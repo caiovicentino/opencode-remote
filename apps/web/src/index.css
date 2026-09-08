@@ -582,6 +582,64 @@ select {
   padding: 4px 0;
 }
 
+/* ── P2-282: per-bubble copy action ──────────────────────────────────
+   Phone-first: a 44x44 touch target under each bubble, always visible,
+   never hover-dependent. The button stays mounted on pointer devices too —
+   the hover reveal below is opacity-only, so layout and hit area never move. */
+.msg-copy-row {
+  display: flex;
+  margin-top: 2px;
+}
+.msg.user .msg-copy-row {
+  justify-content: flex-end;
+}
+.msg.assistant .msg-copy-row {
+  justify-content: flex-start;
+}
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 1;
+  transition:
+    opacity var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+.msg-copy:hover {
+  color: var(--text);
+}
+.msg-copy:focus-visible {
+  outline: 1px solid var(--border-strong);
+  color: var(--text);
+}
+/* the calm ~2s confirmation lives on the button itself */
+.msg-copy[data-copied] {
+  color: var(--accent);
+}
+/* Pointer devices: the action appears on bubble hover and keyboard focus,
+   in place — never display:none, so the target itself always exists. Phone
+   range viewports keep the always-visible base rules even in a desktop
+   browser, matching the real touch devices. */
+@media (hover: hover) and (pointer: fine) and (min-width: 640px) {
+  .msg-copy {
+    min-width: 28px;
+    min-height: 28px;
+    opacity: 0;
+  }
+  .msg:hover .msg-copy,
+  .msg-copy:focus-visible,
+  .msg-copy[data-copied] {
+    opacity: 1;
+  }
+}
+
 /* ── Composer (P3-086): one raised card — attachments, auto-grow input,
    bottom bar with attach / mic / agent·model selector / send ── */
 .composer {
@@ -782,6 +840,13 @@ body.dragging-files::after {
 }
 .composer-btn:active:not(:disabled) {
   transform: none;
+}
+/* P2-201: one quiet line under the composer explaining why the mic is off —
+   the daemon's actionable verdict phrase, never a terminal command. */
+.composer-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin: 4px 2px 0;
 }
 /* P2-107: chat header actions share the composer's ghost chrome — quiet
    icon buttons, no bordered boxes fighting the title (Linear/Raycast bar). */
@@ -1350,6 +1415,24 @@ button.desk-new:hover:not(:disabled) {
 .welcome header {
   text-align: center;
 }
+/* P3-340: product identity — same glyph language as the P2-123 home mark */
+.welcome-mark {
+  display: inline-flex;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+/* P3-340/P3-336: the product wordmark — serif voice at the display step of
+   the type scale. One shared class for every first-contact screen (welcome
+   wizard, pairing, degraded journey) so the brand title never collapses back
+   to body size via inline overrides. */
+.brand-wordmark {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
 .welcome-meta {
   display: flex;
   align-items: center;
@@ -1388,6 +1471,71 @@ button.desk-new:hover:not(:disabled) {
   margin: 0 auto;
 }
 .welcome-pair .pair-section[data-pair-wait="true"] { min-height: 120px; }
+/* P3-333: QR wait state — shimmer skeleton sized exactly like the real QR
+   (no layout jump when it lands) plus the calm "generating" caption. Uses
+   the shared .skel shimmer; prefers-reduced-motion freezes it to a static
+   block via the global media rule. */
+.welcome-qr-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+.welcome-qr-skel {
+  width: min(220px, 60vw);
+  aspect-ratio: 1;
+}
+.welcome-qr-wait .muted {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+/* P3-333: timeout error — same quiet vocabulary as the P2-112 degraded card
+   (bordered surface block, no red, no banner), with the retry as the one
+   action; "do this later" above stays the calm exit. */
+.welcome-qr-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.welcome-qr-error-title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+/* P3-329: the wait/error states name the QR's dependency (the local agent)
+   in the same quiet vocabulary; the error block adds the labeled escape to
+   the manual paste-code ceremony next to the retry. */
+.welcome-qr-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+.welcome-qr-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.welcome-qr-retry,
+.welcome-qr-manual {
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+.welcome-qr-retry:hover,
+.welcome-qr-manual:hover {
+  border-color: var(--fg);
+}
 
 .welcome-step {
   display: flex;
@@ -1770,6 +1918,42 @@ button.desk-new:hover:not(:disabled) {
   border-radius: var(--radius-pill);
   background: var(--accent);
 }
+/* ── P2-220: iOS install hint ──────────────────────────────────────────────
+   Calm one-line note above the conversation list, in the P2-112 card
+   vocabulary (flat --surface panel, --border edge, --muted text — no
+   gradient, no alert color, no emoji). Deliberately in normal document
+   flow: never fixed or sticky, so it can never cover the message composer
+   or steal a tap. */
+.install-hint {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.install-hint-body {
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+.install-hint-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.install-hint-dismiss:hover {
+  color: var(--fg);
+}
 .sess-menu-scrim {
   position: fixed;
   inset: 0;
@@ -1848,12 +2032,14 @@ button.desk-new:hover:not(:disabled) {
 
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet bordered row
    that turns the QR ceremony back on — from the unpaired screen or Settings.
-   Same visual language as .card, no decoration. */
+   Same visual language as .card. P3-335: it is the only host-pairing action,
+   so it reads as a button — trailing chevron on the right and a hover that
+   lifts background, border and chevron together. */
 .pair-remote-entry {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
   text-align: left;
   width: 100%;
   padding: 10px 12px;
@@ -1863,17 +2049,38 @@ button.desk-new:hover:not(:disabled) {
   color: inherit;
   cursor: pointer;
   font: inherit;
+  transition: background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }
 .pair-remote-entry:hover {
   background: var(--surface);
+  border-color: var(--border-strong);
 }
 .pair-remote-entry:disabled {
   opacity: 0.6;
   cursor: default;
 }
+.pair-remote-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
 .pair-remote-entry .muted {
   font-size: 0.75rem;
   font-weight: 400;
+}
+.pair-remote-chevron {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+.pair-remote-entry:hover .pair-remote-chevron {
+  transform: translateX(2px);
+  color: var(--accent);
 }
 
 /* first-run pairing overlay (desktop shell, P2-007) */
@@ -2004,6 +2211,85 @@ button.desk-new:hover:not(:disabled) {
   color: var(--muted);
   max-width: 36ch;
 }
+/* P2-197: reach-probe status — one quiet line below the QR, same calm
+   register as the P2-112 degraded card. Muted when ok, warn-toned (no red,
+   no banner) with a quiet text button when the probe failed. Existing tokens
+   only: no gradient, no glass, no new radius. */
+.pair-reach {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+.pair-reach-warn {
+  color: var(--warn);
+}
+.pair-reach-retry {
+  font-size: 0.8rem;
+  margin-left: 6px;
+  padding: 0;
+}
+
+/* P2-199: daemon↔relay link status — one quiet line right below the reach
+   line, same calm register as the P2-112 degraded card. Muted when
+   connected/local and for the neutral unknown (a legacy payload missing data
+   is never an accusation), warn-toned (no red, no banner) otherwise. Existing
+   tokens only: no gradient, no glass, no new radius. The QR is never hidden. */
+.pair-relaylink {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+.pair-relaylink-warn {
+  color: var(--warn);
+}
+
+/* P2-211: install-location status — one quiet line right below the
+   relay-link line, same calm register as the P2-112 degraded card. Only the
+   wrong-location states render (ok and the neutral unknown stay invisible);
+   warn-toned, no red, no banner, existing tokens only. The QR is never
+   hidden. */
+.pair-install {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+.pair-install-warn {
+  color: var(--warn);
+}
+
+/* P2-214: clock-skew status — one quiet line right below the install-location
+   line, same calm register as the P2-112 degraded card. Only the ahead/behind
+   states render (ok and the neutral unknown stay invisible); warn-toned, no
+   red, no banner, existing tokens only. The QR is never hidden. */
+.pair-clock {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+.pair-clock-warn {
+  color: var(--warn);
+}
+
+/* P2-218: login-item announce — one quiet line right below the clock line,
+   same calm register as the P2-112 degraded card. Renders only on the boot
+   whose verdict was enable (leave and the neutral unknown stay invisible);
+   muted tone only — no warn, no badge, existing tokens only. The QR is
+   never hidden. */
+.pair-startup {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
 
 /* QR scanner state machine (P2-117): looking → preview → unavailable.
    The stage keeps a 4:3 box at every width so a 390px phone never collapses
@@ -2071,6 +2357,9 @@ button.desk-new:hover:not(:disabled) {
   line-height: 1.5;
 }
 .qr-unavailable .qr-paste-cta {
+  align-self: stretch;
+}
+.qr-unavailable .qr-panel-cta {
   align-self: stretch;
 }
 .qr-hint {
@@ -2184,6 +2473,50 @@ button.desk-new:hover:not(:disabled) {
 .daemon-reconnect-btn:hover {
   background: var(--banner-danger-bg);
 }
+/* P2-266: update-ready strip — same calm warn family as the daemon banners
+   (a ready version is a recoverable, non-incident state), one line + one
+   explicit action. Sits above the daemon strips (z-index 61) so both being
+   visible at once still reads in order; the only animation is the entrance,
+   neutralized by the global prefers-reduced-motion query. */
+.sw-update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 61;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 0.85rem;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-bottom: 1px solid var(--warn);
+  animation: sw-banner-in 200ms ease-out;
+}
+.sw-update-btn {
+  padding: 2px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--warn);
+  background: transparent;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sw-update-btn:hover {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+}
+@keyframes sw-banner-in {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
 .has-daemon-down {
   padding-top: 38px;
 }
@@ -2198,6 +2531,17 @@ button.desk-new:hover:not(:disabled) {
   justify-content: center;
   padding-left: 20px;
   padding-right: 20px;
+}
+/* P3-339: one brand-header treatment across the unpaired journey — the
+   welcome wizard centers its h1 (.welcome header, same axis as .home-head)
+   and this screen, the wizard's next step, matches. The generic .screen >
+   header rule above turns this header into a space-between flex row, and
+   flex items ignore text-align, so the flex is dropped (the only child is
+   the h1). Cards below stay left-aligned; the scanner's toolbar header is a
+   different element and is not touched (it carries the back button). */
+.pair-wrap .pair-screen header {
+  display: block;
+  text-align: center;
 }
 /* The two pairing directions (client ceremony / host entry) as titled cards. */
 .pair-section {
@@ -2223,6 +2567,54 @@ button.desk-new:hover:not(:disabled) {
   align-self: center;
   margin: 0;
   font-size: 0.78rem;
+}
+/* ── P3-332: live auto-connect state (local mode) ───────────────────────────
+   The intro promises the shell connects itself, so the local-mode screen shows
+   the attempt in flight: pulsing status dot + phase copy + retry. Same flat
+   surface language as the degraded card — no spinners, no gradients. The dot
+   reuses the shared degraded-pulse keyframes. */
+.pair-auto {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  text-align: left;
+}
+.pair-auto-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--status-wait);
+  animation: degraded-pulse 2s var(--ease-out) infinite;
+}
+.pair-auto-copy {
+  min-width: 0;
+}
+.pair-auto-title {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+  line-height: var(--line-height-tight);
+  color: var(--fg);
+}
+.pair-auto-hint {
+  margin: 0;
+}
+.pair-auto-retry {
+  margin-top: 8px;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--fg);
+  border-color: var(--border);
+  background: transparent;
+}
+.pair-auto-retry:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 /* Invalid-code error: styled block (was an inline-colored <p>) + inline
    helper with the expected format, announced via role=alert/aria-live. */
@@ -2267,6 +2659,19 @@ button.desk-new:hover:not(:disabled) {
    gradients, no glassmorphism. */
 .degraded {
   justify-content: center;
+}
+/* P3-330: the degraded gate is the screen right after the welcome wizard, so
+   its brand header sits on the same centered axis as the wizard's
+   (.welcome header) and the pairing screen's (P3-339) — a flush-left
+   wordmark over a vertically centered card stack read as a broken layout at
+   1440x900, not a focused one. The shared .screen > header rule is a
+   space-between flex row and flex items ignore text-align, so the flex is
+   dropped (the only child is the h1). Scoped to .screen.degraded: sibling
+   screens reusing .screen (chat, settings, scanner toolbar) keep their flex
+   headers with back buttons and actions. */
+.screen.degraded > header {
+  display: block;
+  text-align: center;
 }
 .degraded-status {
   display: flex;
@@ -2428,6 +2833,100 @@ button.desk-new:hover:not(:disabled) {
   font-weight: 600;
   color: var(--fg);
 }
+/* Machine state section (P2-232): one row per readiness verdict — the shared
+   status-dot chrome carries the severity, the daemon's own phrase sits below
+   the label. No new colors: the same dot ladder as the connection indicator. */
+.machine-state-summary {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+.machine-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.machine-row:last-child {
+  margin-bottom: 0;
+}
+.machine-row .status-dot {
+  margin-top: 4px;
+}
+.machine-row-msg {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+/* P2-318: per-routine run history — a quiet collapsible under each routine
+   row (PRODUCT.md: calm, closed by default, no emoji, no loud color). Same
+   anatomy as the thinking block: muted head, hairline rows, chevron turn. */
+.routine-history-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 44px; /* phone touch target */
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
+  cursor: pointer;
+}
+.routine-history-head:hover {
+  color: var(--text);
+}
+.routine-history-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+.routine-history-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.routine-history-chevron.open {
+  transform: rotate(90deg);
+}
+.routine-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.routine-history-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--font-size-sm);
+}
+.routine-history-when {
+  color: var(--muted);
+  min-width: 3.5em;
+  font-variant-numeric: tabular-nums;
+}
+.routine-history-outcome {
+  flex: 1;
+  min-width: 0;
+}
+.routine-history-outcome.failed {
+  color: var(--danger);
+}
+.routine-history-outcome.skipped {
+  color: var(--muted);
+}
+.routine-history-dur {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.routine-history-empty {
+  margin: 2px 0 6px;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
 /* spinner inside the reconnect button (trying state, P2-112) */
 .reconnect-spin {
   display: inline-block;
@@ -2491,6 +2990,76 @@ button.desk-new:hover:not(:disabled) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/* ── P2-281: in-conversation search — floating find bar over the transcript.
+   Shares the chat header's ghost-button chrome and the overlay shadow token;
+   the entrance rides the 150ms interaction beat (dies under the global
+   prefers-reduced-motion block). */
+.chat-search {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: min(420px, calc(100% - 24px));
+  padding: 3px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  color: var(--muted);
+  animation: msg-in var(--motion-fast) var(--ease-out);
+}
+.chat-search > svg {
+  flex-shrink: 0;
+  margin-left: 5px;
+}
+.chat-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  padding: 5px 6px;
+}
+.chat-search input::placeholder {
+  color: var(--muted);
+}
+.chat-search-count {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  padding-right: 4px;
+}
+/* matches inside the bubbles: quiet accent wash for the neighbours, solid
+   accent for the occurrence the reader is on */
+.msg mark.search-mark {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+  margin: 0 -1px;
+}
+.msg mark.search-mark-current {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+/* bubble-level cues for matches that can't be inline-marked (markdown,
+   code fences): a quiet accent rail, stronger for the active one */
+.msg.search-hit {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.msg.search-current {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
 }
 
 /* P2-049: connection dropped — slim in-flow banner with the attempt counter
@@ -3098,5 +3667,99 @@ button.desk-new:hover:not(:disabled) {
     border-right: none;
     border-bottom: 1px solid var(--border);
     max-height: 40%;
+  }
+}
+
+/* ── P2-323: the one calm confirmation dialog (rename / delete / rewind) ──
+   Replaces the last native window.prompt/window.confirm call sites: a
+   centered card over a softened scrim, tokens only, 44px touch targets and
+   200ms ease-out motion that the global prefers-reduced-motion block zeroes. */
+.ask-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim-soft);
+  display: grid;
+  place-items: center;
+  z-index: 80;
+  padding: var(--space-4);
+  animation: ask-fade var(--motion-slow) var(--ease-out);
+}
+.ask-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-5);
+  animation: ask-rise var(--motion-slow) var(--ease-out);
+}
+.ask-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-tight);
+  font-weight: 600;
+  color: var(--text);
+}
+.ask-body {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-body);
+  color: var(--muted);
+}
+.ask-input {
+  min-height: 44px;
+  margin-bottom: var(--space-4);
+}
+.ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.ask-actions button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  font-weight: var(--font-weight-medium);
+  transition: background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+.ask-actions button:focus-visible,
+.ask-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ask-cancel {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.ask-cancel:hover {
+  background: var(--gray-hover);
+}
+.ask-confirm:not(:disabled):hover {
+  border-color: var(--border-strong);
+}
+.ask-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@keyframes ask-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ask-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }

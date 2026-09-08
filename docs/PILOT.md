@@ -120,6 +120,122 @@ ele roda como passo "Smoke-check the packaged bundle" nos dois jobs de
 empacotamento, entre empacotar e anexar os artefatos (desktop-dmg desde a
 P2-130; desktop-win desde a P2-164, com `shell: bash` explícito — pwsh não
 expande glob), de modo que bundle quebrado aborte o job antes do upload.
+Desde a P2-219 o empacotamento Windows também é exercitado no CI, além do
+release: todo PR que toca o desktop roda o job `desktop-package-win`
+(windows-latest, mesmo indicador `desktop` do job scope do macOS), que
+empacota somente o alvo `dir` do Windows — sem instalador NSIS, sem
+assinatura — e roda o mesmo smoke `--no-installer`, de modo que regressão
+de empacotamento Windows reprove o PR em vez de estourar no dia da
+publicação. Desde a P2-224 o indicador `desktop` aciona também o job
+`verify-win` (windows-latest), que roda typecheck e a sub-bateria portátil
+`npm run test:unit-win` (`scripts/portable-suite.ts`, só node puro: sem
+Electron, socket, chmod, spawn ou porta) para que a lógica de caminho
+(webroot, installloc, loginitem, desktop-log, logsDirPath do tray,
+sidecar-log, ci-scope, versions) seja verificada contra o separador
+Windows a cada PR; desde a P2-317 o job também roda quando o indicador
+`portable-suite` do job scope é verdadeiro (classificado pela função irmã
+`touchesPortableSuite` do mesmo `scripts/ci-scope.ts`: diretórios de código
+dos apps, pacotes compartilhados, scripts e o package-lock.json da raiz —
+mudança só de documentação ou de mídia nunca aciona), de modo que lógica de
+caminho do daemon e do relay rode no Windows no próprio PR; localmente, em
+qualquer SO: `npm run test:unit-win`.
+Desde a P2-222 a imagem do relay também é construída e testada no CI, além do
+release: todo PR que toca a superfície relay (`apps/relay`,
+`deploy/relay/Dockerfile`, `.dockerignore`, `package-lock.json` — classificado
+pela função irmã `touchesRelayImage` do mesmo `scripts/ci-scope.ts`) roda o
+job `relay-image` (ubuntu-latest, indicador `relay-image` do job scope), que
+constrói a imagem com tag local efêmera, sobe o contêiner numa porta de
+loopback efêmera, espera `/healthz` com o mesmo teto de 30 tentativas × 1s do
+release e roda o mesmo `scripts/relay-image-smoke.ts` — sem login em registro,
+sem push e sem segredo. Reproduza localmente:
+`docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .` e o smoke
+conforme docs/RELAY-HOSTING.md.
+Desde a P2-204 o desktop-dmg também **abre o app empacotado de verdade**
+antes de anexar o DMG (`apps/desktop/scripts/packaged-boot.mjs`, passo
+"Smoke-boot the packaged app"): launch hermético pelo Playwright do binário
+dentro de `Contents/MacOS` (userData temporário, `OCR_DESKTOP_SESSION`
+próprio da execução, nenhum sidecar — `OCR_DAEMON_ENTRY` inexistente — e
+`OCR_DAEMON_FORCE_DOWN` para o pareamento ficar determinístico), espera o
+load terminar, injeta o canário de console do render smoke e exige `#root`
+com conteúdo antes de fechar o app. Desde a P2-208 o mesmo smoke cobre os
+**dois** jobs de empacotamento: o desktop-win abre o executável real do
+diretório `win-unpacked` (mesmo contrato hermético) depois do empacotamento
+e da verificação Authenticode, antes de anexar o instalador NSIS — as
+candidatas de layout vêm do módulo puro `packaged-boot-layout.mjs` e
+`resolveExecutable` segue sendo o único ponto do script que toca disco. O
+veredito vive numa função pura (`bootVerdict`) com motivos `binary-missing`,
+`load-failed`, `blank-window`, `console-capture-broken` e `console-error`;
+Playwright ausente falha fechado. O smoke de boot também fica **fora do gate
+por design** — é etapa de distribuição: roda no workflow de release (nos dois
+jobs de empacotamento) e localmente contra um pacote já construído (README).
+Desde a P2-242 o mesmo boot real do pacote roda também no CI além do release
+(passo `Smoke-boot the packaged app` nos dois jobs de empacotamento do ci.yml,
+depois do smoke de inspeção, com `shell: bash` explícito e timeout próprio —
+paridade guardada por `scripts/bootsmokeparity.ts` em `scripts/unit.test.ts`) e
+segue FORA do gate determinístico por design. Desde a P2-251 os dois jobs de
+empacotamento do release também executam o lado que o boot smoke desliga de
+propósito — o passo `Smoke the packaged daemon sidecar`
+(`apps/desktop/scripts/packaged-daemon-smoke.mjs`, depois do boot do pacote e
+antes do upload, exigido dos dois lados por `scripts/bootsmokeparity.ts`) sobe
+o `resources/daemon/index.js` empacotado com o próprio Electron do pacote como
+runtime via `ELECTRON_RUN_AS_NODE` (mesmo spawn da produção), hermético (HOME
+temporário, relay desligado pelo preflight fail-closed do daemon, porta de
+métricas efêmera, stdout do pairing URI descartado sem ler) e só aprova com
+`/api/health` respondendo 2xx autenticado com o filho vivo — prova que o
+sidecar empacotado sobe e serve no runtime empacotado; não prova que o shell
+chega a ele ponta a ponta. Desde a P2-253 os dois jobs de empacotamento do
+ci.yml também rodam o `Smoke the packaged daemon sidecar` (depois do boot do
+pacote, mesmo script e mesmo contrato hermético do release, exigido por
+`scripts/bootsmokeparity.ts` nos dois workflows) — a regressão de
+empacotamento do daemon passa a ser pega no pull request, não mais somente na
+tag. Desde a P2-304 o job desktop-win também **instala o instalador de
+verdade** antes de anexá-lo (passo `Smoke-install the Windows installer`,
+`apps/desktop/scripts/installer-smoke.mjs`, depois do smoke do daemon
+empacotado e antes do upload do setup exe): o setup NSIS roda em modo
+silencioso (`/S`, alvo via `/D=` — último argumento, sem aspas) num diretório
+temporário com ambiente hermético (allowlist de vars, HOME/APPDATA apontando
+para um descartável, então o wipe de app-data da P2-249 nunca alcança perfil
+real), confere a árvore instalada (executável, `resources/daemon/index.js`,
+`resources/web-dist`, desinstalador presente), abre o executável **instalado**
+com o mesmo contrato hermético do boot smoke (`hermeticBootEnv` de
+`packaged-boot.mjs` e o mesmo `bootVerdict` — userData temporário, sessão
+própria da execução, nenhum sidecar, pareamento forçado para baixo) e roda o
+desinstalador em modo silencioso exigindo o diretório de instalação de volta.
+O veredito vive na função pura `installerVerdict`
+(`installer-smoke-verdict.mjs`) com motivos `install-failed`, `layout-missing`,
+`boot-failed`, `uninstall-failed` e `leftover-files`; Playwright ausente falha
+fechado **antes** de qualquer mutação da máquina. Exigido por
+`scripts/bootsmokeparity.ts` no job que anexa o setup exe (exatamente uma
+ocorrência, depois do empacotamento e antes do upload, `shell: bash` e timeout
+próprio). Como os irmãos de empacotamento (P2-204/P2-251), o smoke de
+instalador fica **fora do gate determinístico por design** — só roda no
+workflow de release, numa máquina Windows real (NSIS não executa em outro
+host; o script falha fechado fora do Windows).
+Desde a P2-309 o job desktop-dmg também **monta a imagem que o usuário de Mac
+realmente abre** antes de anexá-la (passo `Smoke-mount the macOS disk image`,
+`apps/desktop/scripts/dmg-smoke.mjs`, depois da verificação Gatekeeper do
+container e antes do upload): `hdiutil attach` sem interface num ponto de
+montagem descartável, conferência do conteúdo montado (exatamente um `.app`,
+executável, `resources/daemon` + `web-dist`, atalho para Aplicativos apontando
+para `/Applications`), boot do app DE DENTRO do volume com o mesmo contrato
+hermético do boot smoke e desmontagem sempre (retry `-force`). O veredito vive
+na função pura `dmgVerdict` (`dmg-smoke-verdict.mjs`) com motivos
+`attach-failed`, `layout-missing`, `applications-link-missing`, `boot-failed` e
+`detach-failed`; Playwright ausente falha fechado **antes** de montar qualquer
+coisa. Exigido por `scripts/bootsmokeparity.ts` no job que anexa a imagem
+(exatamente uma ocorrência, depois do empacotamento e antes do upload, `shell:
+bash` e timeout próprio) e, como os irmãos P2-204/P2-251/P2-304, o smoke de
+imagem fica **fora do gate determinístico por design**.
+Na mesma ponta de distribuição, o job `release-feeds` do workflow confere o
+CONTEÚDO dos quatro feeds de update antes da publicação (P2-157, estendido
+pela P2-212): `update-mac-arm64.json` e `update-mac-x64.json` — os dois que
+máquinas reais consultam desde a P2-191 — precisam apontar para um zip
+publicado da própria arquitetura, o apelido `update-mac.json` (que só existe
+para a base já instalada) precisa continuar idêntico ao documento arm64, e o
+`latest.yml` do Windows mantém a checagem de sempre. Qualquer feed apontando
+para artefato ausente da release ou para a arquitetura errada falha o job e
+mantém o release rascunho pelo contrato da P2-179 — falha fechado, com todos
+os problems listados numa única execução.
 
 **Perfil de gate por repo (P2-116).** A bateria acima pressupõe um checkout do
 próprio pilot; apontar o pipeline para um repo externo quebraria o gate (os
@@ -616,6 +732,9 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   (evidence/typecheck/build/…/invariants/review) calculado sobre os eventos
   `gate-fail` que o `recordGateFail` emite; o botão **FILA** mostra na face
   `n prontos ⛔m bloqueadas` (seções `## Ready`/`## Blocked` do BACKLOG.md).
+  A rota lê seções de verdade (`backlogview.ts`, P2-240): cada título delimita
+  a seção até o próximo título, e linha não marcada dentro de `## Done` nunca
+  conta como pronta.
 - **Chip AUDIT MODE**: quando o circuit breaker de febre (P2-032) pausa a fila,
   um chip vermelho no topo do painel mostra o motivo e, no tooltip, o resumo
   do `buildDiagnosis` (api + top steps + top tasks) persistido em
@@ -1607,3 +1726,12 @@ gate, cadeia `test:unit` ou CI — ou estar declarado em `scripts/test-registry.
 `scripts/unit.test.ts` roda `scripts/testreachability.ts` (puro, sem I/O) contra o
 repositório real: script declarado no package.json e nunca invocado não conta como
 cobertura, e qualquer teste órfão futuro reprova o gate.
+
+## Cobertura da bateria portátil (P2-237)
+
+Quem escreve um teste novo em `scripts/` precisa classificá-lo na hora: todo
+arquivo de teste entra na lista portátil (`PORTABLE_TESTS`) ou na lista de
+exclusões (`PORTABLE_EXCLUSIONS`) com uma causa documentada — não existe
+terceira opção; `scripts/portablecoverage.ts` (puro, sem I/O) cruza as duas
+listas com a listagem real do diretório e qualquer arquivo sem classificação
+reprova o gate no `test:unit` e no job `verify-win`.

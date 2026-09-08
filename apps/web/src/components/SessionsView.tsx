@@ -8,7 +8,9 @@ import type { EventEnvelope } from "@ocr/protocol";
 import type { Pairing } from "../lib/client";
 import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
 import { dropCachedSession } from "../lib/sessionCache";
+import { buildAskDialog, type AskIntent } from "../lib/askdialog";
 import { IconArchive, IconCheck, IconChevronDown, IconFilter, IconPencil, IconUndo, IconX } from "./icons";
+import AskDialog from "./AskDialog";
 import MachinePicker from "./MachinePicker";
 
 interface Session {
@@ -47,6 +49,10 @@ interface Props {
   variant?: "grid" | "rows";
   /** P3-084: currently open conversation — drives the sharp active row. */
   activeSession?: string | null;
+  /** P2-220: one-line iOS install hint (null/absent hides the banner). */
+  installHint?: string | null;
+  /** P2-220: persists the dismissal under its own localStorage key. */
+  onDismissInstallHint?: () => void;
 }
 
 /** P1-064: collapsed header for autonomous-pilot sessions, pinned to the end
@@ -120,6 +126,8 @@ export default function SessionsView({
   onCreateSession,
   variant = "grid",
   activeSession = null,
+  installHint = null,
+  onDismissInstallHint,
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const t = useT();
@@ -136,6 +144,9 @@ export default function SessionsView({
   // P3-084: client-side archive (this device's localStorage, reversible)
   const [archivedIds, setArchivedIds] = useState<string[]>(() => loadArchived());
   const [archivedOpen, setArchivedOpen] = useState(false);
+  // P2-323: the in-app confirmation dialog (rename/delete) replaces the
+  // native window.prompt/window.confirm the desktop shell never implemented
+  const [ask, setAsk] = useState<{ intent: AskIntent; id: string; current: string } | null>(null);
 
   // silent restore: a device that already granted permission never re-authorizes
   useEffect(() => {
@@ -171,15 +182,26 @@ export default function SessionsView({
     if (err) setError(err);
   }
 
-  async function renameSession(id: string, current?: string) {
-    const title = window.prompt(t("renamePrompt"), current ?? "");
-    if (!title) return;
-    await request("PATCH", `/session/${id}`, { title });
-    void load();
+  function renameSession(id: string, current?: string) {
+    setAsk({ intent: "rename", id, current: typeof current === "string" ? current : "" });
   }
 
-  async function deleteSession(id: string) {
-    if (!window.confirm(t("deleteConfirm"))) return;
+  function deleteSession(id: string) {
+    setAsk({ intent: "delete", id, current: "" });
+  }
+
+  // P2-323: the dialog only resolves when the user confirms — rename keeps
+  // the non-empty guarantee (identical/blank values stay disabled) and delete
+  // still clears the warm cache only on a 200.
+  async function handleAskConfirm(value: string) {
+    if (!ask) return;
+    const { intent, id } = ask;
+    setAsk(null);
+    if (intent === "rename") {
+      await request("PATCH", `/session/${id}`, { title: value });
+      void load();
+      return;
+    }
     const res = await request("DELETE", `/session/${id}`);
     // P1-064: a deleted conversation must not linger in the warm cache
     if (res.status === 200) dropCachedSession(id);
@@ -305,7 +327,7 @@ export default function SessionsView({
                 className="row-rename"
                 aria-label={t("rename")}
                 title={t("rename")}
-                onClick={() => void renameSession(s.id, s.title)}
+                onClick={() => renameSession(s.id, s.title)}
               >
                 <IconPencil size={14} />
               </button>
@@ -365,7 +387,7 @@ export default function SessionsView({
           </div>
         )}
         <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-          <button aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => void renameSession(s.id, s.title)}>
+          <button className="card-rename" aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => renameSession(s.id, s.title)}>
             <IconPencil size={14} />
           </button>
           {archived ? (
@@ -373,7 +395,7 @@ export default function SessionsView({
               <IconUndo size={14} />
             </button>
           ) : (
-            <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => void deleteSession(s.id)}>
+            <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => deleteSession(s.id)}>
               <IconX size={14} />
             </button>
           )}
@@ -452,6 +474,24 @@ export default function SessionsView({
       )}
 
       <div className="list">
+        {/* P2-220: calm iOS install hint, in the P2-112 card vocabulary. It
+            fails OPEN on purpose: normal document flow at the top of the list
+            — never position:fixed/sticky, never covering the message field,
+            never blocking send, never disabling or hiding any control. If the
+            detection is wrong somewhere, the cost is one quiet line, not a
+            lost pairing. */}
+        {installHint && (
+          <div className="install-hint" role="note" data-install-hint>
+            <span className="install-hint-body">{installHint}</span>
+            <button
+              className="install-hint-dismiss"
+              onClick={onDismissInstallHint}
+              aria-label={t("installHintDismiss")}
+            >
+              {t("installHintDismiss")}
+            </button>
+          </div>
+        )}
         {/* P2-108: badge filters folded into a search-attached menu (was a
             chip row); locale-independent hooks for the gate: data-filter. */}
         <div className="sess-search-row">
@@ -613,6 +653,15 @@ export default function SessionsView({
           onForget={onForget}
           onAddMachine={onAddMachine}
           onClose={() => setSwitching(false)}
+        />
+      )}
+
+      {ask && (
+        <AskDialog
+          descriptor={buildAskDialog(ask.intent, t, ask.current)}
+          currentTitle={ask.intent === "rename" ? ask.current : undefined}
+          onConfirm={(value) => void handleAskConfirm(value)}
+          onClose={() => setAsk(null)}
         />
       )}
     </div>

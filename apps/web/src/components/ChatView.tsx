@@ -1,20 +1,27 @@
 import {
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
-import { transcribeBlob } from "../lib/transcribe";
+import { transcribeBlob, useSttStatus } from "../lib/transcribe";
+import { useModelStatus } from "../lib/modelstatus";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
 import { saveFile } from "../lib/files";
+import { copyText } from "../lib/clipboard";
+import { copyPlan, type CopyPart } from "../lib/copymsg";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
+import { buildAskDialog } from "../lib/askdialog";
+import AskDialog from "./AskDialog";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 import ArtifactViewer from "./ArtifactViewer";
@@ -39,7 +46,19 @@ import { appendDraft, getDraft, setDraft } from "../lib/drafts";
 import { firstSentence, pressureLevel } from "../lib/context";
 import { getTtsLang, speakBrief } from "../lib/voice";
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
+import {
+  pastePlan,
+  PASTE_FALLBACK_FILE_NAME,
+  PASTE_FALLBACK_IMAGE_NAME,
+  type PasteItem,
+} from "../lib/pasteattach";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
+import {
+  canHighlightInline,
+  findHits,
+  segmentsFor,
+  type ChatHit,
+} from "../lib/chatfind";
 import {
   reduceThinking,
   thinkingExpanded,
@@ -47,7 +66,17 @@ import {
   type ThinkingState,
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
-import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSpeaker, IconWrench, IconX } from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
+
+/** P2-312: microphone verdict from the desktop shell (mirrors
+ * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
+ * static pt-BR sentence; settingsTarget is the OS panel that unlocks the mic
+ * when one exists (macOS privacy pane / Windows microphone page). */
+export interface MicAccessVerdict {
+  verdict: "ready" | "will-ask" | "blocked-by-system" | "unknown";
+  phrase: string;
+  settingsTarget: string | null;
+}
 
 interface Props {
   sessionId: string;
@@ -76,6 +105,9 @@ interface Props {
    * in-chat .conn-banner must not duplicate the same sentence (one banner
    * only). The mobile PWA has no shell banner and keeps it. */
   shellBannerVisible?: boolean;
+  /** P2-312: microphone-permission verdict from the desktop shell (absent on
+   * the phone) — replaces the Safari-only NotAllowedError advice. */
+  getMicAccess?: () => Promise<MicAccessVerdict | null>;
 }
 
 interface QuestionInfo {
@@ -163,6 +195,17 @@ function attachmentLabel(items: PendingImage[]): string {
     labels.push(`[file ${i.filename}]`);
   }
   return labels.join(" ");
+}
+
+/** P2-282: a bubble's already-normalized copy parts — the stored reasoning
+ * (rendered as the collapsed thinking block) plus the answer text. lib/copymsg
+ * owns the decision: reasoning is stripped before any joining, so whoever
+ * copies gets the answer, never the machine's internal trail. */
+function copyPartsOf(b: Bubble): CopyPart[] {
+  const parts: CopyPart[] = [];
+  if (b.thinking?.text) parts.push({ type: "reasoning", text: b.thinking.text });
+  if (b.text) parts.push({ type: "text", text: b.text });
+  return parts;
 }
 
 /** P3-085: collapsible reasoning block ("Pensou por Xs", Claude Desktop
@@ -275,6 +318,44 @@ function Modal({
   );
 }
 
+/** P2-281: inline search highlighting for plain-prose bubbles. Only used
+ * when lib/chatfind.canHighlightInline guarantees the raw text renders
+ * verbatim, so the hit offsets are exact; .msg is pre-wrap, so plain
+ * segments keep their own line breaks. `active` is the GLOBAL active hit —
+ * segmentsFor's hitIndex is the per-bubble ordinal, so the current mark is
+ * resolved by object identity through `hits` (same references as the global
+ * searchHits array), never by comparing the two ordinal spaces. */
+function HighlightedText({
+  text,
+  hits,
+  active,
+}: {
+  text: string;
+  hits: ChatHit[];
+  active: ChatHit | null;
+}) {
+  return (
+    <>
+      {segmentsFor(text, hits).map((s, i) =>
+        s.hit ? (
+          <mark
+            key={i}
+            className={
+              active !== null && hits[s.hitIndex!] === active
+                ? "search-mark search-mark-current"
+                : "search-mark"
+            }
+          >
+            {s.text}
+          </mark>
+        ) : (
+          <span key={i}>{s.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 export default function ChatView({
   sessionId,
   events,
@@ -286,6 +367,7 @@ export default function ChatView({
   paneArtifact,
   onPaneArtifactConsumed,
   shellBannerVisible = false,
+  getMicAccess,
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -305,6 +387,13 @@ export default function ChatView({
   const [error, setError] = useState("");
   // text of the last failed send, so the error banner can offer one-tap retry
   const [retryText, setRetryText] = useState("");
+  // P2-312: system settings panel target for the mic-denied verdict — set by
+  // micError alongside the shell's phrase, cleared when the mic is used again.
+  const [micPanel, setMicPanel] = useState<string | null>(null);
+  // P2-282: per-bubble copy — a calm confirmation on the button itself for
+  // ~2s; the failure surfaces where every conversation error already appears.
+  const [copiedBubble, setCopiedBubble] = useState<number | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // transient errors: red text should not stick around forever
   useEffect(() => {
@@ -313,6 +402,17 @@ export default function ChatView({
     return () => clearTimeout(t);
   }, [error]);
   const [recState, setRecState] = useState<"idle" | "rec" | "busy">("idle");
+  // P2-201: host speech-to-text verdict. Unknown (probe silent) stays null —
+  // the mic fails open; a known non-ready state disables it with the phrase.
+  const stt = useSttStatus(request);
+  const sttBlocked = !!stt && stt.state !== "ready";
+  // P2-210: host model-readiness verdict. DELIBERATELY fail-open: the calm
+  // line above the composer never disables it and never blocks sending —
+  // blocking the conversation because a probe says the machine has no
+  // credentials would be worse than the late raw upstream error this line
+  // replaces. Its whole job is to explain that failure before the first send.
+  const modelStatus = useModelStatus(request);
+  const modelHint = modelStatus && modelStatus.state !== "ready" ? modelStatus : null;
   // P2-125 voice replies: toggle + playback state. Availability comes from the
   // daemon (edge-tts installed on the host); the full answer stays in the chat.
   const [ttsOn, setTtsOn] = useState(() => localStorage.getItem("ocr-tts-on") === "1");
@@ -336,6 +436,28 @@ export default function ChatView({
   const [qSel, setQSel] = useState<Record<string, Record<number, string[]>>>({});
   const [qCustom, setQCustom] = useState<Record<string, Record<number, string>>>({});
   const [showActivity, setShowActivity] = useState(false);
+  // P2-281: in-conversation search — a bar floating over the message list;
+  // occurrences come from the pure lib/chatfind over the already-loaded
+  // bubbles, never a fresh fetch and never the DOM.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [searchIdx, setSearchIdx] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchHits = useMemo(
+    () => (searchOpen ? findHits(bubbles, searchTerm) : []),
+    [searchOpen, searchTerm, bubbles],
+  );
+  const searchCursor = searchHits.length ? Math.min(searchIdx, searchHits.length - 1) : 0;
+  const currentHit = searchHits[searchCursor] ?? null;
+  const hitsByBubble = useMemo(() => {
+    const map = new Map<number, ChatHit[]>();
+    for (const h of searchHits) {
+      const list = map.get(h.bubble);
+      if (list) list.push(h);
+      else map.set(h.bubble, [h]);
+    }
+    return map;
+  }, [searchHits]);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
   // P1-064: server paging state + explicit history error (never an eternal skeleton)
   const [historyError, setHistoryError] = useState("");
@@ -620,6 +742,74 @@ export default function ChatView({
     };
   }, [modelMenu]);
 
+  // ── P2-281: in-conversation search ────────────────────────────────────
+  function openSearch() {
+    setSearchOpen(true);
+    // already open: the gesture is "get me back to the field" — select the
+    // term so typing replaces it; the fresh-mount focus lands via effect
+    searchInputRef.current?.focus();
+    searchInputRef.current?.select();
+  }
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchTerm("");
+    setSearchIdx(0);
+  }
+  function stepSearch(dir: 1 | -1) {
+    const n = searchHits.length;
+    if (!n) return;
+    setSearchIdx((searchCursor + dir + n) % n);
+  }
+
+  // focus + select whenever the bar opens, so a second Cmd+F replaces the
+  // previous term in one gesture
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.select();
+  }, [searchOpen]);
+
+  // a new term starts at the newest occurrence — the nearest one to the tail
+  // the reader is already looking at; arrows/Enter then walk the rest.
+  // The closure reads the hits of the render that changed the deps — always
+  // fresh, no render-phase ref write needed.
+  useEffect(() => {
+    setSearchIdx(Math.max(0, searchHits.length - 1));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, searchOpen]);
+
+  // Cmd+F / Ctrl+F opens the bar (the app owns find while the chat is up);
+  // Esc closes from anywhere while it is up — except when a modal is stacked
+  // on top: Modal's own Esc handler consumes that one, and co-closing would
+  // discard the term the reader is mid-way through
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        openSearch();
+      } else if (e.key === "Escape" && searchOpen) {
+        const modalOpen = document.querySelector(".modal-scrim") !== null;
+        if (!modalOpen) closeSearch();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen]);
+
+  // P2-282: the copy gesture itself — served by lib/copymsg's plan through
+  // the existing copyText (the exact clipboard path FileCard, SettingsView
+  // and PairingOverlay already use), never a new clipboard path.
+  function copyBubble(bubbleIdx: number, text: string) {
+    void copyText(text).then((ok) => {
+      if (ok) {
+        setCopiedBubble(bubbleIdx);
+        if (copyTimer.current) clearTimeout(copyTimer.current);
+        copyTimer.current = setTimeout(() => setCopiedBubble(null), 2000);
+      } else {
+        setError(t("copyMsgFailed"));
+      }
+    });
+  }
+
   function pickAgent(value: string) {
     setAgent(value);
     localStorage.setItem("ocr_agent", value);
@@ -633,6 +823,19 @@ export default function ChatView({
   // P3-085: streaming reasoning ("Pensou por Xs" block) — refs above the
   // [sessionId] switch effect, cleared on every switch (P1-089 rule).
   const [liveThinking, setLiveThinking] = useState<ThinkingState | null>(null);
+  // P2-266: one document-level signal of in-progress work (live stream tail
+  // or a send in flight). The service-worker update wiring in main.tsx reads
+  // it before offering a version swap — reloading over a streaming answer
+  // would lose it. Session switches re-run this effect; unmount clears it.
+  const streamingNow = sending || !!liveText || !!liveThinking;
+  useEffect(() => {
+    document.dispatchEvent(
+      new CustomEvent("ocr:streaming", { detail: { streaming: streamingNow } }),
+    );
+    return () => {
+      document.dispatchEvent(new CustomEvent("ocr:streaming", { detail: { streaming: false } }));
+    };
+  }, [streamingNow]);
   const thinkingRef = useRef<ThinkingState | null>(null);
 
   useEffect(() => {
@@ -675,7 +878,21 @@ export default function ChatView({
     setLiveText("");
     thinkingRef.current = null;
     setLiveThinking(null);
+    // P2-281: search is per conversation — a switch starts clean
+    setSearchOpen(false);
+    setSearchTerm("");
+    setSearchIdx(0);
+    // P2-282: so is the copy confirmation
+    setCopiedBubble(null);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
   }, [sessionId]);
+
+  // P2-282: no timer may fire a state write after unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    };
+  }, []);
 
   // P2-090: auto-open the split-pane when the turn goes idle right after the
   // agent wrote an artifact. The pure pairing (write → next idle) lives in
@@ -1148,10 +1365,39 @@ export default function ChatView({
 
   // keep the render window bounded on very long conversations
   useEffect(() => {
+    // P2-281: while the search is open the active occurrence owns the window —
+    // the scroll effect below widens it to reach hits far up the transcript
+    if (searchOpen) return;
     if (bubbles.length - winStart > MSG_WINDOW + 60) {
       setWinStart(Math.max(0, bubbles.length - MSG_WINDOW));
     }
-  }, [bubbles.length, winStart]);
+  }, [bubbles.length, winStart, searchOpen]);
+
+  // P2-281: center the active occurrence. A hit far above the window first
+  // widens it (this effect re-runs after the window moves), then scrolls the
+  // bubble into the middle of the reader.
+  useEffect(() => {
+    if (!searchOpen || !currentHit) return;
+    if (currentHit.bubble < winStart) {
+      setWinStart(Math.max(0, currentHit.bubble - 10));
+      return;
+    }
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-bubble-idx="${currentHit.bubble}"]`)
+      ?.scrollIntoView({ block: "center", behavior: scrollBehavior() });
+  }, [searchOpen, currentHit, winStart, bubbles.length]);
+
+  // P2-281: closing the search restores the tail — declared after the clamp
+  // above so the render window is re-bounded before scrolling home
+  const wasSearchOpen = useRef(false);
+  useEffect(() => {
+    if (wasSearchOpen.current && !searchOpen) {
+      atBottomRef.current = true;
+      setAtBottom(true);
+      bottomRef.current?.scrollIntoView({ behavior: scrollBehavior() });
+    }
+    wasSearchOpen.current = searchOpen;
+  }, [searchOpen]);
 
   // after paging in older bubbles, restore the scroll position the user was at
   useEffect(() => {
@@ -1336,8 +1582,16 @@ export default function ChatView({
   }
 
   const [canUnrevert, setCanUnrevert] = useState(false);
+  // P2-323: rewind confirms through the shared in-app dialog — the native
+  // window.confirm box ignored the UI language and the theme
+  const [rewindAsk, setRewindAsk] = useState<string | null>(null);
   async function revertTo(messageID: string) {
-    if (!window.confirm(t("rewindConfirm"))) return;
+    setRewindAsk(messageID);
+  }
+  async function handleRewindConfirm() {
+    const messageID = rewindAsk;
+    setRewindAsk(null);
+    if (!messageID) return;
     try {
       const res = await request("POST", `/session/${sessionId}/revert`, { messageID });
       if (res.status !== 200) {
@@ -1759,6 +2013,7 @@ export default function ChatView({
 
   async function micDown() {
     setError("");
+    setMicPanel(null);
     try {
       recorder.current = new WavRecorder();
       await recorder.current.start();
@@ -1791,10 +2046,35 @@ export default function ChatView({
   function micError(err: unknown) {
     const e = err as Error & { name?: string };
     if (e.name === "NotAllowedError") {
-      setError("microphone denied — allow it once in iOS Settings → Apps → Safari → Microphone, then reload");
+      // P2-312: when the shell bridge is present, ask it what the OS actually
+      // says (not asked yet / denied by the system / readable) and show that
+      // verdict's phrase — with the system-panel action when the shell offers
+      // one. Without the bridge (the phone) the current sentence stays.
+      if (getMicAccess) {
+        void getMicAccess()
+          .then((v) => {
+            if (v && v.phrase) {
+              // the panel action only makes sense when the system is in the way
+              setMicPanel(v.verdict === "blocked-by-system" || v.verdict === "unknown" ? v.settingsTarget : null);
+              setError(v.phrase);
+            } else {
+              setMicPanel(null);
+              setError(t("micDeniedIos"));
+            }
+          })
+          .catch(() => {
+            setMicPanel(null);
+            setError(t("micDeniedIos"));
+          });
+      } else {
+        setMicPanel(null);
+        setError(t("micDeniedIos"));
+      }
     } else if (e.name === "NotFoundError") {
-      setError("no microphone found on this device");
+      setMicPanel(null);
+      setError(t("micNoMicrophone"));
     } else {
+      setMicPanel(null);
       setError(e.message ?? String(e));
     }
     setRecState("idle");
@@ -1914,6 +2194,47 @@ export default function ChatView({
     };
   }, []);
 
+  // P2-277: paste-to-attach lives on the composer textarea only — never on
+  // window — so no other paste target on the screen is robbed. The decision
+  // is lib/pasteattach (pure, unit-tested): this only converts the DOM items
+  // into the module's plain shape and, on "attach", reuses the exact
+  // attachFile path drag & drop already uses — no new upload path.
+  function onComposerPaste(e: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const data = e.clipboardData;
+    if (!data) return;
+    const text = data.getData("text/plain");
+    const files: File[] = [];
+    const items: PasteItem[] = [];
+    if (text) {
+      items.push({ type: "text", name: "", size: new TextEncoder().encode(text).length });
+    }
+    for (const it of Array.from(data.items)) {
+      if (it.kind !== "file") continue;
+      const f = it.getAsFile();
+      if (!f) continue;
+      files.push(f);
+      items.push({
+        type: f.type.startsWith("image/") ? "image" : f.type ? "file" : "unknown",
+        name: f.name,
+        size: f.size,
+      });
+    }
+    const plan = pastePlan(items);
+    if (plan.verdict === "ignore") return; // text gesture — let the field paste it
+    e.preventDefault();
+    if (plan.verdict === "refuse") {
+      setError(t(plan.reason));
+      return;
+    }
+    for (const it of plan.attach) {
+      const f = files[items.indexOf(it)];
+      if (!f) continue;
+      const name =
+        f.name || (it.type === "image" ? PASTE_FALLBACK_IMAGE_NAME : PASTE_FALLBACK_FILE_NAME);
+      void attachRef.current(name === f.name ? f : new File([f], name, { type: f.type }));
+    }
+  }
+
   function toggleTts() {
     if (speaking) {
       stopSpeaking();
@@ -1982,6 +2303,14 @@ export default function ChatView({
           </div>
         )}
         <button
+          className="chat-btn"
+          onClick={openSearch}
+          aria-label={t("searchInChat")}
+          title={t("searchInChat")}
+        >
+          <IconSearch />
+        </button>
+        <button
           className="chat-btn chat-handoff"
           onClick={() => void handoffToDesktop()}
           aria-label={t("handoffBtn")}
@@ -2027,6 +2356,59 @@ export default function ChatView({
       >
         <div className="chat">
         <div className="msg-wrap">
+        {searchOpen && (
+          <div className="chat-search" role="search">
+            <IconSearch size={14} aria-hidden />
+            <input
+              ref={searchInputRef}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === "ArrowDown") {
+                  e.preventDefault();
+                  stepSearch(e.shiftKey ? -1 : 1);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  stepSearch(-1);
+                }
+                // Esc closes via the window listener — it works even when
+                // the reader has tapped back into the transcript
+              }}
+              placeholder={t("searchInChat")}
+              aria-label={t("searchInChat")}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoComplete="off"
+              enterKeyHint="next"
+            />
+            <span className="chat-search-count" aria-live="polite">
+              {searchTerm.trim()
+                ? searchHits.length > 0
+                  ? `${searchCursor + 1}/${searchHits.length}`
+                  : t("searchNoMatches")
+                : ""}
+            </span>
+            <button
+              className="chat-btn"
+              onClick={() => stepSearch(-1)}
+              disabled={!searchHits.length}
+              aria-label={t("searchPrev")}
+            >
+              <IconChevronUp size={14} />
+            </button>
+            <button
+              className="chat-btn"
+              onClick={() => stepSearch(1)}
+              disabled={!searchHits.length}
+              aria-label={t("searchNext")}
+            >
+              <IconChevronDown size={14} />
+            </button>
+            <button className="chat-btn" onClick={closeSearch} aria-label={t("close")}>
+              <IconX size={14} />
+            </button>
+          </div>
+        )}
         <div className="messages" ref={listRef} onScroll={handleScroll}>
           {loadingHistory && bubbles.length === 0 && (
             <>
@@ -2082,10 +2464,24 @@ export default function ChatView({
               {paging ? "…" : t("loadMore")}
             </button>
           )}
-          {bubbles.slice(winStart).map((b, i) => (
+          {bubbles.slice(winStart).map((b, i) => {
+            const bubbleIdx = winStart + i;
+            const bubbleHits = searchOpen ? hitsByBubble.get(bubbleIdx) : undefined;
+            const searchCls = !bubbleHits
+              ? ""
+              : currentHit && bubbleHits.includes(currentHit)
+                ? " search-current"
+                : " search-hit";
+            // P2-282: lib/copymsg owns the verdict — an unavailable plan
+            // renders no copy button at all (a button that copies nothing is
+            // worse than no button).
+            const plan = copyPlan(copyPartsOf(b));
+            const copied = copiedBubble === bubbleIdx;
+            return (
             <div
               key={i}
-              className={`msg ${b.role}${b.pending ? " pending" : ""}`}
+              className={`msg ${b.role}${b.pending ? " pending" : ""}${searchCls}`}
+              data-bubble-idx={bubbleIdx}
               title={b.pending === "queued" ? t("queuedTitle") : undefined}
             >
               {b.images && b.images.length > 0 && (
@@ -2112,7 +2508,24 @@ export default function ChatView({
                   streaming={false}
                 />
               )}
-              {renderBubbleText(b.text, request, setError)}
+              {bubbleHits && bubbleHits.length > 0 && canHighlightInline(b.text) ? (
+                <HighlightedText text={b.text} hits={bubbleHits} active={currentHit} />
+              ) : (
+                renderBubbleText(b.text, request, setError)
+              )}
+              {plan.verdict === "copy" && (
+                <div className="msg-copy-row">
+                  <button
+                    className="msg-copy"
+                    data-copied={copied || undefined}
+                    aria-label={copied ? t("copied") : t("copyMessage")}
+                    title={t("copyMessage")}
+                    onClick={() => copyBubble(bubbleIdx, plan.text)}
+                  >
+                    {copied ? <IconCheck size={15} /> : <IconCopy size={15} />}
+                  </button>
+                </div>
+              )}
               {b.role === "assistant" &&
                 artifactMentions(b.text, artifacts).map((a) => (
                   <button
@@ -2163,7 +2576,8 @@ export default function ChatView({
                 </button>
               )}
             </div>
-          ))}
+            );
+          })}
           {(liveText || liveThinking) && (
             <div className="msg assistant" aria-live="polite">
               {liveThinking && (
@@ -2378,6 +2792,21 @@ export default function ChatView({
         {error && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <p style={{ color: "var(--danger)", margin: 0, flex: 1, minWidth: 0 }}>{humanizeError(error, t)}</p>
+            {micPanel && (
+              <button
+                className="danger"
+                style={{ padding: "6px 10px", flexShrink: 0 }}
+                onClick={() => {
+                  // P2-312: the existing external-open path — the shell's
+                  // window-open handler routes the panel target through
+                  // extlink.ts to the OS (the phone never renders this).
+                  if (micPanel) window.open(micPanel, "_blank", "noopener");
+                  setMicPanel(null);
+                }}
+              >
+                {t("micOpenPanel")}
+              </button>
+            )}
             {retryText && (
               <button
                 className="danger"
@@ -2496,6 +2925,11 @@ export default function ChatView({
         )}
 
 
+        {modelHint && (
+          <p className="composer-hint" role="status">
+            {modelHint.message}
+          </p>
+        )}
         <div className="composer">
           {images.length > 0 && (
             <div className="composer-atts">
@@ -2533,6 +2967,7 @@ export default function ChatView({
                 void send();
               }
             }}
+            onPaste={onComposerPaste}
           />
           <div className="composer-bar">
             <button
@@ -2548,7 +2983,7 @@ export default function ChatView({
               className="composer-btn composer-mic"
               onPointerDown={(e) => {
                 e.preventDefault();
-                if (recState === "idle") void micDown();
+                if (recState === "idle" && !sttBlocked) void micDown();
               }}
               onPointerUp={() => {
                 if (recState !== "rec") return;
@@ -2559,9 +2994,17 @@ export default function ChatView({
                   setTapToggle(true);
                 }
               }}
-              disabled={!voice || recState === "busy"}
+              disabled={!voice || recState === "busy" || sttBlocked}
               aria-label={recState === "rec" ? t("stopRecording") : t("recordVoice")}
-              title={!voice ? t("micNeedsPermission") : recState === "rec" ? t("stopRecording") : t("recordVoice")}
+              title={
+                sttBlocked
+                  ? stt.message
+                  : !voice
+                    ? t("micNeedsPermission")
+                    : recState === "rec"
+                      ? t("stopRecording")
+                      : t("recordVoice")
+              }
             >
               {recState === "busy" ? (
                 "…"
@@ -2637,6 +3080,11 @@ export default function ChatView({
               {(liveText || liveThinking) ? "…" : <IconArrowUp size={16} />}
             </button>
           </div>
+          {sttBlocked && (
+            <p className="composer-hint" role="status">
+              {stt.message}
+            </p>
+          )}
         </div>
 
         {recap && (
@@ -2863,6 +3311,13 @@ export default function ChatView({
           request={request}
           closing={overlayPhase === "closing"}
           onClose={() => setArtifactView(null)}
+        />
+      )}
+      {rewindAsk && (
+        <AskDialog
+          descriptor={buildAskDialog("rewind", t)}
+          onConfirm={() => void handleRewindConfirm()}
+          onClose={() => setRewindAsk(null)}
         />
       )}
     </div>

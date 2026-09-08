@@ -62,10 +62,147 @@ remoto, zero confiança**.
 - **Recap fixado** — uma linha embaixo do composer mostra onde a conversa
   parou: a primeira sentença da última resposta do agente (ou o summary da
   sessão, quando existir)
-- **Voz** — segure e fale, transcrição local com whisper, sem nuvem
+- **Voz** — segure e fale, transcrição local com whisper, sem nuvem. A
+  transcrição é um recurso **opcional** do host: quando a máquina não tem o
+  motor whisper (ou falta o arquivo de modelo), o botão de microfone nasce
+  desabilitado com uma frase curta e acionável do daemon em vez de gravar para
+  falhar depois — e o daemon expõe o mesmo veredito em
+  `GET /__ocr/voice/stt-status` (`{ available, state, message }`, espelhando a
+  rota de tts-status). Desde a P2-296 o mesmo veredito também viaja em
+  `GET /api/health` (`voiceState` / `voiceMessage` / `voiceCheckedAt`) e no
+  canal `GET /__ocr/settings` que a tela de Configurações já lê — e desde a
+  P2-297 o painel Estado da máquina renderiza esse veredito na linha "Transcrição
+  de voz", a sétima e última linha do painel, sem nenhuma linha pendente de
+  canal futuro. Instale no host com
+  `./scripts/setup-whisper.sh`.
+  `OCR_STT_BLOCK=1` no daemon é um hatch de teste que força o veredito
+  missing-binary para evidência visual determinística
+- **Orientação de microfone negado (desktop)** — quando o sistema recusa o
+  microfone dentro do app desktop, o compositor não mostra mais a frase antiga
+  do Safari/iOS: o shell diz o que o sistema de fato reporta (ainda não
+  perguntou, negado no sistema ou ilegível — fail-closed) numa frase calma em
+  português e, no macOS e no Windows, oferece a ação **Abrir ajustes do
+  sistema**, que abre o painel de privacidade do microfone pelo mesmo portão
+  de link externo do shell. No celular a orientação de navegador móvel segue
+  intacta
+- **Respostas faladas** — a resposta do agente pode ser lida em voz alta por
+  uma ferramenta opcional do host (edge-tts): desde a P2-298 a recusa é uma
+  frase curta e acionável em português, do mesmo veredito que a rota de status
+  serve (sem mais instrução crua em inglês pra instalar no host), o daemon
+  acha a ferramenta no Windows também (localizador nativo `where` no lugar da
+  sonda só POSIX) e uma instalação feita depois do boot vale pela re-sondagem
+  preguiçosa. Desde a P2-300 o mesmo veredito também viaja em
+  `GET /api/health` (`ttsState` / `ttsMessage` / `ttsCheckedAt`) e no canal
+  `GET /__ocr/settings` que a tela de Configurações já lê — e desde a P2-305
+  apps/web tem a chave: o painel Estado da máquina renderiza a linha de
+  resposta falada a partir desse par (`ready` → ok, `missing-tool` →
+  indisponível).
+  `OCR_TTS_BLOCK=1` no daemon é um hatch de teste que força o veredito
+  missing-tool para evidência visual determinística
+- **Prontidão de modelo** — o composer avisa antes do primeiro envio quando a
+  máquina que hospeda o daemon não tem nenhum modelo utilizável configurado
+  (nenhuma credencial de provider, ou credenciais sem modelos): uma linha
+  calma acima do composer diz o que fazer, derivada do mesmo catálogo de
+  providers que o gauge de contexto já busca. O indicador descreve a máquina
+  que hospeda o daemon e **nunca impede o envio** — a mensagem pode seguir
+  mesmo assim. O mesmo veredito é servido em
+  `GET /__ocr/model/status` (`{ available, state, message }`, espelhando a
+  rota de stt-status). `OCR_MODEL_BLOCK=1` no daemon é um hatch de teste que
+  força o veredito no-provider para evidência visual determinística
+- **Prontidão de versão do opencode** — a seção de máquina do Settings avisa
+  quando o opencode instalado na máquina que hospeda o daemon é mais velho do
+  que o mínimo que a API do daemon espera (`1.18.0`): uma linha calma diz que
+  o servidor de agentes da máquina deve ser atualizado e reiniciado. O
+  indicador descreve a máquina que hospeda o daemon — nunca o celular — é
+  sondado uma única vez no boot sobre o binário resolvido e **nunca impede
+  nada**: envio, voz e todos os controles continuam habilitados mesmo com o
+  veredito too-old, e vereditos ok/unknown ficam em silêncio. O mesmo veredito
+  viaja em `GET /api/health` (`opencode.versionState` /
+  `opencode.versionMessage`) e em `GET /__ocr/settings`
+  (`opencodeVersion`). Para atualizar a máquina, instale o opencode mais
+  recente (ex.: `curl -fsSL https://opencode.ai/install | bash` ou
+  `brew upgrade opencode`) e reinicie o daemon; `OCR_OPENCODE_OLD=1` no daemon
+  é um hatch de teste que força o veredito too-old para evidência visual
+  determinística
+- **Prontidão de espaço em disco** — a seção Maquina das configurações avisa
+  quando o volume que hospeda o diretório de estado do daemon está com pouco
+  espaço livre (o daemon escreve ali artifacts, staging de uploads, o log de
+  auditoria e o arquivo de estado): uma linha calma pede para quem gerencia a
+  máquina liberar espaço antes que as escritas comecem a falhar no meio da
+  conversa. Dois limiares são acompanhados, e o mais severo vence: **aviso**
+  abaixo de 2 GB livres ou 10% do volume livre, **crítico** abaixo de 500 MB
+  livres ou 5% do volume livre. O indicador descreve a máquina que hospeda o
+  daemon — nunca o celular — é lido uma vez no boot e depois no mesmo ciclo
+  do janitor de retenção de artifacts, e **nunca impede nada**: envio, voz e
+  todos os controles continuam habilitados mesmo com o veredito crítico
+  (vereditos ok/unknown ficam em silêncio). O mesmo veredito viaja em
+  `GET /api/health` (`diskState` / `diskMessage`) e em `GET /__ocr/settings`
+  (`disk`). Para liberar espaço nessa máquina, remova ou arquive arquivos
+  grandes (os artifacts de sessões antigas em
+  `~/.opencode-remote/artifacts/` são aparados automaticamente pelo janitor
+  de retenção); `OCR_DISK_FULL=1` no daemon é um hatch de teste que força o
+  veredito crítico para evidência visual determinística
+- **Painel Estado da máquina** — Configurações → **Estado da máquina** reúne
+  numa lista calma todos os vereditos de prontidão que a própria máquina
+  informa, em oito linhas: o elo remoto com o relay, o servidor do agente e a
+  versão dele, espaço em disco, conversão de documentos, navegação de sites,
+  transcrição de voz e resposta falada. O pior
+  veredito primeiro, uma linha por veredito com marcador de severidade e **a
+  frase da própria máquina, literal** — o app nunca a reescreve e nunca inventa
+  outra. Nenhuma linha fica pendente de canal futuro (P2-297 ligou as quatro
+  últimas na mesma leitura de settings), vereditos que o daemon conectado não
+  informa simplesmente não
+  aparecem (estado vazio calmo), e nada no painel impede qualquer ação: ele
+  descreve a máquina que hospeda o daemon — nunca o celular
 - **Arquivos** — envie do celular, dê preview de tudo, exporte a conversa
   em markdown; todo card de arquivo tem um botão ⧉ que copia o caminho
   completo do arquivo (Clipboard API com fallback execCommand)
+- **Limites de download (P2-314)** — baixar arquivos da máquina pro celular é
+  limitado do mesmo jeito que o upload (`OCR_DOWNLOAD_MAX_MB`, padrão 200 MB,
+  teto documentado 2000, no máximo 8 downloads abertos): arquivo acima do
+  teto responde `413` e downloads abertos demais respondem `429`, os dois com
+  frase curta em português que nunca carrega caminho, nome de arquivo ou
+  tamanho; download em andamento nunca é interrompido por outro início, a
+  lista de downloads abertos nunca passa dos 8 registros (poda por idade de
+  30 minutos varrida antes de admitir + teto de entradas) e um valor inválido
+  impede o daemon de abrir (fail-closed)
+- **Conversão de documentos em PDF** — mande um documento (docx/doc/rtf/html/csv/xlsx/pptx)
+  e o agente converte localmente: LibreOffice dá fidelidade completa e é
+  descoberto pelo PATH e pelos caminhos padrão de instalação (app bundle no
+  macOS, `C:\Program Files\LibreOffice\program\soffice.exe` no Windows); no
+  macOS, o fallback nativo textutil+cupsfilter cobre doc/docx/rtf/html/csv
+  sem preservar formatação. A prontidão da máquina aparece em `GET /api/health`
+  (`docConvertState` / `docConvertMessage` / `docConvertExts`, sondado uma vez
+  no boot) e viaja espelhada no canal `GET /__ocr/settings` que a tela de
+  Configurações já lê (P2-288) antes de você mandar qualquer coisa; sem
+  conversor instalado, a ferramenta responde com uma frase curta pedindo o
+  LibreOffice — nunca um erro cru em inglês — e o arquivo original nunca é
+  alterado
+- **Revalidação preguiçosa de capacidades (P2-250)** — os vereditos de
+  capacidade da máquina (transcrição de voz, conversão de documentos em PDF,
+  versão do opencode) continuam sondados uma vez no boot, mas não ficam mais
+  congelados: imediatamente antes de o daemon responder "esta máquina não faz
+  isso" (uma transcrição de voz recusada, a leitura do veredito de conversão,
+  versão ou voz na saúde/ajustes) ele volta a sondar a capacidade, no máximo
+  **uma vez por minuto por capacidade** — instalar o LibreOffice ou o whisper,
+  ou atualizar o opencode, passa a valer sem reiniciar o daemon. Veredito que
+  já funciona nunca é re-sondado (o caminho feliz custa zero), sondagem em
+  voo nunca é duplicada, e `GET /api/health` passa a carregar
+  `docConvertCheckedAt` / `opencode.versionCheckedAt` (aditivos) para uma tela
+  dizer quando cada capacidade foi conferida. Ajuste o intervalo mínimo com
+  `OCR_READINESS_MIN_MS` (milissegundos inteiros, padrão 60000, teto 3600000)
+  ou desligue a revalidação com `OCR_READINESS_DISABLE=off` (valores inválidos
+  derrubam o boot, fail-closed)
+- **Prontidão de abrir sites (P2-284)** — a máquina anuncia em `GET /api/health`
+  (`browseState` / `browseMessage` / `browseCheckedAt`) se sabe navegar, antes
+  de você pedir; o painel **Estado da máquina** das Configurações renderiza
+  esse veredito na linha "Navegação de sites" (verde/âmbar/vermelho) pelo
+  canal `GET /__ocr/settings` que a tela já lê (P2-287/P2-288) — e desde a
+  P2-297 todas as linhas do painel viajam nesse mesmo canal, sem nenhuma
+  linha pendente de canal futuro. Instalar o navegador do
+  Playwright é opcional, e quando ele
+  falta o agente responde com uma frase curta em português em vez de um erro
+  cru em inglês
 - **Handoff** — continue a sessão exata no Mac (ícone de laptop no header do chat)
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
@@ -89,7 +226,27 @@ remoto, zero confiança**.
 - **Rascunho por conversa (P1-088)** — o campo de mensagem guarda um rascunho
   por conversa: alternar de sessão no meio da digitação não perde nem mistura
   texto; enviar limpa só o rascunho da conversa onde você enviou
-- **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo
+- **Colar pra anexar (P2-277)** — colar no composer anexa direto um print de
+  tela, imagem ou arquivo copiado (até 4 itens por colagem, 25 MB cada);
+  colar texto continua colando texto
+- **Rotinas** — cron de verdade: diário, dias da semana ou loop por intervalo;
+  execução presa (daemon reiniciado no meio, evento de sessão perdido) é
+  liberada sozinha após o prazo de 2 h (`OCR_RUN_LEASE_MS`, `off` para
+  desativar) e a rotina volta a rodar no próximo horário programado; o
+  arquivo de rotinas é gravado de forma atômica (a mesma escrita
+  tmp+rename 0600 que protege o estado do daemon) e um arquivo ilegível ou
+  que não pôde ser lido nunca é sobrescrito — o daemon segue com a lista
+  vazia enquanto os bytes originais vão para uma cópia
+  `routines.json.<timestamp>.quarantine` ao lado, ficando no lugar, intactos,
+  até que essa mudança consiga acontecer; o disparo só acontece dentro de uma
+  janela de 30 minutos após o horário marcado (rotina criada depois do horário
+  fica marcada como cumprida no dia, sem executar na hora) e as falhas de
+  disparo tentam no máximo 3 vezes por dia antes de fechar o dia com estado de
+  erro, enquanto o modo por intervalo mantém o próprio ritmo de propósito; na
+  tela de ajustes, cada rotina ganha uma linha colapsável "Histórico de
+  execuções" com as dez corridas mais recentes (quando relativo, resultado
+  traduzido e duração) e uma frase curta de estado vazio quando não há
+  registros
 - **Seguro por construção** — gate com passkey (WebAuthn), ECDH P-256 +
   AES-256-GCM, anti-replay, allowlist de dispositivos, audit log, biometria
 - **Dispositivos distinguíveis** — cada pareamento ganha um rótulo estável e
@@ -99,7 +256,17 @@ remoto, zero confiança**.
   prefixo de chave — dá pra revogar um celular perdido sem adivinhar entre
   prefixos. O carimbo é gravado no máximo uma vez por dispositivo por hora
   (`DEVICE_TOUCH_INTERVAL_MS`): propositalmente aproximado, nunca a frame, e não
-  muda nenhuma decisão de admissão
+  muda nenhuma decisão de admissão. Cada entrada também ganha um veredito de
+  uso derivado (`ativo`, `ocioso`, `dormente`, `nunca visto`, com uma frase
+  curta de ajuda) calculado apenas por leitura desses carimbos — o produto
+  nunca revoga sozinho; revogar continua sendo ação explícita do dono.
+- **Push limitado e redigido (P2-272)** — no máximo **10 telefones** guardam
+  assinatura de notificação ao mesmo tempo (telefone novo depois do teto é
+  recusado; nenhum aparelho funcionando é descartado em silêncio), e a tela de
+  diagnóstico de push mostra só um rótulo curto com o host de cada endpoint,
+  nunca o endereço completo — o endpoint de push é por si só a credencial que
+  notifica aquele telefone. O arquivo de assinaturas é gravado de forma
+  atômica (mesmo contrato tmp+rename 0600 do estado do daemon).
 - **BYOM** — opencode suporta qualquer provider; escolha o modelo por sessão
 - **API + SDK** — dirija sessões por código (`packages/sdk`)
 - **Artifacts** — o agente escreve documentos (html, md, csv, pdf) em
@@ -120,11 +287,65 @@ remoto, zero confiança**.
   sessões criadas direto no CLI/TUI do opencode não são tocadas). O registro
   de sessões injetadas vive em memória: sessões criadas antes de um restart
   do daemon não são re-injetadas depois — apenas as criadas pelo daemon novo
+- **Retenção de artifacts** — a pasta de artifacts é limitada por um janitor
+  para que uma instalação antiga nunca encha o disco em silêncio: uma varredura
+  do daemon (uma vez no boot, depois a cada **6 h**) apaga diretórios de sessão
+  inteiros sob `~/.opencode-remote/artifacts/` com mais de **30 dias**, do mais
+  antigo pro mais novo, até a pasta caber em **1 GB** no total. O período de
+  graça de **48 h** protege artifacts recém-escritos, e os **3 diretórios de
+  sessão modificados mais recentemente** são sempre preservados, mesmo com
+  qualquer teto estourado. Só a raiz de artifacts é tocada por este janitor —
+  `clips/` e qualquer outro diretório de estado nunca são varridos ou apagados
+  (a pasta `uploads/` tem janitor de retenção próprio, no próximo item). Para
+  desligar o
+  janitor por completo, use `OCR_ARTIFACT_RETENTION=off` no ambiente do daemon
+  (padrão: ligado). Cada varredura registra uma linha de log com quantidade e
+  bytes apagados e incrementa a métrica `ocr_artifact_retention_deleted_total`
+- **Retenção de uploads** — `~/.opencode-remote/uploads/` (vídeos e documentos
+  enviados do telefone, além de arquivos gerados para download) é limitada
+  pela mesma varredura e cadência do janitor (uma vez no boot, depois a cada
+  **6 h**): arquivos com mais de **30 dias** são apagados e, do mais antigo
+  pro mais novo, o necessário para a pasta caber em **2 GB**. Arquivos
+  escritos nas últimas **24 h** nunca são tocados, e os **5 arquivos
+  modificados mais recentemente** sempre sobrevivem, mesmo com qualquer teto
+  estourado — e o que for apagado aqui continua no telefone que enviou o
+  arquivo. Só a raiz de uploads é varrida (arquivos comuns e rasos;
+  subdiretórios, arquivos ocultos e symlinks são ignorados). Cada varredura
+  registra uma linha com quantidade e bytes apagados (nunca nomes de arquivo)
+  e incrementa a métrica `ocr_upload_retention_deleted_total`. Para desligar
+  por completo, use `OCR_UPLOAD_RETENTION=off` no ambiente do daemon (padrão:
+  ligado); os tetos são ajustáveis por   `OCR_UPLOAD_RETENTION_GRACE_HOURS`,
+  `OCR_UPLOAD_RETENTION_MAX_AGE_DAYS`, `OCR_UPLOAD_RETENTION_MAX_BYTES` e
+  `OCR_UPLOAD_RETENTION_MIN_FILES` (valores inválidos derrubam o boot,
+  fail-closed)
+- **Retenção de clips** — `~/.opencode-remote/clips/` (os clipes verticais
+  renderizados mais o áudio extraído para transcrição — os arquivos mais
+  pesados que o produto produz) é limitada pela mesma varredura e cadência do
+  janitor (uma vez no boot, depois a cada **6 h**): a unidade de decisão é o
+  **grupo** — a pasta de um vídeo de origem, ou um arquivo de trabalho solto
+  na raiz — apagado inteiro, nunca pela metade. Grupos com mais de **30 dias**
+  vão embora e, do mais antigo pro mais novo, o necessário para a pasta caber
+  em **4 GB**. Grupos modificados nas últimas **24 h** nunca são tocados, e os
+  **3 grupos modificados mais recentemente** sempre sobrevivem, mesmo com
+  qualquer teto estourado. Só a raiz de clips é varrida (filhos imediatos;
+  symlinks nunca são seguidos e uploads, artifacts e qualquer outro
+  diretório de estado ficam fora de alcance). Cada varredura registra uma
+  linha com quantidade e bytes apagados (nunca nomes de arquivo ou pasta —
+  eles vêm do título dos seus vídeos) e incrementa a métrica
+  `ocr_clip_retention_deleted_total`. Para desligar por completo, use
+  `OCR_CLIP_RETENTION=off` no ambiente do daemon (padrão: ligado); os tetos
+  são ajustáveis por `OCR_CLIP_RETENTION_GRACE_HOURS`,
+  `OCR_CLIP_RETENTION_MAX_AGE_DAYS`, `OCR_CLIP_RETENTION_MAX_BYTES` e
+  `OCR_CLIP_RETENTION_MIN_GROUPS` (valores inválidos derrubam o boot,
+  fail-closed)
 - **App desktop (inicial)** — shell Electron com a mesma UI, com tray e menu nativo;
   inclui um **pane Browser**: no shell desktop ele renderiza um `<webview>` Electron real e
   sandboxed (scroll, click e edit funcionam como num navegador; `contextIsolation`/`sandbox`
   ligados, `nodeIntegration` desligado, popups desligados), com barra de URL editável, reload
-  e botão maximizar (~80% de largura). O modo screenshot via Playwright (`/api/browse`) segue
+  e botão maximizar (~80% de largura). Um download iniciado no pane segue a
+  política única de downloads do shell — nenhum diálogo nativo, nome saneado,
+  salvo na pasta Downloads do sistema ou recusado com uma linha de log (P2-241). O modo
+  screenshot via Playwright (`/api/browse`) segue
   como fallback no PWA e como superfície de browse dos reviewers (`tools/browse.mjs`)
 - **Primeiro boot degradado (P2-112)** — com o daemon local inacessível no primeiro
   contato, o app não trava mais no pareamento: um cartão calmo ("Conectando pela
@@ -136,11 +357,14 @@ remoto, zero confiança**.
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
-  parear um celular com a opção explícita de "fazer isso depois". Dá para pular a
-  qualquer momento; concluir ou pular grava a flag no localStorage do renderer (sem
-  IPC, sem tocar o processo main), então quem já usa o app — incluindo todo mundo que
-  atualizar com pareamento salvo — nunca a vê. Superfície única em tela cheia: sem
-  banners e sem overlay de pareamento (regra P2-108)
+  parear um celular com a opção explícita de "fazer isso depois". Os dois primeiros
+  passos têm o atalho global "Pular" na linha de metadados; o passo final tem uma
+  única saída, no próprio cartão — "Fazer isso depois" (ou "Pronto" depois de parear)
+  — para a mesma ação nunca mostrar duas rotas com nomes diferentes (P3-338). Concluir
+  ou pular grava a flag no localStorage do renderer (sem IPC, sem tocar o processo
+  main), então quem já usa o app — incluindo todo mundo que atualizar com pareamento
+  salvo — nunca a vê. Superfície única em tela cheia: sem banners e sem overlay de
+  pareamento (regra P2-108)
 - **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor
   de agente que ele proxyfica não está (`opencode serve` não instalado, porta errada,
   senha mudada). O `/api/health` traz o veredito classificado (`opencode.state`:
@@ -176,7 +400,11 @@ remoto, zero confiança**.
   o focus, e o painel de sessões é totalmente navegável por teclado. As telas de conexão
   seguem um único idioma de ponta a ponta: banners de daemon caído/reconectando, o scanner
   de QR e a home do desktop resolvem o copy do mesmo dicionário das ações vizinhas —
-  sem mistura pt-BR/inglês numa mesma tela
+  sem mistura pt-BR/inglês numa mesma tela. A tela inteira de Configurações também é
+  traduzida (P2-275): Sobre, Estilo de legenda, Aparência, Notificações push, Compartilhar
+  com o agente, Skills, Rotinas agendadas e o Registro de segurança saem do dicionário,
+  com um teste unitário de travamento de deriva que falha se uma frase literal em inglês
+  voltar a ser escrita no componente
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
@@ -193,6 +421,62 @@ com KeepAlive e imprime o QR de pareamento. Aponte a câmera do PWA e pronto.
 O origin do PWA no celular é servido pelo serviço launchd `com.ocr.pwa`
 (`apps/web/dist` estático em `127.0.0.1:5173`, P2-075) — nunca um dev server.
 O daemon vigia `/healthz` e sinaliza no dashboard se o origin cair.
+
+### Mantenha o pareamento no iPhone: adicione à Tela de Início (P2-220)
+
+Se o celular abre o app como **aba comum do Safari** (sem instalar na Tela de
+Início), o iOS pode apagar o armazenamento desse site — incluindo a chave de
+pareamento — depois de cerca de uma semana sem uso, e a única recuperação
+seria voltar até o Mac para ler outro QR. Para evitar essa perda silenciosa, o
+app mostra um **aviso calmo de uma linha** acima da lista de conversas
+explicando como adicioná-lo à Tela de Início (botão Compartilhar → Adicionar
+à Tela de Início). O aviso:
+
+- aparece **somente no navegador de iPhone/iPad**, fora do modo instalado
+  (standalone), enquanto existir um pareamento salvo;
+- nunca aparece no app desktop (o armazenamento dele não é varrido) nem na
+  primeira tela, quando não há nada a perder;
+- pode ser dispensado — **dispensar é definitivo** naquele dispositivo; e
+- nunca bloqueia nada: é um elemento normal do fluxo da página, não cobre o
+  campo de mensagem nem desabilita controle algum.
+
+`?installhint=1` no endereço força o aviso a aparecer para screenshots e
+reprodução de suporte (hatch só de teste; nada é gravado por ele).
+
+### Offline no celular (P2-239)
+
+Depois de uma visita com internet a PWA guarda o próprio shell: ao instalar,
+o service worker coloca no cache o documento raiz e todo arquivo versionado
+por hash que ele referencia (`assets/index-*.js`, `assets/index-*.css`…), então
+reabrir o app sem rede continua renderizando a interface. Arquivo com hash no
+nome é servido cache-first, o documento de navegação é revalidado
+network-first, e todo o resto — além de qualquer método que não seja GET — vai
+para a rede sem ser gravado. Cada publicação instala num cache com nome novo e
+o activate apaga as sobras com hash de publicação anterior, então o cache não
+cresce para sempre.
+
+A versão nova nunca quebra a aba que já está aberta (P2-246): o service worker
+atualizado espera enquanto existir janela viva da publicação anterior e assume
+só na próxima abertura do app, então os arquivos que o documento na tela ainda
+vai pedir nunca somem do cache no meio da conversa.
+
+O app instalado deixa de depender desse fechamento (P2-266): quando a tela
+volta a ficar visível, o app verifica se há publicação nova (no máximo uma vez
+a cada 30 minutos, nunca enquanto uma resposta está chegando ou existe
+rascunho não enviado) e, havendo versão nova esperando, mostra uma faixa de
+uma linha cuja ação "Atualizar agora" troca a versão e recarrega — sem
+desinstalar, sem refazer o pareamento, sem mais nada. `?swupdate=demo` no
+endereço força a faixa para screenshots e reprodução em suporte, e só vale
+dentro do shell desktop em sessão de harness — qualquer boot normal ignora.
+
+- Se nada foi guardado ainda (a primeira visita foi sem rede ou o pre-carregamento
+  foi interrompido), o app mostra uma página mínima e estática — "Você está sem
+  conexão … recarregue a página" — no lugar de tela branca ou erro cru do
+  navegador. Reconecte e recarregue.
+- Para forçar um download limpo, apague os dados do site nas configurações do
+  navegador do celular (ou remova e recrie o atalho da Home Screen); a próxima
+  visita com internet reconstrói o cache. Publicar uma versão nova também troca
+  o cache sozinho.
 
 ## Instalar como terceiro (sem tailnet — modo LAN)
 
@@ -231,7 +515,9 @@ gerados o relay sobe em ws puro na 8788, então use `RELAY_URL="ws://$LAN_IP:878
 e deixe de fora `PWA_TLS_*`/`NODE_EXTRA_CA_CERTS` também. `RELAY_TLS_CERT`/`RELAY_TLS_KEY`
 são um par obrigatório: defina os dois para terminação `wss://` direta ou nenhum —
 definir só um, valor em branco ou arquivo ilegível faz o relay recusar o boot
-(exit 1) em vez de servir `ws://` puro sem avisar. Portas e certificados
+(exit 1) em vez de servir `ws://` puro sem avisar. O relay também olha a validade
+do certificado: recusa o boot quando vencido ou ainda não válido por mais de 24 h
+e avisa a partir de 14 dias antes do vencimento. Portas e certificados
 são variáveis de ambiente. O serviço do pilot segue a mesma regra:
 `deploy/install-pilot.sh` não tem hostname fixo — defina `RELAY_URL` (e
 `NODE_EXTRA_CA_CERTS` para wss com CA local; na reinstalação os dois são
@@ -273,9 +559,55 @@ damaged". Um release **ad-hoc** cobra a régua ad-hoc: a assinatura precisa
 verificar e as ferramentas precisam produzir vereditos legíveis, mas o spctl
 rejeitando o build e a ausência de ticket são exatamente o fluxo documentado de
 right-click → **Open**, então o caminho de release sem secrets continua verde.
+Desde a P2-295 os mesmos três vereditos também rodam sobre cada **contêiner**
+DMG que você realmente baixa (`spctl -t open` e `stapler validate` em cada
+imagem, uma por arquitetura): o release só sai quando os vereditos próprios dos
+contêineres batem com o formato documentado de empacotamento — a assinatura e,
+num release notarizado, o ticket grampeado vivem no app dentro do DMG, e um
+contêiner sem assinatura sendo rejeitado continua significando apenas
+right-click → **Open** uma vez.
 
 Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
 checksum fixado automaticamente pelo pipeline de release a cada tag).
+
+No Windows, o pacote winget `caiovicentino.opencode-remote` segue o mesmo
+caminho (P2-245): cada release anexa os três manifestos exigidos (versão,
+instalador e locale en-US), gerados e verificados pelo próprio pipeline a
+partir do sha256 publicado no `checksums.txt` — baixe os três `.yaml` da
+página de releases e rode `winget install --manifest caiovicentino.opencode-remote.yaml`
+na pasta deles; é um caminho de instalação alternativo ao instalador solto,
+igual à fórmula do Homebrew no Mac.
+
+O Mac recebe a mesma cortesia no sentido oposto (P2-255): cada release anexa o
+`opencode-remote-cask.rb`, manifesto de cask do Homebrew cobrindo as duas
+arquiteturas de DMG (Apple Silicon e Intel), gerado e verificado pelo próprio
+pipeline a partir do sha256 publicado no `checksums.txt` — baixe-o da página
+de releases e rode `brew install --cask ./opencode-remote-cask.rb` para
+instalar o app com uma linha, sem arrastar DMG nenhum à mão.
+
+**Instale uma vez a partir do DMG (P2-211).** O atualizador só consegue trocar
+um bundle que vive na pasta **Aplicativos** — um app aberto direto do DMG
+montado (ou da pasta de downloads) roda somente leitura num caminho aleatório
+que o atualizador jamais substitui, ou seja, nunca atualiza. O app agora avisa
+isso no primeiro boot: uma linha calma embaixo do QR de pareamento pede para
+arrastar o app para a pasta Aplicativos, ejetar o disco e reabrir por lá. A
+linha descreve a máquina que hospeda o daemon, **nunca bloqueia o pareamento**
+(o QR continua visível — arraste e reabra depois de parear) e **nunca bloqueia
+nenhum outro uso do app**; quando o local não pode ser confirmado, ela fica
+silenciosa. Com o local errado, um update já baixado **não é oferecido como
+reinício** (uma linha no `desktop.log` no lugar), porque o reinício não
+conseguiria aplicá-lo de qualquer forma. O Copy diagnostic em Configurações
+reporta o estado do veredito (nunca o caminho). Primeiro o macOS; desde a
+P2-299 o Windows também é classificado — a mesma linha calma aparece quando o
+executável roda de uma cópia temporária extraída de um zip baixado (pedindo
+para fechar o app, instalá-lo em uma pasta definitiva do computador e reabrir
+pela cópia instalada), de um compartilhamento de rede (pedindo para instalá-lo
+no disco da própria máquina) ou da pasta de downloads (reaproveitando o
+veredito de downloads já existente), enquanto Arquivos de Programas, Arquivos
+de Programas (x86), a área de Programas por usuário e qualquer outro caminho
+comum ficam calados; as outras plataformas não mudam.
+`OCR_DESKTOP_FORCE_DMG_VOLUME=1` no shell desktop força
+o aviso para screenshots determinísticos (hatch de teste, nunca em produção).
 
 ### Instalador do app desktop (Windows)
 
@@ -297,6 +629,33 @@ ou valor em branco) é fail-closed: o job de release aborta no preflight de
 assinatura e lista todos os problemas em vez de publicar uma assinatura
 quebrada.
 
+#### Como funciona a atualização no Windows (P2-233)
+
+O Windows não tem motor de update em segundo plano: o app consulta o
+`latest.yml` e a instalação em si é sempre um ato manual, seu. Desde a
+P2-233 o fluxo dentro do app não termina mais no muro de sete arquivos da
+página de release. Quando **você** clica no item **Verificar atualizações**
+que já existe (bandeja ou menu Ajuda) e há versão nova publicada, o app baixa
+o único instalador que o feed cita — o arquivo resolvido ao lado do próprio
+`latest.yml`, nada além dele — para a pasta `update-staging` dentro do
+diretório de dados de usuário do app, confere a
+integridade e revela o arquivo no Explorer, já selecionado, pronto para o
+seu duplo clique. O app **nunca executa o instalador** — nem com confirmação,
+nem agendado, nunca: executar binário recém-baixado é uma superfície que o
+produto não precisa abrir. A integridade é fail-closed: o digest sha512
+publicado no `latest.yml` é comparado com o digest medido nos bytes baixados
+(base64, comparação sem diferenciar maiúsculas de minúsculas); divergência
+apaga o arquivo baixado e mantém a página de release como fallback, e falha
+de rede ou feed sem digest também deixa o caminho manual de sempre — abrir a
+página de release no GitHub — intacto. Nada baixa no boot, por temporizador
+nem no recheck periódico de fundo; só o seu clique explícito baixa. Desde a
+P2-301 o clique explícito também se recusa a baixar qualquer coisa quando o
+executável em execução não pode ser trocado pelo instalador — uma extração
+temporária de zip baixado ou um compartilhamento de rede (uma linha
+`update install not offered` no `desktop.log`, a mesma proteção que o fluxo
+de consentimento do macOS já tinha) — então rode o setup exe uma vez e reabra
+o app pela cópia instalada para voltar a receber atualizações.
+
 Os dois caminhos de release continuam propositalmente distintos. Quando o
 perfil decide mode=authenticode, o job `desktop-win` também verifica a
 assinatura Authenticode do instalador empacotado (PowerShell
@@ -312,15 +671,64 @@ falha, o log do job lista todos os problemas de uma vez em
 `authenticode-verify:`; as linhas `Status:`/`StatusMessage:` da verificação
 ficam em `authenticode.txt` (artefato do workspace do run).
 
+O empacotamento Windows deixou de ser exclusividade do release: todo PR que
+toca a superfície desktop roda também o job `desktop-package-win` no CI
+(P2-219), que builda, empacota somente o alvo `dir` — o bundle `win-unpacked`,
+sem instalador NSIS e sem assinatura — e roda o smoke determinístico, de modo
+que pacote quebrado reprova o PR em vez de estourar no dia da publicação.
+Para reproduzir localmente num Windows:
+
+    npm run dist --workspace @ocr/desktop -- --win --dir
+    npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+O primeiro comando gera `apps/desktop/dist/win-unpacked`; o segundo valida o
+layout do bundle de forma determinística (web UI, sidecar do daemon,
+executável).
+
+Desde a P2-242 os dois jobs de empacotamento do CI também **abrem** o pacote
+real uma vez no PR (passo `Smoke-boot the packaged app`, logo depois do smoke
+de inspeção) — o mesmo launch hermético do workflow de release (userData
+temporário, sessão própria da execução, nenhum sidecar, Playwright ausente
+falha fechado), de modo que pacote que não abre reprova o PR em vez de
+estourar no dia da publicação. Reproduza o mesmo boot localmente contra um
+pacote já construído:
+
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
+
+Desde a P2-224 o mesmo PR roda também o job `verify-win` no windows-latest,
+que faz typecheck e roda o subconjunto portátil da bateria de unit
+(`scripts/portable-suite.ts` — sem Electron, sockets, chmod, spawns nem
+portas de rede), de modo que regressão de separador ou normalização de
+caminho em módulos como `webroot.ts`, `installloc.ts`, `desktop-log.ts`,
+`sidecar-log.ts`, `tray.ts` e `versions.ts` reprova o PR em vez de estourar
+na máquina de quem usa. Rode a mesma sub-bateria localmente em qualquer SO:
+
+    npm run test:unit-win
+
 **Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
 `package.json` (raiz e `apps/desktop`). O workflow de release roda
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em
 caso de divergência, além de rodar `npm run dist:smoke --workspace
 @ocr/desktop` no bundle empacotado antes do upload do DMG — suba a versão dos
-dois arquivos junto com a tag. PRs que tocam o shell desktop, a web UI ou
-`package-lock.json` rodam ainda um job de empacotamento escopado
+dois arquivos junto com a tag. Desde a P2-204 (DMG) e a P2-208 (Windows) os
+**dois** jobs de empacotamento também **abrem** o app empacotado uma vez
+(passo `Smoke-boot the packaged app`): launch hermético do bundle real
+(userData temporário, nenhum sidecar do daemon, janela oculta) que espera a
+interface montar, verifica a coleta de erros de console do renderer com um
+canário injetado e falha fechado quando o Playwright não está disponível —
+pacote que não abre aborta o release antes do upload. Dá para rodar o smoke
+de boot localmente contra um pacote já construído (macOS ou Windows):
+
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
+    node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
+
+PRs que tocam o shell desktop, a web UI ou `package-lock.json` rodam ainda um
+job de empacotamento escopado
 (`desktop-package`, alvo mac `dir` apenas, sem DMG/assinatura) validado com
-`dist:smoke --no-installer`; os instaladores assinados completos seguem
+`dist:smoke --no-installer` e, desde a P2-242, selado pelo boot real do
+pacote (passo `Smoke-boot the packaged app` nas duas plataformas); os
+instaladores assinados completos seguem
 saindo só na tag. Antes de empacotar, esse job também garante os orçamentos de
 tamanho de `scripts/bundle-budget.ts` (P2-162): o payload somado de
 `apps/web/dist` e o bundle sidecar `apps/desktop/dist-daemon/index.js` precisam
@@ -345,11 +753,24 @@ feed de update faltando derruba
 o workflow (todos os faltantes listados de uma vez) em vez de virar um 404
 silencioso no cheque de update do app. O release também só é considerado
 completo quando os feeds apontam para artefatos da mesma tag (P2-157): um job
-`release-feeds` baixa `update-mac.json` e `latest.yml`, confere via
-`scripts/feed-consistency.ts` que o `name`/`url` do Squirrel e o
-`version`/`path` do yml citam a versão da tag e arquivos realmente publicados,
-e derruba o workflow — sem isso um feed defasado sai verde e cada app
-instalado falha o auto-update em silêncio.
+`release-feeds` baixa `update-mac.json`, `latest.yml` e os dois feeds
+por-arquitetura, confere via `scripts/feed-consistency.ts` que o `name`/`url`
+do Squirrel e o `version`/`path` do yml citam a versão da tag e arquivos
+realmente publicados, e derruba o workflow — sem isso um feed defasado sai
+verde e cada app instalado falha o auto-update em silêncio. Desde a P2-212 o
+gate cobre também a arquitetura: `update-mac-arm64.json` precisa apontar para
+um zip publicado com o token `arm64` e `update-mac-x64.json` para um com
+`x64` (um Mac Intel jamais pode receber o zip arm64 — os feeds que máquinas
+reais consultam são exatamente os conferidos), e o apelido `update-mac.json`,
+que só existe para a base pré-P2-191, precisa continuar idêntico ao documento
+arm64. A publicação segue bloqueada enquanto qualquer feed apontar para
+artefato ausente ou da arquitetura errada. A integridade também é conferida
+(P2-308): o mesmo job `release-feeds` baixa os artefatos da release, mede o
+sha512 (base64) e o tamanho em bytes com `node:crypto` e confronta cada
+digest declarado pelo feed via `scripts/feedhash.ts`, derrubando a release
+ainda em rascunho em vez de publicar um feed que o app recusaria para
+sempre — e como o feed JSON do Squirrel.Mac não declara digest, só os feeds
+que declaram sha512 (hoje o `latest.yml`) são conferidos pelo hash.
 
 **Releases nascem como rascunho** (P2-179): o `gh release create` roda com
 `--draft`, então nada fica visível para a base instalada enquanto os jobs de
@@ -370,6 +791,19 @@ que falhou lista todos os assets faltantes) e depois ou conserte a causa e
 re rode o workflow — um re-run passa direto por release já publicada — ou
 apague o rascunho com `gh release delete vX.Y.Z --yes` (a tag fica; apague
 também com `--cleanup-tag` se quiser retaggear limpo).
+
+**A página de release diz o que baixar** (P2-216): o corpo gerado
+automaticamente é um muro de títulos de commit, então antes de o release ficar
+público o job `release-publish` escreve nele um guia curto de download
+(`scripts/release-notes.ts`): uma linha para **Mac com Apple Silicon**, uma
+para **Mac com Intel** e uma para **Windows**, cada uma com o nome exato do
+instalador para aquela máquina, mais o aviso de primeira abertura para builds
+macOS sem assinatura e como conferir o download contra o `checksums.txt`. O
+guia só cita arquivos realmente anexados ao release — cada linha de público é
+conferida contra a lista de assets publicados — e se o instalador de algum
+público (ou o próprio `checksums.txt`) estiver faltando, o passo do guia
+falha e o release segue rascunho, em vez de publicar orientação para um
+download que não existe.
 
 **Confira o seu download** (P2-186): todo release também traz o
 `checksums.txt`, um manifesto SHA-256 no formato padrão do coreutils (uma linha
@@ -397,6 +831,14 @@ tag).
 
 ## Relay hospedado (Docker)
 
+Todo PR que toca a superfície do relay (`apps/relay`, `deploy/relay/Dockerfile`,
+`.dockerignore`, `package-lock.json`) também constrói e faz smoke da imagem no
+CI (job `relay-image`, P2-222) — mesma construção e mesmos probes do release,
+sem login em registro e sem push. Para reproduzir localmente:
+`docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .` e
+`npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:<porta> "$(docker exec relay-smoke whoami)"`
+num contêiner iniciado dessa tag.
+
 Não quer hospedar o relay no seu Mac? `deploy/relay/Dockerfile` gera uma imagem
 multi-stage enxuta (node 22 slim, compilada com tsc, usuário não-root,
 `HEALTHCHECK` no `/healthz`) para qualquer plataforma de containers — aponte o
@@ -409,6 +851,74 @@ host não-loopback é recusado — URL inválida desativa a conexão com o relay
 do relay e segue funcionando. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+Hospedado, o relay também protege a própria memória (P2-217): par que para de
+ler tem o buffer de saída limitado por `RELAY_BUFFER_CAP_BYTES` (padrão
+4 MiB por socket) e é fechado sozinho — close code `1013` e métrica aditiva
+`slow_consumers_total` — em vez de um celular travado no 4G crescer sem teto
+no processo e derrubar as conversas de todo mundo. A admissão também tem teto
+no processo inteiro (P2-227): quando o número de sockets vivos chega a
+`RELAY_MAX_SOCKETS_GLOBAL` (padrão 1000, teto 10000), novos upgrades são
+recusados com close `1013` e métrica `capacity_refused_total` — o relay diz
+não pra conexão nova em vez de morrer por esgotamento de descritor de arquivo
+e derrubar as conversas de todos os inquilinos. E a conexão precisa se
+habilitar pra vaga (P2-230): socket que nunca entra em quarto é fechado após
+`RELAY_JOIN_DEADLINE_MS` (padrão 60s, teto 1h, `-1` desliga) com métrica
+`idle_unjoined_closed` — o pong automático sozinho não segura vaga pra
+sempre. E nenhum quarto come o link por volume (P2-243): dentro de uma
+janela que se renova (`RELAY_ROOM_BUDGET_WINDOW_MS`, padrão 1h), um quarto
+só pode encaminhar `RELAY_ROOM_BUDGET_BYTES` (padrão
+1 GiB, ~3,8x a hora mais pesada legítima de conversa + voz + arquivos +
+screenshots) antes de ter os sockets fechados — metade do teto escreve uma
+linha de aviso por janela, o teto fechado gera o contador
+`roomsBudgetTerminated` no `/healthz`; o mesmo contador também sai no
+`/metrics` como `relay_room_budget_terminated` (formato Prometheus) /
+`room_budget_terminated` (JSON), publicado mesmo em zero pra um alerta de
+raspagem nunca confundir relay saudável com série ausente. Só o tamanho dos quadros é acumulado
+(o relay continua cego: nenhum conteúdo, nenhum campo de envelope, nenhuma
+identidade); `RELAY_ROOM_BUDGET_BYTES=-1` desliga o orçamento num relay
+privado e allowlistado. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
+A sonda `/healthz` do relay hospedado também anuncia o veredito do
+certificado TLS (P2-290): com o par de certificados configurado, o corpo
+ganha os campos aditivos `certExpiryVerdict`
+(`use`/`warn`/`refuse-expired`/`refuse-not-yet-valid`) e `certExpiryInS`
+(segundos inteiros até o vencimento, piso zero) — alimentados pelo veredito
+que o relay já recalcula no sweep de liveness, então um certificado
+vencendo aparece no monitor do operador dias antes de os telefones falharem
+o handshake. Fail-closed: ausente em modo plain, ausente quando nada foi
+medido, e nunca material do certificado (só o veredito curto e uma contagem
+de segundos).
+
+O relay também divide seu único contador opaco `roomsRejected` por motivo
+(P2-293): o `/healthz` ganha os campos aditivos `roomsRejectedInvalidRoomId`
+e `roomsRejectedSocketRoomCap` e o `/metrics` ganha os contadores
+correspondentes `relay_rooms_rejected_invalid_room_id` /
+`relay_rooms_rejected_socket_room_cap` (`rooms_rejected_invalid_room_id` /
+`rooms_rejected_socket_room_cap` no JSON), para o operador do relay hospedado
+distinguir telefones legítimos batendo no teto de salas por conexão —
+comprar capacidade — de uma única origem malformada em laço — bloqueá-la. A
+soma nunca ultrapassa o total inalterado, as regras são fail-closed (nenhum
+zero inventado, nenhuma recusa atribuída ao motivo errado) e nenhum campo ou
+linha carrega id de sala, id de conexão, endereço ou IP. Runbook:
+[docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
+O veredito do certificado também chega à superfície de raspagem do
+`/metrics` (P2-294): com o par de certificados configurado, o formato
+Prometheus ganha duas linhas gauge — `relay_cert_expiry_state` (0 = `use`,
+1 = `warn`, 2 = `refuse-expired`, 3 = `refuse-not-yet-valid`) e
+`relay_cert_expiry_seconds` (segundos inteiros até o vencimento, piso zero)
+— calculadas a cada raspagem a partir do veredito que o relay já mantém no
+sweep de liveness, então o alerta baseado em métricas acorda o operador dias
+antes de os telefones falharem o handshake. Fail-closed: nenhuma série no
+modo plain ou sem veredito medido, toda linha pré-existente permanece byte a
+byte e nenhuma linha carrega material do certificado.
+
+Regras de alerta prontas para essas séries vão no repositório (P2-320):
+`deploy/relay/alerts.yml`, gerado por `apps/relay/src/alertrules.ts` — uma
+frase por regra, o que antecipa e como carregar o arquivo, na seção de regras
+de alerta do [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 A imagem também entrega a PWA do celular (P2-188): ela define
 `RELAY_WEB_DIR=/app/apps/web/dist`, então a URL do relay no navegador do
 telefone já abre o app — o primeiro passo da jornada não exige dev server,
@@ -419,7 +929,12 @@ ficam intocados, e a rota estática responde `503` durante o dreno. Um
 `RELAY_WEB_DIR` apontando pra diretório inexistente, que não é diretório,
 ilegível ou sem `index.html` legível recusa o boot — motivos logados uma vez,
 exit 1, sem listener; sem a variável, o comportamento antigo (404 pra todo o
-resto) é preservado. Todo documento 200 da rota estática chega travado
+resto) é preservado. Bundle incompleto também é barrado (P2-225): o boot
+confere que todo script/estilo local referenciado pelo `index.html` existe e
+é legível no mesmo diretório, então uma cópia montada pela metade (ou
+desatualizada) sai com código 1 e uma linha de log por asset ausente, em vez
+de servir tela branca — suba o container uma vez apontando pro diretório que
+vai publicar e confirme que a linha `relay listening` aparece. Todo documento 200 da rota estática chega travado
 (P2-192): `Content-Security-Policy` só permitindo a própria origem (estilo
 inline liberado — o bundle gerado injeta estilo — além de imagens
 `data:`/`blob:` e conexões `wss:`/`https:` porque o app disca pro relay),
@@ -441,7 +956,28 @@ mesmos cabeçalhos de segurança dos documentos 200, a chave da identidade é o
 caminho de upgrade já deriva (nunca um IP cru), baldes ociosos são podados
 pelo sweep de liveness sob teto de 4096 entradas — e o `GET /healthz` nunca é
 contado nem barrado, então um balanceador não pode ser expulso do próprio
-probe. O relay continua cego: nada disso toca frames, chaves ou plaintext.
+probe. Assets de texto também são negociados com gzip (P2-198): html/js/css/
+map/json/svg/txt/webmanifest entre 1024 bytes e 8 MiB são servidos com
+`content-encoding: gzip` quando o `Accept-Encoding` do cliente permite
+(qualidade zero e cabeçalho malformado significam identity, o coringa `*`
+vale como gzip), as duas variantes carregam `Vary: Accept-Encoding`, os bytes
+comprimidos ficam memoizados em memória com teto de 64 entradas / 32 MiB
+(chave caminho + tamanho + mtime, descarte do mais antigo), e
+`png`/`jpg`/`webp`/`ico`/`woff2` e todo corpo fora da faixa de tamanho seguem
+sem compressão — enquanto 404/405 e o `/healthz` permanecem byte a byte como
+sempre. Requisições condicionais fecham o ciclo (P2-200): todo 200 da rota
+estática carrega um `ETag` forte derivado do mesmo stat da negociação mais a
+codificação — então o validador gzip e o identity são sempre diferentes e um
+cache compartilhado nunca serve bytes comprimidos a quem pediu identity — e
+um `If-None-Match` que revalida (lista, coringa `*`, prefixo fraco `W/`
+ignorado, cabeçalho malformado significa enviar) recebe `304` sem corpo e sem
+leitura em disco, com o etag, `Cache-Control`, `Vary: Accept-Encoding` e os
+cabeçalhos de segurança do P2-192, mas nunca
+`Content-Encoding`/`Content-Length`/`Content-Type`; 404/405 e `/healthz`
+seguem byte a byte, e o orçamento de requisições continua sendo cobrado antes
+da decisão condicional. O relay continua cego: nada disso toca frames, chaves
+ou plaintext — só asset estático público da raiz allowlisted é cacheado ou
+revalidado.
 
 No app desktop você não precisa exportar `RELAY_URL` no braço: os Ajustes
 (Settings) têm o card **Relay do celular** (seção exclusiva do shell), onde
@@ -477,6 +1013,77 @@ problema nunca vira QR — os dois QRs rotulados de cima seguem como fallback. A
 janela limitada de pareamento (P2-190) continua sendo o que restringe a
 validade da credencial.
 
+**Sonda de alcance (P2-197)**: um endereço sintaticamente válido pode mesmo
+assim não levar a lugar nenhum — relay fora do ar, nome de DNS que nunca
+existiu, certificado vencido ou um servidor que não é o nosso. Enquanto a tela
+de pareamento está aberta, o shell sonda o endereço do app uma vez por tick de
+polling (teto de 2s) a partir da máquina que hospeda o daemon e mostra o
+veredito numa linha calma abaixo do QR ("inacessível", "timeout",
+"certificado", "DNS", "erro HTTP", "não é o nosso app"), com ação **Testar de
+novo** quando falha. A sonda bate apenas na origem do endereço do app — nunca
+no link de pareamento, que carrega a credencial — e não envia nenhum
+cabeçalho de credencial. Um aviso nunca bloqueia o pareamento nem esconde o QR:
+o Mac não alcançar o relay não prova que o celular também não alcança (outra
+rede, outro DNS).
+
+**Elo do relay (P2-199)**: a sonda de alcance diz se o endereço do app
+responde, mas a conversa em si viaja por outro elo — o WebSocket entre o
+daemon desta máquina e o relay escrito dentro do QR. Enquanto a tela de
+pareamento está aberta, o shell lê o veredito desse elo na mesma resposta de
+`/api/health` que já busca a cada tick e mostra uma linha calma logo abaixo da
+linha de alcance: **conectado**, **modo local** (sem relay), **conectando /
+reconectando** (discagem em curso ou backoff), **recusado** (relay lotado ou
+limitando o ritmo) ou **mal configurado** (o endereço de relay do daemon foi
+recusado na partida). A linha descreve a máquina que hospeda o daemon — não o
+celular, não a câmera. Como todo aviso desta tela, ela nunca bloqueia o
+pareamento nem esconde o QR: o elo pode voltar antes de o celular terminar de
+escanear.
+
+**Relógio torto (P2-214)**: uma máquina com relógio muito adiantado ou muito
+atrasado tem o seu próprio modo de falha — o navegador do celular recusa o
+certificado do relay hospedado (a janela de validade deixa de cobrir o "agora"
+do celular), a janela de pareamento fecha num instante que ninguém prevê e
+todo carimbo de horário que o celular mostra fica errado, tudo sem uma linha
+explicando o porquê. Enquanto a tela de pareamento está aberta, o shell compara
+o relógio da máquina com o cabeçalho `Date` da MESMA resposta que a sonda de
+alcance já obteve — sem requisição nova, sem servidor de tempo — e mostra uma
+linha calma abaixo da linha de local de instalação quando o relógio está
+**adiantado** ou **atrasado**, apontando para o ajuste automático de data e
+hora. A linha descreve a máquina que hospeda o daemon e nunca bloqueia o
+pareamento nem esconde o QR (relógio torto não impede de parear agora); sem
+referência comparável, ela fica calada. `OCR_DESKTOP_FORCE_CLOCK_BEHIND=1` no
+shell desktop força o aviso para screenshots determinísticos (hatch só de
+teste).
+
+**Abrir no login por padrão (P2-218)**: um app empacotado que não está rodando
+é a única falha que nenhuma reação a retorno de suspensão conserta — depois do
+primeiro reboot, corte de energia ou logout, o celular simplesmente não
+encontra a máquina, sem causa mostrada em lugar nenhum. Por isso a primeira
+execução do app instalado (macOS/Windows) liga sozinha o **Start at login** —
+é isso que permite ao celular continuar encontrando esta máquina — e anuncia
+com uma linha calma na tela de pareamento (o QR nunca é escondido). O ajuste
+continua no menu da bandeja: desligar **Start at login** lá é definitivo e
+nenhum boot futuro religa. Builds de desenvolvimento nunca são mexidos, outras
+plataformas mantêm o comportamento anterior, e `OCR_DESKTOP_FORCE_LOGIN_ITEM=1`
+no shell desktop força o anúncio para screenshots determinísticos (hatch só de
+teste, máquina intocada).
+
+**Desinstalação no Windows (P2-249)**: desinstalar o app remove a entrada de
+abertura no login (nada de boot tentando abrir um programa que não existe
+mais) e a pasta de dados do próprio app no perfil de quem desinstalou —
+arquivos de estado e logs incluídos, já que a instalação é por usuário — e
+nunca toca Documentos, Área de Trabalho, Downloads nem nada fora dos dados do
+próprio app.
+
+**Apagamento de dados no macOS (P2-267)**: o macOS não tem desinstalador —
+arrastar o app para o Lixo deixa no disco a identidade da máquina (chaves
+ECDH e VAPID), a lista de celulares pareados, os arquivos de estado do shell e
+a pasta de logs. O item **"Apagar dados do app…"** no menu Ajuda apaga
+exatamente a pasta de dados do próprio app (identidade, celulares pareados,
+estado e logs) após uma confirmação em duas etapas — a segunda avisa que todos
+os celulares pareados perdem o acesso — e encerra o app em seguida; nada fora
+dos dados do próprio app é tocado.
+
 **Reconexão guiada pelo código de fechamento (P2-156)**: quando o socket do
 relay fecha, o daemon classifica o código em vez de tratar qualquer queda como
 problema de rede. `1013` (server busy / too many connections / room full) o
@@ -487,6 +1094,19 @@ mantém a curva com jitter da P2-129 intocada. O veredito aparece nos campos
 aditivos `closeCode`/`closeKind` na linha de log `relay connection lost` e como
 `lastClose: { code, kind }` dentro do objeto `relayRetry` do `/api/health` —
 a reason bruta nunca é exposta.
+
+**Reconexão consciente do erro de discagem (P2-260)**: quando o relay nem
+chega a ser alcançado — o nome não resolve, a conexão é recusada, o tempo
+esgota ou o certificado TLS do relay está vencido, sem confiança ou para
+outro hostname — o daemon classifica o erro de discagem do mesmo jeito que
+classifica os códigos de fechamento e registra uma dica curta e estática em
+pt-BR no lugar da mensagem crua do Node (que embute host e porta do relay).
+Causas permanentes de configuração passam a esperar no mínimo 60s e causas de
+certificado no mínimo 5min antes de re-discar — endereço ou certificado errado
+não melhoram sozinhos, então a máquina para de martelar — enquanto soluços
+transitórios mantêm a curva com jitter da P2-129 intocada. O veredito aparece
+como `lastDial: { kind, hint }` aditivo dentro do objeto `relayRetry` do
+`/api/health`, ao lado de `lastClose`.
 
 ## CLI
 
@@ -528,6 +1148,26 @@ veja [docs/security.md](docs/security.md).
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/capacitor.md](docs/capacitor.md) — shell nativo iOS
 
+**Arquivo de identidade se protege sozinho (P2-234).** O `daemon.json` carrega
+a identidade da máquina e a lista de aparelhos pareados, então um arquivo
+ilegível (escrita truncada de antes do P2-165, disco cheio, edição manual que
+deu errado) não derruba mais o daemon com um erro cru de sintaxe que faz a
+máquina sumir do telefone sem explicação. O boot recusa com uma única linha
+calma em português, move o arquivo ilegível para uma cópia de quarentena 0600
+ao lado do original e sai com o código documentado 78 — nada é apagado e a
+identidade nunca é recriada pelas suas costas. Restaurar o arquivo de
+quarentena no lugar do `daemon.json` devolve todos os pareamentos; apagar os
+dois arquivos recomeça a máquina do zero, exigindo novo pareamento. Veja
+[docs/troubleshooting.md](docs/troubleshooting.md).
+
+**Cópia de segurança automática da identidade (P2-254).** O daemon mantém uma
+cópia de recuperação do `daemon.json` — identidade completa e aparelhos
+pareados — como o irmão `daemon.json.backup` no mesmo diretório de estado,
+escrita com a mesma permissão restrita 0600 do original no máximo uma vez por
+dia logo depois de uma gravação de estado, e se o arquivo principal ficar
+ilegível no boot o daemon o preserva em quarentena e restaura a cópia
+automaticamente, sem trabalho manual.
+
 ## App desktop (inicial)
 
 O primeiro estágio da [visão desktop](docs/VISION.md): um shell Electron
@@ -544,6 +1184,15 @@ Desde a P2-178 toda abertura externa passa por um único gate: apenas links
 de propósito (a recusa é registrada no log como esquema + motivo, nunca a
 URL).
 
+**Proxy (P2-285)**: o shell segue a configuração de proxy da máquina — o
+proxy do sistema é o padrão, e um endereço fixo vindo do ambiente de proxy é
+aplicado uma única vez no boot com o loopback sempre fora do proxy (a ponte
+local do daemon nunca passa pelo proxy). Desde a P2-289 o dono também pode
+escolher o proxy à mão em Configurações → **Proxy da máquina** (sistema / sem
+proxy / endereço fixo): a escolha fica guardada nesta máquina e vale a
+partir do próximo início do app. Cada decisão vira uma linha `proxy:` (modo,
+origem e motivo) no `desktop.log`, nunca o endereço nem credenciais.
+
 Desde o P1-046 a janela é um cockpit de duas colunas de verdade: a conversa
 fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou
 Configurações abrem num pane contextual à direita (trocar de pane nunca
@@ -554,7 +1203,38 @@ Browser / Arquivos / Configurações / Mission Control. O menu nativo fala
 português desde a P2-176 (mesmo idioma da UI) e ganhou o menu **Ajuda** com
 **Verificar atualizações**, **Abrir pasta de logs** e **Copiar diagnóstico** —
 as ações de suporte do tray, agora também na barra de menus (os itens de
-update só aparecem quando há feed configurado).
+update só aparecem quando há feed configurado). Desde a P2-276 o menu e a
+bandeja seguem o idioma escolhido dentro do app (Configurações → Idioma): o
+shell se reconstrói nesse idioma e, sem escolha feita, usa o do sistema.
+
+**Menu de clique direito (P2-235)**: o clique com o botão direito na janela
+abre um menu de contexto nativo com o básico que um usuário leigo procura —
+**Recortar / Copiar / Colar / Selecionar tudo** em campos editáveis, **Copiar**
+para texto selecionado em qualquer lugar, **Abrir link / Copiar endereço do
+link** para links (abrir segue o mesmo gate de esquema http/https/mailto de
+toda abertura externa — esquema recusado só oferece "copiar endereço", nunca
+"abrir") e até quatro sugestões de ortografia para palavra com erro. Builds de
+desenvolvimento (não empacotados) também oferecem **Inspecionar elemento**;
+builds empacotados nunca. Quando não há nada o que oferecer, nenhum menu abre.
+Sessões de teste automatizado nunca abrem o menu — um popup nativo roubaria o
+foco do gate (a mesma regra de sessão de harness das demais superfícies
+nativas).
+
+**Downloads (P2-241)**: um download iniciado em qualquer lugar do shell — um
+link no pane Browser, um link de artifact, um redirecionamento — nunca abre
+diálogo nativo de salvar. Todo download passa por uma política única e pura,
+nesta ordem: sessão de teste hermética (`OCR_DESKTOP_SESSION`) não grava um
+byte; esquema que o gate de abertura externa recusa (file, blob, data,
+javascript — http/https/mailto passam) é cancelado; o nome anunciado precisa
+sobreviver ao saneamento fail-closed (nada de nome vazio ou só de espaços,
+nada de `/` `\` `..` `:`, nada de caractere de controle, nada de nome
+reservado do Windows, teto de 200 caracteres — a extensão é preservada) e o
+tamanho anunciado não pode passar de **1 GB** (tamanho desconhecido nunca
+recusa sozinho). O que passa cai na pasta **Downloads** do sistema com o nome
+tornado único na pasta (nada é sobrescrito), é revelado selecionado no
+explorador de arquivos e anunciado com no máximo uma notificação ao terminar —
+e o app **nunca executa nem abre** o arquivo baixado (só revela, como o
+instalador da P2-233). Recusas viram uma linha sem caminho no `desktop.log`.
 
 **Home viva (P2-123)**: sem conversa selecionada, o cockpit mostra uma home de
 verdade no lugar do beco antigo — greeting serifado ("De volta à ação, &lt;máquina&gt;",
@@ -573,6 +1253,13 @@ filtros de badge + Hoje/Ontem/Anteriores) no meio e um **footer de conta**
 fixo embaixo com avatar/inicial da máquina, nome e modo de conexão ("Local ·
 esta máquina" / "Remoto · pareado"). O footer abre o seletor de máquina, o
 mesmo overlay do header mobile.
+
+**Renomear funciona no desktop (P2-323)**: renomear conversa não morre mais
+em silêncio no app desktop — o lápis abre um diálogo calmo dentro do app
+(campo pré-preenchido, Enter confirma, Esc cancela, o foco volta pra linha)
+que também cobre as confirmações de apagar e rebobinar, no lugar das últimas
+caixas nativas `window.prompt`/`window.confirm`: o shell Electron nunca
+implementou o prompt e as caixas ignoravam o idioma e o tema.
 
 **Auto-preview (P1-072)**: quando o agent sobe um site local (http.server,
 vite, dev server…) e menciona `http://localhost:<porta>` na resposta, o pane
@@ -644,8 +1331,38 @@ com a janela fechada no tray) ele também reconfere sozinho a cada ~6 h
 (jitter de ±10%), recuando de 15 min até o teto de 6 h enquanto o feed estiver
 inacessível. Achando um `feed.json` mais
 novo, o release baixa em segundo plano e um diálogo de consentimento oferece
-**Reiniciar agora / Depois** — nada instala sem clique explícito, versão
-adiada não é re-oferecida na sessão, e checagens repetidas nunca empilham
+**Reiniciar agora / Depois** — nada instala sem clique explícito. Desde a
+P2-257, a oferta adiada não desaparece: volta até duas vezes (uma a cada 4 h,
+três ofertas por versão no total, no mesmo temporizador da reverificação) e o
+item do tray para release baixada reabre o mesmo diálogo — a instalação
+acontece ao aceitar a oferta ("Reiniciar agora"), nunca por uma
+reinicialização comum. Desde a P2-258, durante o download em segundo plano o
+próprio item de status da bandeja acompanha o progresso — "Downloading
+update… 42%" (ou "Downloading update…" sem número quando o feed não anuncia o
+total) — e, se a rede morrer no meio, no próximo tique de reverificação o
+rótulo vira "Update download stalled — check for updates", apenas informativo:
+nada é cancelado, rebaixado ou baixado de novo por causa do rótulo. Desde a
+P2-264, antes de a reverificação agendada começar um download o shell mede o
+espaço livre do volume que hospeda o diretório de dados: quando não cabe o
+pacote mais a cópia descompactada (com uma folga documentada), ou o espaço
+não pôde ser medido, a checagem é adiada — a bandeja mostra `Update postponed
+— not enough disk space`, uma linha cai no `desktop.log` e **liberar espaço em
+disco (ou clicar em Check for updates) destrava a atualização** no próximo
+tique; nada é cancelado, apagado ou instalado pelas suas costas. Desde a
+P2-270, quando a versão instalada em si morre antes de abrir janela — a única
+falha que nenhum diálogo sobrevive — o shell conta as aberturas seguidas que
+nunca chegaram a uma janela útil e, passado um piso documentado, suspende a
+verificação automática de atualização naquela execução, sinaliza a bandeja e
+pergunta ao dono uma única vez pelas saídas que já existem (**Copiar
+diagnóstico** ou **Seguir assim mesmo**); ele nunca volta versão, desinstala
+ou apaga nada, e o registro se cura sozinho na primeira vez em que a janela
+abre de verdade. Desde a P2-291, com esse veredito ativo o guarda de
+atualização se recusa a baixar e reoferecer a própria versão que o feed
+insiste em anunciar quando é justamente a que está rodando — a bandeja ganha
+um item **OpenCode Remote — retomar atualização automática**, que registra a
+sua liberação e recheca na hora, e uma versão nova volta a fluir
+normalmente. Checagens
+repetidas nunca empilham
 ofertas velhas. Desde a P2-146, todo release do GitHub também publica os
 feeds JSON do Squirrel.Mac, gerados por
 `apps/desktop/scripts/update-feed.mjs` a partir do `latest-mac.yml` + dos
@@ -707,6 +1424,20 @@ hosted) e ganhou um botão **Reconectar agora** que dispara o mesmo restart do
 tray — um `kickstart` no daemon a cada deploy não deixa mais o app preso na
 tela de pareamento.
 
+**Reação ao voltar da suspensão**: quando a máquina volta do sleep e quando a
+sessão é desbloqueada (eventos de `powerMonitor` no macOS/Windows), o shell
+reage em vez de esperar um backoff que já pode ter se esgotado: se o daemon
+respondeu saudável no último tick, uma sonda imediata confirma a saúde; se o
+orçamento de respawn se esgotou — ou se o retry agendado está a mais de 30s de
+distância — o daemon é reiniciado na hora (o mesmo reinício do item do tray);
+nos demais casos, só confere a saúde. Cada evento é tratado no máximo uma vez
+por janela de 10s — repetições dentro da janela são descartadas em silêncio, a
+volta da suspensão nunca vira enxurrada de log — e cada evento tratado escreve
+exatamente uma linha `[desktop] wake event (…)` com a ação e o motivo.
+Plataformas sem o sinal do sistema seguem como antes, nenhuma sonda periódica
+nova é criada e o pareamento nunca é alterado por um wake: sem re-pareamento,
+sem escrita em allowlist ou no arquivo de estado.
+
 **Zero pairing na máquina host**: o shell do desktop trata o daemon da mesma
 máquina como um único domínio de confiança (loopback, mesmo usuário,
 `daemon.json` 0600). Se esse daemon prova saúde no boot — desafio 401
@@ -743,6 +1474,16 @@ e são validados contra os displays conectados no boot: janela esquecida num
 monitor desconectado (ou arquivo corrompido) cai no padrão 1280×820 em vez de
 abrir off-screen ou travar.
 
+**O tamanho do texto também é lembrado (P2-238)**: os itens de zoom do menu
+Visualizar (**Tamanho padrão**, **Ampliar**, **Reduzir**) ajustam o texto do
+app com as mesmas teclas de sempre (Cmd/Ctrl+0, Cmd/Ctrl++ , Cmd/Ctrl+-) e o
+nível escolhido é gravado junto com os bounds da janela — reabriu, o tamanho
+continua. A faixa vai de ~58% a ~3× do tamanho de fábrica (níveis −3 a 6,
+~20% por clique) para o app continuar legível e utilizável; nos extremos o
+item do menu aparece desabilitado. **Tamanho padrão** (Cmd/Ctrl+0) sempre
+devolve o tamanho de fábrica. Sessões de teste (`OCR_DESKTOP_SESSION`) começam
+sempre no padrão e não gravam nada.
+
 **Log persistente do shell**: o app desktop grava tudo que o processo main
 emite (linhas `[desktop] …`: ciclo de vida do daemon, polls de pareamento,
 crashes do renderer, erros fatais) em `userData/logs/desktop.log` — assim o
@@ -771,11 +1512,88 @@ best-effort: em plataformas sem suporte a notificação o shell segue rodando
 em silêncio — com a janela fechada no tray, é assim que o usuário leigo
 descobre que perdeu o controle.
 
+**A bandeja conta a viagem inteira (P2-252)**: o tooltip e a linha de status
+no topo do menu da bandeja deixam de falar só do processo local e passam a
+dizer o que de fato acontece — `processo local fora do ar: nenhum telefone
+alcança esta máquina` com o sidecar no chão, `o relay recusou a conexão`,
+`conectando ao relay`, `nenhum telefone pareado: escaneie o código no celular`
+ou `tudo pronto: o celular alcança esta máquina` — alimentados pelo mesmo
+poll de 3s do pareamento, sem requisição nova.
+
 **Fechar a janela mantém o app na bandeja**: na primeira vez que a janela é
 fechada, uma notificação nativa única avisa que o OpenCode Remote continua
 rodando — na barra de menus no macOS, na bandeja do sistema no Windows/Linux
 — e como reabrir (clique no ícone da bandeja ou abra o app de novo). A dica
 aparece uma única vez; fechar de novo, ou reabrir depois, não notifica.
+
+**Atalho global para reabrir a janela (P2-229)**: uma combinação de teclas do
+sistema traz a janela de volta de qualquer lugar — `Command+Shift+O` no macOS
+e `Ctrl+Shift+O` no Windows/Linux. O atalho usa o mesmo caminho de mostrar e
+focar do clique na bandeja, então uma janela fechada por engano não exige
+caçar o ícone. O menu Ajuda e a bandeja exibem a combinação ativa como item
+informativo desabilitado — ou o motivo de nenhum atalho estar registrado,
+jamais uma combinação mentirosa. Escolha outra combinação com
+`OCR_DESKTOP_HOTKEY="Ctrl+Alt+R"` (pelo menos um modificador é obrigatório;
+valor inválido não registra nada em vez de cair no padrão em silêncio) ou
+desligue a feature com `OCR_DESKTOP_DISABLE_HOTKEY=1`. Se outro aplicativo já
+usa a combinação, o registro falha aberto: uma linha no desktop.log e a
+bandeja continua funcionando. Sessões de teste automatizadas nunca registram
+atalho global — um run de teste não pode roubar teclas do sistema inteiro.
+
+**Sair pede confirmação quando o celular perderia o acesso (P2-221)**: o item
+**Quit** da bandeja e o **Encerrar OpenCode Remote** do menu do app (ou
+`Cmd+Q`) fazem um quit de verdade com limpeza completa do daemon — e como o
+app agora abre no login (P2-218) justamente para o telefone sempre encontrar
+esta máquina, sair sem dizer nada virou o jeito silencioso de derrubar o
+acesso remoto. Por isso, num app empacotado com daemon saudável e celular
+pareado, a saída antes confirma numa caixa nativa com três caminhos: **Sair**
+(encerra de verdade), **Continuar na bandeja** (o app segue vivo e o celular
+mantém o acesso) e **Não perguntar de novo** (sai agora, e toda saída futura
+fica silenciosa — a escolha é definitiva e fica registrada só como um flag
+booleano no `userData`). Sair nunca pergunta quando não há nada a perder:
+builds de desenvolvimento, daemon não saudável, nenhum celular pareado ou
+escolha já registrada. O veredito e o motivo aparecem no desktop.log
+(`[desktop] quit confirm: …`) e no bundle de diagnóstico (`quit confirm:`) —
+jamais com caminhos ou tokens. Dois hatches só de teste deixam o fluxo
+determinístico: `OCR_DESKTOP_FORCE_QUIT_CONFIRM=1` força a confirmação e
+`OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never` responde a caixa na hora.
+
+**Janela travada avisa em vez de silêncio (P2-223)**: quando a janela do app
+para de responder, o shell avisa — primeiro uma notificação calma ("a janela
+parou de responder; pode voltar sozinha") e, se o travamento continuar, uma
+caixa nativa oferece **Recarregar** ou **Aguardar**. Recarregar não perde a
+conversa (ela vive no daemon). O veredito, a duração e o desfecho aparecem no
+desktop.log (`[desktop] hang watch: …`) e no bundle de diagnóstico
+(`last hang:`). Sessões de teste nunca veem a caixa, e
+`OCR_DESKTOP_HANG_DIALOG_ANSWER=reload|wait` responde no lugar para fluxos
+determinísticos.
+
+**Janela preta ganha caminho de recuperação em vez de beco sem saída
+(P2-244)**: numa máquina com driver de vídeo defeituoso, o processo de GPU
+caía a cada boot sem ninguém olhando — janela preta, reabrir, repetir. O
+shell agora conta quedas do processo de vídeo numa janela de uma hora (a
+contagem sobrevive a reinícios, em `userData/gpu-state.json`): as primeiras
+quedas só viram uma linha de log, e a terceira dentro da janela desliga a
+aceleração de vídeo no próximo início (decidida antes de o app ficar pronto,
+único ponto em que o Electron ainda honra o desligamento), com no máximo uma
+dica pela bandeja por início. Sem diálogos nativos, sem timers novos; sessão
+de teste nunca desliga nada e nunca grava o estado. A política se cura
+sozinha: uma hora sem queda nova religa a aceleração no boot seguinte. Detalhes em
+[docs/troubleshooting.md](docs/troubleshooting.md#black-window-video-acceleration-turns-itself-off-p2-244).
+
+**Carga que não termina deixa de ser janela branca em silêncio (P2-247)**: um
+asset danificado dentro do pacote, uma atualização parcialmente escrita, um
+arquivo posto em quarentena por antivírus ou um volume lento deixavam o app
+numa janela branca permanente, sem uma palavra e sem uma linha de log. O
+shell agora observa a falha de carga da janela principal: até **3 recarregamentos
+automáticos** (um a cada 1,5s) seguem as primeiras falhas, cada decisão
+registra uma linha estática no desktop.log (`[desktop] load watch: …`, só com
+o código de erro e o esquema da URL — nunca a sua navegação) e, quando os
+recarregamentos se esgotam, a própria janela mostra uma frase curta explicando
+o que aconteceu e como recuperar (reabrir; reinstalar se persistir). Sem
+diálogo nativo, sem timers novos; uma carga bem-sucedida reabre o orçamento.
+Veja
+[docs/troubleshooting.md](docs/troubleshooting.md#the-window-never-finishes-loading-p2-247).
 
 ## Roadmap
 

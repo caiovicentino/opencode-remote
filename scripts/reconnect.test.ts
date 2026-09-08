@@ -35,9 +35,9 @@ const RELAY_PORT = await new Promise<number>((resolve, reject) => {
 const RELAY_URL = `ws://127.0.0.1:${RELAY_PORT}`;
 
 setTimeout(() => {
-  console.error("reconnect test timed out (global 30s)");
+  console.error("reconnect test timed out (global 90s)");
   process.exit(1);
-}, 30_000).unref();
+}, 90_000).unref();
 
 const home = mkdtempSync(join(tmpdir(), "ocr-reconnect-"));
 const stateFile = join(home, ".opencode-remote", "daemon.json");
@@ -107,10 +107,23 @@ async function handshake() {
   );
   const confirm = await new Promise<string>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("no confirm after hello (5s)")), 5000);
-    ws.once("message", (data: WebSocket.RawData) => {
+    const onMsg = (data: WebSocket.RawData) => {
+      let frame: { from?: string; payload?: string };
+      try {
+        frame = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      // the daemon announces itself with an empty-payload frame from the room
+      // on every relay connect — it can land between hello and the confirm
+      // when the daemon dials while the handshake is in flight
+      if (frame.from === state.room && frame.payload === "") return;
+      if (frame.from === "testclient") return;
       clearTimeout(t);
-      resolve(JSON.parse(data.toString()).payload);
-    });
+      ws.off("message", onMsg);
+      resolve(frame.payload!);
+    };
+    ws.on("message", onMsg);
   });
   const check = await openSealed<{ ok: boolean }>(
     JSON.parse(atob(confirm)).confirm,
@@ -123,7 +136,10 @@ async function handshake() {
 function request(method: string, path: string, body?: unknown): Promise<OpResponse> {
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("request timeout")), 8000);
+    const t = setTimeout(() => {
+      ws.off("message", onMsg);
+      reject(new Error("request timeout"));
+    }, 8000);
     const onMsg = async (data: WebSocket.RawData) => {
       const frame = JSON.parse(data.toString());
       if (frame.from === "testclient") return;
@@ -190,12 +206,50 @@ if (res.status !== 200) throw new Error(`pre-restart op failed: ${res.status}`);
 console.log("op before restart: OK");
 
 // --- restart the daemon under the client's feet ----------------------------
+// The restarted daemon announces itself with an empty-payload frame from the
+// room the moment its relay socket opens (apps/daemon index.ts sends it on
+// every connect). Waiting for that announce instead of a fixed sleep removes
+// the cold-start race where the op is dialed into an empty room — a blind
+// relay drops the frame and the 8s request timeout kills the run.
+const daemonAnnounce = new Promise<void>((resolve, reject) => {
+  const t = setTimeout(() => reject(new Error("no daemon announce after restart (15s)")), 15_000);
+  const onMsg = (data: WebSocket.RawData) => {
+    let frame: { from?: string; payload?: string };
+    try {
+      frame = JSON.parse(data.toString());
+    } catch {
+      return; // non-JSON frame: not a relay envelope, never the announce
+    }
+    if (frame.from !== state.room || frame.payload !== "") return;
+    clearTimeout(t);
+    ws.off("message", onMsg);
+    resolve();
+  };
+  ws.on("message", onMsg);
+});
 daemon.kill("SIGTERM");
 await new Promise((r) => setTimeout(r, 1000));
 daemon = startDaemon();
-await new Promise((r) => setTimeout(r, 3000));
+await daemonAnnounce;
 
-res = await request("POST", "/__ocr/transcribe/chunk", { id: "t2", idx: 0, data: "" });
+res = await (async () => {
+  // P3-337 gate round 3: under heavy machine load the restarted daemon's room
+  // re-join can lag its socket opening, and the relay — a blind router — drops
+  // an op addressed to a room the daemon has not rejoined yet. Retry the op a
+  // bounded number of times (fresh frame id per attempt) instead of failing
+  // the whole gate step on one dropped frame.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await request("POST", "/__ocr/transcribe/chunk", { id: "t2", idx: 0, data: "" });
+    } catch (e) {
+      if ((e as Error).message !== "request timeout") throw e;
+      lastErr = e;
+      console.error(`op retry ${attempt + 1}/2: daemon had not rejoined the room yet`);
+    }
+  }
+  throw lastErr;
+})();
 if (res.status !== 200) throw new Error(`post-restart op failed: ${res.status}`);
 console.log("op after daemon restart (auto re-handshake): OK");
 

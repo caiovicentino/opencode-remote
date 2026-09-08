@@ -66,6 +66,57 @@ export interface PairingState {
    * is NEVER minted for a problem-bearing link (the two labeled QRs stay).
    */
   pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
+  /**
+   * P2-197: reach verdict of the app address (webreach.ts classifier),
+   * probed once per pairing tick from the machine hosting the daemon.
+   * Additive; absent = the probe has not run (unknown — renders nothing).
+   * A failed probe never blocks pairing and never hides the QR.
+   */
+  reach?: { state: string; message: string };
+  /**
+   * P2-199: verdict of the daemon↔relay link (relaylink.ts classifier),
+   * computed from the same /api/health answer the tick already fetches and
+   * only while the overlay may still be needed. Additive; absent only when
+   * the health call itself failed or the overlay cannot be needed — a 200
+   * answer without relay fields (legacy daemon) travels as the discreet
+   * unknown state instead. A down link never blocks pairing and never hides
+   * the QR.
+   */
+  relayLink?: { state: string; message: string };
+  /**
+   * P2-211: verdict of the app's install location (installloc.ts classifier),
+   * computed ONCE at boot in the main process. Additive; absent = unknown to
+   * the renderer (ok/unknown render nothing). A wrong location (DMG volume,
+   * translocated copy, downloads folder) explains the drag-to-Applications
+   * action but NEVER blocks pairing and NEVER hides the QR.
+   */
+  installLocation?: { state: string; message: string };
+  /**
+   * P2-214: verdict of the machine's clock compared against the Date response
+   * header of the SAME answer the reach probe already obtained (clockskew.ts
+   * classifier), under the same overlay guard. Additive; absent = unknown to
+   * the renderer (ok/unknown render nothing). A wrong clock explains the
+   * automatic date/time action but NEVER blocks pairing and NEVER hides the
+   * QR — pairing itself still works right now.
+   */
+  clock?: { state: string; message: string };
+  /**
+   * P2-218: verdict of the login-item boot decision (loginitem.ts planner),
+   * computed ONCE at boot in the main process. Additive; absent = unknown to
+   * the renderer (any state but "enable" renders nothing — and even "enable"
+   * is a one-boot announce). The announce NEVER hides the QR and NEVER blocks
+   * pairing — it is information, not an error.
+   */
+  startup?: { state: string; message: string };
+  /**
+   * P2-321: verdict of the wedged-daemon probe (sidecarwedge.ts classifier) —
+   * the shell's own sidecar child alive but not answering health probes.
+   * Additive; absent = no wedge in effect (the renderer renders nothing —
+   * today the verdict's surfaces are desktop.log and diagnostics). state is
+   * one of observe | degraded | restart | give-up; message is a static
+   * pt-BR phrase with no path, port, identifier or secret.
+   */
+  sidecarWedge?: { state: string; message: string };
 }
 
 /**

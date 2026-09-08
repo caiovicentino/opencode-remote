@@ -1,6 +1,22 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readFileSync, statSync } from "node:fs";
+import { extname } from "node:path";
+import { gzipSync } from "node:zlib";
 import { contentTypeFor, cacheControlFor, resolveWebPath, spaFallbackPath } from "./webroot.js";
 import { securityHeaders } from "./webheaders.js";
+import {
+  negotiateEncoding,
+  WebEncodingCache,
+  webEncodingCacheKey,
+  WEB_ENCODING_CACHE_MAX_BYTES,
+  WEB_ENCODING_CACHE_MAX_ENTRIES,
+  type WebEncodingDecision,
+  type WebContentEncoding,
+} from "./webencoding.js";
+import { conditionalVerdict, etagFor } from "./webcond.js";
+import { rejectionBreakdown } from "./rejectreasons.js";
+import type { CertExpiryVerdict } from "./certexpiry.js";
+import type { CertChainVerdict } from "./certchain.js";
 
 /**
  * GET /healthz — public, unauthenticated liveness probe for the hosted
@@ -43,13 +59,139 @@ import { securityHeaders } from "./webheaders.js";
  * starved out of its own probe, and the probe consumes no tokens. The drain
  * keeps priority over the budget so the LB protocol stays intact, and the
  * WebSocket upgrade path never reaches this handler at all.
+ *
+ * P2-198: a 200 document whose extension and size pass the pure
+ * webencoding.ts negotiation and whose client accepts gzip is served
+ * content-encoding: gzip — the bytes compressed once per process and
+ * memoized in WEB_ENCODING_CACHE (path + size + mtime keyed, capped in
+ * entries and total bytes). Both 200 variants carry vary: accept-encoding
+ * so a shared cache never mixes them; the identity variant keeps streaming
+ * through the injected `send` exactly as before. The 404/405/503 answers and
+ * the /healthz body stay byte-for-byte as they were: no compression, no
+ * vary — a load balancer reading the probe must not change behavior because
+ * of this. The relay stays blind: only public static assets from the
+ * allowlisted root pass through here, never a sealed frame.
+ *
+ * P2-200: every 200 of the static route — compressed or identity — carries a
+ * strong etag derived from the same stat the encoding decision already took
+ * (size + mtime, no extra disk access) plus the chosen encoding, so the
+ * gzip and identity validators differ and a shared cache can never serve
+ * compressed bytes to a client that asked for identity. A request whose
+ * if-none-match matches — list, whitespace-tolerated, wildcard `*`, weak
+ * comparison per webcond.ts — is answered 304 with no body, carrying the
+ * etag, cache-control, vary and the P2-192 security headers but never
+ * content-encoding, content-length or content-type, and the file is not read
+ * or compressed at all. The per-identity budget (P2-195) is still charged
+ * before the conditional decision — a cheap 304 is still a request — and the
+ * 404/405 answers and the /healthz body stay byte-for-byte as they were: no
+ * validator, no conditional handling.
+ *
+ * P2-290: an optional `certExpiry` getter on the state lets the probe carry
+ * the current certificate-expiry verdict — the same verdict the runtime
+ * revalidation in index.ts already maintains (P2-259) — so an operator
+ * watching this documented probe sees an expiring certificate days before
+ * phones start failing their handshake. The rules below are evaluated IN
+ * THIS ORDER (the order is load-bearing and covered by tests):
+ *
+ *   1. A state without the getter adds nothing: the body keeps the exact
+ *      pre-P2-290 shape byte for byte, drain response included.
+ *   2. An absent (getter returned undefined), non-textual or out-of-table
+ *      verdict adds nothing — and a good verdict is NEVER invented. The
+ *      table is the documented certexpiry.ts one: `use`, `warn`,
+ *      `refuse-expired`, `refuse-not-yet-valid`. Fail-closed: announcing
+ *      certificate health nobody measured is worse than staying silent.
+ *   3. A non-finite deadline adds no seconds field (an unusable instant
+ *      cannot back a number); a negative remainder floors at zero.
+ *   4. The result is a pure function of the state and `now`: identical
+ *      inputs produce identical bodies in two calls.
+ *
+ * Boundary: no returned field ever carries a subject, issuer, serial number,
+ * fingerprint, file path, host or any other certificate or key material —
+ * only the short static verdict string and a whole-seconds count. The relay
+ * stays blind here, as everywhere.
+ *
+ * P2-293: an optional `roomsRejectedBreakdown` getter lets the probe carry
+ * the per-reason split of the opaque `roomsRejected` total — the closed
+ * rejectreasons.ts table (today: `invalid-room-id`, `socket-room-cap`) — so
+ * the operator distinguishes legitimate phones hitting the configured
+ * ceiling from a malformed origin in a loop. The rules below are evaluated
+ * IN THIS ORDER (covered by tests):
+ *
+ *   1. A state without the getter adds nothing: the body keeps the exact
+ *      pre-P2-293 shape byte for byte, drain response included.
+ *   2. The getter's counters normalize through the pure rejectionBreakdown():
+ *      an absent, non-object or non-numeric-slot set adds nothing — and an
+ *      invented set of zeros is NEVER published. A non-empty normalized set
+ *      is assigned verbatim (table order, one field per documented reason).
+ *
+ * Boundary: no returned field ever carries a room identifier, connection
+ * id, address, IP or envelope content — only whole counter values keyed by
+ * the documented reason names.
+ *
+ * P2-310: an optional `certChain` getter lets the probe carry the current
+ * certificate-chain verdict — the classification the boot preflight computed
+ * and the reload sweep keeps current (certchain.ts). Same rules as the
+ * P2-290 fields: a state without the getter adds nothing (plain mode keeps
+ * the body byte for byte), an absent, non-textual or out-of-table verdict
+ * adds nothing and a verdict is NEVER invented. The field carries only the
+ * short static verdict string — never a subject, issuer, serial number,
+ * fingerprint, file path, host or port.
  */
+
+/**
+ * P2-290: the documented certexpiry.ts verdict table, restated as the
+ * runtime allowlist. A verdict outside it adds nothing (fail-closed).
+ */
+const CERT_EXPIRY_VERDICTS: ReadonlySet<string> = new Set([
+  "use",
+  "warn",
+  "refuse-expired",
+  "refuse-not-yet-valid",
+]);
+
+/**
+ * P2-310: the documented certchain.ts verdict table, restated as the runtime
+ * allowlist. A verdict outside it adds nothing (fail-closed).
+ */
+const CERT_CHAIN_STATES: ReadonlySet<string> = new Set([
+  "complete",
+  "self-signed",
+  "leaf-only",
+  "broken-order",
+  "unknown",
+]);
+
+/** P2-290: the current certificate-expiry verdict as maintained by the
+ *  runtime revalidation in index.ts — the short static verdict plus the
+ *  certificate's notAfter instant. Nothing else about the certificate ever
+ *  crosses this interface. */
+export interface CertExpiryHealth {
+  verdict: CertExpiryVerdict;
+  /** Certificate notAfter instant in epoch milliseconds. */
+  expiresAtMs: number;
+}
 
 export interface HealthzState {
   version: string;
   startedAt: number;
   rooms: () => number;
   roomsRejected: () => number;
+  /** P2-243: additive — rooms closed by the per-room volume budget. When
+   *  absent the payload keeps the exact pre-P2-243 shape. */
+  roomsBudgetTerminated?: () => number;
+  /** P2-290: additive — the current certificate-expiry verdict. When absent
+   *  (or when it answers undefined) the payload keeps the exact pre-P2-290
+   *  shape. */
+  certExpiry?: () => CertExpiryHealth | undefined;
+  /** P2-310: additive — the current certificate-chain verdict (certchain.ts).
+   *  When absent (or when it answers undefined) the payload keeps the exact
+   *  pre-P2-310 shape. */
+  certChain?: () => CertChainVerdict | undefined;
+  /** P2-293: additive — the per-reason counters behind roomsRejected, keyed
+   *  by the closed rejectreasons.ts table. The pure rejectionBreakdown()
+   *  decides what (if anything) the payload publishes; a state without the
+   *  getter keeps the exact pre-P2-293 shape. */
+  roomsRejectedBreakdown?: () => unknown;
 }
 
 export interface HealthzPayload {
@@ -60,6 +202,26 @@ export interface HealthzPayload {
   roomsRejected: number;
   /** Additive and only present while draining (P2-145). */
   draining?: true;
+  /** Additive (P2-243): rooms terminated by the per-room volume budget,
+   *  present only when the state provides the counter. */
+  roomsBudgetTerminated?: number;
+  /** Additive (P2-290): the short static certificate verdict, present only
+   *  when the state provides the getter and the verdict is one of the
+   *  documented table values. Never carries certificate material. */
+  certExpiryVerdict?: CertExpiryVerdict;
+  /** Additive (P2-290): whole seconds until certificate expiry, floored at
+   *  zero; present only alongside certExpiryVerdict with a finite deadline. */
+  certExpiryInS?: number;
+  /** Additive (P2-310): the short static certificate-chain verdict, present
+   *  only when the state provides the getter and the verdict is one of the
+   *  documented table values. Never carries certificate material. */
+  certChainState?: CertChainVerdict;
+  /** Additive (P2-293): the roomsRejected split by the closed
+   *  rejectreasons.ts table, present only when the state provides the
+   *  getter and the counters normalize to a non-empty set. Never carries a
+   *  room id, connection id, address or IP — whole counters only. */
+  roomsRejectedInvalidRoomId?: number;
+  roomsRejectedSocketRoomCap?: number;
 }
 
 export function healthzPayload(s: HealthzState, now = Date.now(), draining = false): HealthzPayload {
@@ -70,6 +232,39 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
     rooms: s.rooms(),
     roomsRejected: s.roomsRejected(),
   };
+  // P2-243: additive field only when the state provides the getter — a state
+  // without it reproduces the pre-P2-243 body byte for byte
+  if (s.roomsBudgetTerminated !== undefined) base.roomsBudgetTerminated = s.roomsBudgetTerminated();
+  // P2-290: additive certificate fields, following the header rules in order:
+  // getter absent adds nothing; an absent, non-textual or out-of-table
+  // verdict adds nothing and a good verdict is NEVER invented (fail-closed —
+  // announcing certificate health nobody measured is worse than staying
+  // silent); a non-finite deadline omits the seconds field while a negative
+  // remainder floors at zero; identical inputs produce identical bodies.
+  const cert = s.certExpiry?.();
+  if (cert && typeof cert.verdict === "string" && CERT_EXPIRY_VERDICTS.has(cert.verdict)) {
+    base.certExpiryVerdict = cert.verdict as CertExpiryVerdict;
+    if (Number.isFinite(cert.expiresAtMs)) {
+      base.certExpiryInS = Math.max(0, Math.floor((cert.expiresAtMs - now) / 1000));
+    }
+  }
+  // P2-310: additive chain field, same rules as the expiry one above: a
+  // state without the getter adds nothing; an absent, non-textual or
+  // out-of-table verdict adds nothing and a verdict is NEVER invented
+  // (fail-closed); identical inputs produce identical bodies.
+  const chain = s.certChain?.();
+  if (typeof chain === "string" && CERT_CHAIN_STATES.has(chain)) {
+    base.certChainState = chain;
+  }
+  // P2-293: additive breakdown fields, following the header rules in order:
+  // a state without the getter adds nothing; the getter's counters go
+  // through the pure rejectionBreakdown(), whose empty result (absent,
+  // non-object or non-numeric slots — never invented zeros) adds nothing
+  // and whose non-empty result is exactly the documented fields in table
+  // order, byte-for-byte stable for identical inputs.
+  if (s.roomsRejectedBreakdown !== undefined) {
+    Object.assign(base, rejectionBreakdown(s.roomsRejectedBreakdown()));
+  }
   // healthy body stays byte-identical to the pre-P2-145 probe; the additive
   // field only appears while draining (ok flips to false in the same case)
   return draining ? { ...base, draining: true } : base;
@@ -78,8 +273,11 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
 /**
  * Injected static-file I/O for the P2-188 web route. `root` is the
  * fail-closed-validated RELAY_WEB_DIR; `isFile` and `send` are the only
- * filesystem touches, owned by index.ts so this module stays testable over
- * real HTTP without stubbing fs.
+ * filesystem touches of the identity path, owned by index.ts so this module
+ * stays testable over real HTTP without stubbing fs. P2-198: the gzip path
+ * additionally reads the file (readFileSync) and compresses it (gzipSync)
+ * inside this module — the decision comes from the pure webencoding.ts and
+ * the bytes are memoized in WEB_ENCODING_CACHE.
  */
 export interface WebStatic {
   root: string;
@@ -102,9 +300,57 @@ export interface WebBudgetGate {
   take(req: IncomingMessage, nowMs: number): { allow: boolean; retryAfterS: number };
 }
 
-/** 200 with the resolved file's content-type and cache policy, body via `send`. */
+/**
+ * P2-198: process-wide memoized gzip bodies for the static route. Keyed by
+ * absolute path + size + mtime; capped in entries and total bytes by the
+ * documented webencoding.ts constants, oldest entry discarded first. One
+ * bundle is compressed at most once per process.
+ */
+export const WEB_ENCODING_CACHE = new WebEncodingCache(
+  WEB_ENCODING_CACHE_MAX_ENTRIES,
+  WEB_ENCODING_CACHE_MAX_BYTES,
+);
+
+/**
+ * P2-198: the encoding decision for a 200 document, plus the stat the
+ * decision needs (size for the thresholds, mtime for the cache key). A file
+ * that vanished between isFile() and this stat falls back to identity — the
+ * injected sender re-answers through its own error path, exactly as before.
+ */
+function planEncoding(
+  abs: string,
+  req: IncomingMessage,
+): { decision: WebEncodingDecision; sizeBytes: number; mtimeMs: number } {
+  try {
+    const st = statSync(abs);
+    if (st.isFile()) {
+      return {
+        decision: negotiateEncoding(req.headers["accept-encoding"], extname(abs), st.size),
+        sizeBytes: st.size,
+        mtimeMs: st.mtimeMs,
+      };
+    }
+  } catch {
+    // fall through: identity, streamed through the injected sender
+  }
+  return { decision: { encoding: "identity", vary: false }, sizeBytes: -1, mtimeMs: 0 };
+}
+
+/**
+ * 200 with the resolved file's content-type and cache policy, body via `send`.
+ * P2-198: when the negotiation returns gzip, the compressed bytes come from
+ * WEB_ENCODING_CACHE (compressed once, memoized) and are written with
+ * content-encoding, vary and the already-compressed content-length — the
+ * P2-192 header set passes through untouched. HEAD is answered with the same
+ * headers and no body (Node suppresses the body of a HEAD response). Any
+ * failure reading or compressing falls back to the identity path below.
+ * P2-200: every 200 carries a strong etag (encoding-derived, so the two
+ * variants never share one), and an if-none-match that revalidates is
+ * answered 304 first — validators and metadata only, no read, no
+ * compression, no body.
+ */
 function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, {
+  const headers = {
     "content-type": contentTypeFor(abs),
     "cache-control": cacheControlFor(abs),
     // the route is public and unauthenticated: the allowlist already pins
@@ -113,6 +359,67 @@ function sendDoc(web: WebStatic, abs: string, req: IncomingMessage, res: ServerR
     // P2-192: CSP, framing, referrer and permissions lockdown on both 200
     // paths (resolved asset and SPA fallback); HSTS only under TLS
     ...securityHeaders(web.isTls(req), web.csp),
+  };
+  const plan = planEncoding(abs, req);
+  // P2-200: the strong validator derives from the same stat the encoding
+  // decision already took (zero extra disk access) plus the chosen encoding
+  // — gzip and identity validators differ, so a shared cache can never serve
+  // compressed bytes to a client that asked for identity. A failed stat
+  // leaves nothing to derive a validator from: no etag, no conditional path.
+  const validator = (encoding: WebContentEncoding): Record<string, string> => {
+    if (plan.sizeBytes < 0) return {};
+    return { etag: etagFor(plan.sizeBytes, plan.mtimeMs, encoding) };
+  };
+  const current = validator(plan.decision.encoding).etag;
+  // revalidation first (P2-200): a 304 carries no body, so the file is not
+  // read nor compressed. The per-identity budget (P2-195) was already charged
+  // by the caller — a cheap 304 is still a request.
+  if (current && conditionalVerdict(req.headers["if-none-match"], current) === "not-modified") {
+    const notModified: Record<string, string> = {
+      etag: current,
+      "cache-control": headers["cache-control"],
+      ...securityHeaders(web.isTls(req), web.csp),
+    };
+    if (plan.decision.vary) notModified["vary"] = "Accept-Encoding";
+    res.writeHead(304, notModified);
+    res.end();
+    return;
+  }
+  if (plan.decision.encoding === "gzip") {
+    try {
+      const body = WEB_ENCODING_CACHE.getOrCompute(
+        webEncodingCacheKey(abs, plan.sizeBytes, plan.mtimeMs),
+        () => gzipSync(readFileSync(abs)),
+      );
+      res.writeHead(200, {
+        ...headers,
+        ...validator("gzip"),
+        "content-encoding": "gzip",
+        vary: "Accept-Encoding",
+        "content-length": String(body.length),
+      });
+      res.end(body);
+      return;
+    } catch {
+      // the file vanished between isFile() and the read, or compression
+      // failed: the identity sender below answers instead — carrying the
+      // identity validator, so a revalidation of these bytes matches (P2-200)
+      res.writeHead(200, {
+        ...headers,
+        ...validator("identity"),
+        vary: "Accept-Encoding",
+      });
+      web.send(abs, req, res);
+      return;
+    }
+  }
+  // identity variant: the pre-P2-198 headers byte for byte, plus the vary
+  // so a shared cache never mixes this variant with the gzip one (P2-198),
+  // plus the strong validator (P2-200)
+  res.writeHead(200, {
+    ...headers,
+    ...validator("identity"),
+    ...(plan.decision.vary ? { vary: "Accept-Encoding" } : {}),
   });
   web.send(abs, req, res);
 }

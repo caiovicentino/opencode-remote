@@ -1,0 +1,20 @@
+{
+  "jobs": {
+    "ci.yml/verify": ["contents:read"],
+    "ci.yml/scope": ["contents:read"],
+    "ci.yml/desktop-package": ["contents:read"],
+    "ci.yml/desktop-package-win": ["contents:read"],
+    "ci.yml/verify-win": ["contents:read"],
+    "ci.yml/relay-image": ["contents:read"],
+    "release.yml/release": ["contents:write"],
+    "release.yml/desktop-dmg": ["contents:write"],
+    "release.yml/desktop-win": ["contents:write"],
+    "release.yml/release-verify": ["contents:read"],
+    "release.yml/relay-image": ["contents:read", "packages:write"],
+    "release.yml/release-feeds": ["contents:read"],
+    "release.yml/release-publish": ["contents:write"]
+  },
+  "conditions": {
+    "ci.yml/verify-win": "Runs when the scope job's desktop OR portable-suite output is true (P2-317): the portable Windows battery also exercises apps/daemon and apps/relay path logic, so a PR touching those runs it too, while docs-only or media-only changes never do."
+  }
+}

@@ -176,7 +176,7 @@ ws.send(
   console.log("sealed op round-trip over local WS: OK");
 }
 
-// --- 4. ping → pong control frame on the live session -----------------------
+// --- 4. ping → pong on the live session (RT-341: the pong arrives SEALED) ---
 {
   ws.send(
     JSON.stringify({
@@ -187,17 +187,21 @@ ws.send(
   );
   const pong = await new Promise<string>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("no pong after ping (5s)")), 5000);
-    ws.on("message", (data: WebSocket.RawData) => {
+    ws.on("message", async (data: WebSocket.RawData) => {
       try {
         const frame = JSON.parse(data.toString());
-        const ctl = JSON.parse(atob(frame.payload)) as { type?: string };
-        if (ctl.type === "pong") {
+        const env = await openSealed<{ type?: string }>(
+          frame.payload,
+          sessionKey,
+          seqAad(frame.from, frame.seq ?? 0),
+        );
+        if (env?.type === "pong") {
           ws.removeAllListeners("message");
           clearTimeout(t);
           resolve("pong");
         }
       } catch {
-        // sealed frame — ignore
+        // clear control frame or foreign payload — keep waiting
       }
     });
   });

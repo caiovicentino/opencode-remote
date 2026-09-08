@@ -62,6 +62,31 @@ reconnect wait at 30s/60s respectively, so a saturated relay is not hammered
 as if the network had dropped; `transient` keeps the bare P2-129 curve. The
 raw close reason is never exposed.
 
+Since P2-260 the same object also carries an additive `lastDial`: `null`
+until the first dial failure, otherwise `{ kind, hint }` — the classified
+cause of the most recent failed dial to the relay (`unresolved-name`,
+`refused`, `timed-out`, `cert-expired`, `cert-untrusted`,
+`cert-name-mismatch`, `cert-other` or `transient`) plus one static pt-BR
+operator hint. A permanent cause floors the next reconnect wait at 60s (bad
+address) or 5min (bad certificate); `transient` keeps the P2-129 curve. The
+raw Node error message, which embeds the relay host and port, is neither
+logged in free text nor exposed here.
+
+Since P2-303 the `relay` object also carries an additive machine-proxy
+verdict of the dial: `relayProxyState` is `direct` (today's path — no proxy
+variables, a loopback relay, a `NO_PROXY` match or a discarded address) or
+`tunnel` (the dial crosses the machine's http/https proxy via an HTTP
+CONNECT tunnel — over a TLS session when the proxy address is `https://`),
+and `relayProxyReason` is one static pt-BR phrase for the
+state. The proxy address itself never rides — the reason is address-free
+copy, and the tunnel's host/port stay inside the daemon. Since P2-311 the
+same object also carries the additive `relayProxyAuth` with exactly two
+values, `none` and `basic`: only the PRESENCE of a usable proxy credential.
+The credential's secret never rides this surface, is never logged and is
+never persisted — a proxy that answers the CONNECT with 407 surfaces through
+the existing `lastDial` classification with its own pt-BR hint ("o proxy
+pediu autenticação e recusou a credencial"), still classified `refused`.
+
 ### `/api/health` — upstream agent state (P2-135)
 
 `GET /api/health` keeps the legacy `opencodeHealthy` boolean untouched and
@@ -98,6 +123,112 @@ bootstrap pairing window from docs/security.md. `false` once the window
 closed (or was never opened); reopen the pairing screen in the desktop app
 or restart the daemon to pair.
 
+### `/api/health` — capability last-checked instants (P2-250)
+
+`GET /api/health` adds two additive fields carrying WHEN each capability
+verdict was last probed (ISO instant, `null` before the first probe):
+`docConvertCheckedAt` at the top level and `versionCheckedAt` inside the
+`opencode` object. Every state/message field the payload already had keeps
+its exact shape.
+
+The verdicts themselves are no longer frozen at the boot probe: the daemon
+re-probes a capability lazily, right before it answers with a refusal
+(voice transcription 501) or serves the verdict (health route: doc conversion,
+version and voice; `/__ocr/settings`: version, doc conversion, browse and
+voice), at most once per
+`OCR_READINESS_MIN_MS` per capability (whole milliseconds, default 60000,
+ceiling 3600000; invalid values fail the boot, fail-closed). A verdict that
+already works is never re-probed and a probe in flight is never duplicated.
+Set `OCR_READINESS_DISABLE=off|0|false` to turn revalidation off entirely;
+`on|1|true` is the documented enable value and anything else fails the boot.
+Each actually re-done probe logs exactly one line with the capability name
+and the resulting state — never a path, a resolved binary or env content.
+
+### `/api/health` — browse-readiness verdict (P2-284)
+
+`GET /api/health` adds three additive fields for the browse capability (no
+existing field is removed, renamed or repositioned): `browseState`
+(`ready` | `no-browser` | `disabled` | `unknown`), `browseMessage` (short
+pt-BR sentence, same register as the other verdicts) and `browseCheckedAt`
+(ISO instant, `null` before the first probe). The verdict is probed once at
+boot on the same readiness hook as the other capabilities and re-probed
+lazily on this route under the same `OCR_READINESS_MIN_MS` /
+`OCR_READINESS_DISABLE` policy — so a machine announces whether it knows how
+to open sites BEFORE the user asks, and installing the Playwright browser
+afterwards is picked up without a restart. No phrase ever carries a path,
+port, address, environment variable or the raw error tail.
+
+### `/api/health` — voice-transcription readiness (P2-296)
+
+`GET /api/health` adds three additive fields for the voice capability (no
+existing field is removed, renamed or repositioned): `voiceState`
+(`ready` | `missing-binary` | `missing-model`), `voiceMessage` (short pt-BR
+sentence, same register as the other verdicts) and `voiceCheckedAt` (ISO
+instant, `null` before the first probe). The verdict is probed once at boot on
+the same readiness hook as the other capabilities and re-probed lazily on this
+route and on the settings read under the same `OCR_READINESS_MIN_MS` /
+`OCR_READINESS_DISABLE` policy — the machine no longer claims all-clear while
+it cannot hear, and installing whisper or its model afterwards is picked up
+without a restart. The documented `OCR_STT_BLOCK=1` hatch keeps forcing the
+missing-binary verdict for these fields too. No phrase ever carries an
+absolute path, a model file name, an install script name, a port, an address,
+a raw environment variable or a secret.
+
+### Voice replies — spoken-reply verdict (P2-298)
+
+`GET /__ocr/voice/tts-status` keeps its `available`, `voice`, `voices` and
+`langs` fields exactly as they were and adds two additive fields from the same
+pure verdict the other capability routes serve: `state` (`ready` |
+`missing-tool`) and `message` (short pt-BR sentence, same register as the
+other verdicts). The `POST /__ocr/voice/tts` refusal (501) now carries that
+same actionable phrase instead of a raw English install instruction. The
+verdict is re-probed lazily at both points under the same
+`OCR_READINESS_MIN_MS` / `OCR_READINESS_DISABLE` policy — an edge-tts install
+made after boot is picked up without a restart — and the documented
+`OCR_TTS_BLOCK=1` hatch forces the missing-tool verdict for deterministic
+screenshots. No phrase ever carries a path, a tool or script name, a port, an
+address, a raw environment variable or a secret.
+
+### `/api/health` — spoken-reply readiness (P2-300)
+
+`GET /api/health` adds three additive fields for the speech capability (no
+existing field is removed, renamed or repositioned): `ttsState` (`ready` |
+`missing-tool`), `ttsMessage` (short pt-BR sentence, same register as the
+other verdicts) and `ttsCheckedAt` (ISO instant, `null` before the first
+probe). The identifier is `ttsState` — deliberately NOT `voiceState`, which
+has named the voice-TRANSCRIPTION pair since P2-296. The verdict is probed
+once at boot on the same readiness hook as the other capabilities and
+re-probed lazily on this route and on the settings read under the same
+`OCR_READINESS_MIN_MS` / `OCR_READINESS_DISABLE` policy — the machine no
+longer claims all-clear while it cannot speak, and installing edge-tts
+afterwards is picked up without a restart. The documented `OCR_TTS_BLOCK=1`
+hatch keeps forcing the missing-tool verdict for these fields too.
+
+### `/__ocr/settings` — machine-readiness mirror (P2-288)
+
+`GET /__ocr/settings` carries the document-conversion and site-navigation
+verdicts additively — `docConvertState`, `docConvertMessage`, `browseState`,
+`browseMessage` — the same names and values `GET /api/health` publishes, so
+the Settings **Machine state** panel renders both lines from the channel it
+already reads (no new route, no new request, no new poll, no periodic timer).
+Both capabilities are re-probed lazily at this point under the same
+`OCR_READINESS_MIN_MS` / `OCR_READINESS_DISABLE` policy as the version
+verdict; a capability that was never measured stays silent instead of
+announcing readiness. Since P2-292 the relay and agent verdicts ride this
+same channel additively — `relay` (`ok` + `reason`, the health relay object
+minus the address, which never rides) and `opencode` (`binaryFound` +
+`binarySource`) — so the panel's first two lines reach a lay user, and no
+line besides these two stays pending. Since P2-296 the voice pair rides the
+same rules too — `voiceState` / `voiceMessage` — and since P2-300 the
+spoken-reply pair rides them as well — `ttsState` / `ttsMessage` (the
+identifier deliberately not `voiceState`, which is transcription), appended
+last. Since P2-297
+apps/web reads every group on this same channel, so the Settings
+**Machine state** panel renders all eight lines (P2-305 appended the
+spoken-replies row: `ready` → ok, `missing-tool` → unavailable, any other
+value silent) and no line stays pending a future channel. No existing field
+of the response is renamed, removed or repositioned.
+
 ### Pairing state (P2-007)
 
 Two read-only routes serve the desktop shell's first-run QR overlay; they are
@@ -124,6 +255,10 @@ known-broken. Request bodies are capped at 64 KB. Audit entries land in the
 same `audit.log` the app reviews; set `OCR_BROWSE_DISABLED=1` to turn the
 surface off. The desktop app exposes the same routes through the **🌐 Browser**
 pane (screenshot loop — page content never renders inside the app origin).
+Since P2-284 the browse error paths answer with the short pt-BR readiness
+phrase instead of a raw English error: a failed browser launch keeps status
+502 and the kill switch keeps 503, both carrying the `browseMessage` verdict
+from `/api/health`.
 
 ```bash
 TOKEN=$(opencode-remote token)
@@ -234,6 +369,82 @@ negative, zero, fractional or above the 2000 MB ceiling) is fail-closed at
 boot: one error line per problem, exit code 1, no listener. Refusal log lines
 carry only the route and the refused size — never chunk content, full ids,
 tokens or session ids.
+
+## Download start limits (P2-314)
+
+Starting a download (`POST /__ocr/download/start`) is bounded before any
+identifier is created, with the same fail-closed shape as the upload path
+above:
+
+- **File ceiling** — `OCR_DOWNLOAD_MAX_MB` (default **200 MB**, whole
+  megabytes, documented maximum **2000** — the same default and ceiling as
+  `OCR_UPLOAD_MAX_MB`). A file whose measured size is above the ceiling
+  answers **413** with a short static pt-BR phrase
+  (`Arquivo grande demais para transferir por aqui.`) that never contains the
+  path, the file name or the measured size.
+- **Open downloads** — at most **8** entries in the open-downloads map; a
+  start beyond that answers **429** with a short static pt-BR phrase
+  (`Muitas transferências abertas ao mesmo tempo — tente de novo em
+  instantes.`). A download already in progress is never interrupted by
+  another start — the newcomer is the one refused.
+- **Entries ceiling** — on top of the existing 30-minute age prune, the
+  open-downloads map never holds more than the 8 documented entries; if it
+  ever does, the oldest registrations are discarded first. The age prune runs
+  **before** admission — the same sweep-then-admit order as the upload
+  staging route — so aged-out registrations never count as live and the
+  endpoint can never wedge at 429 after 30 idle minutes.
+- **Fail-closed boot** — an invalid `OCR_DOWNLOAD_MAX_MB` (non-numeric,
+  negative, zero, fractional or above the 2000 MB ceiling) is refused at
+  boot exactly like `OCR_UPLOAD_MAX_MB`: one error line per problem, exit
+  code 1, no listener.
+
+The chunk route (`GET /__ocr/download/chunk`) and the 500,000-byte chunk
+count are untouched. Refusal log lines carry only the static reason — never
+the path, file name or size.
+
+## Scheduled routines — per-routine execution history (P2-316)
+
+`GET /__ocr/routines` keeps returning the scheduled routines and now each
+routine carries an optional `history` field beside the `lastRun` mark it
+already had — one record per trigger, **newest first**, so a routine that has
+been failing every day is visible instead of leaving no trace anywhere:
+
+```json
+{
+  "id": "…",
+  "name": "Bom dia",
+  "lastRun": "2026-09-07",
+  "history": [
+    { "at": "2026-09-07T10:00:02.123Z", "durationMs": 2141, "outcome": "completed", "sessionId": "ses_…" },
+    { "at": "2026-09-06T10:00:01.004Z", "durationMs": 187, "outcome": "failed" },
+    { "at": "2026-09-05T10:00:00.900Z", "durationMs": 0, "outcome": "skipped" }
+  ]
+}
+```
+
+- **Record fields (only these four, ever)** — `at`: trigger start instant in
+  ISO form; `durationMs`: trigger duration in milliseconds; `outcome`: a
+  closed set — `completed` (the run finished and produced its result),
+  `failed` (the fire failed, the agent run errored, or the run was released
+  by the 2 h lease), `skipped` (the day was closed without a fire — machine
+  off past the 30-minute window or the retry ceiling reached); and
+  `sessionId`: the identifier of the session created for the run, when there
+  is one.
+- **Cap** — at most **30 records per routine** (`ROUTINE_HISTORY_CAP` in
+  `apps/daemon/src/routinehistory.ts`), always the newest ones: appending
+  never refuses a record, the oldest is discarded to make room, and the cap
+  is re-applied on every load, so the file cannot grow without bound.
+- **Privacy guarantee** — a record never carries the routine prompt text,
+  an agent reply or error text, an absolute path, or user data of any other
+  kind. The history answers whether the routine ran, how long a trigger took
+  and whether it failed — nothing about the content that flowed through it.
+  The contract lives in the `routinehistory.ts` header and is pinned by unit
+  tests.
+- **Persistence and tolerance** — the history is stored on the routine in the
+  same `routines.json` file (no new file, same atomic 0600 write). A load
+  tolerates an old file without the field, a missing or truncated history and
+  malformed records: only the invalid record is discarded — never the routine,
+  never the whole list. Routines without history simply omit the field.
 
 ## SDK (TypeScript/JS)
 

@@ -43,6 +43,15 @@ const {
 } = await import("../apps/desktop/src/update.ts");
 // P2-146: pure Squirrel.Mac feed builder (CLI in the release workflow).
 const { buildSquirrelFeed } = await import("../apps/desktop/scripts/update-feed.mjs");
+// P2-233: Windows explicit-action installer download (pure decision layer).
+const {
+  parseWindowsFeed,
+  assetUrlFrom,
+  installerNameIsSafe,
+  integrityVerdict,
+  winDownloadDecision,
+  MAX_INSTALLER_NAME,
+} = await import("../apps/desktop/src/winupdate.ts");
 
 // --- feedUrlFromEnv ----------------------------------------------------------
 check("feedUrlFromEnv: unset → null", feedUrlFromEnv({}) === null);
@@ -305,6 +314,7 @@ import {
   updatesEnabled,
   versionFromDownloadedArgs,
   type UpdateDialogSinks,
+  type WinInstallerRequest,
 } from "../apps/desktop/src/update.ts";
 
 /**
@@ -736,6 +746,246 @@ check(
   );
 }
 
+
+// --- P2-233: parseWindowsFeed (Windows latest.yml → version/file/digest) ------
+{
+  const WIN_YML = `version: 0.2.1
+path: OpenCode-Remote-Setup-0.2.1.exe
+sha512: qz9KkfakeBase64DigestAA==
+releaseName: 0.2.1
+releaseDate: '2026-09-01'
+files:
+  - url: OpenCode-Remote-Setup-0.2.1.exe
+    sha512: qz9KkfakeBase64DigestAA==
+    size: 1234
+`;
+  const feed = parseWindowsFeed(WIN_YML);
+  check("parseWindowsFeed: valid feed → version, installer file, digest", feed?.version === "0.2.1" && feed?.file === "OpenCode-Remote-Setup-0.2.1.exe" && feed?.digest === "qz9KkfakeBase64DigestAA==");
+  check("parseWindowsFeed: top-level path/sha512 win over the indented files block", feed?.file === "OpenCode-Remote-Setup-0.2.1.exe");
+  check("parseWindowsFeed: empty body → null", parseWindowsFeed("") === null && parseWindowsFeed("   \n  ") === null);
+  check("parseWindowsFeed: HTML error page → null", parseWindowsFeed("<html><body>404 Not Found</body></html>") === null);
+  check("parseWindowsFeed: missing file name → null", parseWindowsFeed("version: 0.2.1\nsha512: abc==\n") === null);
+  check("parseWindowsFeed: missing digest → null", parseWindowsFeed("version: 0.2.1\npath: Setup.exe\n") === null);
+  check("parseWindowsFeed: non dotted-numeric version → null", parseWindowsFeed("version: v0.2.1\npath: Setup.exe\nsha512: abc==\n") === null);
+  check("parseWindowsFeed: prerelease version → null", parseWindowsFeed("version: 0.2.1-beta.1\npath: Setup.exe\nsha512: abc==\n") === null);
+  check("parseWindowsFeed: prose version → null", parseWindowsFeed("version: banana\npath: Setup.exe\nsha512: abc==\n") === null);
+  const spaced = parseWindowsFeed("version: 0.2.1 \r\npath: OpenCode-Remote-Setup-0.2.1.exe\t \r\nsha512:   qz9KkfakeBase64DigestAA==  \r\n");
+  check("parseWindowsFeed: whitespace around values tolerated (also CRLF)", spaced?.version === "0.2.1" && spaced?.file === "OpenCode-Remote-Setup-0.2.1.exe" && spaced?.digest === "qz9KkfakeBase64DigestAA==");
+  check("installerNameIsSafe: plain setup name accepted", installerNameIsSafe("OpenCode-Remote-Setup-0.2.1.exe") === true);
+  check("installerNameIsSafe: separators/dotdot/colon/oversize refused", !installerNameIsSafe("") && !installerNameIsSafe("a/b.exe") && !installerNameIsSafe("a\\b.exe") && !installerNameIsSafe("a..b.exe") && !installerNameIsSafe("C:setup.exe") && !installerNameIsSafe("a".repeat(MAX_INSTALLER_NAME + 1)));
+}
+
+// --- P2-233: assetUrlFrom (installer resolved NEXT TO the feed, fail-closed) --
+check(
+  "assetUrlFrom: simple name resolves in the feed's own directory",
+  assetUrlFrom("https://github.com/foo/bar/releases/latest/download/latest.yml", "App-Setup-0.2.1.exe") ===
+    "https://github.com/foo/bar/releases/latest/download/App-Setup-0.2.1.exe",
+);
+check(
+  "assetUrlFrom: spaces percent-encoded",
+  assetUrlFrom("https://feeds.example/rel/", "My App Setup.exe") === "https://feeds.example/rel/My%20App%20Setup.exe",
+);
+check("assetUrlFrom: empty name refused", assetUrlFrom("https://x/latest.yml", "") === null && assetUrlFrom("https://x/latest.yml", "   ") === null);
+check("assetUrlFrom: slash refused", assetUrlFrom("https://x/latest.yml", "dir/setup.exe") === null);
+check("assetUrlFrom: backslash refused", assetUrlFrom("https://x/latest.yml", "dir\\setup.exe") === null);
+check("assetUrlFrom: dot-dot refused", assetUrlFrom("https://x/latest.yml", "..%2Fsetup.exe") === null && assetUrlFrom("https://x/latest.yml", "..") === null);
+check("assetUrlFrom: embedded scheme refused", assetUrlFrom("https://x/latest.yml", "https://evil/setup.exe") === null);
+check("assetUrlFrom: colon refused", assetUrlFrom("https://x/latest.yml", "C:setup.exe") === null);
+check("assetUrlFrom: over the documented size ceiling refused", assetUrlFrom("https://x/latest.yml", `${"a".repeat(MAX_INSTALLER_NAME + 1)}.exe`) === null);
+check("assetUrlFrom: invalid feed URL refused", assetUrlFrom("not a url at all", "Setup.exe") === null);
+check("assetUrlFrom: non-http(s) feed URL refused", assetUrlFrom("ftp://x/latest.yml", "Setup.exe") === null);
+
+// --- P2-233: integrityVerdict (fail-closed digest compare, static pt-BR) ------
+{
+  const noPathNoUrl = (message: string) => !/[A-Za-z]:[\\/]/.test(message) && !message.includes("://") && !message.includes("www.");
+  const accepted = integrityVerdict("AbCdEf123456==", "AbCdEf123456==");
+  check("integrityVerdict: equal digest accepted", accepted.ok === true && accepted.message.length > 0);
+  check(
+    "integrityVerdict: case-only difference accepted",
+    integrityVerdict("AbCdEf123456==", "aBcDeF123456==").ok === true,
+  );
+  const refused = integrityVerdict("AbCdEf123456==", "TotallyDifferent==");
+  check("integrityVerdict: different digest refused", refused.ok === false && refused.message.length > 0);
+  check(
+    "integrityVerdict: missing expected/measured digest refused",
+    integrityVerdict(null, "abc").ok === false && integrityVerdict("abc", "").ok === false && integrityVerdict(null, null).ok === false,
+  );
+  const messages = [accepted.message, refused.message, integrityVerdict(null, null).message];
+  check(
+    "integrityVerdict: every phrase is static pt-BR with no absolute path and no URL scheme",
+    messages.every((m) => noPathNoUrl(m) && !/[\n\r]/.test(m) && m.length < 200),
+  );
+}
+
+// --- P2-233: download decision (RULE ORDER: harness first, always) -------------
+check(
+  "winDownloadDecision: harness session never downloads, even with a newer version",
+  winDownloadDecision({ harnessSession: true, packaged: true, platform: "win32", explicitAction: true }).action === "skip" &&
+    winDownloadDecision({ harnessSession: true, packaged: true, platform: "win32", explicitAction: true }).reason === "harness-session",
+);
+check(
+  "winDownloadDecision: unpackaged app never downloads",
+  winDownloadDecision({ harnessSession: false, packaged: false, platform: "win32", explicitAction: true }).action === "skip",
+);
+check(
+  "winDownloadDecision: macOS never downloads through this path",
+  winDownloadDecision({ harnessSession: false, packaged: true, platform: "darwin", explicitAction: true }).action === "skip",
+);
+check(
+  "winDownloadDecision: packaged Windows + explicit action downloads",
+  winDownloadDecision({ harnessSession: false, packaged: true, platform: "win32", explicitAction: true }).action === "download",
+);
+check(
+  "winDownloadDecision: packaged Windows without an explicit action never downloads (boot/timer/recheck)",
+  winDownloadDecision({ harnessSession: false, packaged: true, platform: "win32", explicitAction: false }).action === "skip",
+);
+
+// --- P2-233: the win32 explicit-action path through checkForUpdatesOnBoot -----
+{
+  const WIN_YML = `version: 0.9.0
+path: OpenCode-Remote-Setup-0.9.0.exe
+sha512: qz9KkfakeBase64DigestAA==
+releaseName: 0.9.0
+`;
+  const winOpts = {
+    feedUrl: "https://github.com/foo/bar/releases/latest/download/latest.yml",
+    currentVersion: "0.2.0",
+    updater: fakeUpdater(),
+    fetchImpl: fakeFetcher(WIN_YML),
+    log: () => {},
+  };
+  const requests: WinInstallerRequest[] = [];
+  const okStatus = await checkForUpdatesOnBoot({
+    ...winOpts,
+    platform: "win32",
+    winInstallerDownload: async (info) => {
+      requests.push(info);
+      return true;
+    },
+  });
+  check(
+    "P2-233: win32 + sink + parsed feed → installer request next to the feed and update-installer-ready",
+    okStatus === "update-installer-ready" &&
+      JSON.stringify(requests) ===
+        JSON.stringify([
+          {
+            version: "0.9.0",
+            file: "OpenCode-Remote-Setup-0.9.0.exe",
+            url: "https://github.com/foo/bar/releases/latest/download/OpenCode-Remote-Setup-0.9.0.exe",
+            expectedDigest: "qz9KkfakeBase64DigestAA==",
+          },
+        ]),
+  );
+  const openedUrls: string[] = [];
+  const fallbackStatus = await checkForUpdatesOnBoot({
+    ...winOpts,
+    platform: "win32",
+    openReleasePage: (url) => openedUrls.push(url),
+    winInstallerDownload: async () => false,
+  });
+  check(
+    "P2-233: sink declines → manual release-page fallback intact (same openReleasePage sink)",
+    fallbackStatus === "update-available-manual" &&
+      JSON.stringify(openedUrls) === JSON.stringify(["https://github.com/foo/bar/releases/latest"]),
+  );
+  const unparseableStatus = await checkForUpdatesOnBoot({
+    ...winOpts,
+    fetchImpl: fakeFetcher("<html>502 Bad Gateway</html>"),
+    platform: "win32",
+    openReleasePage: (url) => openedUrls.push(url),
+    winInstallerDownload: async () => true,
+  });
+  check(
+    "P2-233: unparseable Windows feed body → sink never fires (unrecognized-feed)",
+    unparseableStatus === "unrecognized-feed",
+  );
+  let macSinkCalls = 0;
+  const macStatus = await checkForUpdatesOnBoot({
+    ...winOpts,
+    platform: "darwin",
+    winInstallerDownload: async (info) => {
+      macSinkCalls++;
+      return Boolean(info);
+    },
+  });
+  check(
+    "P2-233: macOS tray re-check keeps the P2-131 behavior byte-for-byte (sink never invoked)",
+    macStatus === "update-available-manual" && macSinkCalls === 0,
+  );
+}
+
+// --- P2-233: source-level contract (installer never executed, rule order, no timers)
+{
+  const mainSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "main.ts"), "utf8");
+  const updateSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "update.ts"), "utf8");
+  const winSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "winupdate.ts"), "utf8");
+  // Module purity: the decision layer never gains I/O, network or timers.
+  check(
+    "P2-233: winupdate.ts stays pure (no electron, no node:fs, no fetch, no child_process, no timers)",
+    !winSrc.includes("from \"electron\"") &&
+      !winSrc.includes("node:fs") &&
+      !winSrc.includes("fetch(") &&
+      !winSrc.includes("child_process") &&
+      !winSrc.includes("setTimeout") &&
+      !winSrc.includes("setInterval"),
+  );
+  // Rule-order contract inside the pure decision: harness-session is the FIRST
+  // consulted rule, before packaged, platform and explicit-action.
+  const decStart = winSrc.indexOf("export function winDownloadDecision");
+  const decSrc = winSrc.slice(decStart, winSrc.indexOf("}", winSrc.indexOf("explicitAction", decStart)) + 1);
+  check(
+    "P2-233: harness-session rule is the first consulted in winDownloadDecision",
+    decSrc.indexOf("input.harnessSession") >= 0 &&
+      decSrc.indexOf("input.harnessSession") < decSrc.indexOf("input.packaged") &&
+      decSrc.indexOf("input.packaged") < decSrc.indexOf("input.platform") &&
+      decSrc.indexOf("input.platform") < decSrc.indexOf("input.explicitAction"),
+  );
+  // No execution surface anywhere near the Windows download: the handler never
+  // spawns/execs/opens the installer — it only reveals it via showItemInFolder.
+  const handlerStart = mainSrc.indexOf("async function downloadWinInstaller");
+  const handlerSrc = mainSrc.slice(handlerStart, mainSrc.indexOf("function scheduleNextUpdateCheck", handlerStart));
+  check(
+    "P2-233: main.ts handler consults the decision before any fetch, never executes the installer",
+    handlerSrc.length > 0 &&
+      handlerSrc.indexOf("winDownloadDecision(") >= 0 &&
+      handlerSrc.indexOf("winDownloadDecision(") < handlerSrc.indexOf("fetch(") &&
+      !handlerSrc.includes("spawn(") &&
+      !handlerSrc.includes("execFile(") &&
+      !handlerSrc.includes("openPath(") &&
+      !handlerSrc.includes("quitAndInstall"),
+  );
+  check(
+    "P2-233: handler reveals the installer with showItemInFolder (never openPath/openExternal on it)",
+    handlerSrc.includes("showItemInFolder(") && !handlerSrc.includes("openPath(") && !handlerSrc.includes("openExternal("),
+  );
+  check(
+    "P2-233: no child_process anywhere in main.ts/update.ts, no exec of the downloaded file",
+    !mainSrc.includes("child_process") && !updateSrc.includes("child_process") && !updateSrc.includes("spawn("),
+  );
+  // Action-driven only: no new periodic timer anywhere in the update path
+  // (main.ts's two pre-existing setInterval calls are out of scope here —
+  // hang-watch and the pairing poll — and P2-155's recheck timer is untouched).
+  check(
+    "P2-233: no new periodic timers in update.ts, winupdate.ts or the download handler",
+    !updateSrc.includes("setInterval(") &&
+      !updateSrc.includes("setTimeout(") &&
+      !winSrc.includes("setTimeout") &&
+      !winSrc.includes("setInterval") &&
+      !handlerSrc.includes("setTimeout(") &&
+      !handlerSrc.includes("setInterval("),
+  );
+  // The win32 gate precedes the sink invocation in update.ts: macOS behavior
+  // is byte-for-byte inert.
+  check(
+    "P2-233: update.ts gates the Windows sink behind platform === win32",
+    updateSrc.indexOf("platform === \"win32\"") >= 0 &&
+      updateSrc.indexOf("platform === \"win32\"") < updateSrc.indexOf("winInstallerDownload({"),
+  );
+  check(
+    "P2-233: update-installer-ready has its own tray/menu label",
+    updateMenuLabel("update-installer-ready") === "Update downloaded — installer ready",
+  );
+}
 
 // --- e2e: compiled update.js inside the real Electron ------------------------
 // P2-131: the e2e layer spawns real Electron and needs dist-electron — it is

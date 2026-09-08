@@ -2,6 +2,7 @@
 // usage: const t = useT(); t("search") — components re-render on change.
 
 import { useSyncExternalStore } from "react";
+import { INSTALL_HINT_MESSAGE } from "./installhint";
 
 export type Lang = "en" | "pt";
 
@@ -20,6 +21,21 @@ function detect(): Lang {
 let lang: Lang = detect();
 const listeners = new Set<() => void>();
 
+// P2-276: the native shell (menu bar + tray) follows the language chosen
+// here — a one-way push over the existing preload bridge, same pattern as
+// the unread badge (lib/unread.ts). Absent in plain browsers; any bridge
+// failure is swallowed — the push is cosmetic and must never break the UI.
+function publishLangToShell(l: Lang): void {
+  try {
+    const bridge = (window as unknown as { ocrDesktop?: { sendLang?: (lang: string) => void } }).ocrDesktop;
+    bridge?.sendLang?.(l);
+  } catch {
+    // no shell, or the bridge rejected — the shell keeps its current language
+  }
+}
+
+publishLangToShell(lang);
+
 export function getLang(): Lang {
   return lang;
 }
@@ -29,6 +45,7 @@ export function setLang(l: Lang) {
   try {
     localStorage.setItem(KEY, l);
   } catch {}
+  publishLangToShell(l);
   listeners.forEach((fn) => fn());
 }
 
@@ -102,6 +119,13 @@ export const dict = {
     rewindBtn: "back to here",
     rewindConfirm:
       "Take the conversation back to this point? Everything after it is undone — including code changes. You can redo later.",
+    // P2-323: the shared in-app confirmation dialog (rename / delete / rewind)
+    askRenameTitle: "Rename conversation",
+    askRenameBody: "Pick a new name for this conversation.",
+    askDeleteTitle: "Delete conversation",
+    askRewindTitle: "Rewind to this point",
+    askRewindConfirm: "Rewind",
+    askCancel: "Cancel",
     rewound: "Conversation rewound",
     unrevert: "Redo (undo the rewind)",
     unreverted: "Back to the present",
@@ -116,6 +140,10 @@ export const dict = {
     copyPath: "Copy path",
     copied: "Copied",
     copyFailed: "Could not copy the path",
+    // P2-282: per-bubble copy action on the chat bubbles themselves
+    copyMessage: "Copy message",
+    copyMsgFailed: "Could not copy the message",
+    copyMsgNothing: "Nothing to copy in this message",
     answer: "Answer",
     skip: "Skip",
     customAnswer: "or type your own answer…",
@@ -218,6 +246,13 @@ export const dict = {
     pairLinkTitle: "Scan with your phone's camera",
     pairLinkHint:
       "One code is all it takes — the camera opens the app on your phone already paired. The pairing credential rides in the URL fragment, which no browser sends to any server.",
+    // reach probe of the app address (desktop, P2-197): calm line below the QR
+    pairReachOk: "The app address answered — the QR is ready for your phone.",
+    pairReachRetry: "Test again",
+    pairReachTesting: "Testing again…",
+    // daemon↔relay link (desktop, P2-199): quiet line below the reach line
+    pairRelayLinkOk: "The app is talking to the relay — the room is ready for your phone.",
+    pairRelayLinkLocal: "Local mode — your phone pairs directly on this machine's network, no relay needed.",
     webAppTitle: "App address (phone)",
     webAppHint:
       "Where the phone opens the app — derived from the phone relay (wss:// becomes https://, same host and port) unless you save one here.",
@@ -226,7 +261,26 @@ export const dict = {
     webAppOriginDerived: "Derived from the phone relay — same host and port, wss:// becomes https://.",
     webAppOriginUnavailable: "No usable address — the local relay only serves this machine.",
     webAppReset: "Use the address from the relay",
+    // machine proxy owner choice (desktop settings, P2-289) — no emoji, no
+    // path, no port, no secret in any of these strings; the refusal line
+    // renders the module's own static reason verbatim.
+    proxyTitle: "Machine proxy",
+    proxyHint: "How the app reaches the internet on this machine. The system proxy is followed by default.",
+    proxyModeSystem: "Follow the system",
+    proxyModeDirect: "No proxy",
+    proxyModeFixed: "Fixed address",
+    proxyAddressLabel: "Proxy address",
+    proxySave: "Save proxy choice",
+    proxySaved: "proxy choice saved",
+    proxyInvalid: "Could not save the proxy choice.",
+    proxyNextStart: "The choice takes effect the next time the app starts.",
+    proxyOriginOwner: "Active now: your choice.",
+    proxyOriginEnvironment: "Active now: the machine environment.",
     localConnecting: "Connecting to the local daemon…",
+    // P3-332: the live auto-connect card (local mode) — phase copy + hints.
+    autoConnectLooking: "Looking for the local daemon…",
+    autoConnectBusyHint: "This runs by itself — nothing to type or scan.",
+    autoConnectIdleHint: "The daemon isn't answering yet — the attempt restarts on its own.",
     // degraded first-boot journey (desktop, P2-112): a dead daemon on first
     // boot is never a dead end — calm status, visible auto-retry, minimal
     // local data, and the manual pairing screen one click away.
@@ -266,8 +320,9 @@ export const dict = {
       "Reopen the app — it reconnects by itself; if this keeps happening, close other heavy programs.",
     sidecarUnknownTitle: "The daemon exited unexpectedly",
     sidecarUnknownAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
-    // P2-148: first-run welcome — three steps, shown once, skippable at any
-    // time. Calm, plain sentences; step 2 reuses the degraded-journey copy.
+    // P2-148: first-run welcome — three steps, shown once; steps 1–2 carry a
+    // global skip, the final step exits via the in-context "do this later".
+    // Calm, plain sentences; step 2 reuses the degraded-journey copy.
     welcomeStepOf: "Step {n} of 3",
     welcomeStep1Title: "Control this machine from your phone",
     welcomeStep1Body:
@@ -285,6 +340,11 @@ export const dict = {
     welcomePairedTitle: "Phone paired",
     welcomePairedHint: "The phone is already talking to this machine — you can close and start using it.",
     welcomeQrWait: "Generating QR…",
+    welcomeQrWaitHint: "The QR is generated by this machine's local agent.",
+    welcomeQrError: "The QR code did not load.",
+    welcomeQrErrorHint: "The QR comes from the local agent — without it running, no pairing code is generated.",
+    welcomeQrRetry: "Try again",
+    welcomeQrManual: "Pair manually",
     reconnectTrying: "Trying…",
     reconnectStarted: "Daemon restart started — the app reconnects on its own.",
     reconnectFailed: "Could not restart the daemon — try again in a moment.",
@@ -340,6 +400,7 @@ export const dict = {
     scanHint: "Point the camera at the pairing code shown by the daemon.",
     scanPasteCta: "Paste pairing code instead",
     "scanErr_permission": "Camera permission denied. Allow camera access for this app and try again.",
+    camOpenPanel: "Open system settings",
     "scanErr_no-device": "No camera found on this device.",
     "scanErr_busy": "Camera is in use by another app. Close it and try again.",
     "scanErr_interrupted": "Camera was interrupted. Try again.",
@@ -362,7 +423,14 @@ export const dict = {
     thoughtFor: "Thought for {n}s",
     thoughtLabel: "Thought",
     attachFile: "Attach file",
+    pasteTooLarge: "Paste refused: the pasted item is larger than the attach limit",
+    pasteTooMany: "Paste refused: too many items in one paste — attach up to 4 at a time",
     micNeedsPermission: "Microphone unavailable — allow access to record voice",
+    // P2-312: mic-denied copy — the phone keeps the Safari sentence, the
+    // desktop shell swaps in the OS verdict phrase (apps/desktop/src/micaccess.ts).
+    micDeniedIos: "microphone denied — allow it once in iOS Settings → Apps → Safari → Microphone, then reload",
+    micNoMicrophone: "no microphone found on this device",
+    micOpenPanel: "Open system settings",
     modelSelector: "Agent and model",
     defaultModel: "default model",
     stopRecording: "Stop recording",
@@ -388,6 +456,11 @@ export const dict = {
     voiceOutLang: "Reply voice",
     toolActivity: "tool activity",
     noToolCalls: "no tool calls observed yet",
+    // P2-281: in-conversation search bar
+    searchInChat: "Search in conversation…",
+    searchPrev: "Previous match",
+    searchNext: "Next match",
+    searchNoMatches: "no matches",
     refreshTools: "Refresh tool history",
     agentMode: "Agent mode",
     agentOption: "agent",
@@ -453,6 +526,132 @@ export const dict = {
     homeIdea3Label: "Recap my recent sessions",
     homeIdea3Prompt: "Summarize my recent conversations, with the next step for each one.",
     homeStartError: "Couldn't start the conversation. Check the connection and try again.",
+    // P2-220: iOS install hint above the conversation list (iPhone/iPad,
+    // regular tab, saved pairing). Dismissal is definitive — documented.
+    installHintBody:
+      "Add the app to your Home Screen to keep this pairing saved — in the browser, tap the Share button and choose Add to Home Screen.",
+    installHintDismiss: "Dismiss",
+    // P2-266: update-ready strip — one calm line + explicit action; the
+    // button is the only path that swaps the waiting worker in.
+    swUpdateReady: "A new version of the app is ready.",
+    swUpdateAction: "Update now",
+    // P2-232: machine-state section (Settings) — labels resolve per locale;
+    // the rows' phrases themselves come from the daemon, never from here.
+    machineStateTitle: "Machine state",
+    machineStateEmpty: "Nothing to show yet — the machine hasn't reported its state.",
+    machineStateAllOkTitle: "Everything is fine on this machine.",
+    machineStateAttentionTitle: "One or more items need attention on this machine.",
+    machineStateUnavailableTitle: "Something is unavailable on this machine.",
+    machineLabelRelay: "Remote connection",
+    machineLabelAgent: "Agent server",
+    machineLabelVersion: "Agent version",
+    machineLabelDisk: "Disk space",
+    machineLabelDocs: "Document conversion",
+    // P2-287: the site-opening readiness row — short label only, no emoji,
+    // no path, no port, no address; the row's phrase comes from the daemon.
+    machineLabelBrowse: "Web browsing",
+    // P2-297: the voice-transcription readiness row — same discipline; the
+    // phrase comes from the daemon (P2-296 payload), never from here.
+    machineLabelVoice: "Voice transcription",
+    // P2-305: the spoken-reply (TTS) readiness row — same discipline; the
+    // phrase comes from the daemon (ttsMessage), never from here.
+    machineLabelSpoken: "Spoken replies",
+    // P2-275: the remaining Settings sections ride the dict — SettingsView no
+    // longer carries literal JSX copy. Product names (MCP, AutoMode) stay.
+    aboutTitle: "About",
+    aboutVersions: "app {app} · daemon {daemon}",
+    save: "Save",
+    machineNamePlaceholder: "machine name",
+    remove: "Remove",
+    mcpTypeLocal: "local",
+    mcpTypeRemote: "remote",
+    voiceInLang: "Language",
+    voiceLangAuto: "Auto-detect",
+    voiceLangEn: "English",
+    voiceLangPt: "Portuguese",
+    voiceLangEs: "Spanish",
+    voiceLangFr: "French",
+    ttsVoicePt: "Portuguese (Antonio)",
+    ttsVoiceEn: "English (Andrew)",
+    ttsVoiceEs: "Spanish (Alvaro)",
+    captionStyleTitle: "Caption style (clips)",
+    captionFont: "Font (e.g. Helvetica Bold)",
+    captionFontSize: "Size",
+    captionPrimary: "Primary color (&H..)",
+    captionHighlight: "Highlight color (&H..)",
+    captionOutline: "Outline color (&H..)",
+    captionMargin: "Bottom margin",
+    captionSave: "Save style",
+    captionSaved: "caption style saved",
+    appearanceTitle: "Appearance",
+    themeLabel: "Theme",
+    themeSystem: "System",
+    themeDark: "Dark",
+    themeLight: "Light",
+    fontLabel: "Font size",
+    fontSmall: "Small",
+    fontNormal: "Normal",
+    fontLarge: "Large",
+    pushTitle: "Push notifications",
+    pushSendTest: "Send test notification",
+    pushSending: "Sending…",
+    pushResubscribe: "Re-subscribe",
+    pushSubscribed: "subscribed",
+    pushNoDevices: "no device subscribed — tap Re-subscribe",
+    pushSentOk: "sent OK — check the phone",
+    pushSubsCount: "{n} device(s) subscribed · iOS: app must be on the Home Screen",
+    shareTitle: "Share to agent",
+    shareAndroidLabel: "Android/desktop",
+    shareAndroidBody: "the system share sheet offers \"OpenCode Remote\" directly.",
+    shareIosLabel: "iOS",
+    shareIosBody:
+      "copy the link anywhere, open the app, long-press the message field → Paste, add your instruction and send. Or create a Shortcut (Shortcuts app) that copies the shared text and opens \"OpenCode Remote\".",
+    skillsTitle: "Skills (1-tap prompts)",
+    skillLabelPlaceholder: "label (e.g. Daily report)",
+    skillPromptPlaceholder: "prompt sent to the agent on tap",
+    skillAdd: "Add skill",
+    skillAdded: "skill added",
+    skillRejected: "skill rejected — label and prompt required",
+    routinesTitle: "Scheduled routines",
+    routineEveryDay: "Every day",
+    routineSpecificDays: "Specific days",
+    routineLoop: "Loop every N min",
+    routineModeLabel: "Schedule mode",
+    routineIntervalLabel: "Interval in minutes",
+    routineNamePlaceholder: "name",
+    routineIntervalHint: "runs immediately, then every N minutes while the daemon is up (min 5)",
+    routinePromptPlaceholder: "prompt for the agent (e.g. summarize crypto news and save a report)",
+    routineAdd: "Add routine",
+    routineAdded: "routine added",
+    routineRejected: "routine rejected — check fields",
+    routineEvery: "every {n}m",
+    routineDaily: "daily {time}",
+    routineLastError: "last error: {err}",
+    routineLastOk: "last run: ok",
+    routineNeverRan: "never ran",
+    routineHistoryToggle: "Run history ({n})",
+    routineHistoryEmpty: "No runs recorded yet.",
+    routineHistoryJustNow: "now",
+    routineOutcomeCompleted: "completed",
+    routineOutcomeFailed: "failed",
+    routineOutcomeSkipped: "skipped",
+    daySun: "Sun",
+    dayMon: "Mon",
+    dayTue: "Tue",
+    dayWed: "Wed",
+    dayThu: "Thu",
+    dayFri: "Fri",
+    daySat: "Sat",
+    dayLetter0: "S",
+    dayLetter1: "M",
+    dayLetter2: "T",
+    dayLetter3: "W",
+    dayLetter4: "T",
+    dayLetter5: "F",
+    dayLetter6: "S",
+    deviceFallback: "device",
+    revoke: "Revoke",
+    securityLog: "Security log",
   },
   pt: {
     search: "Buscar conversas…",
@@ -499,6 +698,13 @@ export const dict = {
     rewindBtn: "Voltar pra cá",
     rewindConfirm:
       "Voltar a conversa pra este ponto? Tudo o que veio depois é desfeito — inclusive as mudanças no código. Dá pra refazer depois.",
+    // P2-323: diálogo compartilhado de confirmação (renomear / apagar / voltar)
+    askRenameTitle: "Renomear conversa",
+    askRenameBody: "Escolha um novo nome para esta conversa.",
+    askDeleteTitle: "Apagar conversa",
+    askRewindTitle: "Voltar a este ponto",
+    askRewindConfirm: "Voltar",
+    askCancel: "Cancelar",
     rewound: "Conversa voltou pra trás",
     unrevert: "Refazer (desfazer o voltar)",
     unreverted: "De volta pro presente",
@@ -513,6 +719,10 @@ export const dict = {
     copyPath: "Copiar caminho",
     copied: "Copiado",
     copyFailed: "Não deu pra copiar o caminho",
+    // P2-282: ação de copiar nas próprias bolhas do chat
+    copyMessage: "Copiar mensagem",
+    copyMsgFailed: "Não deu pra copiar a mensagem",
+    copyMsgNothing: "Nada pra copiar nesta mensagem",
     answer: "Responder",
     skip: "Pular",
     customAnswer: "ou escreva sua resposta…",
@@ -613,6 +823,13 @@ export const dict = {
     pairLinkTitle: "Escaneie com a câmera do celular",
     pairLinkHint:
       "Um código só — a câmera abre o app no celular já pareado. A credencial de pareamento viaja no fragmento da URL, que nenhum navegador envia a servidor.",
+    // sonda de alcance do endereço do app (desktop, P2-197): linha calma abaixo do QR
+    pairReachOk: "O endereço do app respondeu — o QR está pronto para o celular.",
+    pairReachRetry: "Testar de novo",
+    pairReachTesting: "Testando de novo…",
+    // elo daemon↔relay (desktop, P2-199): linha discreta abaixo da linha de alcance
+    pairRelayLinkOk: "O app está falando com o relay — a sala está pronta para o celular.",
+    pairRelayLinkLocal: "Modo local — o celular pareia direto na rede desta máquina, sem relay.",
     webAppTitle: "Endereço do app (celular)",
     webAppHint:
       "Onde o celular abre o app — derivado do relay do celular (wss:// vira https://, mesmo host e porta), a menos que você salve um aqui.",
@@ -621,7 +838,23 @@ export const dict = {
     webAppOriginDerived: "Derivado do relay do celular — mesmo host e porta, wss:// vira https://.",
     webAppOriginUnavailable: "Sem endereço utilizável — o relay local só atende esta máquina.",
     webAppReset: "Usar o endereço do relay",
+    proxyTitle: "Proxy da máquina",
+    proxyHint: "Como o app sai para a internet nesta máquina. Por padrão, o proxy do sistema é seguido.",
+    proxyModeSystem: "Seguir o sistema",
+    proxyModeDirect: "Sem proxy",
+    proxyModeFixed: "Endereço fixo",
+    proxyAddressLabel: "Endereço do proxy",
+    proxySave: "Salvar escolha de proxy",
+    proxySaved: "escolha de proxy salva",
+    proxyInvalid: "Não foi possível salvar a escolha de proxy.",
+    proxyNextStart: "A escolha vale a partir do próximo início do app.",
+    proxyOriginOwner: "Vale agora: escolha sua.",
+    proxyOriginEnvironment: "Vale agora: ambiente da máquina.",
     localConnecting: "Conectando ao daemon local…",
+    // P3-332: cartão de auto-conexão ao vivo (modo local) — fase + avisos.
+    autoConnectLooking: "Procurando o daemon local…",
+    autoConnectBusyHint: "Isso roda sozinho — nada pra digitar ou escanear.",
+    autoConnectIdleHint: "O daemon ainda não responde — a tentativa recomeça sozinha.",
     // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
     // primeiro contato nunca vira beco sem saída — status calmo, retry
     // automático visível, dados locais mínimos e o pareamento a um clique.
@@ -661,8 +894,9 @@ export const dict = {
     sidecarUnknownTitle: "O daemon saiu de forma inesperada",
     sidecarUnknownAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
     // P2-148: boas-vindas de primeira execução — três passos, mostrados uma
-    // vez, puláveis a qualquer momento. Frases simples e calmas; o passo 2
-    // reusa a copy da jornada degradada.
+    // vez; passos 1–2 têm o atalho global, o passo final sai pelo
+    // "Fazer isso depois" do próprio cartão. Frases simples e calmas; o passo
+    // 2 reusa a copy da jornada degradada.
     welcomeStepOf: "Passo {n} de 3",
     welcomeStep1Title: "Controle esta máquina pelo celular",
     welcomeStep1Body:
@@ -680,6 +914,11 @@ export const dict = {
     welcomePairedTitle: "Celular pareado",
     welcomePairedHint: "O celular já está falando com esta máquina — pode fechar e usar.",
     welcomeQrWait: "Gerando QR…",
+    welcomeQrWaitHint: "O QR é gerado pelo agente local desta máquina.",
+    welcomeQrError: "O QR code não carregou.",
+    welcomeQrErrorHint: "O QR vem do agente local — sem ele em execução, nenhum código de pareamento é gerado.",
+    welcomeQrRetry: "Tentar de novo",
+    welcomeQrManual: "Parear manualmente",
     reconnectTrying: "Tentando…",
     reconnectStarted: "Reinício do daemon iniciado — o app reconecta sozinho.",
     reconnectFailed: "Não deu pra reiniciar o daemon agora — tente de novo em instantes.",
@@ -735,6 +974,7 @@ export const dict = {
     scanHint: "Aponte a câmera pro código de pareamento mostrado pelo daemon.",
     scanPasteCta: "Colar código de pareamento",
     "scanErr_permission": "Permissão de câmera negada. Libere o acesso pra este app e tente de novo.",
+    camOpenPanel: "Abrir ajustes do sistema",
     "scanErr_no-device": "Nenhuma câmera encontrada neste dispositivo.",
     "scanErr_busy": "A câmera está em uso por outro app. Feche-o e tente de novo.",
     "scanErr_interrupted": "A câmera foi interrompida. Tente de novo.",
@@ -757,7 +997,13 @@ export const dict = {
     thoughtFor: "Pensou por {n}s",
     thoughtLabel: "Pensou",
     attachFile: "Anexar arquivo",
+    pasteTooLarge: "Colagem recusada: o item colado é maior que o limite de anexo",
+    pasteTooMany: "Colagem recusada: itens demais numa só colagem — anexe até 4 por vez",
     micNeedsPermission: "Microfone indisponível — permita o acesso pra gravar voz",
+    // P2-312: same keys as above — the phone sentence and the panel action.
+    micDeniedIos: "microfone negado — permita o acesso em Ajustes → Apps → Safari → Microfone e recarregue",
+    micNoMicrophone: "nenhum microfone encontrado neste dispositivo",
+    micOpenPanel: "Abrir ajustes do sistema",
     modelSelector: "Agente e modelo",
     defaultModel: "modelo padrão",
     stopRecording: "Parar gravação",
@@ -783,6 +1029,11 @@ export const dict = {
     voiceOutLang: "Voz das respostas",
     toolActivity: "atividade de tools",
     noToolCalls: "nenhuma tool chamada ainda",
+    // P2-281: in-conversation search bar
+    searchInChat: "Buscar na conversa…",
+    searchPrev: "Ocorrência anterior",
+    searchNext: "Próxima ocorrência",
+    searchNoMatches: "nada encontrado",
     refreshTools: "Atualizar histórico de tools",
     agentMode: "Modo do agente",
     agentOption: "agente",
@@ -846,5 +1097,131 @@ export const dict = {
     homeIdea3Label: "Resumo das conversas recentes",
     homeIdea3Prompt: "Resuma minhas conversas recentes, com o próximo passo de cada uma.",
     homeStartError: "Não deu pra iniciar a conversa. Verifique a conexão e tente de novo.",
+    // P2-220: aviso de instalação acima da lista de conversas (iPhone/iPad,
+    // aba comum, pareamento salvo). Dispensar é definitivo — documentado.
+    // EXATAMENTE a frase do módulo puro (afirmado por scripts/unit.test.ts).
+    installHintBody: INSTALL_HINT_MESSAGE,
+    installHintDismiss: "Dispensar",
+    // P2-266: faixa de versão nova — uma linha calma + ação explícita; o
+    // botão é o único caminho que troca o worker esperado.
+    swUpdateReady: "Uma versão nova do app está pronta.",
+    swUpdateAction: "Atualizar agora",
+    // P2-232: seção Estado da máquina (Configurações) — rótulos por idioma;
+    // as frases das linhas vêm da própria máquina, nunca daqui.
+    machineStateTitle: "Estado da máquina",
+    machineStateEmpty: "Nada a mostrar ainda — a máquina ainda não informou o estado.",
+    machineStateAllOkTitle: "Tudo certo nesta máquina.",
+    machineStateAttentionTitle: "Um ou mais itens pedem atenção nesta máquina.",
+    machineStateUnavailableTitle: "Algo está indisponível nesta máquina.",
+    machineLabelRelay: "Conexão remota",
+    machineLabelAgent: "Servidor do agente",
+    machineLabelVersion: "Versão do agente",
+    machineLabelDisk: "Espaço em disco",
+    machineLabelDocs: "Conversão de documentos",
+    // P2-287: linha de prontidão de navegação — só o rótulo curto, sem emoji,
+    // sem caminho, sem porta, sem endereço; a frase da linha vem da máquina.
+    machineLabelBrowse: "Navegação de sites",
+    // P2-297: linha de prontidão da transcrição de voz — mesma disciplina; a
+    // frase vem da máquina (payload da P2-296), nunca daqui.
+    machineLabelVoice: "Transcrição de voz",
+    // P2-305: linha de prontidão da resposta falada (TTS) — mesma disciplina;
+    // a frase vem da máquina (ttsMessage), nunca daqui.
+    machineLabelSpoken: "Resposta falada",
+    // P2-275: seções restantes das Configurações no dicionário — o SettingsView
+    // não tem mais copy literal no JSX. Nomes de produto (MCP, AutoMode) ficam.
+    aboutTitle: "Sobre",
+    aboutVersions: "app {app} · daemon {daemon}",
+    save: "Salvar",
+    machineNamePlaceholder: "nome da máquina",
+    remove: "Remover",
+    mcpTypeLocal: "local",
+    mcpTypeRemote: "remoto",
+    voiceInLang: "Idioma",
+    voiceLangAuto: "Detectar automaticamente",
+    voiceLangEn: "Inglês",
+    voiceLangPt: "Português",
+    voiceLangEs: "Espanhol",
+    voiceLangFr: "Francês",
+    ttsVoicePt: "Português (Antonio)",
+    ttsVoiceEn: "Inglês (Andrew)",
+    ttsVoiceEs: "Espanhol (Alvaro)",
+    captionStyleTitle: "Estilo de legenda (clips)",
+    captionFont: "Fonte (ex: Helvetica Bold)",
+    captionFontSize: "Tamanho",
+    captionPrimary: "Cor primária (&H..)",
+    captionHighlight: "Cor de destaque (&H..)",
+    captionOutline: "Cor do contorno (&H..)",
+    captionMargin: "Margem inferior",
+    captionSave: "Salvar estilo",
+    captionSaved: "estilo de legenda salvo",
+    appearanceTitle: "Aparência",
+    themeLabel: "Tema",
+    themeSystem: "Sistema",
+    themeDark: "Escuro",
+    themeLight: "Claro",
+    fontLabel: "Tamanho da fonte",
+    fontSmall: "Pequena",
+    fontNormal: "Normal",
+    fontLarge: "Grande",
+    pushTitle: "Notificações push",
+    pushSendTest: "Enviar notificação de teste",
+    pushSending: "Enviando…",
+    pushResubscribe: "Reinscrever",
+    pushSubscribed: "inscrito",
+    pushNoDevices: "nenhum dispositivo inscrito — toque em Reinscrever",
+    pushSentOk: "enviado — confira o celular",
+    pushSubsCount: "{n} dispositivo(s) inscrito(s) · iOS: o app precisa estar na Tela de Início",
+    shareTitle: "Compartilhar com o agente",
+    shareAndroidLabel: "Android/desktop",
+    shareAndroidBody: "a folha de compartilhamento do sistema oferece \"OpenCode Remote\" direto.",
+    shareIosLabel: "iOS",
+    shareIosBody:
+      "copie o link em qualquer lugar, abra o app, segure o campo de mensagem → Colar, escreva sua instrução e envie. Ou crie um Atalho (app Atalhos) que copia o texto compartilhado e abre \"OpenCode Remote\".",
+    skillsTitle: "Skills (prompts de 1 toque)",
+    skillLabelPlaceholder: "rótulo (ex: Relatório diário)",
+    skillPromptPlaceholder: "prompt enviado ao agente ao tocar",
+    skillAdd: "Adicionar skill",
+    skillAdded: "skill adicionada",
+    skillRejected: "skill recusada — rótulo e prompt são obrigatórios",
+    routinesTitle: "Rotinas agendadas",
+    routineEveryDay: "Todos os dias",
+    routineSpecificDays: "Dias específicos",
+    routineLoop: "Repetir a cada N min",
+    routineModeLabel: "Modo de agendamento",
+    routineIntervalLabel: "Intervalo em minutos",
+    routineNamePlaceholder: "nome",
+    routineIntervalHint: "roda imediatamente e depois a cada N minutos enquanto o daemon estiver no ar (mín. 5)",
+    routinePromptPlaceholder: "prompt para o agente (ex: resumir notícias de cripto e salvar um relatório)",
+    routineAdd: "Adicionar rotina",
+    routineAdded: "rotina adicionada",
+    routineRejected: "rotina recusada — confira os campos",
+    routineEvery: "a cada {n} min",
+    routineDaily: "todo dia {time}",
+    routineLastError: "último erro: {err}",
+    routineLastOk: "última execução: ok",
+    routineNeverRan: "nunca executou",
+    routineHistoryToggle: "Histórico de execuções ({n})",
+    routineHistoryEmpty: "Nenhuma execução registrada ainda.",
+    routineHistoryJustNow: "agora",
+    routineOutcomeCompleted: "concluída",
+    routineOutcomeFailed: "falhou",
+    routineOutcomeSkipped: "pulada",
+    daySun: "Dom",
+    dayMon: "Seg",
+    dayTue: "Ter",
+    dayWed: "Qua",
+    dayThu: "Qui",
+    dayFri: "Sex",
+    daySat: "Sáb",
+    dayLetter0: "D",
+    dayLetter1: "S",
+    dayLetter2: "T",
+    dayLetter3: "Q",
+    dayLetter4: "Q",
+    dayLetter5: "S",
+    dayLetter6: "S",
+    deviceFallback: "dispositivo",
+    revoke: "Revogar",
+    securityLog: "Registro de segurança",
   },
 } satisfies Record<Lang, Record<string, string>>;

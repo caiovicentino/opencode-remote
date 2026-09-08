@@ -10,6 +10,9 @@ import { createServer } from "node:net";
 import { log, logError } from "./desktop-log";
 import { teeSidecarChunk } from "./sidecar-log";
 import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
+import { planSidecarStop, type SidecarStopStep } from "./sidecarstop";
+import { planSidecarWedge, type SidecarWedgeVerdict } from "./sidecarwedge";
+import type { RelayLinkFacts } from "./relaylink";
 import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
 import { DEFAULT_RELAY_URL } from "./relaysetting";
 
@@ -182,6 +185,9 @@ const sidecar: SidecarState = {
 
 /** Pending respawn backoff timer, if any. */
 let respawnTimer: NodeJS.Timeout | null = null;
+/** P2-209: wall-clock deadline of the pending respawn timer (0 when none) —
+ * bookkeeping only; the backoff schedule itself is untouched. */
+let nextRespawnDeadline = 0;
 
 // --- adopted-daemon reconnect watchdog (P1-053) -------------------------------
 // When the shell reuses an external daemon (launchd/CLI on :8792) there is no
@@ -303,6 +309,13 @@ export interface DaemonHealthInfo {
   version: string | null;
   /** null when absent/malformed (legacy daemon) — additive, never an error. */
   opencode: DaemonUpstreamDetail | null;
+  /** P2-199: daemon↔relay link facts for the linkVerdict classifier, read
+   * from the SAME /api/health body. null only when the health call itself
+   * failed (unreachable/non-200/unparseable); a 200 body without the relay
+   * fields yields an all-null facts object, which linkVerdict maps to a
+   * calm "unknown". localMode is the pairing tick's own signal and is
+   * attached by the caller (quietLocal), never by the daemon. */
+  relay: Omit<RelayLinkFacts, "localMode"> | null;
 }
 
 /** Tolerant read of the P2-135 opencode object: only a well-shaped object
@@ -319,6 +332,38 @@ function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
   };
 }
 
+/** P2-199: tolerant read of the daemon↔relay link facts from the SAME
+ * /api/health body the tick already fetches — no new request, no new timeout.
+ * Fields degrade independently: anything absent or malformed becomes null,
+ * which linkVerdict maps to "unknown". relay.url is deliberately ignored (the
+ * verdict never needs the address and it must not travel to the renderer). */
+function toRelayFacts(body: {
+  relay?: unknown;
+  relayConnected?: unknown;
+  relayRetry?: unknown;
+}): Omit<RelayLinkFacts, "localMode"> {
+  const retry = (typeof body.relayRetry === "object" && body.relayRetry !== null ? body.relayRetry : {}) as {
+    attempt?: unknown;
+    nextDelayMs?: unknown;
+    lastClose?: { kind?: unknown };
+  };
+  const relay = (typeof body.relay === "object" && body.relay !== null ? body.relay : {}) as {
+    ok?: unknown;
+    reason?: unknown;
+  };
+  const lastClose = (typeof retry.lastClose === "object" && retry.lastClose !== null ? retry.lastClose : {}) as {
+    kind?: unknown;
+  };
+  return {
+    relayConnected: typeof body.relayConnected === "boolean" ? body.relayConnected : null,
+    relayOk: typeof relay.ok === "boolean" ? relay.ok : null,
+    relayReason: typeof relay.reason === "string" ? relay.reason : null,
+    attempt: typeof retry.attempt === "number" ? retry.attempt : null,
+    nextDelayMs: typeof retry.nextDelayMs === "number" ? retry.nextDelayMs : null,
+    lastCloseKind: typeof lastClose.kind === "string" ? lastClose.kind : null,
+  };
+}
+
 /**
  * P3-054: authenticated GET /api/health returning the daemon's own version
  * string (null when unreachable, unauthorized or malformed). The pairing
@@ -327,22 +372,29 @@ function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
  * user replaced externally while the app stayed open.
  * P2-138: the same response also carries the upstream `opencode` detail
  * object; one loopback call per poll serves both consumers.
+ * P2-199: the same answer now also carries the daemon↔relay link facts —
+ * still one loopback call per poll, no new request and no new timeout.
  */
 export async function fetchDaemonHealth(token: string | null): Promise<DaemonHealthInfo> {
-  if (token === null) return { version: null, opencode: null };
+  const down: DaemonHealthInfo = { version: null, opencode: null, relay: null };
+  if (token === null) return down;
   try {
     const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}/api/health`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    if (res.status !== 200) return { version: null, opencode: null };
-    const body = (await res.json().catch(() => ({}))) as { version?: unknown; opencode?: unknown };
+    if (res.status !== 200) return down;
+    const body = (await res.json().catch(() => null)) as
+      | { version?: unknown; opencode?: unknown; relay?: unknown; relayConnected?: unknown; relayRetry?: unknown }
+      | null;
+    if (body === null || typeof body !== "object") return down;
     return {
       version: typeof body.version === "string" ? body.version : null,
       opencode: toUpstreamDetail(body.opencode),
+      relay: toRelayFacts(body),
     };
   } catch {
-    return { version: null, opencode: null };
+    return down;
   }
 }
 
@@ -357,7 +409,12 @@ export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise
     // Fresh install: the daemon generates its first token on the very poll
     // below, so keep re-reading while we have none (memoized once found).
     if (token === null) token = readApiToken();
-    if (await healthOnce(port, token)) return true;
+    if (await healthOnce(port, token)) {
+      // P2-321: our own child proved healthy — start (or keep) watching it for
+      // a wedge. Adopted daemons (spawned=false) stay with the reconnect watchdog.
+      if (sidecar.spawned) armWedgeProbe();
+      return true;
+    }
     await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
   }
   return false;
@@ -449,6 +506,7 @@ export async function startDaemonSidecar(
     sidecar.reused = true; // enables the daemon.log pair-URI fallback
     // P1-053: an adopted daemon is not our child — track its health forever
     // instead of relying on the (hosted-only) respawn budget.
+    disarmWedgeProbe(); // P2-321: the wedge prober only watches our own child
     startReconnectWatchdog();
     // P3-017: also remember how a replacement could be spawned so the manual
     // restart (restartDaemon) can act when an adopted daemon turns unstable.
@@ -487,11 +545,33 @@ export function setSidecarRelayUrl(url: string): void {
   relayUrlForSpawn = url;
 }
 
+// --- P2-303: machine proxy handed to every sidecar spawn ----------------------
+
+// The daemon child reads the machine's proxy environment (HTTPS_PROXY etc.)
+// by itself, but the owner's fixed choice lives in the shell's userData
+// (proxy.json) — invisible to the child. The boot verdict holder (main.ts)
+// publishes the fixed address here once per boot; spawnChild forwards it as
+// OCR_RELAY_PROXY, the daemon's own proxy variable, so the owner's choice
+// reaches the sidecar's relay dial. null clears the injection — the child
+// falls back to the machine environment it inherited anyway.
+let relayProxyForSpawn: string | null = null;
+
+/** Apply the fixed proxy address for every future sidecar spawn (initial
+ * start, respawns and manual restarts). Callers pass the already-validated
+ * owner address, or null when no fixed choice applies. */
+export function setSidecarRelayProxy(address: string | null): void {
+  relayProxyForSpawn = address;
+}
+
 /** Spawn + wire one daemon child (used by the initial start and by respawns). */
 function spawnChild(entry: DaemonEntry): void {
   // We're taking over with our own child again: the adopted-daemon watchdog
   // belongs to the reuse mode and must never probe (or state) alongside it.
   stopReconnectWatchdog();
+  // P2-321: a spawn that is not the wedge recovery's own respawn disarms the
+  // wedge prober — a fresh child starts a fresh watch. The recovery's own
+  // respawn keeps the prober armed so the documented ceiling can bind.
+  if (!wedgeRecoveryInFlight) disarmWedgeProbe();
   const child = spawn(entry.node, [...entry.args, entry.file], {
     cwd: entry.cwd,
     env: {
@@ -505,13 +585,22 @@ function spawnChild(entry: DaemonEntry): void {
       // pairing QR no longer points at this machine's own loopback by
       // default. Validated again by the daemon's own boot preflight.
       RELAY_URL: relayUrlForSpawn,
+      // P2-303: the owner's fixed proxy choice (see setSidecarRelayProxy) so
+      // the sidecar's relay dial tunnels through the same proxy the shell
+      // uses. Absent when no fixed choice applies — the machine environment
+      // the child inherits decides on its own.
+      ...(relayProxyForSpawn ? { OCR_RELAY_PROXY: relayProxyForSpawn } : {}),
     },
     // stdout is piped (not inherited) so we can capture the boot pairing URI;
     // each chunk is forwarded to our own stdout, preserving the old behavior.
     // stderr switched from "inherit" to "pipe" (P3-018) so both streams can be
     // teed into userData/logs/daemon-sidecar.log — inherit is invisible in the
     // packaged app, where the stage-5 user has no terminal at all.
-    stdio: ["ignore", "pipe", "pipe"],
+    // P2-315: the fourth channel is the child's IPC message pipe (a local
+    // socketpair on macOS, a named pipe on Windows) — the graceful-stop
+    // request travels over it. No port is bound and no network listener is
+    // added; the constitution's port rule is untouched.
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   sidecar.child = child;
   sidecar.spawned = true;
@@ -552,6 +641,10 @@ function spawnChild(entry: DaemonEntry): void {
   });
   child.on("exit", (code, signal) => {
     sidecar.exited = true;
+    // P2-321: every exit disarms the wedge prober — crash, intentional stop
+    // or app quit — EXCEPT the wedge recovery's own stop, which must keep its
+    // prober armed so the replacement child is judged against the ceiling.
+    if (!wedgeRecoveryInFlight) disarmWedgeProbe();
     // P2-140: remember WHY it died (port busy, missing entry, signal…); an
     // intentional stop never overwrites the verdict — it clears it below.
     if (!sidecar.stopping) {
@@ -582,6 +675,9 @@ function spawnChild(entry: DaemonEntry): void {
     }
   });
   log(`[desktop] daemon sidecar spawned (pid ${child.pid}, metrics :${activeDaemonPort()})`);
+  // P2-321: the wedge recovery's own respawn is complete — from here on the
+  // prober watches the replacement child like any other spawn would.
+  wedgeRecoveryInFlight = false;
 }
 
 /**
@@ -604,8 +700,10 @@ function scheduleRespawn(): void {
     `[desktop] daemon sidecar respawn in ${Math.round(delay / 1000)}s (attempt ${sidecar.failures}/${RESPAWN_MAX_ATTEMPTS})`,
   );
   if (respawnTimer) clearTimeout(respawnTimer);
+  nextRespawnDeadline = Date.now() + delay;
   respawnTimer = setTimeout(() => {
     respawnTimer = null;
+    nextRespawnDeadline = 0;
     void respawn();
   }, delay);
 }
@@ -626,7 +724,9 @@ async function respawn(): Promise<void> {
     sidecar.reused = true;
     sidecar.failures = 0;
     sidecar.exit = null; // recovered — the last crash verdict is history
-    // Adopted again → the infinite reconnect watchdog takes over (P1-053).
+    // Adopted again → the infinite reconnect watchdog takes over (P1-053)
+    // and the wedge prober stands down (P2-321: not our child anymore).
+    disarmWedgeProbe();
     startReconnectWatchdog();
     return;
   }
@@ -649,6 +749,18 @@ export function isDaemonDown(): boolean {
 /** Diagnostic view into the respawn bookkeeping (eval battery asserts on it). */
 export function respawnState(): { failures: number; gaveUp: boolean } {
   return { failures: sidecar.failures, gaveUp: sidecar.gaveUp };
+}
+
+/**
+ * P2-209: additive diagnostic — how far the pending respawn timer still is
+ * (ms; null when nothing is scheduled). Read by the wake reaction to decide
+ * whether the backoff's own retry is soon enough after the machine returns
+ * from sleep. Pure bookkeeping read: it never mutates the backoff, the
+ * attempt ceiling or any spawn rule.
+ */
+export function nextRespawnInMs(): number | null {
+  if (respawnTimer === null || nextRespawnDeadline <= 0) return null;
+  return Math.max(0, nextRespawnDeadline - Date.now());
 }
 
 /** P2-140: why the sidecar died last (classifier verdict), or null while no
@@ -723,7 +835,161 @@ async function reconnectProbe(): Promise<void> {
   scheduleReconnectProbe(reconnectDelayMs(reconnectActive ? reconnectAttempts : 1, RESPAWN_DELAYS_MS));
 }
 
-/** Terminate the child we spawned (SIGTERM → 3s grace → SIGKILL). Idempotent. */
+// --- wedged-daemon probe (P2-321) ---------------------------------------------
+// The supervision above only sees a child that EXITS. A daemon that wedges
+// alive — port still bound, event loop pinned — never exits, so the exit
+// handler never fires, the respawn budget is never touched and the phone
+// hangs on a connection nothing will revive. After the child's FIRST healthy
+// boot the shell therefore probes it too (healthOnce, same loopback endpoint
+// the shell already uses — no new port, no new route, no new listener) and
+// feeds the answers through the pure verdict of sidecarwedge.ts. Same timer
+// discipline as the adopted-daemon watchdog: one self-scheduling probe,
+// disarmed on intentional stop, fresh spawn, child exit and app exit, and
+// never armed for an adopted daemon (that is the reconnect watchdog's job).
+
+/** Wedge probe interval. Tests shorten it via OCR_DAEMON_WEDGE_PROBE_MS —
+ * production never sets it, exactly like the other OCR_DAEMON_* hatches. */
+const WEDGE_PROBE_MS = Number(process.env.OCR_DAEMON_WEDGE_PROBE_MS) || 10_000;
+/** True while the wedge prober is watching our own child. */
+let wedgeArmed = false;
+/** Pending wedge probe timer, if any. */
+let wedgeTimer: NodeJS.Timeout | null = null;
+/** Consecutive health probes the child answered with silence. */
+let wedgeFailedProbes = 0;
+/** Consecutive wedge recoveries already spent (zeroed on the first healthy probe). */
+let wedgeRecoveries = 0;
+/** Last non-observe verdict, still in effect (null while healthy/observing). */
+let wedgeActive: SidecarWedgeVerdict | null = null;
+/** True between the wedge-initiated stop and its own respawn's spawnChild —
+ * the one window in which exit/new-spawn must NOT disarm the prober, so the
+ * documented recovery ceiling can actually bind. */
+let wedgeRecoveryInFlight = false;
+
+/** Last wedge verdict in effect, for the pairing payload (additive field) —
+ * a copy, so callers can never mutate the live verdict. */
+export function sidecarWedgeState(): { state: string; message: string } | null {
+  return wedgeActive ? { state: wedgeActive.kind, message: wedgeActive.message } : null;
+}
+
+/** Arm the wedge prober after our own child's first healthy boot. Idempotent:
+ * a prober already watching (e.g. through a wedge recovery) keeps its counters. */
+function armWedgeProbe(): void {
+  if (wedgeArmed) return;
+  wedgeArmed = true;
+  wedgeFailedProbes = 0;
+  wedgeRecoveries = 0;
+  wedgeActive = null;
+  log("[desktop] wedge probe armed for the daemon sidecar (alive-but-unresponsive watch)");
+  scheduleWedgeProbe(WEDGE_PROBE_MS);
+}
+
+/** Disarm the wedge prober and forget the episode (counters and verdict). */
+function disarmWedgeProbe(): void {
+  wedgeArmed = false;
+  if (wedgeTimer) {
+    clearTimeout(wedgeTimer);
+    wedgeTimer = null;
+  }
+  wedgeFailedProbes = 0;
+  wedgeRecoveries = 0;
+  wedgeActive = null;
+}
+
+/** One self-scheduling probe; runs while the prober stays armed. */
+function scheduleWedgeProbe(afterMs: number): void {
+  if (!wedgeArmed) return;
+  if (wedgeTimer) clearTimeout(wedgeTimer);
+  wedgeTimer = setTimeout(() => {
+    wedgeTimer = null;
+    void wedgeProbe();
+  }, afterMs);
+}
+
+async function wedgeProbe(): Promise<void> {
+  if (!wedgeArmed) return;
+  const childAlive = sidecar.child !== null && !sidecar.exited;
+  if (!childAlive) {
+    // Nothing to wedge — the exit path owns a dead child. Keep the cadence.
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+    return;
+  }
+  const healthy = await healthOnce(activeDaemonPort(), sidecar.token ?? readApiToken());
+  // An intentional stop, a fresh spawn or the app quitting may have happened
+  // during the probe — the verdict below would be stale.
+  if (!wedgeArmed) return;
+  if (healthy) {
+    // First healthy probe zeroes both counters (sidecarwedge.ts contract).
+    if (wedgeFailedProbes > 0) {
+      log("[desktop] daemon sidecar answering again — wedge counters reset");
+    }
+    wedgeFailedProbes = 0;
+    wedgeRecoveries = 0;
+    wedgeActive = null;
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+    return;
+  }
+  wedgeFailedProbes += 1;
+  const verdict = planSidecarWedge({
+    failedProbes: wedgeFailedProbes,
+    childAlive,
+    transitionInFlight: sidecar.stopping || respawnTimer !== null,
+    recoveriesUsed: wedgeRecoveries,
+  });
+  if (verdict.kind === "observe") {
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+    return;
+  }
+  // degraded / restart / give-up all travel: desktop.log once per transition
+  // and the additive pairing-payload field for as long as the verdict holds.
+  if (wedgeActive?.kind !== verdict.kind) {
+    log(`[desktop] daemon sidecar wedge: ${verdict.message}`);
+  }
+  wedgeActive = verdict;
+  if (verdict.kind === "restart") {
+    // One budgeted recovery through the EXISTING stop + respawn machinery —
+    // never a parallel path, never while another transition is in flight.
+    // The flag stays up until the recovery's own spawnChild runs, so neither
+    // the stop's exit nor the fresh spawn disarms the prober mid-recovery.
+    wedgeRecoveries += 1;
+    wedgeRecoveryInFlight = true;
+    await stopDaemonSidecar();
+    if (!wedgeRecoveryInFlight) return; // impossible today; fail safe on quit races
+    // The prober stays armed through its own recovery; the next probes judge
+    // the replacement child against the spent budget.
+    scheduleRespawn();
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+  } else if (verdict.kind === "give-up") {
+    // Ceiling reached: stop probing, keep the verdict visible in the payload.
+    if (wedgeTimer) {
+      clearTimeout(wedgeTimer);
+      wedgeTimer = null;
+    }
+    wedgeArmed = false;
+  } else {
+    scheduleWedgeProbe(WEDGE_PROBE_MS);
+  }
+}
+
+/**
+ * P2-315: exit status of the last intentionally stopped sidecar child (null
+ * before the first stop). Diagnostic + eval-battery surface: the graceful IPC
+ * stop is proven by the real daemon exiting with code 0 after the shell's
+ * message (never a signal kill).
+ */
+let lastStop: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+
+export function lastStopExit(): { code: number | null; signal: NodeJS.Signals | null } | null {
+  return lastStop ? { ...lastStop } : null;
+}
+
+/**
+ * Terminate the child we spawned. P2-315: the sequence is decided by the pure
+ * planner in sidecarstop.ts — a graceful shutdown request over the IPC message
+ * channel when it is connected (identical on both platforms; the daemon runs
+ * the same drain as SIGTERM), falling back to the fixed signal walk when it
+ * is not — keeping the 3s grace, the idempotency, the pending-respawn
+ * cancellation and the resolve-only-on-exit contract. Idempotent.
+ */
 export async function stopDaemonSidecar(): Promise<void> {
   // A pending respawn must never fire after (or during) an intentional stop,
   // and neither may an adopted-daemon reconnect probe (P1-053).
@@ -731,8 +997,8 @@ export async function stopDaemonSidecar(): Promise<void> {
     clearTimeout(respawnTimer);
     respawnTimer = null;
   }
-  stopReconnectWatchdog();
-  sidecar.failures = 0;
+  nextRespawnDeadline = 0;
+  stopReconnectWatchdog();  sidecar.failures = 0;
   sidecar.gaveUp = false;
   sidecar.exit = null; // an intentional stop is not a crash to explain
   const child = sidecar.child;
@@ -744,15 +1010,53 @@ export async function stopDaemonSidecar(): Promise<void> {
     return;
   }
   sidecar.stopping = true;
+  const plan = planSidecarStop({
+    platform: process.platform,
+    channelConnected: child.connected === true && typeof child.send === "function",
+    childAlive: true,
+  });
   await new Promise<void>((resolve) => {
     // Resolve only on "exit" so callers observe a fully dead, reaped child;
-    // the timer merely escalates SIGTERM → SIGKILL after the grace period.
-    const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
-    child.once("exit", () => {
-      clearTimeout(timer);
+    // the timer merely escalates to the plan's force signal after the grace.
+    let timer: NodeJS.Timeout | null = null;
+    child.once("exit", (code, signal) => {
+      if (timer) clearTimeout(timer);
+      lastStop = { code, signal };
       resolve();
     });
-    child.kill("SIGTERM");
+    const runSignal = (signal: "SIGTERM" | "SIGKILL"): void => {
+      try {
+        child.kill(signal);
+      } catch {
+        /* the child died while the stop was in flight — exit resolves next */
+      }
+    };
+    // Execute the plan in order: steps up to and including the wait run
+    // inline (graceful request / fallback signal / grace arming); everything
+    // after the wait is escalation the timer delivers only if the child is
+    // still alive when the grace expires.
+    const waitAt = plan.findIndex((step) => step.kind === "wait");
+    const escalation: SidecarStopStep[] = waitAt === -1 ? [] : plan.slice(waitAt + 1);
+    for (const step of waitAt === -1 ? plan : plan.slice(0, waitAt + 1)) {
+      if (step.kind === "message") {
+        // A send failure (channel died mid-stop) is not fatal: the plan's
+        // force signal after the grace still applies. The callback keeps a
+        // racing send from emitting a stray child "error".
+        try {
+          child.send(step.payload, () => {});
+        } catch {
+          /* channel gone — fall through to the force path */
+        }
+      } else if (step.kind === "signal") {
+        runSignal(step.signal);
+      } else if (step.kind === "wait" && timer === null) {
+        timer = setTimeout(() => {
+          for (const step of escalation) {
+            if (step.kind === "signal") runSignal(step.signal);
+          }
+        }, step.ms);
+      }
+    }
   });
   sidecar.child = null;
   sidecar.stopping = false;
@@ -781,6 +1085,7 @@ export async function restartDaemon(): Promise<boolean> {
       clearTimeout(respawnTimer);
       respawnTimer = null;
     }
+    nextRespawnDeadline = 0;
     // Fresh crash budget: the user explicitly asked for another recovery round.
     sidecar.failures = 0;
     sidecar.gaveUp = false;
@@ -791,7 +1096,9 @@ export async function restartDaemon(): Promise<boolean> {
     if (sidecar.token !== null && (await healthOnce(activeDaemonPort(), sidecar.token))) {
       log(`[desktop] restart daemon: daemon healthy on :${activeDaemonPort()} — reusing it`);
       sidecar.reused = true;
-      // Adopted again → re-arm the infinite reconnect watchdog (P1-053).
+      // Adopted again → re-arm the infinite reconnect watchdog (P1-053) and
+      // stand the wedge prober down (P2-321: not our child anymore).
+      disarmWedgeProbe();
       startReconnectWatchdog();
       return true;
     }

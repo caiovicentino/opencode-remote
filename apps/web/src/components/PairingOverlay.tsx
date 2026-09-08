@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { useT } from "../lib/i18n";
 
@@ -19,6 +19,13 @@ export interface PairLinkInfo {
   problems: string[];
 }
 
+/** P2-197: reach verdict for the app address, probed from the machine that
+ * hosts the daemon (additive field, desktop shell). */
+export interface ReachInfo {
+  state: string;
+  message: string;
+}
+
 interface Props {
   /** PNG data-URL rendered by the desktop main process (P2-007). */
   qrDataUrl: string;
@@ -32,6 +39,22 @@ interface Props {
   /** P2-193: the combined link — when its QR exists, the whole journey
    * collapses into ONE scannable code and the two labeled steps disappear. */
   pairLink?: PairLinkInfo | null;
+  /** P2-197: last reach probe verdict (null/absent = unknown → no line). */
+  reach?: ReachInfo | null;
+  /** P2-197: re-run the reach probe now ("test again" action). */
+  onReachRetry?: () => void;
+  /** P2-199: daemon↔relay link verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  relayLink?: { state: string; message: string } | null;
+  /** P2-211: install-location verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  installLocation?: { state: string; message: string } | null;
+  /** P2-214: clock-skew verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  clock?: { state: string; message: string } | null;
+  /** P2-218: login-item verdict from the machine hosting the daemon
+   * (null/absent = unknown → no line). */
+  startup?: { state: string; message: string } | null;
 }
 
 /**
@@ -46,10 +69,22 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock, startup }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
+  // P2-197: "test again" is in flight — the fresh verdict arrives with the
+  // next pairing-state push, or the flag self-clears (an unchanged verdict is
+  // deduplicated by the shell and never pushed).
+  const [retesting, setRetesting] = useState(false);
+  useEffect(() => {
+    setRetesting(false);
+  }, [reach?.state, reach?.message]);
+  useEffect(() => {
+    if (!retesting) return;
+    const id = setTimeout(() => setRetesting(false), 6_000);
+    return () => clearTimeout(id);
+  }, [retesting]);
   async function copyAddress() {
     if (!webApp?.url) return;
     try {
@@ -139,6 +174,83 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
             </section>
           </>
         )}
+
+        {/* P2-197: calm reach status below the QR, P2-112 vocabulary. The QR
+            is NEVER hidden or dimmed when the probe fails on purpose: this
+            Mac not reaching the relay does NOT prove the phone can't either
+            (different network, different DNS) — burying the QR on a verdict
+            from another machine's network would kill the journey. */}
+        {reach && (
+          <p className={reach.state === "ok" ? "pair-reach" : "pair-reach pair-reach-warn"}>
+            {reach.state === "ok" ? t("pairReachOk") : reach.message}
+            {reach.state !== "ok" && (
+              <button
+                className="pair-reach-retry"
+                onClick={() => {
+                  setRetesting(true);
+                  onReachRetry?.();
+                }}
+              >
+                {retesting ? t("pairReachTesting") : t("pairReachRetry")}
+              </button>
+            )}
+          </p>
+        )}
+
+        {/* P2-199: calm daemon↔relay link status right below the reach line,
+            same P2-112 vocabulary. The QR is NEVER hidden or dimmed when the
+            link is down on purpose: the daemon↔relay link can come back up
+            before the phone finishes pairing, and hiding the QR would kill
+            the journey mid-flight. */}
+        {relayLink && (
+          <p
+            className={
+              relayLink.state === "connected" || relayLink.state === "local" || relayLink.state === "unknown"
+                ? "pair-relaylink"
+                : "pair-relaylink pair-relaylink-warn"
+            }
+          >
+            {relayLink.state === "connected"
+              ? t("pairRelayLinkOk")
+              : relayLink.state === "local"
+                ? t("pairRelayLinkLocal")
+                : relayLink.message}
+          </p>
+        )}
+
+        {/* P2-211: calm install-location line right below the relay-link line,
+            same P2-112 vocabulary. Invisible for ok AND for the neutral
+            unknown (an unconfirmed location is never an accusation); when the
+            app runs from the DMG volume, a translocated copy or the downloads
+            folder, the line explains the drag-to-Applications action. The QR
+            is NEVER hidden or dimmed on purpose: the wrong install location
+            does not block pairing NOW — hiding the QR would kill the journey
+            while the fix (drag + reopen) happens after it. */}
+        {installLocation && installLocation.state !== "ok" && installLocation.state !== "unknown" && (
+          <p className="pair-install pair-install-warn">{installLocation.message}</p>
+        )}
+
+        {/* P2-214: calm clock-skew line right below the install-location line,
+            same P2-112 vocabulary. Invisible for ok AND for the neutral
+            unknown (an absent reference is never an accusation); when the
+            machine hosting the daemon is ahead or behind, the line explains
+            the automatic date/time action. The QR is NEVER hidden or dimmed
+            on purpose: a wrong clock does not block pairing NOW — the phone
+            may refuse the relay certificate and the timestamps may look
+            wrong, but the pairing itself still works, so burying the QR
+            would kill the journey while the fix happens after it. */}
+        {clock && clock.state !== "ok" && clock.state !== "unknown" && (
+          <p className="pair-clock pair-clock-warn">{clock.message}</p>
+        )}
+
+        {/* P2-218: one-time login-item announce right below the clock line,
+            same P2-112 vocabulary. Visible ONLY on the boot whose verdict was
+            "enable" (the verdict is computed once per boot, not re-ticked);
+            any other state — and an absent field, e.g. a legacy payload — is
+            unknown and renders nothing. This is an announce, not an error:
+            the QR is NEVER hidden or dimmed by this line and pairing is never
+            blocked by it. */}
+        {startup && startup.state === "enable" && <p className="pair-startup">{startup.message}</p>}
 
         {deviceList && deviceList.length > 0 && (
           <p className="splash-under muted">

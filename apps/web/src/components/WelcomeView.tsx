@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import type { DegradedKind, UpstreamNotice } from "../lib/degraded";
+import { qrWaitVerdict, QR_WAIT_TIMEOUT_MS } from "../lib/qrWait";
 import ReconnectButton from "./ReconnectButton";
 
 interface Props {
@@ -20,6 +21,10 @@ interface Props {
   /** P1-056 (fable #2): leave the ceremony — turns remote pairing OFF so
    * "do this later" never resurrects the QR overlay after onboarding. */
   onCancelPairRemote?: () => void;
+  /** P3-329: labeled escape to the manual paste-code ceremony, offered on
+   * the QR error branch — a stuck wait must never dead-end a first-time
+   * user on a spinner whose only alternative hides one screen earlier. */
+  onPairManually?: () => void;
   /** Finish (or skip) — App stamps the flag and unmounts the onboarding. */
   onDone: () => void;
 }
@@ -31,11 +36,13 @@ function InlinePair({
   phonePaired,
   onPairRemote,
   onCancelPairRemote,
+  onPairManually,
 }: {
   qrDataUrl?: string | null;
   phonePaired?: boolean;
   onPairRemote: () => void;
   onCancelPairRemote?: () => void;
+  onPairManually?: () => void;
 }) {
   const t = useT();
   // fable #2/#3: mount-only ceremony — the App passes a NEW inline arrow per
@@ -54,6 +61,33 @@ function InlinePair({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const anyPairRemote = true;
+  // P3-333: the QR is minted by the shell's poll (normally well under a
+  // second) — but a cold daemon or a failed tick used to leave this step on
+  // a bare "generating" line forever. Track elapsed time since the wait
+  // started; past the timeout the pure verdict resolves to a retryable
+  // inline error instead of a frozen skeleton.
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [attempt, setAttempt] = useState(0);
+  const startedAt = useRef(Date.now());
+  useEffect(() => {
+    if (qrDataUrl) return;
+    const id = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt.current;
+      setElapsedMs(elapsed);
+      if (elapsed >= QR_WAIT_TIMEOUT_MS) window.clearInterval(id);
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [qrDataUrl, attempt]);
+  const verdict = qrWaitVerdict({ qrDataUrl, elapsedMs });
+  // Retry re-fires the shell's remote-pairing request (app:setRemotePairing
+  // re-runs its poll) and restarts the wait window. The calm exit stays the
+  // step's "do this later" — this block only adds the way back in.
+  const retry = () => {
+    startedAt.current = Date.now();
+    setElapsedMs(0);
+    setAttempt((a) => a + 1);
+    on.current();
+  };
   if (phonePaired) {
     return (
       <div className="degraded-status" data-paired="ok">
@@ -65,10 +99,38 @@ function InlinePair({
       </div>
     );
   }
+  // P3-337: the step-3 card heading above is the single pairing title — this
+  // section carries only the live QR/status, no all-caps kicker repeating it.
   return (
     <section className="pair-section" data-pair-wait={!qrDataUrl}>
-      <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
-      {qrDataUrl ? <img className="welcome-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} /> : <p className="muted">{t("welcomeQrWait")}</p>}
+      {qrDataUrl ? (
+        <img className="welcome-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} />
+      ) : verdict === "error" ? (
+        <div className="welcome-qr-error" role="alert">
+          <p className="welcome-qr-error-title">{t("welcomeQrError")}</p>
+          {/* P3-329: name the dependency — the QR is minted from the local
+              agent's pairing credential; with the agent down nothing loads. */}
+          <p className="muted welcome-qr-hint">{t("welcomeQrErrorHint")}</p>
+          <div className="welcome-qr-actions">
+            <button className="welcome-qr-retry" onClick={retry}>
+              {t("welcomeQrRetry")}
+            </button>
+            {onPairManually && (
+              <button className="welcome-qr-manual" onClick={onPairManually}>
+                {t("welcomeQrManual")}
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="welcome-qr-wait" role="status">
+          <div className="skel welcome-qr-skel" aria-hidden="true" />
+          <p className="muted">{t("welcomeQrWait")}</p>
+          {/* P3-329: even the healthy wait says where the QR comes from — a
+              first-time user with a dead agent is never left guessing. */}
+          <p className="muted welcome-qr-hint">{t("welcomeQrWaitHint")}</p>
+        </div>
+      )}
     </section>
   );
 }
@@ -79,7 +141,7 @@ function InlinePair({
  * banner per P2-108), step 3 invites pairing a phone with an explicit "do
  * this later". Zero emoji (P2-107), P3-083 tokens only, 150–300ms motion
  * that dies under prefers-reduced-motion (P3-087). */
-export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onDone }: Props) {
+export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onPairManually, onDone }: Props) {
   const t = useT();
   const [step, setStep] = useState(1);
 
@@ -100,13 +162,21 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
     <div className="welcome" data-welcome-step={step}>
       <div className="welcome-col">
         <header>
-          <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
+          <div className="welcome-mark" aria-hidden="true">
+            ✻
+          </div>
+          <h1 className="brand-wordmark">OpenCode Remote</h1>
         </header>
         <div className="welcome-meta">
           <span className="welcome-step-of">{t("welcomeStepOf", { n: step })}</span>
-          <button className="welcome-skip" onClick={onDone}>
-            {t("welcomeSkip")}
-          </button>
+          {/* P3-338: one labeled exit per screen — the final step already ends
+              with the in-context "do this later"/"done" button, so the global
+              skip would be a second, differently-labeled way out. */}
+          {step < 3 && (
+            <button className="welcome-skip" onClick={onDone}>
+              {t("welcomeSkip")}
+            </button>
+          )}
         </div>
         {step === 1 && (
           <div className="welcome-step welcome-intro">
@@ -162,11 +232,11 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
                 phonePaired={phonePaired}
                 onPairRemote={onPairRemote}
                 onCancelPairRemote={onCancelPairRemote}
+                onPairManually={onPairManually}
               />
             )}
             {!onPairRemote && (
               <section className="pair-section">
-                <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
                 <span className="muted">{t("pairRemoteHint")}</span>
               </section>
             )}

@@ -1,8 +1,8 @@
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { accessSync, constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, createReadStream, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { join as joinPath, sep } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, X509Certificate } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
@@ -15,10 +15,27 @@ import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
 import { relayKnobs } from "./knobs.js";
+import { unknownRelayKeys } from "./knobnames.js";
 import { resolveLogLevel, shouldLog, type LogLevel } from "./loglevel.js";
 import { tlsPlan } from "./tlsconfig.js";
+import {
+  certExpiryVerdict,
+  CERT_CLOCK_TOLERANCE_MS,
+  CERT_WARN_WINDOW_MS,
+  type CertExpiryVerdict,
+} from "./certexpiry.js";
+import { certReloadVerdict, type CertPairImpression, type CertReloadOutcome } from "./certreload.js";
+import { certChainVerdict, type CertChainVerdict, type CertLink } from "./certchain.js";
 import { makeIpTagger } from "./iptag.js";
-import { webRootPlan, type DirProbe } from "./webroot.js";
+import {
+  assetIntegrityPlan,
+  indexAssetPlan,
+  webRootPlan,
+  WEB_INDEX_FILE,
+  WEB_INDEX_MAX_BYTES,
+  type AssetProbe,
+  type DirProbe,
+} from "./webroot.js";
 import { resolveWebCsp } from "./webheaders.js";
 import {
   resolveWebBudget,
@@ -26,6 +43,31 @@ import {
   webBudgetIdentity,
   WEB_BUDGET_IDLE_MS,
 } from "./webbudget.js";
+import {
+  parseBufferCap,
+  sendVerdict,
+  SLOW_CONSUMER_CLOSE_CODE,
+  SLOW_CONSUMER_CLOSE_REASON,
+} from "./backpressure.js";
+import { acceptVerdict, parseMaxSockets } from "./capacity.js";
+import {
+  budgetVerdict,
+  parseRoomBudget,
+  ROOM_BUDGET_CLOSE_CODE,
+  ROOM_BUDGET_CLOSE_REASON,
+  ROOM_BUDGET_WARN_REASON,
+  type RoomBudgetLimits,
+  type RoomBudgetState,
+} from "./roombudget.js";
+import { emptyRejectCounts, ROOM_REJECT_REASONS } from "./rejectreasons.js";
+import {
+  idleUnjoined,
+  parseJoinDeadline,
+  JOIN_UNJOINED_CLOSE_CODE,
+  JOIN_UNJOINED_CLOSE_REASON,
+} from "./joindeadline.js";
+import { certExpiryMetrics } from "./certmetrics.js";
+import { procMetrics, procMetricsJson } from "./procmetrics.js";
 
 /**
  * Relay: a blind router.
@@ -53,6 +95,22 @@ if (LOG.problems.length > 0) {
     ev("warn", "invalid relay log level, refusing to start (fail-closed)", { reason });
   }
   process.exit(1);
+}
+// P2-263: an unrecognized RELAY_ variable is ignored by every resolver below,
+// which used to hide typos in silence — the operator believed the chosen knob
+// was applied while the `relay listening` line showed the default. Each
+// unknown key gets ONE warn line here, before any listener opens, carrying
+// the key name and (when something sits within an edit distance of 2) the
+// nearest documented knob name — never the value, because one of these
+// variables carries the metrics bearer token and others carry certificate
+// paths. Advisory only: hosting platforms inject variables of their own, so
+// an unknown key must never refuse the boot (no exit, no problem list).
+for (const { key, suggestion } of unknownRelayKeys(Object.keys(process.env))) {
+  ev(
+    "warn",
+    "unknown RELAY_ environment variable ignored",
+    suggestion === undefined ? { key } : { key, suggestion },
+  );
 }
 // P2-141: admission ceilings are env-configurable and validated fail-closed
 // (P2-114 spirit). Any bad value — non-numeric, zero, negative, per-room cap
@@ -89,6 +147,102 @@ if (TLS.problems.length > 0) {
   }
   process.exit(1);
 }
+// P2-259: an expired (or not-yet-valid) certificate used to be discovered
+// only when every phone failed its handshake — the P2-154 preflight probed
+// file readability alone. While the pair is in tls mode, the certificate's
+// two validity instants are extracted here with the standard Node
+// X509Certificate API (no new dependency; the key file is never read) and
+// the verdict is consulted BEFORE any listener opens — metrics included,
+// same refusal shape as the tlsPlan problems above: reason logged once,
+// exit 1. A warn logs a single line and boot continues. Plain mode has no
+// pair and therefore no validity to check — untouched. The relay stays
+// blind: only the two instants are extracted, no certificate or key
+// material ever reaches a log line (the phrases come from certexpiry.ts),
+// and an unparseable certificate becomes NaN instants so the verdict
+// refuses fail-closed instead of crashing with a stack trace.
+const CERT_EXPIRY = (() => {
+  if (TLS.mode !== "tls") return undefined;
+  let notBefore = Number.NaN;
+  let notAfter = Number.NaN;
+  try {
+    const cert = new X509Certificate(readFileSync(TLS.certPath));
+    notBefore = Date.parse(cert.validFrom);
+    notAfter = Date.parse(cert.validTo);
+  } catch {
+    // NaN instants: the verdict below refuses fail-closed
+  }
+  return {
+    notBefore,
+    notAfter,
+    ...certExpiryVerdict(notBefore, notAfter, Date.now(), CERT_CLOCK_TOLERANCE_MS, CERT_WARN_WINDOW_MS),
+  };
+})();
+if (CERT_EXPIRY && (CERT_EXPIRY.verdict === "refuse-expired" || CERT_EXPIRY.verdict === "refuse-not-yet-valid")) {
+  ev("warn", "invalid relay TLS certificate, refusing to start (fail-closed)", { reason: CERT_EXPIRY.reason });
+  process.exit(1);
+}
+if (CERT_EXPIRY && CERT_EXPIRY.verdict === "warn") {
+  ev("warn", "relay TLS certificate nearing expiry", { reason: CERT_EXPIRY.reason });
+}
+// P2-310: the certificate file can be a lone leaf or a full chain — Node's
+// X509Certificate constructor only ever reads the FIRST block, so the
+// preflight above validated a validity window that says nothing about the
+// intermediates. Every CERTIFICATE block in the file is extracted here (the
+// caller owns the extraction; certchain.ts stays pure) and classified ONCE
+// at boot. The verdict only explains — a leaf-only file still boots and
+// serves, because clients that already hold the intermediate in cache
+// connect fine; the line exists so the operator hears about it from the
+// relay instead of reverse-engineering a phone that refuses the handshake.
+// Exactly one static log line per verdict (warn only for the verdicts that
+// need attention). Plain mode has no pair: nothing is read, nothing logged.
+const CERT_CHAIN = (() => {
+  if (TLS.mode !== "tls") return undefined;
+  let pemText = "";
+  try {
+    pemText = readFileSync(TLS.certPath, "utf8");
+  } catch {
+    // the empty extraction below classifies fail-closed (unknown)
+  }
+  return certChainVerdict(extractCertLinks(pemText));
+})();
+if (CERT_CHAIN) {
+  ev(
+    certChainLogLevel(CERT_CHAIN.verdict),
+    "relay TLS certificate chain classified",
+    { verdict: CERT_CHAIN.verdict, reason: CERT_CHAIN.reason },
+  );
+}
+// P2-310: the boot verdict is the baseline for the reload deduplication —
+// only transitions away from the last seen verdict ever log a line.
+let lastCertChainState: CertChainVerdict | undefined = CERT_CHAIN?.verdict;
+
+// P2-310: PEM extraction lives in the caller — certchain.ts stays pure (no
+// node:fs, no node:crypto). Every CERTIFICATE block in file order becomes
+// one subject/issuer pair. A file whose blocks do not ALL parse yields an
+// empty list, which the verdict maps to unknown (fail-closed) — a half-
+// readable chain is never guessed into healthy.
+function extractCertLinks(pemText: string): CertLink[] {
+  const links: CertLink[] = [];
+  try {
+    for (const block of pemText.matchAll(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g)) {
+      const cert = new X509Certificate(block[0]!);
+      links.push({ subject: cert.subject, issuer: cert.issuer });
+    }
+  } catch {
+    return [];
+  }
+  return links;
+}
+
+// P2-310: the two healthy verdicts log at info; the ones an operator must
+// investigate log at warn. Purely a log-level choice — the verdict never
+// refuses a boot, closes a socket or skips an admission check.
+function certChainLogLevel(verdict: CertChainVerdict): LogLevel {
+  return verdict === "leaf-only" || verdict === "broken-order" || verdict === "unknown" ? "warn" : "info";
+}
+// P2-259: the boot verdict is the baseline for the runtime deduplication —
+// only transitions away from the last seen verdict ever log a line.
+let lastCertExpiryVerdict: CertExpiryVerdict | undefined = CERT_EXPIRY?.verdict;
 // P2-171: the remaining tuning knobs — per-connection rate limit, per-IP cap,
 // trusted proxy hops and liveness sweep — resolve fail-closed like the P2-141
 // limits above: a typo, a negative, fractional or zero value (zero is
@@ -119,13 +273,71 @@ const WEB = webRootPlan(
   },
   (dir) => {
     try {
-      accessSync(joinPath(dir, "index.html"), fsConstants.R_OK);
+      accessSync(joinPath(dir, WEB_INDEX_FILE), fsConstants.R_OK);
       return true;
     } catch {
       return false;
     }
   },
 );
+// P2-225: a web root that passes the checks above can still be a partial or
+// stale copy — exactly what a volume-mounted deploy that copies the bundle
+// in two steps (or gets interrupted) looks like. The relay used to boot
+// green, answer 200 on / and 404 on the entry document's JavaScript, and the
+// phone showed a permanent white screen with no diagnostic anywhere. While
+// the web root is enabled, the entry document is read (with an explicit
+// 512 KiB ceiling — an overflow is a problem, never an unbounded read) and
+// every local asset it references is probed with the same rigidity the
+// static route enforces. The problems join the web-root ones in the SAME
+// fail-closed block below, so an incomplete bundle logs one line per cause
+// and exits 1 before any listener opens.
+if (WEB.enabled) {
+  const indexProblems: string[] = [];
+  let html: string | undefined;
+  try {
+    const indexPath = joinPath(WEB.root, WEB_INDEX_FILE);
+    const stat = statSync(indexPath);
+    if (!stat.isFile()) {
+      indexProblems.push(
+        "RELAY_WEB_DIR contains an index.html that is not a regular file: " +
+          "refusing to boot with an unusable web root (fail-closed)",
+      );
+    } else if (stat.size > WEB_INDEX_MAX_BYTES) {
+      indexProblems.push(
+        "RELAY_WEB_DIR index.html is above the boot ceiling of " +
+          `${WEB_INDEX_MAX_BYTES} bytes: refusing to boot instead of reading an oversized entry document (fail-closed)`,
+      );
+    } else {
+      const text = readFileSync(indexPath, "utf8");
+      if (Buffer.byteLength(text) > WEB_INDEX_MAX_BYTES) {
+        indexProblems.push(
+          "RELAY_WEB_DIR index.html is above the boot ceiling of " +
+            `${WEB_INDEX_MAX_BYTES} bytes: refusing to boot instead of reading an oversized entry document (fail-closed)`,
+        );
+      } else {
+        html = text;
+      }
+    }
+  } catch {
+    indexProblems.push(
+      "RELAY_WEB_DIR index.html could not be read at boot: " +
+        "refusing to boot with an unverifiable entry document (fail-closed)",
+    );
+  }
+  if (html !== undefined) {
+    indexProblems.push(
+      ...assetIntegrityPlan(indexAssetPlan(html), WEB.root, (abs): AssetProbe => {
+        try {
+          accessSync(abs, fsConstants.R_OK);
+          return "ok";
+        } catch (e) {
+          return (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
+        }
+      }),
+    );
+  }
+  WEB.problems.push(...indexProblems);
+}
 if (WEB.problems.length > 0) {
   for (const reason of WEB.problems) {
     ev("warn", "invalid relay web root, refusing to start (fail-closed)", { reason });
@@ -159,6 +371,67 @@ if (WEB_BUDGET.problems.length > 0) {
   }
   process.exit(1);
 }
+// P2-217: the per-socket backpressure cap (RELAY_BUFFER_CAP_BYTES) resolves
+// fail-closed like every knob above — a non-numeric, zero, negative,
+// fractional or above-ceiling value refuses the boot (one log line per
+// reason, exit 1, no listener) instead of serving with an unvalidated cap.
+// Absent or blank keeps the documented 4 MiB default; the cap gates only the
+// forwarding loop below — admission, rate limits and the frame-size cap are
+// untouched.
+const BUFFER_CAP = parseBufferCap(process.env);
+if (BUFFER_CAP.problems.length > 0) {
+  for (const reason of BUFFER_CAP.problems) {
+    ev("warn", "invalid relay buffer cap, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const bufferCapBytes = BUFFER_CAP.cap;
+// P2-227: the process-wide socket capacity (RELAY_MAX_SOCKETS_GLOBAL) resolves
+// fail-closed like every knob above — a non-numeric, zero, negative,
+// fractional or above-ceiling value refuses the boot (one log line per
+// reason, exit 1, no listener) instead of serving with an unvalidated cap.
+// Absent or blank keeps the documented default; the cap gates only the
+// admission check below — the per-IP cap, the frame-size cap and the
+// backpressure verdict are untouched.
+const CAPACITY = parseMaxSockets(process.env);
+if (CAPACITY.problems.length > 0) {
+  for (const reason of CAPACITY.problems) {
+    ev("warn", "invalid relay socket capacity, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const maxSocketsGlobal = CAPACITY.maxSockets;
+// P2-230: the join deadline (RELAY_JOIN_DEADLINE_MS) resolves fail-closed
+// like every knob above — a non-numeric, zero, negative, fractional or
+// above-ceiling value refuses the boot (one log line per reason, exit 1, no
+// listener) instead of serving with an unvalidated deadline. Absent or blank
+// keeps the documented default; the documented disable value (-1) turns the
+// reaper off entirely.
+const JOIN_DEADLINE = parseJoinDeadline(process.env);
+if (JOIN_DEADLINE.problems.length > 0) {
+  for (const reason of JOIN_DEADLINE.problems) {
+    ev("warn", "invalid relay join deadline, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const joinDeadlineMs = JOIN_DEADLINE.deadlineMs;
+// P2-243: the per-room accumulated-volume budget (RELAY_ROOM_BUDGET_WINDOW_MS
+// + RELAY_ROOM_BUDGET_BYTES) resolves fail-closed like every knob above — a
+// non-numeric, zero, negative (other than the documented -1 disable value),
+// fractional or above-ceiling value refuses the boot (one log line per
+// reason, exit 1, no listener) instead of serving with an unvalidated
+// budget. Absent or blank keeps the documented defaults (1 GiB per room per
+// 1 h window); the budget gates only the forwarding loop below — admission,
+// the frame-size cap, the rate bucket and the backpressure verdict are
+// untouched.
+const ROOM_BUDGET = parseRoomBudget(process.env);
+if (ROOM_BUDGET.problems.length > 0) {
+  for (const reason of ROOM_BUDGET.problems) {
+    ev("warn", "invalid relay room budget, refusing to start (fail-closed)", { reason });
+  }
+  process.exit(1);
+}
+const roomBudgetLimits: RoomBudgetLimits = { windowMs: ROOM_BUDGET.windowMs, capBytes: ROOM_BUDGET.capBytes };
 // The only fs touches of the static route: existence/file checks per request
 // and a streamed body (empty for HEAD). isFile canonicalizes the target with
 // realpath before the containment comparison — with a separator boundary, so
@@ -239,9 +512,19 @@ interface Socket extends WebSocket {
   ip?: string;
   released?: boolean;
   lastSeen?: number;
+  // P2-230: when the connection was accepted and whether it ever entered a
+  // room — the join-deadline reaper's only two inputs (joindeadline.ts).
+  openedAt?: number;
+  joinedRoom?: boolean;
 }
 
 const rooms = new Map<string, Set<Socket>>();
+
+// P2-243: accumulated per-room volume within the tumbling window, keyed by
+// room id. Written only on the forwarding path (no timer, no sweep) and
+// discarded in leaveAll the moment the room itself dies, so the map can
+// never outgrow `rooms`.
+const roomBudgets = new Map<string, RoomBudgetState>();
 
 // --- optional metrics endpoint (bind configurable, token-optional) -----------
 // P2-132: the bind address is configurable (RELAY_METRICS_BIND) so a scraper
@@ -257,9 +540,27 @@ const m = {
   rejects: 0,
   rateLimited: 0,
   roomsRejected: 0,
+  // P2-293: the same refusals re-labeled by reason — each slot is fed at
+  // the exact statement below that increments roomsRejected, and nowhere
+  // else, so the sum never exceeds the total. Pure observation: no policy
+  // reads this, only the observability surfaces do.
+  roomsRejectedByReason: emptyRejectCounts(),
   staleTerminated: 0,
+  slowConsumers: 0,
+  capacityRefused: 0,
+  // P2-230: sockets closed for never having joined any room.
+  idleUnjoinedClosed: 0,
+  // P2-243: rooms closed for moving more bytes than the window budget allows.
+  roomBudgetTerminated: 0,
   startedAt: Date.now(),
 };
+// P2-313: process-observation state for the metrics surfaces — pure
+// observation, no policy reads these numbers. The sweep below records how
+// late each tick started relative to the intended interval (elapsed minus
+// interval), keeping only the window max; every /metrics scrape reads and
+// resets that max, so each window covers exactly one scrape interval.
+let sweepDelayMaxMs = 0;
+let lastSweepAt = Date.now();
 if (METRICS.port && METRICS.problems.length === 0) {
   createHttpServer((req, res) => {
     if (METRICS.token && !metricsAuthOk(req.headers.authorization, METRICS.token)) {
@@ -267,6 +568,14 @@ if (METRICS.port && METRICS.problems.length === 0) {
       return;
     }
     if (req.url?.startsWith("/metrics")) {
+      // P2-313: one process sample per scrape, and the read-and-reset of the
+      // scheduling-delay window — both formats get the same numbers and
+      // every scrape opens a fresh window. Observation only: nothing below
+      // feeds any limit, admission, refusal or socket close.
+      const procMem = process.memoryUsage();
+      const procUptimeS = Math.round((Date.now() - m.startedAt) / 1000);
+      const procDelayMs = sweepDelayMaxMs;
+      sweepDelayMaxMs = 0;
       if (req.url.includes("format=prom")) {
         const lines = [
           "# TYPE relay_connections_total counter",
@@ -283,10 +592,52 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_rate_limited_total ${m.rateLimited}`,
           "# TYPE relay_rooms_rejected counter",
           `relay_rooms_rejected ${m.roomsRejected}`,
+          // P2-293: one counter per documented room-reject reason, same
+          // naming grammar as the total line above — which stays
+          // byte-for-byte identical. Observation only: the reason names are
+          // fixed short strings, never a room id, address or IP.
+          ...ROOM_REJECT_REASONS.flatMap((r) => [
+            `# TYPE ${r.metric} counter`,
+            `${r.metric} ${m.roomsRejectedByReason[r.reason]}`,
+          ]),
           "# TYPE relay_stale_terminated counter",
           `relay_stale_terminated ${m.staleTerminated}`,
+          "# TYPE relay_slow_consumers_total counter",
+          `relay_slow_consumers_total ${m.slowConsumers}`,
+          "# TYPE relay_capacity_refused_total counter",
+          `relay_capacity_refused_total ${m.capacityRefused}`,
+          "# TYPE relay_idle_unjoined_closed counter",
+          `relay_idle_unjoined_closed ${m.idleUnjoinedClosed}`,
+          // P2-302: additive — rooms closed by the per-room volume budget.
+          // The SAME in-memory counter the /healthz getter publishes
+          // (roomsBudgetTerminated), read at scrape time: no new counter, no
+          // new route, no new request, no new timer, no termination-policy
+          // change. Zero publishes as zero, never omitted, so an operator
+          // alert distinguishes a healthy relay from a missing series.
+          // Boundary: a whole counter value only — never a room id, address,
+          // IP, port, token or any identifiable material.
+          "# TYPE relay_room_budget_terminated counter",
+          `relay_room_budget_terminated ${m.roomBudgetTerminated}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
+          // P2-294: additive certificate-expiry series — the SAME verdict the
+          // periodic revalidation below already maintains and the /healthz
+          // getter publishes, now on the surface the operator's metric
+          // scraping actually watches. Evaluated per scrape from values
+          // already in memory: no new timer, no new route, no new request.
+          // Plain mode (no certificate) contributes no line at all, and every
+          // pre-existing line above stays byte for byte.
+          ...certExpiryMetrics(
+            lastCertExpiryVerdict,
+            CERT_EXPIRY ? Math.floor((CERT_EXPIRY.notAfter - Date.now()) / 1000) : Number.NaN,
+          ),
+          // P2-313: additive process series at the very end — the SAME
+          // numbers the JSON body publishes below. Zero publishes as zero,
+          // never omitted, so an operator alert distinguishes a healthy
+          // relay from a missing series. Boundary: a byte count, a seconds
+          // count or a milliseconds count only — never an address, port,
+          // room id, token or any identifiable material.
+          ...procMetrics(procMem.rss, procMem.heapUsed, procMem.heapTotal, procUptimeS, procDelayMs),
         ];
         res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
         res.end(lines.join("\n") + "\n");
@@ -296,7 +647,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
       res.end(
         JSON.stringify(
           {
-            uptime_s: Math.round((Date.now() - m.startedAt) / 1000),
+            uptime_s: procUptimeS,
             connections_total: m.connectionsTotal,
             connections_active: wss.clients.size,
             frames_routed: m.framesRouted,
@@ -304,8 +655,25 @@ if (METRICS.port && METRICS.problems.length === 0) {
             rejects: m.rejects,
             rate_limited_total: m.rateLimited,
             rooms_rejected: m.roomsRejected,
+            // P2-293: per-reason split of rooms_rejected above (additive,
+            // same counters the /healthz breakdown publishes)
+            ...Object.fromEntries(
+              ROOM_REJECT_REASONS.map((r) => [r.json, m.roomsRejectedByReason[r.reason]]),
+            ),
             stale_terminated: m.staleTerminated,
+            slow_consumers_total: m.slowConsumers,
+            capacity_refused_total: m.capacityRefused,
+            idle_unjoined_closed: m.idleUnjoinedClosed,
+            // P2-302: additive — same counter the /healthz body publishes,
+            // read at scrape time; zero stays zero. A whole count only:
+            // never a room id, address, IP, port, token or any identifiable
+            // material.
+            room_budget_terminated: m.roomBudgetTerminated,
             rooms_active: rooms.size,
+            // P2-313: additive — the SAME process numbers the Prometheus
+            // text publishes above, next to the uptime this body already
+            // had. Observation only: no policy reads them.
+            ...procMetricsJson(procMem.rss, procMem.heapUsed, procMem.heapTotal, procDelayMs),
           },
           null,
           2,
@@ -329,6 +697,9 @@ if (METRICS.port && METRICS.problems.length === 0) {
 }
 
 function join(socket: Socket, room: string) {
+  // P2-230: marks the peer as established for the join-deadline reaper —
+  // once a socket entered any room it is never closed for idleness.
+  socket.joinedRoom = true;
   socket.rooms ??= new Set();
   socket.rooms.add(room);
   let set = rooms.get(room);
@@ -342,7 +713,12 @@ function join(socket: Socket, room: string) {
 function leaveAll(socket: Socket) {
   for (const room of socket.rooms ?? []) {
     rooms.get(room)?.delete(socket);
-    if (rooms.get(room)?.size === 0) rooms.delete(room);
+    if (rooms.get(room)?.size === 0) {
+      rooms.delete(room);
+      // P2-243: the budget state dies with the room — the map never holds
+      // an entry for a room that no longer exists.
+      roomBudgets.delete(room);
+    }
   }
 }
 
@@ -363,6 +739,54 @@ const server =
     ? createHttpsServer({ cert: readFileSync(TLS.certPath), key: readFileSync(TLS.keyPath) })
     : createHttpServer();
 const wss = new WebSocketServer({ noServer: true, maxPayload: maxFrame });
+
+// P2-306: hot reload of the TLS pair. The boot preflight above is untouched —
+// it still reads the pair exactly once and refuses a broken one fail-closed.
+// What changed: the pair on disk can now be RENEWED while the relay runs, and
+// the material in service used to stay frozen at the boot-time bytes, so
+// every phone lost access at the renewal deadline until someone restarted the
+// relay. This state holds the impression of the pair in service (size and
+// mtime of each file plus the two validity instants); the SAME liveness sweep
+// P2-067 already schedules re-probes it — only when the file stats moved does
+// the sweep re-read and re-parse the pair (P2-306). Plain mode has no pair:
+// CERT_RELOAD stays undefined and not a single disk probe is added — the
+// plain-mode behavior stays byte for byte the pre-P2-306 one.
+const CERT_RELOAD = (() => {
+  if (TLS.mode !== "tls" || !CERT_EXPIRY) return undefined;
+  const impression: CertPairImpression = {
+    certSize: Number.NaN,
+    certMtimeMs: Number.NaN,
+    keySize: Number.NaN,
+    keyMtimeMs: Number.NaN,
+    notBefore: CERT_EXPIRY.notBefore,
+    notAfter: CERT_EXPIRY.notAfter,
+  };
+  try {
+    const certStat = statSync(TLS.certPath);
+    const keyStat = statSync(TLS.keyPath);
+    impression.certSize = certStat.size;
+    impression.certMtimeMs = certStat.mtimeMs;
+    impression.keySize = keyStat.size;
+    impression.keyMtimeMs = keyStat.mtimeMs;
+  } catch {
+    // partial impression: the sweep re-probes the files and compares
+  }
+  return {
+    // what the running server actually holds — moves only when a renewal is
+    // applied for real
+    inService: { ...impression },
+    // the last on-disk state the sweep has seen, whatever the verdict — a
+    // refused or inapplicable pair is never re-read tick after tick; only a
+    // NEW file change re-opens the verdict
+    onDisk: { ...impression },
+    // P2-306: exactly one log line per transition — a repeated refusal of the
+    // same reason (a renewal stuck illegible for hours) never spams the log.
+    // The dedupe gates the LOG LINE only, never the application: two valid
+    // renewals in a row must both apply even though the static outcome text
+    // is identical.
+    lastOutcome: undefined as CertReloadOutcome | undefined,
+  };
+})();
 let counter = 0;
 
 // P2-023: SIGTERM/SIGINT graceful shutdown — drain ≤3s, then exit 0.
@@ -394,6 +818,36 @@ server.on(
       startedAt: m.startedAt,
       rooms: () => rooms.size,
       roomsRejected: () => m.roomsRejected,
+      // P2-293: additive — the per-reason split of roomsRejected above, fed
+      // at the exact same two increment points. healthz.ts normalizes it
+      // through the pure rejectreasons.ts rules; a malformed set adds
+      // nothing to the probe body and the total keeps its byte-for-byte
+      // contract.
+      roomsRejectedBreakdown: () => m.roomsRejectedByReason,
+      // P2-243: additive — rooms closed by the per-room volume budget.
+      roomsBudgetTerminated: () => m.roomBudgetTerminated,
+      // P2-290: additive — the probe announces the certificate verdict the
+      // P2-259 runtime revalidation already maintains (`lastCertExpiryVerdict`,
+      // refreshed by the SAME ping sweep; no new timer, no new route, no new
+      // request, boot refusal untouched) plus the whole seconds left before
+      // expiry. Plain mode has no certificate: the getter answers undefined
+      // and the body stays byte-for-byte the pre-P2-290 shape. Only the short
+      // static verdict and a seconds count leave the process — no subject,
+      // issuer, serial, fingerprint, path or host material.
+      certExpiry: () =>
+        CERT_EXPIRY && lastCertExpiryVerdict
+          ? { verdict: lastCertExpiryVerdict, expiresAtMs: CERT_EXPIRY.notAfter }
+          : undefined,
+      // P2-310: additive — the probe announces the chain classification the
+      // boot preflight computed and the SAME reload sweep keeps current:
+      // `lastCertChainState` is the variable the sweep reassigns when it
+      // adopts renewed material, so the probe always describes the pair in
+      // service (the boot-time CERT_CHAIN const would freeze the first
+      // classification forever). Plain mode has no certificate: the getter
+      // answers undefined and the body stays byte-for-byte the pre-P2-310
+      // shape. Only the short static verdict leaves the process — no
+      // subject, issuer, serial, fingerprint, path or host material.
+      certChain: () => lastCertChainState,
     },
     isShuttingDown,
     // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the
@@ -432,6 +886,21 @@ server.listen(PORT, () => {
     ratePerMin: RATE_PER_MIN,
     rateBurst: RATE_BURST,
     pingIntervalS: PING_INTERVAL_S,
+    // P2-217: additive provenance field — the resolved per-socket backpressure
+    // cap in bytes. No pre-existing field changed name or meaning.
+    bufferCapBytes,
+    // P2-227: additive provenance field — the resolved process-wide live
+    // socket capacity. No pre-existing field changed name or meaning.
+    maxSocketsGlobal,
+    // P2-230: additive provenance field — the resolved join deadline in ms
+    // (JOIN_DEADLINE_MS_DISABLED when the reaper is disabled). No
+    // pre-existing field changed name or meaning.
+    joinDeadlineMs,
+    // P2-243: additive provenance fields — the resolved per-room volume
+    // budget (capBytes is ROOM_BUDGET_BYTES_DISABLED when the budget is
+    // disabled). No pre-existing field changed name or meaning.
+    roomBudgetWindowMs: ROOM_BUDGET.windowMs,
+    roomBudgetCapBytes: ROOM_BUDGET.capBytes,
     // P2-177: additive provenance field — the resolved log level this
     // process writes at. No pre-existing field changed name or meaning.
     logLevel: LOG.level,
@@ -480,10 +949,27 @@ wss.on("connection", (socket: Socket, req) => {
     socket.close(1013, "too many connections");
     return;
   }
+  // P2-227: process-wide capacity gate — the last admission check, after the
+  // per-IP cap and before the connection is accepted into the relay (the ws
+  // client is already inside wss.clients here, so the count is the live
+  // total). A refusal closes ONLY this one socket: no room is touched, no
+  // established connection is affected. The per-IP slot this attempt took is
+  // given back, so a flood of refusals cannot leak per-IP budgets.
+  const capacity = acceptVerdict(wss.clients.size, maxSocketsGlobal);
+  if (capacity.action === "refuse") {
+    ipCap.release(ip);
+    m.capacityRefused++;
+    ev("warn", "connection refused: process at socket capacity", { count: m.capacityRefused, reason: capacity.reason });
+    socket.close(1013, "server busy");
+    return;
+  }
   socket.ip = ip;
   socket.id = `s${Date.now().toString(36)}${(counter++).toString(36)}`;
   socket.rooms = new Set();
   socket.lastSeen = Date.now();
+  // P2-230: the join-deadline baseline — stamped only after every admission
+  // check passed, so a socket without this stamp is never reaped.
+  socket.openedAt = Date.now();
   ev("info", "connection open", { id: socket.id, total: wss.clients.size });
 
   // every pong proves the peer is alive at the transport level (ws clients
@@ -526,6 +1012,8 @@ wss.on("connection", (socket: Socket, req) => {
     // never close — with only a prefix logged, as everywhere else.
     if (!isValidRoomId(frame.room)) {
       m.roomsRejected++;
+      // P2-293: observation only — same refusal, re-labeled by reason
+      m.roomsRejectedByReason["invalid-room-id"]++;
       ev("warn", "frame dropped: invalid room id", {
         id: socket.id,
         room: String(frame.room).slice(0, 8),
@@ -534,6 +1022,8 @@ wss.on("connection", (socket: Socket, req) => {
     }
     if (!socket.rooms?.has(frame.room) && (socket.rooms?.size ?? 0) >= MAX_ROOMS_PER_SOCKET) {
       m.roomsRejected++;
+      // P2-293: observation only — same refusal, re-labeled by reason
+      m.roomsRejectedByReason["socket-room-cap"]++;
       ev("warn", "frame dropped: socket room cap exceeded", {
         id: socket.id,
         room: frame.room.slice(0, 8),
@@ -565,16 +1055,57 @@ wss.on("connection", (socket: Socket, req) => {
 
     const targets = rooms.get(frame.room);
     if (!targets) return;
-    m.framesRouted++;
-    m.bytesRouted += frame.payload.length;
     const out = JSON.stringify({
       room: frame.room,
       from: frame.from ?? socket.id,
       seq: frame.seq,
       payload: frame.payload,
     });
+    // P2-243: per-room accumulated-volume verdict, consulted at the SAME
+    // forwarding point as the token bucket above and the per-socket
+    // backpressure verdict in the loop below — no new timer, no sweep, boot
+    // unchanged. Only this frame's serialized byte count is counted: never
+    // its content, never an envelope field, never any identity. The state
+    // dies with the room (leaveAll), so the map cannot grow forever.
+    const budget = budgetVerdict(roomBudgets.get(frame.room), Date.now(), out.length, roomBudgetLimits);
+    roomBudgets.set(frame.room, budget.state);
+    if (budget.plan.action === "terminate") {
+      m.roomBudgetTerminated++;
+      ev("warn", "room closed: volume above the window budget", {
+        room: frame.room.slice(0, 8),
+        count: m.roomBudgetTerminated,
+        reason: ROOM_BUDGET_CLOSE_REASON,
+      });
+      // the same close path every policy close uses (room full, slow
+      // consumer): each socket of the room closes alone and runs the normal
+      // close path — per-IP slot release included
+      for (const t of [...targets]) t.close(ROOM_BUDGET_CLOSE_CODE, ROOM_BUDGET_CLOSE_REASON);
+      return;
+    }
+    if (budget.plan.action === "warn") {
+      // at most ONE line per room per window (budgetVerdict's warned flag)
+      ev("warn", "room nearing the window volume budget", {
+        room: frame.room.slice(0, 8),
+        reason: ROOM_BUDGET_WARN_REASON,
+      });
+    }
+    m.framesRouted++;
+    m.bytesRouted += frame.payload.length;
     for (const t of targets) {
-      if (t !== socket && t.readyState === t.OPEN) t.send(out);
+      if (t === socket || t.readyState !== t.OPEN) continue;
+      // P2-217: backpressure gate — consult the target's own accumulated
+      // outgoing bytes BEFORE every send. Only two outcomes exist: queue the
+      // frame, or close the slow socket (never a silent drop — the relay is
+      // blind and could not re-send it). The close touches only this target;
+      // the sender and every other peer of the room keep routing.
+      const verdict = sendVerdict(t.bufferedAmount, out.length, bufferCapBytes);
+      if (verdict.action === "close-slow") {
+        m.slowConsumers++;
+        ev("warn", "slow consumer closed", { count: m.slowConsumers, reason: verdict.reason });
+        t.close(SLOW_CONSUMER_CLOSE_CODE, SLOW_CONSUMER_CLOSE_REASON);
+        continue;
+      }
+      t.send(out);
     }
   });
 
@@ -595,10 +1126,180 @@ wss.on("connection", (socket: Socket, req) => {
 if (PING_INTERVAL_S > 0) {
   setInterval(() => {
     const now = Date.now();
+    // P2-313: scheduling-delay observation riding this SAME sweep tick (no
+    // new timer, no new route, no new request, no new dependency) — how much
+    // later this tick started than the intended interval. Only the window
+    // max is kept; the /metrics scrape reads and resets it. Log-only
+    // observability: nothing here closes, refuses or throttles anything.
+    const sweepLateMs = now - lastSweepAt - PING_INTERVAL_S * 1000;
+    lastSweepAt = now;
+    if (sweepLateMs > sweepDelayMaxMs) sweepDelayMaxMs = sweepLateMs;
+    // P2-306 hot reload, riding the SAME sweep tick the ping interval already
+    // schedules (no new timer, no new route, no new request, no new
+    // dependency): the pair is re-read ONLY when its file impression moved
+    // since the last probe. On an adopt verdict the fresh material is applied
+    // with setSecureContext — a live-socket-safe swap that reaches only the
+    // following handshakes, no established socket is ever closed — and the
+    // instants feeding the expiry verdict below (and, through them, the
+    // P2-290 healthz field and the P2-294 metrics) start describing the pair
+    // now on disk. On a refuse verdict the material in service stays: a
+    // broken renewal never trades a working relay for a worse pair. Every
+    // transition logs exactly one static line — no path, subject, issuer,
+    // serial, fingerprint or any certificate material, same grammar as the
+    // certexpiry.ts phrases. Plain mode has no pair (CERT_RELOAD undefined):
+    // this block never runs and not a single disk probe is added.
+    if (CERT_RELOAD) {
+      let probe: { cert: Stats; key: Stats } | undefined;
+      try {
+        probe = { cert: statSync(TLS.certPath), key: statSync(TLS.keyPath) };
+      } catch {
+        probe = undefined;
+      }
+      const moved =
+        probe !== undefined &&
+        (probe.cert.size !== CERT_RELOAD.onDisk.certSize ||
+          probe.cert.mtimeMs !== CERT_RELOAD.onDisk.certMtimeMs ||
+          probe.key.size !== CERT_RELOAD.onDisk.keySize ||
+          probe.key.mtimeMs !== CERT_RELOAD.onDisk.keyMtimeMs);
+      if (probe && moved) {
+        const fresh: CertPairImpression = {
+          certSize: Number.NaN,
+          certMtimeMs: Number.NaN,
+          keySize: Number.NaN,
+          keyMtimeMs: Number.NaN,
+          notBefore: Number.NaN,
+          notAfter: Number.NaN,
+        };
+        let freshCert: Buffer | undefined;
+        let freshKey: Buffer | undefined;
+        try {
+          freshCert = readFileSync(TLS.certPath);
+          freshKey = readFileSync(TLS.keyPath);
+          const cert = new X509Certificate(freshCert);
+          fresh.notBefore = Date.parse(cert.validFrom);
+          fresh.notAfter = Date.parse(cert.validTo);
+          // stats captured BEFORE the read: a renewal whose writes straddle
+          // this tick leaves the impression one step behind the disk and the
+          // next sweep re-reads and heals it
+          fresh.certSize = probe.cert.size;
+          fresh.certMtimeMs = probe.cert.mtimeMs;
+          fresh.keySize = probe.key.size;
+          fresh.keyMtimeMs = probe.key.mtimeMs;
+        } catch {
+          // partial impression: the verdict refuses fail-closed
+        }
+        // the on-disk impression moves whatever the verdict — a refused or
+        // inapplicable pair is never re-read and re-parsed tick after tick
+        CERT_RELOAD.onDisk = fresh;
+        const outcome = certReloadVerdict(CERT_RELOAD.inService, fresh, now, CERT_CLOCK_TOLERANCE_MS);
+        let applied = false;
+        if (outcome.verdict === "adopt") {
+          // the swap itself is where a mismatched or truncated key (a renewal
+          // written as two files whose writes straddled a sweep) is first
+          // proven: the throw is caught and becomes a refusal — the relay
+          // keeps the material in service instead of crashing at exactly the
+          // renewal deadline
+          try {
+            if (freshCert && freshKey && CERT_EXPIRY && "setSecureContext" in server) {
+              server.setSecureContext({ cert: freshCert, key: freshKey });
+              CERT_EXPIRY.notBefore = fresh.notBefore;
+              CERT_EXPIRY.notAfter = fresh.notAfter;
+              CERT_RELOAD.inService = fresh;
+              applied = true;
+            }
+          } catch {
+            applied = false;
+          }
+        }
+        // one static line per transition: every ADOPTION follows a real file
+        // change and logs exactly once (the next tick finds the stats settled,
+        // so this can never spam), while a REFUSAL of the same stuck pair
+        // would repeat tick after tick and is deduplicated by verdict+reason.
+        // Neither branch gates the application: two valid renewals in a row
+        // (A→B→C) must both swap the material even though the static text is
+        // identical. A renewal that validated but could not be applied is
+        // logged as the refusal it effectively is.
+        const logged: CertReloadOutcome =
+          outcome.verdict === "adopt" && !applied
+            ? {
+                verdict: "refuse",
+                reason:
+                  "relay certificate renewal could not be applied: keeping the material in service instead of risking a broken pair (fail-closed)",
+              }
+            : outcome;
+        if (logged.verdict === "adopt") {
+          CERT_RELOAD.lastOutcome = logged;
+          ev("info", "relay TLS certificate renewed", { reason: logged.reason });
+        } else if (
+          logged.verdict === "refuse" &&
+          (logged.verdict !== CERT_RELOAD.lastOutcome?.verdict ||
+            logged.reason !== CERT_RELOAD.lastOutcome?.reason)
+        ) {
+          CERT_RELOAD.lastOutcome = logged;
+          ev("warn", "relay TLS certificate renewal refused", { reason: logged.reason });
+        }
+        // P2-310: adopted material re-classifies the certificate chain on
+        // the SAME sweep tick — no new timer, route, request or dependency.
+        // The verdict is recomputed only when new material actually entered
+        // service (a refused pair leaves the material in service, so its
+        // classification stands); one deduplicated line per transition,
+        // log-only — it never closes a socket, exits or refuses anything.
+        if (applied && freshCert) {
+          const nextChain = certChainVerdict(extractCertLinks(freshCert.toString("utf8")));
+          if (nextChain.verdict !== lastCertChainState) {
+            ev(
+              certChainLogLevel(nextChain.verdict),
+              "relay TLS certificate chain state changed",
+              { verdict: nextChain.verdict, reason: nextChain.reason },
+            );
+          }
+          lastCertChainState = nextChain.verdict;
+        }
+      }
+    }
+    // P2-259 runtime re-evaluation: the boot decision is re-checked on the
+    // SAME sweep tick the ping interval already schedules — no new timer,
+    // and only while a TLS pair exists. Strictly log-only: it never closes
+    // a socket, never exits the process, never refuses a connection and
+    // never alters the healthz body (byte-for-byte the same in the healthy
+    // and the P2-145 drain case) — dropping live conversations over a date
+    // would be worse than the problem. One deduplicated line per verdict
+    // transition.
+    if (CERT_EXPIRY) {
+      const nextCert = certExpiryVerdict(
+        CERT_EXPIRY.notBefore,
+        CERT_EXPIRY.notAfter,
+        now,
+        CERT_CLOCK_TOLERANCE_MS,
+        CERT_WARN_WINDOW_MS,
+      );
+      if (nextCert.verdict !== lastCertExpiryVerdict) {
+        lastCertExpiryVerdict = nextCert.verdict;
+        ev("warn", "relay TLS certificate validity changed state", { reason: nextCert.reason });
+      }
+    }
     for (const dead of decideStale(now, wss.clients as Set<Socket>, PING_INTERVAL_S, PING_INTERVAL_S)) {
       m.staleTerminated++;
       ev("info", "stale socket terminated", { id: dead.id, silentS: PING_INTERVAL_S * 2 });
       dead.terminate();
+    }
+    // P2-230: reap sockets that connected but never entered any room — the
+    // browser's automatic pong keeps them "alive" for the liveness verdict
+    // while they hold a global-cap and per-IP slot forever. Consulted inside
+    // the SAME periodic sweep as the liveness verdict: no new timer. The
+    // only effect is closing that one socket with the policy code below;
+    // established rooms, the frame grammar, the admission caps and the
+    // slow-consumer verdict are untouched, and the normal close path (per-IP
+    // slot release) runs exactly as on any other hangup. The warn line
+    // carries the counter and the fixed reason only — never a room id, a
+    // client address or a payload excerpt (P2-174/P2-177).
+    for (const idle of idleUnjoined(now, wss.clients as Set<Socket>, joinDeadlineMs)) {
+      m.idleUnjoinedClosed++;
+      ev("warn", "connection closed: never joined a room", {
+        count: m.idleUnjoinedClosed,
+        reason: JOIN_UNJOINED_CLOSE_REASON,
+      });
+      idle.close(JOIN_UNJOINED_CLOSE_CODE, JOIN_UNJOINED_CLOSE_REASON);
     }
     for (const c of wss.clients) {
       if (c.readyState === c.OPEN) c.ping();

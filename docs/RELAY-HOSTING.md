@@ -27,6 +27,21 @@ docker run -d --name relay \
   ghcr.io/caiovicentino/opencode-remote:0.2.0
 ```
 
+Since P2-222 the same build + smoke gate also runs on every pull request that
+touches the relay surface (`apps/relay`, `deploy/relay/Dockerfile`,
+`.dockerignore`, `package-lock.json`): the PR-scoped `relay-image` job of
+`.github/workflows/ci.yml` builds the image with an ephemeral local tag,
+boots it on an ephemeral loopback port and runs the identical smoke battery —
+never logging in to a registry, pushing, publishing or reading secrets.
+Reproduce it locally:
+
+```bash
+docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .
+docker run -d --name relay-smoke -p "127.0.0.1:8787:8787" relay-smoke:pr
+npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:8787 "$(docker exec relay-smoke whoami)"
+docker rm -f relay-smoke
+```
+
 Pin the version tag instead of `latest`: `latest` moves with every release
 and a casual `pull` can land you on a version you never tested. Publishing
 is opt-in fail-closed — the workflow only pushes when the repository variable
@@ -89,8 +104,13 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 |---|---|---|
 | `RELAY_PORT` | `8787` | Keep `8787` on the container's private network and publish it only to the TLS terminator. Set it if you map a different host port. |
 | `RELAY_MAX_SOCKETS` | `1000` | Total concurrent websocket ceiling. Raise it only on an instance sized for the load (a stage-4 scale-out can grow this without recompiling). |
+| `RELAY_MAX_SOCKETS_GLOBAL` | `1000` | Process-wide live-socket capacity enforced at admission (P2-227): once the live count reaches it, every new upgrade is refused — close code `1013` ("server busy"), additive `capacity_refused_total` counter — instead of accepting one more socket into a process that may be near its file-descriptor limit. Ceiling `10000`; a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). See the capacity section below. |
+| `RELAY_JOIN_DEADLINE_MS` | `60000` | Deadline for a connection to enter its first room (P2-230): a socket that never sends a frame is closed with close code `4001` (`socket ocioso: nunca entrou em quarto`) and frees its global-cap and per-IP slot — the automatic pong would otherwise keep it alive forever. Ceiling `3600000` (1 h); the documented disable value is `-1`; a non-numeric, zero, negative (other than `-1`), fractional or above-ceiling value refuses the boot (fail-closed). See the join-deadline section below. |
 | `RELAY_MAX_PER_ROOM` | `10` | Peer ceiling per room. Must not exceed `RELAY_MAX_SOCKETS`. |
 | `RELAY_MAX_FRAME_BYTES` | `1000000` | Largest accepted frame in bytes (ws `maxPayload`). Hard ceiling is `16777216` (16 MiB, the int32 `maxPayload` bound); sealed op payloads are far smaller. |
+| `RELAY_BUFFER_CAP_BYTES` | `4194304` | Per-socket ceiling on accumulated outgoing bytes (P2-217): when a target's own queue plus the next frame passes it, that target is closed with close code `1013` and the reason `consumidor lento: buffer de saida acima do teto` instead of buffering forever. Ceiling `67108864` (64 MiB); a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). Raise it only on an instance whose peers legitimately buffer multi-megabyte bursts. |
+| `RELAY_ROOM_BUDGET_WINDOW_MS` | `3600000` | Length of the per-room volume-budget window (P2-243): a tumbling window per room; the first forwarded frame after a reset starts the next one. Ceiling `86400000` (24 h); a non-numeric, zero, negative, fractional or above-ceiling value refuses the boot (fail-closed). See the room-budget section below. |
+| `RELAY_ROOM_BUDGET_BYTES` | `1073741824` | Per-room ceiling on accumulated forwarded-frame bytes within the window (P2-243): crossing half the cap warns once per window, crossing the cap closes every socket of the room. Ceiling `17179869184` (16 GiB); the documented disable value is `-1`; a non-numeric, zero, negative (other than `-1`), fractional or above-ceiling value refuses the boot (fail-closed). See the room-budget section below. |
 | `RELAY_METRICS_PORT` | unset (off) | Leave unset in containers unless a scraper needs it. When set, the endpoint serves counters on `/metrics` (JSON, or Prometheus text with `?format=prom`). |
 | `RELAY_METRICS_BIND` | `127.0.0.1` | Keep the loopback default unless your scraper sits outside the container (k8s sidecars share the network namespace and don't need it). Any non-loopback address **requires** `RELAY_METRICS_TOKEN` — the relay refuses to boot the metrics endpoint on a network-exposed interface without one (fail-closed) and logs the reason instead. |
 | `RELAY_METRICS_TOKEN` | unset (no auth) | Required whenever `RELAY_METRICS_BIND` leaves loopback. Scrapers must send `Authorization: Bearer <token>`; every other request gets an empty `401`. The endpoint exposes envelope counters only — no plaintext, no key material, no room ids. |
@@ -142,6 +162,157 @@ reproduces the historical limits exactly. Nothing about the blind-router
 property changes with the configured values: the relay still never reads
 plaintext or key material.
 
+### Backpressure: the relay closes who does not read (P2-217)
+
+Before P2-217 the only memory defense on the forwarding path was the
+per-frame size cap: a target that simply stopped reading — a phone whose TCP
+window froze on a bad 4G link, a browser tab suspended by the OS — kept
+accepting frames into its outgoing socket buffer, growing the relay process's
+memory without bound until the process died and took every room's
+conversation down at once, with no log line explaining why. On a hosted
+multi-tenant relay, one dead connection could consume everyone's memory.
+
+The relay now consults a per-socket verdict **before every send**: the
+target's own accumulated outgoing bytes (`bufferedAmount`) plus the next
+frame may not pass `RELAY_BUFFER_CAP_BYTES` (default 4 MiB, ceiling 64 MiB).
+In other words, the relay closes who does not read instead of accumulating
+memory. A peer over the line is closed **alone** — close code `1013` ("try
+again later") with the reason `consumidor lento: buffer de saida acima do
+teto` — while the sender and every other peer of the room keep routing
+uninterrupted. Each such close increments the additive
+`slow_consumers_total` counter (`relay_slow_consumers_total` in the
+Prometheus text format) and writes one `warn` JSONL line carrying only the
+counter and the reason — never a room id, a client address or any payload
+content.
+
+Two properties are deliberate, not incidental:
+
+- **Frames are never dropped or queued out of order.** The relay is blind —
+  it cannot re-send what it discards — so silently swallowing a frame would
+  corrupt the end-to-end stream while both ends still look healthy. Closing
+  the slow socket is the honest signal: daemons and phones already reconnect
+  with backoff and resend their state.
+- **The verdict fails open.** If a socket implementation cannot report its
+  accumulated bytes (missing, negative or non-finite count), the frame is
+  sent: a peer without that accounting must never have a good connection
+  closed because of it.
+
+The knob is validated fail-closed at boot like every other relay knob
+(`invalid relay buffer cap, refusing to start`, exit 1, no listener), and the
+`relay listening` line carries the resolved value as an additive
+`bufferCapBytes` field.
+
+### Capacity: the process refuses new sockets instead of dying (P2-227)
+
+A hosted multi-tenant relay serves many room pairs from one process, and
+every live websocket holds one file descriptor. Before P2-227 the only
+connection ceiling was per identity (`RELAY_MAX_PER_IP`, default 20) — so a
+handful of distinct addresses, or a proxy misconfiguration that funnels
+thousands of tenants through one trusted hop, could push the process to its
+file-descriptor exhaustion point and kill every tenant's conversations at
+once, with no line explaining why.
+
+The admission path now consults a process-wide verdict **after** the per-IP
+cap and **before** a connection is accepted: when the live socket count is at
+`RELAY_MAX_SOCKETS_GLOBAL` (default 1000, ceiling 10000), the new socket
+alone is refused — close code `1013` ("server busy"). Established
+connections and rooms are untouched, the additive `capacity_refused_total`
+counter (`relay_capacity_refused_total` in the Prometheus text format)
+increments, and one `warn` JSONL line carries only the counter and the reason
+(`teto global de sockets atingido`) — never a room id, a client address or any
+payload content. The verdict also fails open when the live count is missing,
+negative or non-finite: a broken count must never refuse a good connection.
+In short, the process degrades to "new peers must wait for a slot" instead of
+dying whole; daemons and phones already reconnect with backoff and find
+another instance (or the same one after drain).
+
+Size the knob together with the host's file-descriptor limit: the relay needs
+one descriptor per live websocket plus a fixed handful for the listeners,
+stdout and timers, so keep `RELAY_MAX_SOCKETS_GLOBAL` comfortably below the
+`nofile` limit the process actually runs with (`ulimit -n`, or the docker
+`--ulimit nofile=…` / compose equivalent). Raise both together when an
+instance must legitimately hold more peers — and remember the ws-level
+`RELAY_MAX_SOCKETS` above still applies as the outer bound. The knob is
+validated fail-closed at boot (`invalid relay socket capacity, refusing to
+start`, exit 1, no listener) and the `relay listening` line carries the
+resolved value as an additive `maxSocketsGlobal` field.
+
+### Connections must earn their slot: the join deadline (P2-230)
+
+A socket that connects and never sends a frame used to hold its capacity
+slot forever: the ws pong is emitted by the browser protocol layer
+automatically, with no action from the client, so the liveness sweep judged
+the idle peer perfectly alive. On a multi-tenant relay a handful of such
+sockets exhausts `RELAY_MAX_SOCKETS_GLOBAL` and the per-IP cap and every
+real phone gets "server busy" with no line explaining why.
+
+Now the same sweep that reaps silent peers also closes connections that
+never entered any room: after `RELAY_JOIN_DEADLINE_MS` (default `60000` ms)
+a roomless socket is closed alone with close code `4001` and the fixed
+reason `socket ocioso: nunca entrou em quarto`. Established conversations
+are never touched, the additive `idle_unjoined_closed` counter
+(`relay_idle_unjoined_closed` in the Prometheus text format) increments, and
+one `warn` JSONL line carries only the counter and the reason — never a room
+id, a client address or any payload content. The verdict rides the existing
+`RELAY_PING_INTERVAL_S` sweep (no new timer) and the resolved value is
+advertised on the `relay listening` line as an additive `joinDeadlineMs`
+field.
+
+Sizing: keep the default 60 s — a real phone needs one round-trip after the
+handshake, and even a cold radio, fresh TLS and a captive portal finish
+seconds inside it. Raise it only if you serve networks with minutes-long
+connection setups (satellite, heavily throttled mobile gateways); the
+ceiling is one hour. `-1` disables the reaper entirely — sensible only for a
+private, allowlisted relay where every peer provably joins. A non-numeric,
+zero, negative (other than `-1`), fractional or above-ceiling value refuses
+the boot (fail-closed).
+
+### One room cannot eat the link: the per-room volume budget (P2-243)
+
+Every traffic control above is instantaneous: the per-frame cap bounds one
+frame (P2-141), the token bucket bounds frames per second per connection
+(P3-004) and the backpressure cap bounds bytes queued on one socket
+(P2-217). A room whose peers stayed comfortably inside all three could
+still move bytes forever — the hosted relay's traffic bill had no ceiling,
+and no log line said which room grew. The per-room budget is the missing
+accumulated dimension: within a tumbling window (`RELAY_ROOM_BUDGET_WINDOW_MS`,
+default one hour), a room may forward at most
+`RELAY_ROOM_BUDGET_BYTES` (default 1 GiB, ~3.8x the heaviest legitimate
+room-hour of the product: chat + voice + file transfers + screenshots). Two
+lines are the whole operator surface:
+
+- **One warn per window, at half the cap**: `room nearing the window volume
+  budget` — an early signal while the room can still finish the window
+  legitimately. At most one line per room per window.
+- **Terminate at the cap**: `room closed: volume above the window budget` —
+  every socket of the room is closed (close code `1013`, reason `sala
+  encerrada: volume acima do teto da janela`) through the same policy-close
+  path as a full room or a slow consumer; endpoints reconnect with backoff
+  and a fresh window. A total exactly AT the cap is still serviceable — only
+  strictly above it terminates.
+
+The accounting is honest about what the relay can see: only the serialized
+frame's byte count is accumulated per room — never payload content, never an
+envelope field, never an identity (the blind-router contract is untouched).
+Log lines carry at most an 8-character room-id prefix, the same convention
+as every other relay rejection line. The state dies with the room (the
+moment its last peer leaves), so there is no map growth and no new timer:
+the verdict is consulted on the forwarding path, where the rate bucket and
+the backpressure verdict already sit. The additive `roomsBudgetTerminated`
+field on `/healthz` counts terminated rooms since boot, and the same counter
+rides the `/metrics` endpoint (P2-302) as `relay_room_budget_terminated` in
+the Prometheus text format and `room_budget_terminated` in the JSON — zero
+published as zero, never omitted, so a scraping-based alert distinguishes a
+healthy relay from a missing series.
+
+To adjust: set `RELAY_ROOM_BUDGET_BYTES` (ceiling 16 GiB) and/or
+`RELAY_ROOM_BUDGET_WINDOW_MS` (ceiling 24 h) — both validated fail-closed at
+boot like every other knob (`invalid relay room budget, refusing to start`,
+exit 1, no listener), and the resolved values ride the `relay listening`
+line as additive `roomBudgetWindowMs`/`roomBudgetCapBytes` fields. To turn
+the budget off entirely (a private, allowlisted relay), set
+`RELAY_ROOM_BUDGET_BYTES=-1` — the only accepted non-positive value.
+
 ### The TLS pair is mandatory together and fail-closed (P2-154)
 
 `RELAY_TLS_CERT` and `RELAY_TLS_KEY` are validated as a pair before any
@@ -167,6 +338,45 @@ host-local detail. The `relay listening` line carries an additive
 `tlsSource` field (`env` when the relay terminates TLS itself, `none` behind
 a terminator); no pre-existing field changed meaning, and no log line ever
 prints certificate or key material.
+
+The certificate's validity window is checked too (P2-259): the relay **refuses
+to boot** when the certificate is expired or not yet valid by more than 24
+hours (a clock tolerance, so a skewed host clock never takes a healthy relay
+down), and it **only warns** — at boot and on each liveness sweep afterwards,
+without dropping a single connection — starting **14 days before expiry**
+(`relay TLS certificate nearing expiry`), so renew the certificate when the
+warning shows up instead of waiting for the phones to lose access.
+
+A renewed certificate also takes effect without a restart (P2-306): the same
+liveness sweep that re-checks the validity window watches the pair's file
+stats and, when they move, re-reads and re-parses it. A valid renewal is
+applied in place (`relay TLS certificate renewed`) — the next handshake uses
+the new material while already-established connections stay untouched — and
+the `/healthz` and `/metrics` expiry fields follow the pair now on disk. A
+renewal that is illegible, unreadable, expired, not yet valid beyond the same
+24 h tolerance, or whose key does not match its certificate is refused with a
+single `relay TLS certificate renewal refused` line and the relay keeps
+serving the material that still works, so a botched renewal never costs an
+outage. No timer, route, port or dependency was added, plain mode (no pair
+configured) never touches this path, and no log line ever carries the file
+path or any certificate material.
+
+The certificate **chain** is classified too (P2-310): the boot reads every
+`CERTIFICATE` block in `RELAY_TLS_CERT` — not just the first one the
+validity preflight sees — and logs exactly one static line (`relay TLS
+certificate chain classified`) with the outcome: `complete` (leaf and
+intermediates, in file order), `self-signed` (one certificate only),
+`leaf-only` (the classic mistake of pointing the variable at the bare leaf —
+clients that do not already hold the intermediate in cache may refuse the
+handshake while the owner's own Mac, which does, connects fine),
+`broken-order` (two or more certificates that do not chain in file order) or
+`unknown` (the file could not be assessed — fail-closed). When the hot
+reload above adopts a renewal, the same sweep re-classifies the new material
+and logs one deduplicated `relay TLS certificate chain state changed` line
+per transition. The verdict is purely explanatory: it never refuses a boot,
+closes a connection or changes an admission decision — it exists so the
+operator hears the explanation from the relay instead of reverse-engineering
+a phone that refuses to connect.
 
 ### The log level is fail-closed too (P2-177)
 
@@ -232,6 +442,14 @@ and the process exits with code `1` before **any** listener opens. Problem
 text cites `RELAY_WEB_DIR` and never the configured path — log shippers get
 no host-local detail. The `relay listening` line carries an additive
 `webRoot: true|false` field; no path is ever logged.
+
+Since P2-225 the boot also verifies the entry document's own references: an
+`index.html` whose scripts or styles are missing or unreadable next to it —
+a partial or stale volume-mounted copy — refuses the boot the same way (one
+`invalid relay web root` line per missing asset, exit 1, no listener), so
+before publishing a bundle boot the image once with `RELAY_WEB_DIR` pointed
+at the exact directory you are about to ship and confirm it reaches the
+`relay listening` line.
 
 ### The served page ships locked down: security headers (P2-192)
 
@@ -302,6 +520,102 @@ start`) and the process exits `1` before any listener opens. Absent or blank
 keeps the defaults. The `relay listening` line carries the resolved values as
 an additive `webBudget` field when the web root is enabled.
 
+### The static route compresses with gzip (P2-198)
+
+A phone opening the app over the relay's own URL used to download every asset
+uncompressed: the raw bytes a vite build reports are several times the gzip
+size, on first load and on every cache miss, through the same process that
+routes everyone's sealed E2E frames. The static route now negotiates content
+encoding — decided by the pure `webencoding.ts` module, no new dependency —
+and answers `content-encoding: gzip` whenever the client's `accept-encoding`
+header allows it:
+
+- **Only text-like assets are compressible**: html, js, css, map, json, svg,
+  txt and webmanifest. `png`, `jpg`, `webp`, `ico` and `woff2` are already
+  compressed formats and are **never** compressed, whatever the header says;
+  anything outside the static allowlist is never served anyway.
+- **Two documented size thresholds bound the decision.** Bodies below
+  **1024 bytes** gain nothing from gzip (the gzip framing overhead can exceed
+  the savings) and stay `identity`; bodies above **8 MiB** are refused
+  compression for a single request, so no request ever pins a large
+  input+output buffer pair. In between, the header decides.
+- **The header is parsed leniently but strictly on quality.** `gzip` and
+  `GZIP` are the same, whitespace is ignored, the `*` wildcard counts as
+  accepting gzip, an explicit `gzip` element beats the wildcard, and
+  `gzip;q=0` — or any malformed header (a q value that is not a number or
+  outside 0..1) — means `identity`.
+- **Both variants carry `vary: accept-encoding`** — gzip and identity alike
+  — so a shared intermediate cache never mixes the two variants of a
+  compressible asset. A resource that can never vary (already-compressed
+  format, size out of range) carries no vary at all.
+- **Compressed bytes are memoized in memory**, keyed by absolute path +
+  size + mtime (a redeployed file never answers with a previous build's
+  bytes), capped at **64 entries / 32 MiB total**; the entry inserted longest
+  ago is discarded when either cap is reached. The same bundle is therefore
+  compressed at most once per process, and a burst inside the request budget
+  above never becomes a CPU amplifier.
+- **The 404, 405 and `/healthz` answers are byte-for-byte what they were**:
+  no compression, no vary, no changed behavior for a load balancer reading
+  the probe. The identity variant of a 200 document streams through the same
+  sender as before, plus the vary header.
+
+The relay stays a blind router: this path only ever touches public static
+assets from the allowlisted web root — no sealed frame, key material or
+plaintext flows through it. The WebSocket path gains no compression on
+purpose: sealed frames are incompressible, and per-message deflate would only
+add CPU and memory per peer.
+
+### Conditional requests: etag and 304 (P2-200)
+
+A phone revalidating the app used to re-download the whole bundle on every
+reload of the entry document, which by contract cannot be cached immutably.
+The static route now speaks RFC 7232 conditional requests, decided by the
+pure `webcond.ts` module — no new dependency:
+
+- **Every 200 of the static route carries a strong `etag`**, compressed and
+  identity variants alike. The validator is derived from the same stat the
+  gzip negotiation already took (size + mtime, no extra disk access) plus the
+  chosen encoding — so **the gzip and identity validators always differ** and
+  a shared cache can never serve compressed bytes to a client that asked for
+  identity. The same size, mtime and encoding always produce the same tag,
+  across process restarts too.
+- **A request whose `if-none-match` revalidates is answered `304` with no
+  body**: the file is not read, not compressed, not touched. The 304 carries
+  the etag, `cache-control`, `vary: accept-encoding` (whenever the
+  corresponding 200 would carry it) and every P2-192 security header — and
+  never `content-encoding`, `content-length` or `content-type`.
+- **The `if-none-match` comparison is lenient on structure, strict on
+  match**: comma-separated lists are honored (a match by any element
+  revalidates), whitespace and extra commas are ignored, the `*` wildcard
+  revalidates, the weak `W/` prefix is ignored in the comparison, and a
+  missing, empty or malformed header simply sends the body — a conditional
+  may only ever make the answer cheaper, never change the answer.
+- **The 404, 405 and `/healthz` answers stay byte-for-byte what they were**:
+  no validator, no conditional handling. A load balancer reading the probe
+  sees nothing new. The per-identity request budget above is still charged
+  before the conditional decision — a cheap 304 is still a request.
+- **The relay stays blind**: only public static assets from the allowlisted
+  web root participate in this path — no plaintext, no keys, no room ids,
+  and no sealed frame is ever cached or validated.
+
+### An unknown RELAY_ variable warns at boot (P2-263)
+
+The table and subsections above are the canonical registry of every `RELAY_`
+variable the relay reads, and the unit battery locks that registry to this
+document in both directions. At boot, before any listener opens, the relay
+checks the environment for `RELAY_`-prefixed keys outside the registry and
+writes **one `warn` line per unknown key**, naming the key and — when a
+documented name sits within two edits of it (a swapped, missing, extra or
+doubled letter) — the closest documented name as a suggestion. The line never
+carries the value: one of these variables holds the metrics bearer token and
+others hold certificate paths.
+
+The check is advisory by design. A hosting platform injects variables of its
+own, so an unknown `RELAY_` key never refuses the boot — it only stops being
+silent. If the line appears, fix the spelling in your deployment
+configuration: up to that point the relay was running with the documented
+default, not with the value you believed you had set.
+
 ## Behind a proxy: `x-forwarded-for` and the per-IP cap
 
 `x-forwarded-for` is forgeable by any client, so the relay ignores it by
@@ -352,11 +666,87 @@ changed. No other relay log line ever carries a client address.
 expose publicly (no room ids, no per-peer metadata):
 
 ```json
-{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0}
+{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0}
 ```
 
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
 use the same path as the HTTP health check.
+
+### Why a room was refused: the rejection breakdown (P2-293)
+
+A single opaque `roomsRejected` total cannot answer the operator's actual
+question — are legitimate phones hitting the configured per-connection
+ceiling (buy capacity) or is one malformed origin in a loop hammering the
+relay (block it)? The probe therefore also carries the total split by the
+closed table of refusal reasons: `roomsRejectedInvalidRoomId` (the frame's
+room id failed the room-id grammar) and `roomsRejectedSocketRoomCap` (the
+socket already holds the maximum number of rooms). The two fields are
+additive and always sum to at most `roomsRejected` — each per-reason counter
+is fed at the exact statement that increments the total, so no refusal is
+counted twice or misattributed. The total keeps its name and meaning byte
+for byte.
+
+Fail-closed: a state that cannot produce a fully numeric counter set
+publishes nothing instead of an invented set of zeros, a counter that is
+negative, fractional or non-finite publishes as zero, and no field ever
+carries a room identifier, connection id, address or IP — the relay stays
+blind. The drain response keeps the fields, like every other one:
+
+```json
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
+```
+
+### Certificate verdict on the probe (P2-290)
+
+When the relay runs with a TLS pair, two additive fields ride the same body:
+`certExpiryVerdict` — one of `use`, `warn`, `refuse-expired`,
+`refuse-not-yet-valid` — and `certExpiryInS`, the whole seconds until the
+certificate stops being valid (floored at zero). Both come from the verdict
+the relay already recomputes on its liveness sweep — no new timer, no new
+route — so an operator monitoring this probe sees an expiring certificate
+days before phones start failing their handshake, instead of reading it in a
+log line nobody watches.
+
+The fields are fail-closed: absent in plain mode (`ws://`, no certificate),
+absent while no verdict was measured, and never announcing a healthy verdict
+the relay did not measure. They carry only the verdict string and a seconds
+count — never a subject, issuer, serial number, fingerprint, file path or
+host. The drain response keeps them, exactly like every other field:
+
+```json
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
+```
+
+The same verdict also feeds the Prometheus series described in the metrics
+section below (`relay_cert_expiry_state` / `relay_cert_expiry_seconds`), which
+is the surface an operator's alerting can actually evaluate. The alert rule,
+in prose: page when the state gauge leaves `0` — the certificate stopped
+being a plain `use` — or when `relay_cert_expiry_seconds` drops below the
+renewal budget (a common choice is three days). The seconds gauge is the line
+that fires first, days before the handshake failures every phone would
+otherwise be the first to report at once.
+
+### Certificate chain state on the probe (P2-310)
+
+When the relay runs with a TLS pair, one more additive field rides the same
+body: `certChainState` — one of `complete`, `self-signed`, `leaf-only`,
+`broken-order`, `unknown` — the chain classification the boot computed and
+the reload sweep keeps current. It answers the question an expiring
+certificate never explains: the relay is healthy, the certificate is valid,
+and still a phone outside refuses the handshake — because the certificate
+file carries only the leaf (`leaf-only`) and the client does not hold the
+intermediate in cache.
+
+The field is fail-closed like the expiry ones: absent in plain mode (`ws://`,
+no certificate), never announcing a classification the relay did not measure
+(`unknown` publishes as measured), and carrying only the short static verdict
+string — never a subject, issuer, serial number, fingerprint, file path or
+host. It is observability, not policy: no connection is refused because of
+it. The drain response keeps the field, exactly like every other one:
+
+```json
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"use","certExpiryInS":86400,"certChainState":"leaf-only","draining":true}
+```
 
 ### During the drain: 503 on purpose (P2-145)
 
@@ -365,7 +755,7 @@ When the relay receives `SIGTERM` it enters a drain window (≤3s) and
 `draining:true` field — every pre-existing field keeps its name and meaning:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"draining":true}
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
 ```
 
 The 503 tells the load balancer to stop routing NEW daemons and phones to
@@ -391,6 +781,93 @@ once at boot. With a token configured, requests without a matching
 `Authorization: Bearer <token>` header receive a `401` with no body. Like
 `/healthz`, the payload is counter-only — the relay is a blind router and the
 metrics never carry plaintext or key material.
+
+The room-rejection total is also split by reason (P2-293): the Prometheus
+text format gains one counter per documented reason —
+`relay_rooms_rejected_invalid_room_id` (bad room id) and
+`relay_rooms_rejected_socket_room_cap` (per-connection room ceiling) — in the
+same naming grammar as the unchanged `relay_rooms_rejected` total, and the
+JSON payload gains the matching `rooms_rejected_invalid_room_id` /
+`rooms_rejected_socket_room_cap` fields next to the unchanged
+`rooms_rejected`. Same contract as the probe: the sum never exceeds the
+total, and no line or field carries a room id, address or IP.
+
+The certificate verdict the relay already recomputes on its liveness sweep is
+exported as Prometheus text lines too (P2-294) — the surface an operator's
+alerting actually scrapes: `relay_cert_expiry_state` (gauge; `0` = `use`,
+`1` = `warn`, `2` = `refuse-expired`, `3` = `refuse-not-yet-valid` — a
+numeric state gauge, never a textual label, so no scrape ever creates new
+series cardinality) and `relay_cert_expiry_seconds` (gauge; whole seconds to
+expiry, floored at zero). Both are computed per scrape from values already in
+memory — no new timer, no new route, no new request — and every pre-existing
+line stays byte for byte. Fail-closed: plain mode (no certificate) publishes
+neither line, an unmeasured verdict publishes neither line, and no line ever
+carries a subject, issuer, serial number, fingerprint, file path or host.
+
+The relay process itself is on the same surface (P2-313), as five additive
+gauges appended after every pre-existing line in both formats —
+`relay_resident_bytes` is the process's resident memory (RSS) in bytes, the
+series that exposes a slow leak as a steady climb long before the OOM killer
+does the announcing; `relay_heap_used_bytes` is the JavaScript heap actually
+in use, whose ratchet-only-upward shape between scrapes anticipates growing
+live data (retained rooms, maps, buffers); `relay_heap_total_bytes` is the
+heap the runtime has allocated for the relay, which anticipates memory
+pressure from the outside — a cgroup or hosting-plan limit the process is
+about to run into; `relay_uptime_seconds` is how long the process has been
+up, and a value that keeps resetting anticipates the crash loop that
+per-scrape probes miss when the process dies between them;
+`relay_scheduling_delay_ms` is the largest delay observed since the previous
+scrape between when the internal liveness sweep was due and when it actually
+ran (window max, reset by every scrape), and a rising value anticipates an
+event loop so starved that keep-alive checks and frame routing start
+lagging — the stage that precedes dropped conversations. The same numbers
+ride the JSON body as `resident_bytes`, `heap_used_bytes`, `heap_total_bytes`
+and `scheduling_delay_ms` next to the existing `uptime_s`. They are
+observation only — no limit, admission, refusal or socket close reads them —
+computed per scrape from values already in memory (no new timer, no new
+route, no new request, no new dependency), and fail-closed like the
+certificate series: a component the relay cannot measure is omitted rather
+than published as an invented zero, and no series ever carries an address,
+port, room id, token or any identifiable material.
+
+### Alert rules for the hosted relay (P2-320)
+
+A metric feed only helps once something says which number is worth waking
+someone for, so the repository ships a ready-made starting rule set:
+`deploy/relay/alerts.yml` is generated by the pure module
+`apps/relay/src/alertrules.ts` — a unit test pins the committed file byte for
+byte to the serializer's output, and every rule observes a series the
+`/metrics` endpoint really emits. Load it with
+`promtool check rules deploy/relay/alerts.yml` and list the file under
+`rule_files` in your Prometheus configuration; the thresholds are starting
+points, not policy — no relay behavior reads them, and tuning them to your
+instance is expected. What each rule anticipates:
+
+- `RelayCapacityRefused` — new connections are being turned away for
+  capacity, so peers face "server busy" instead of a working relay.
+- `RelayCrashLoop` — the process keeps restarting, announced by an
+  `relay_uptime_seconds` that resets toward zero between scrapes.
+- `RelayCertExpiryState` — the TLS certificate left the healthy `use` state,
+  the step before phones start failing their handshake.
+- `RelayCertExpirySeconds` — the certificate entered its final three days
+  before expiry, the last comfortable window to renew.
+- `RelaySchedulingDelay` — the event loop is lagging, the stage that precedes
+  keep-alive failures and dropped conversations.
+- `RelayMemoryBytes` — resident memory is high, anticipating memory pressure
+  (an OOM kill or a hosting-plan ceiling) instead of explaining an outage
+  after the fact.
+- `RelaySlowConsumers` — peers that stop reading are being closed to contain
+  memory, which often means a bad link or a stuck client on the far side.
+- `RelayRoomsRejected` — room refusals are accumulating, usually an invalid
+  room id loop or legitimate clients hitting the per-connection ceiling.
+- `RelayRoomBudgetTerminated` — a room crossed its window volume budget and
+  was terminated, the traffic-control signal an operator pays attention to.
+
+The rule set is closed and documented in one place: adding a rule means
+editing `alertrules.ts` (and this section) first, regenerating the file and
+committing both together. Nothing in the relay reads these rules — no limit,
+admission, refusal or socket close changes because of them; they exist only
+for the operator's alerting stack.
 
 ## Pointing a daemon at the hosted relay
 

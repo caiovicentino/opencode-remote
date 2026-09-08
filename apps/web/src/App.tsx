@@ -28,7 +28,8 @@ import PairingView from "./components/PairingView";
 import PairingOverlay, { type WebAppInfo } from "./components/PairingOverlay";
 import SessionsView from "./components/SessionsView";
 import SidebarAccount from "./components/SidebarAccount";
-import ChatView from "./components/ChatView";
+import ChatView, { type MicAccessVerdict } from "./components/ChatView";
+import { type CameraAccessVerdict } from "./components/QrScanner";
 import HomeView from "./components/HomeView";
 import { setDraft } from "./lib/drafts";
 import SettingsView, {
@@ -37,6 +38,8 @@ import SettingsView, {
   type RelaySettingWriteResult,
   type WebAppSetting,
   type WebAppSettingWriteResult,
+  type ProxySetting,
+  type ProxySettingWriteResult,
 } from "./components/SettingsView";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
@@ -52,6 +55,12 @@ import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
 import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import { WELCOME_DONE, WELCOME_KEY, shouldShowWelcome } from "./lib/welcome";
+import {
+  INSTALL_HINT_DISMISSED_KEY,
+  installHintVerdict,
+  parseInstallHintDismissed,
+  serializeInstallHintDismissed,
+} from "./lib/installhint";
 import {
   IconAlert,
   IconChat,
@@ -101,6 +110,22 @@ interface PairingState {
   /** P2-193: the combined pair link — app address + credential in the
    * URL fragment (desktop shell only, additive). */
   pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
+  /** P2-197: reach verdict for the app address (desktop shell only,
+   * additive) — absent means unknown, which renders nothing. */
+  reach?: { state: string; message: string };
+  /** P2-199: daemon↔relay link verdict (desktop shell only, additive) —
+   * absent only when the health call failed or the overlay cannot be needed;
+   * a legacy daemon travels as the discreet unknown line instead. */
+  relayLink?: { state: string; message: string };
+  /** P2-211: install-location verdict (desktop shell only, additive) —
+   * absent = unknown, which renders nothing. Never blocks pairing. */
+  installLocation?: { state: string; message: string };
+  /** P2-214: clock-skew verdict (desktop shell only, additive) —
+   * absent = unknown, which renders nothing. Never blocks pairing. */
+  clock?: { state: string; message: string };
+  /** P2-218: login-item verdict (desktop shell only, additive) —
+   * absent = unknown, which renders nothing. Never blocks pairing. */
+  startup?: { state: string; message: string };
 }
 
 /** Electron bridge from apps/desktop/src/preload.ts (absent in the browser). */
@@ -120,6 +145,9 @@ interface DesktopBridge {
   onDeepLink?: (cb: (uri: string) => void) => () => void;
   /** P1-053: one-click recovery from the daemon-down banner. */
   reconnectDaemon?: () => Promise<boolean>;
+  /** P2-197: pairing overlay "test again" — re-runs the pairing tick, which
+   * re-probes the app address (desktop shell only). */
+  recheckWebApp?: () => Promise<void>;
   /** P1-061/P1-070: loopback WS credentials (+ room/ecdhPub) for the direct
    * local transport and the zero-ceremony local pairing. */
   getLocalLink?: () => Promise<{ port: number; token: string; room?: string; ecdhPub?: string } | null>;
@@ -137,6 +165,13 @@ interface DesktopBridge {
   /** P2-189: app address the phone opens — Settings card (desktop shell only). */
   getWebAppUrl?: () => Promise<WebAppSetting>;
   setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
+  /** P2-289: machine proxy — Settings card (desktop shell only). */
+  getProxySetting?: () => Promise<ProxySetting>;
+  setProxyChoice?: (choice: { mode: "system" | "direct" | "fixed"; address?: string }) => Promise<ProxySettingWriteResult>;
+  /** P2-312: microphone-permission verdict (desktop shell only, mirrored in ChatView). */
+  getMicAccess?: () => Promise<MicAccessVerdict | null>;
+  /** P2-319: camera-permission verdict (desktop shell only, mirrored in QrScanner). */
+  getCamAccess?: () => Promise<CameraAccessVerdict | null>;
 }
 
 function desktopBridge(): DesktopBridge | null {
@@ -279,6 +314,37 @@ export default function App() {
     }
     return shouldShowWelcome(flag, loadPairings().length > 0 || !!loadState());
   });
+
+  // P2-220: iOS Safari sweeps the script-writable storage (IndexedDB +
+  // localStorage) of a website that was never installed to the Home Screen
+  // after ~7 days of no use — the private key in IndexedDB dies with it.
+  // The risky context is detected ONCE on mount, inside this initializer:
+  // no new listeners, no timers, no per-render reads (pinned by
+  // scripts/unit.test.ts).
+  const [installHintEnv] = useState(() => {
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      (navigator as { standalone?: boolean }).standalone === true;
+    let dismissed = false;
+    try {
+      dismissed = parseInstallHintDismissed(localStorage.getItem(INSTALL_HINT_DISMISSED_KEY));
+    } catch {
+      dismissed = false;
+    }
+    return {
+      userAgent: navigator.userAgent,
+      // P2-220 reviewer round 3: iPadOS 13+ defaults to a Macintosh UA — the
+      // touch indicator is what makes the hint reach default-config iPads.
+      maxTouchPoints: navigator.maxTouchPoints,
+      standalone,
+      dismissed,
+      desktopShell: desktopBridge() !== null,
+      // documented test hatch (P2-220): ?installhint=1 forces the hint so
+      // visual evidence is deterministic; persists nothing
+      forced: new URLSearchParams(location.search).get("installhint") === "1",
+    };
+  });
+  const [installHintDismissed, setInstallHintDismissed] = useState(installHintEnv.dismissed);
 
   // P2-148: finishing (or skipping) stamps the flag in the renderer's
   // localStorage — no IPC, no main-process change, no second banner.
@@ -761,6 +827,15 @@ export default function App() {
         deviceList={phonePairing ? pairingState?.deviceList : undefined}
         webApp={pairingState?.webApp ?? null}
         pairLink={pairingState?.pairLink ?? null}
+        reach={pairingState?.reach ?? null}
+        relayLink={pairingState?.relayLink ?? null}
+        installLocation={pairingState?.installLocation ?? null}
+        clock={pairingState?.clock ?? null}
+        startup={pairingState?.startup ?? null}
+        onReachRetry={() => {
+          // Optional chaining: in a plain browser there is no desktop bridge.
+          void desktopBridge()?.recheckWebApp?.();
+        }}
         onDismiss={() => {
           setPairingDismissed(true);
           setPhonePairing(false);
@@ -839,6 +914,13 @@ export default function App() {
           phonePaired={pairingState?.phonePaired}
           onCancelPairRemote={() => void desktopBridge()?.setRemotePairing?.(false)}
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+          onPairManually={() => {
+            // P3-329: the stuck QR wait's labeled escape — leave the wizard
+            // straight into the manual paste-code ceremony instead of making
+            // the user find the unlabeled link one screen earlier.
+            finishWelcome();
+            setPairManual(true);
+          }}
           onDone={finishWelcome}
         />
       </div>
@@ -865,8 +947,12 @@ export default function App() {
           }}
           onRetry={() => setAddingMachine(false)}
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-          localMode={pairingState?.mode === "local"}
+          // P3-332: adding a machine IS the manual remote ceremony — the
+          // shell's local auto-connect mode must never hide the paste/scan
+          // form here (it would leave no way to type a remote code).
+          localMode={false}
           preferPaste={!!desktopBridge()}
+          getCamAccess={desktopBridge()?.getCamAccess}
         />
       </div>
     );
@@ -889,6 +975,8 @@ export default function App() {
         setRelayUrl={desktopBridge()?.setRelayUrl}
         getWebAppUrl={desktopBridge()?.getWebAppUrl}
         setWebAppUrl={desktopBridge()?.setWebAppUrl}
+        getProxySetting={desktopBridge()?.getProxySetting}
+        setProxyChoice={desktopBridge()?.setProxyChoice}
         upstream={upstream}
       />
       </div>
@@ -936,13 +1024,19 @@ export default function App() {
               void connect(pairing, true);
             }}
             onRetry={() => {
-              const stored = loadState();
-              if (stored) void connect(stored.pairing, false);
-              else setPhase("unpaired");
+              // P3-332: with no stored pairing the retry re-arms the auto-pair
+              // (local link / deep link) — the live card's only way forward.
+              setPhase("unpaired");
+              tryAutoPair();
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-            localMode={pairingState?.mode === "local"}
+            // P3-329: reaching this screen through pairManual IS explicit
+            // manual intent (wizard escape or degraded escape) — the local
+            // auto-connect mode must never swallow the paste/scan ceremony
+            // (same rule as "add machine", P3-332).
+            localMode={pairManual ? false : pairingState?.mode === "local"}
             preferPaste={!!desktopBridge()}
+            getCamAccess={desktopBridge()?.getCamAccess}
           />
         )}
       </div>
@@ -964,6 +1058,7 @@ export default function App() {
       // P2-108: the shell strip (.daemon-reconnecting/.daemon-down) and the
       // in-chat .conn-banner say the same sentence — never show both.
       shellBannerVisible={kind === "reconnecting" || kind === "down"}
+      getMicAccess={desktopBridge()?.getMicAccess}
     />
   );
   const settingsNode = (
@@ -977,6 +1072,8 @@ export default function App() {
       setRelayUrl={desktopBridge()?.setRelayUrl}
       getWebAppUrl={desktopBridge()?.getWebAppUrl}
       setWebAppUrl={desktopBridge()?.setWebAppUrl}
+      getProxySetting={desktopBridge()?.getProxySetting}
+      setProxyChoice={desktopBridge()?.setProxyChoice}
       upstream={upstream}
     />
   );
@@ -995,6 +1092,29 @@ export default function App() {
       }}
     />
   ) : null;
+  // P2-220: the calm install hint — verdict recomputed from state that is
+  // already in React (machines, dismissed flag); the environment probes it
+  // wraps were read once at mount. ?installhint=1 forces it on for the
+  // deterministic screenshot evidence, whatever the verdict says.
+  const hint = installHintVerdict({
+    userAgent: installHintEnv.userAgent,
+    maxTouchPoints: installHintEnv.maxTouchPoints,
+    standalone: installHintEnv.standalone,
+    desktopShell: installHintEnv.desktopShell,
+    hasPairing: machines.length > 0,
+    dismissed: installHintDismissed,
+  });
+  // P2-220 reviewer round 3 (BLOCKING): the copy must follow the app locale —
+  // the verdict's pt-BR message stays a pure-module constant; what renders is
+  // the dict key (dict.pt.installHintBody is exactly that constant).
+  const installHint = installHintEnv.forced || hint.show ? t("installHintBody") : null;
+  function dismissInstallHint() {
+    setInstallHintDismissed(true);
+    try {
+      localStorage.setItem(INSTALL_HINT_DISMISSED_KEY, serializeInstallHintDismissed());
+    } catch {}
+  }
+
   const sessionsNode = (
     <SessionsView
       request={request}
@@ -1012,6 +1132,8 @@ export default function App() {
         dispatchView({ type: "openChat", sessionId: id });
       }}
       onDisconnect={disconnect}
+      installHint={installHint}
+      onDismissInstallHint={dismissInstallHint}
       onEnablePush={async () => {
         const { enablePush } = await import("./lib/push");
         await enablePush(request);

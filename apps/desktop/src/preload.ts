@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { MicAccessVerdict } from "./micaccess";
+import type { CameraAccessVerdict } from "./camaccess";
 
 /** Result shape of the /api/browse proxy in apps/desktop/src/main.ts. */
 export interface DaemonBrowseResponse {
@@ -68,6 +70,25 @@ export interface PairingState {
    * Optional and additive; qrDataUrl is null whenever problems is non-empty
    * (no QR for a problem-bearing link — the two-QR fallback stays). */
   pairLink?: { url: string; qrDataUrl: string | null; problems: string[] };
+  /** P2-197: how the last reach probe of the app address went (state ok |
+   * unreachable | timeout | tls-error | dns-error | http-error | not-our-app
+   * plus a static pt-BR message). Optional and additive: absent means the
+   * probe has not run (or the shell is legacy) — an unknown state renders
+   * nothing and never blocks pairing. */
+  reach?: { state: string; message: string };
+  /** P2-199: how the daemon↔relay link is doing (state connected | local |
+   * dialing | refused | misconfigured | unknown plus a static pt-BR message).
+   * Optional and additive: absent only when the health call itself failed or
+   * the overlay cannot be needed (quiet local / already paired) — a 200
+   * health answer without relay fields (legacy daemon) travels as the
+   * unknown state instead, rendered as a discreet line that never blocks
+   * pairing. */
+  relayLink?: { state: string; message: string };
+  /** P2-211: install-location verdict (state ok | dmg-volume | translocated |
+   * downloads | unknown plus a static pt-BR message), computed once at boot.
+   * Optional and additive: absent means legacy shell — the renderer treats it
+   * as the unknown state and renders nothing. Never blocks pairing. */
+  installLocation?: { state: string; message: string };
 }
 
 /** P2-187: the phone relay address resolution (Settings → "Relay do celular").
@@ -104,6 +125,26 @@ export interface WebAppSettingWriteResult extends WebAppSetting {
   ok: boolean;
 }
 
+/** P2-289: the machine-proxy owner choice (Settings → machine proxy). mode
+ * is the stored choice (null = no choice yet — the machine environment
+ * decides), origin says whether the ACTIVE boot mode came from the stored
+ * choice or the machine environment, and reason is a short static phrase
+ * with no address and no credential. Mirrors
+ * apps/desktop/src/proxystore.ts. */
+export interface ProxySetting {
+  mode: "system" | "direct" | "fixed" | null;
+  address: string | null;
+  origin: "owner" | "environment";
+  reason: string;
+}
+
+/** Result of a write: ok=false carries the module's static refusal reason
+ * and nothing was persisted; the live session is never reconfigured — the
+ * choice applies on the next app start. */
+export interface ProxySettingWriteResult extends ProxySetting {
+  ok: boolean;
+}
+
 contextBridge.exposeInMainWorld("ocrDesktop", {
   platform: process.platform,
   version: ipcRenderer.invoke("app:version"),
@@ -125,6 +166,9 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   setRemotePairing: (on: boolean): Promise<boolean> => ipcRenderer.invoke("app:setRemotePairing", on),
   // P1-053: banner button — manual daemon restart (same path as the tray).
   reconnectDaemon: (): Promise<boolean> => ipcRenderer.invoke("app:reconnectDaemon"),
+  // P2-197: pairing overlay "test again" — re-runs the pairing tick, which
+  // re-probes the app address; the next ocr:pairing-state push carries it.
+  recheckWebApp: (): Promise<void> => ipcRenderer.invoke("app:recheckWebApp"),
   // P2-187: phone relay address — current resolution and the validated write
   // (null clears the stored setting; validation happens in the main process).
   getRelaySetting: (): Promise<RelaySetting> => ipcRenderer.invoke("app:relaySetting"),
@@ -136,11 +180,30 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getWebAppUrl: (): Promise<WebAppSetting> => ipcRenderer.invoke("app:webAppUrl"),
   setWebAppUrl: (url: string | null): Promise<WebAppSettingWriteResult> =>
     ipcRenderer.invoke("app:setWebAppUrl", url),
+  // P2-289: machine proxy — current stored choice + validated write (the
+  // main process refuses a credential-bearing, wrong-scheme or unparseable
+  // address and returns the static reason instead).
+  getProxySetting: (): Promise<ProxySetting> => ipcRenderer.invoke("app:proxySetting"),
+  setProxyChoice: (choice: { mode: "system" | "direct" | "fixed"; address?: string }): Promise<ProxySettingWriteResult> =>
+    ipcRenderer.invoke("app:saveProxyChoice", choice),
+  // P2-312: microphone-permission verdict for the composer's error path —
+  // read at request time (never cached at boot) through the same bridge as
+  // the proxy setting above. Shape mirrors apps/desktop/src/micaccess.ts.
+  getMicAccess: (): Promise<MicAccessVerdict> => ipcRenderer.invoke("app:micAccess"),
+  // P2-319: camera-permission verdict for the scanner's unavailable state —
+  // read at request time (never cached at boot) through the same bridge.
+  // Shape mirrors apps/desktop/src/camaccess.ts.
+  getCamAccess: (): Promise<CameraAccessVerdict> => ipcRenderer.invoke("app:camAccess"),
   // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)
   // and pushes it on every change; main maps it to app.setBadgeCount. The
   // getter exists so tests can verify the IPC round-trip via the harness.
   sendUnread: (n: number): void => ipcRenderer.send("ocr:unread", n),
   getUnreadBadge: (): Promise<number> => ipcRenderer.invoke("app:unreadBadge"),
+  // P2-276: the shell (menu bar + tray) follows the language chosen in the
+  // app — one-way push, same pattern as sendUnread above. Main resolves it
+  // through shelllang.ts (an invalid payload counts as no preference) and
+  // rebuilds both OS surfaces on the change.
+  sendLang: (lang: string): void => ipcRenderer.send("ocr:shell-lang", lang),
   // P1-050: Settings "Copy diagnostic" — support bundle (versions, daemon
   // state, desktop.log tail, crash-file names). Text only, no secrets.
   getDiagnostics: (): Promise<string> => ipcRenderer.invoke("app:diagnostics"),

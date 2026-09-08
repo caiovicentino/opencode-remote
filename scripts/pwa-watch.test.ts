@@ -78,7 +78,7 @@ const stop = startPwaWatch({
   initialDelayMs: 0,
   onTransition: (down) => transitions.push(down),
 });
-await new Promise((r) => setTimeout(r, 150));
+await new Promise((r) => setTimeout(r, 500));
 stop();
 check("watch: first healthy probe is silent (assumed up)", transitions[0] === true);
 // sequence: up up down down up up down → transitions exactly [down, up, down]

@@ -205,6 +205,16 @@ export function IconPlus(p: IconProps) {
   );
 }
 
+/** P2-281: in-conversation search trigger (magnifier). */
+export function IconSearch(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </Icon>
+  );
+}
+
 /** P2-108: sessions filter menu trigger (funnel). */
 export function IconFilter(p: IconProps) {
   return (
@@ -299,6 +309,16 @@ export function IconCheck(p: IconProps) {
   return (
     <Icon {...p}>
       <path d="M20 6 9 17l-5-5" />
+    </Icon>
+  );
+}
+
+/** P2-282: per-bubble copy-message action (two stacked sheets, lucide-style). */
+export function IconCopy(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
     </Icon>
   );
 }

@@ -30,6 +30,13 @@ export function clearDraft(id: string): void {
   drafts.delete(id);
 }
 
+/** P2-266: true while any session holds an unsent draft — the sw-update
+ * wiring reads it before offering a version swap, so a reload can never
+ * discard typed-but-unsent text. */
+export function hasDrafts(): boolean {
+  return drafts.size > 0;
+}
+
 /** Appends with a single space separator and returns the new value. */
 export function appendDraft(id: string, text: string): string {
   const prev = getDraft(id);

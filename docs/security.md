@@ -41,6 +41,12 @@ identity servers, no accounts.
    forcing a write loop, and the field is purely informational — admission
    decisions, E2E crypto and replay protection are untouched. Old allowlists
    without the field read back as "never seen" and keep every existing field.
+   The devices routes additionally attach a derived, read-only staleness
+   verdict per entry (`ativo`, `ocioso`, `dormente`, `nunca visto`, plus a
+   short static pt-BR hint) computed from the stamps alone by a pure module
+   (`devicestale.ts`): classification is insight for the owner, never an
+   action — nothing in that path revokes a device or rewrites `daemon.json`,
+   and revocation stays an explicit owner decision.
 7. **Least-privilege file delivery.** Downloads are restricted to explicit
    roots (`~/.opencode-remote/uploads`, Desktop, Downloads, Documents, repo
    cwd) and resolved against real paths before serving.
@@ -88,6 +94,12 @@ identity servers, no accounts.
 
 - A compromised relay can DoS you (drop frames) but cannot read, alter or
   forge content.
+- A room member cannot forge liveness or force a rehandshake (RT-341): only
+  sealed frames move the client's liveness clock (the daemon's pong is sealed
+  too), and a clear `reconnect` is a verified hint — never a command. The
+  client answers it with one ping and only rehandshakes when no sealed frame
+  arrives within 1500 ms, with a 10 s floor between hint-triggered
+  rehandshakes.
 - A rogue device cannot sustain a flood through the relay: message frames are
   token-bucketed per connection (600 msgs/min, burst 1000, tunable via env)
   and the over-budget socket is dropped with close code 4029. Every frame
@@ -103,6 +115,112 @@ identity servers, no accounts.
   remote adds a biometric gate on top — approvals should still be read:
   the approval card previews the first lines of the requested
   command/patch, and the diff button opens the full file changes.
+
+12. **macOS data wipe (P2-267).** macOS has no uninstaller, so the desktop
+    shell's Help menu carries an explicit data-wipe item: after a two-step
+    native confirmation it deletes exactly the app's own immediate children
+    in its data root — `daemon.json` (ECDH identity, VAPID keys, paired
+    clients), the shell state files and the logs folder — and quits, so a
+    sold or shared computer never keeps holding the machine identity.
+    Nothing outside the app's own data is touched, and a test-harness
+    session refuses the wipe before any dialog can open.
+
+13. **Dependency advisories (P2-269).** CI runs `npm run audit:deps`
+    (`scripts/audit-deps.ts`) on every PR, and a new advisory at severity
+    **high** or **critical** in a runtime dependency fails the job, while a
+    failed collection, a dev-only advisory, a below-floor severity or a
+    still-valid exemption only warns; to exempt an advisory, add an entry
+    with the advisory id, a one-sentence reason and an expiry date to
+    `scripts/audit-exemptions.json` — past the expiry the advisory counts in
+    full again.
+
+14. **Workflow permissions (P2-271).** Every job of both workflows declares
+    its own least-privilege `permissions:` block — the six CI jobs can only
+    read repository contents, and only the release jobs that publish touch
+    `contents: write` (plus `packages: write` for the relay image) — and
+    `npm run check:workflow-perms` (`scripts/check-workflow-perms.ts`,
+    verdict in the pure `scripts/workflowperms.ts`) runs in the `verify` job
+    after the install step, re-reading both files and failing the job on a
+    reject verdict alone (a broad `write-all`, a job without any
+    declaration, or a scope outside `scripts/workflow-scopes.json`; a failed
+    read only warns): a new job must declare its own `permissions:` block in
+    the workflow and register its scopes under its `"file/job"` key in
+    `scripts/workflow-scopes.json`.
+
+15. **Push subscriptions are bounded and redacted (P2-272).** The phones that
+    receive web push live in `subscriptions.json`, capped at 10 at once and
+    admitted only through a pure verdict: the payload must be a well-formed
+    subscription and the endpoint an absolute `https://` URL within a
+    documented size ceiling (fail-closed — a push endpoint is itself the
+    bearer credential to notify that phone, so clear-text schemes are never
+    accepted and a new phone past the ceiling is refused instead of silently
+    evicting a working one). The file is written with the same atomic
+    tmp+rename 0600 contract as `daemon.json`, and the push diagnostics
+    surface (and every log line) shows only a short host-based label — never
+    the full endpoint.
+
+16. **Third-party actions are pinned (P2-278).** Every `uses:` reference of
+    both workflows is pinned to a full commit SHA (the original tag kept in
+    a same-line comment), and `npm run check:action-pins`
+    (`scripts/check-action-pins.ts`, verdict in the pure `scripts/actionpins.ts`)
+    runs in the `verify` job after the install step, failing the job only on
+    a reject verdict — a third-party action not pinned to a full commit SHA;
+    a first-party owner (`scripts/action-owners.json`) pinned only by a tag
+    and a still-valid exemption (`scripts/action-exemptions.json`, with
+    reason and expiry) only warn: to add a new action, pin it to a commit
+    SHA resolved from the public GitHub API and keep the tag as a comment;
+    to exempt an unresolvable reference, add an entry with the
+    `owner/action` id, a one-sentence reason and an expiry date to
+    `scripts/action-exemptions.json` — past the expiry the reference counts
+    in full again.
+
+17. **Lockfile integrity (P2-283).** `package-lock.json` is the only file
+    that decides which third-party code `npm ci` installs inside the job
+    that packages the notarized DMG and the signed installer, so
+    `npm run check:lock-integrity` (`scripts/check-lock-integrity.ts`,
+    verdict in the pure `scripts/lockintegrity.ts`) runs in the `verify`
+    job after the install step and before the build, failing the job only
+    on a reject verdict — an origin outside the documented registries
+    (`scripts/lock-registries.json`, today the public npm registry) or a
+    registry origin without an integrity hash (including a hash string with
+    no usable material, such as `sha512-`) — while a failed read, a
+    hash from another algorithm or a still-valid exemption only warn: only
+    an origin provably repo-relative into this repository (a workspace link
+    such as `apps/daemon`) counts as internal, so any other origin shape
+    fails closed into the registry checks; to
+    exempt an entry with a deadline, add it with the lockfile path as id,
+    a one-sentence reason and an expiry date to
+    `scripts/lock-exemptions.json` — past the expiry the entry counts in
+    full again.
+
+18. **Update-feed digest confrontation (P2-308).** The `release-feeds` job
+    downloads the release artifacts, measures sha512 (base64) and byte size
+    with `node:crypto` and confronts every digest the feed declares through
+    the pure `scripts/feedhash.ts`, failing the job with all problems at
+    once while the release is still a draft — the Windows app refuses an
+    installer whose digest diverges, so a hash-mismatched feed would
+    otherwise block every installed machine from updating forever; the
+    Squirrel.Mac JSON feeds     declare no digest, so only the feeds that
+    declare a sha512 (today `latest.yml`) are hash-checked.
+
+19. **Scope-gated Windows verification (P2-317).** The `verify-win` job
+    (windows-latest) runs typecheck and the portable path-logic battery
+    whenever the scope job's `desktop` **or** `portable-suite` output is
+    true — the latter classifies every app code directory, shared package,
+    script and the root lockfile, but never a docs-only or media-only
+    changeset — so Windows-specific daemon or relay logic (agent binary
+    resolution, document-converter install locations, relay webroot) is
+    exercised on Windows in the PR instead of surfacing on a user's machine
+    after the signed installer ships.
+
+20. **Job timeouts (P2-322).** Every job of both workflows declares its own
+    job-level `timeout-minutes` within the documented ceiling of **120
+    minutes** (GitHub's undeclared default is 360), and `npm run
+    check:job-timeouts` (`scripts/check-job-timeouts.ts`, verdict in the
+    pure `scripts/jobtimeouts.ts`) runs in the `verify` job beside the
+    permissions and action-pinning gates, failing it when a job declares no
+    timeout, one that is not a positive integer, one above the ceiling — or
+    when a workflow file is missing, unreadable or unparseable (fail closed).
 
 ## Key rotation
 

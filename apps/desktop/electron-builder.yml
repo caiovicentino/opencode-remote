@@ -123,8 +123,17 @@ win:
   icon: build/icon.png
 nsis:
   oneClick: false
+  # P2-249: the install is per-user, so the uninstaller runs with the
+  # uninstalling user's own privileges and its removal reaches only that
+  # user's profile — never another account's data.
   perMachine: false
   allowToChangeInstallationDirectory: true
+  # P2-249: wipe the app-data folder on uninstall. Privacy reason: a shared
+  # computer must not keep the machine identity and the paired-phone records
+  # on disk after the owner removed the app, and a phone pairing is worthless
+  # once that machine's daemon ceases to exist. The custom autostart-entry
+  # removal lives in build/installer.nsh (customUnInstall).
+  deleteAppDataOnUninstall: true
   # P2-186: space-free (was "OpenCode Remote Setup ${version}.exe") — the
   # checksum manifest and mirrors want deterministic, space-free names.
   # Deterministic, version-templated file name — the release workflow glob-

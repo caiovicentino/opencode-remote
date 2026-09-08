@@ -85,3 +85,18 @@ export function stopAccepting(server: Server | null, sockets: Iterable<WebSocket
     }
   });
 }
+
+/**
+ * P2-315: pure accept/ignore verdict for a message arriving over the spawn
+ * IPC channel from the desktop shell (apps/desktop/src/sidecarstop.ts sends
+ * exactly this shape — the two sides must agree). Only the shutdown request
+ * counts; every other shape — null, primitives, arrays, wrong or missing
+ * type — is rejected and the caller stays silent. Deterministic: the same
+ * input yields the same verdict on every call.
+ */
+export function isSidecarStopMessage(raw: unknown): boolean {
+  return (
+    typeof raw === "object" && raw !== null && !Array.isArray(raw) &&
+    (raw as { type?: unknown }).type === "shutdown"
+  );
+}

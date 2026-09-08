@@ -7,10 +7,12 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # P2-130: tag and the two package.json versions must agree BEFORE anything
       # is published — a drifting version produces a latest-mac.yml whose
@@ -43,13 +45,16 @@ jobs:
   # and users right-click → Open once (README), exactly as before.
   desktop-dmg:
     runs-on: macos-14
+    # P2-322: job-level timeout, coherent with the work — the heaviest job of
+    # the pipeline (full package, possible notarization, four smokes, upload).
+    timeout-minutes: 90
     needs: release
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -98,6 +103,46 @@ jobs:
       - name: Smoke-check the packaged bundle
         run: npm run dist:smoke --workspace @ocr/desktop
 
+      # P2-204: dist-smoke only INSPECTS the package; a regression that only
+      # shows up at runtime — main throwing at boot, an asar missing an asset
+      # the renderer asks for, an entitlement killing the process — used to
+      # sail past the packaging jobs and surface on the user's Mac. Boot the
+      # real .app hermetically (temp userData, no sidecar, hidden window),
+      # fail BEFORE the upload below — same shape as the P2-196 relay image
+      # smoke. Playwright missing fails closed (exit 1). shell: bash
+      # (P2-126 lesson).
+      - name: Smoke-boot the packaged app
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-boot: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $APP"
+          node apps/desktop/scripts/packaged-boot.mjs "$APP"
+
+      # P2-251: the boot smoke above deliberately never spawns the sidecar
+      # (OCR_DAEMON_ENTRY points nowhere), so the daemon bundle that
+      # bundle-daemon.mjs builds used to reach the release without ever
+      # executing. Run the packaged resources/daemon/index.js the way
+      # daemon.ts runs it in production (packaged Electron as the Node
+      # runtime), hermetically (temp HOME, relay off, ephemeral metrics
+      # port) and require an authenticated /api/health 2xx BEFORE the upload
+      # below. Proves the sidecar boots and serves on the packaged runtime;
+      # does NOT prove the desktop shell reaches it end to end. Fail closed
+      # with every problem listed. shell: bash (P2-126 lesson) and its own
+      # timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-daemon-smoke: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"
+
       # P2-170: a DMG whose notarization ticket never got stapled, whose
       # identity expired, or whose profile silently fell back to ad-hoc used
       # to be published as if signed — users opened it and got "app is
@@ -117,6 +162,65 @@ jobs:
           npx --yes tsx@4.23.12 scripts/gatekeeper-verify.ts \
             "${{ steps.signing.outputs.mode }}" "${{ steps.signing.outputs.notarize }}" \
             codesign.txt spctl.txt stapler.txt
+
+      # P2-295: the step above verifies the packaged .app, but the file a user
+      # downloads and double-clicks is the DMG CONTAINER — review round 2
+      # pinned the real packaging shape (apps/desktop/electron-builder.yml):
+      # electron-builder leaves dmg.sign off and never staples the image, so
+      # the container itself is always UNSIGNED/UNSTAPLED in every mode — the
+      # signature and the stapled ticket live on the .app inside. The gate
+      # below therefore treats the unsigned-container verdicts ("not signed at
+      # all", spctl rejection, no stapled ticket) as the documented baseline
+      # and fails closed on anything anomalous: empty or unrecognizable
+      # output from any tool, a failed signature verification, or a
+      # signed-but-rejected / signed-but-unstapled container when the signing
+      # profile promised more (scripts/gatekeeper-verify.ts decides).
+      # electron-builder ships ONE CONTAINER PER ARCHITECTURE (P2-191,
+      # arm64 + x64) — verify EACH of them, never assume a single file.
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245/P2-255 lessons).
+      - name: Gatekeeper verification of the distributed DMG
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          DMGS="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg' | sort)"
+          [ -n "$DMGS" ] || { echo "gatekeeper-verify: no .dmg found under apps/desktop/dist — nothing to verify"; exit 1; }
+          i=0
+          while IFS= read -r DMG; do
+            i=$((i+1))
+            echo "gatekeeper-verify: verifying container $DMG"
+            codesign --verify --deep --strict --verbose=2 "$DMG" > "dmg-codesign-$i.txt" 2>&1 || true
+            spctl -a -vv -t open "$DMG" > "dmg-spctl-$i.txt" 2>&1 || true
+            xcrun stapler validate "$DMG" > "dmg-stapler-$i.txt" 2>&1 || true
+            npx --yes tsx@4.23.12 scripts/gatekeeper-verify.ts dmg \
+              "${{ steps.signing.outputs.mode }}" "${{ steps.signing.outputs.notarize }}" \
+              "dmg-codesign-$i.txt" "dmg-spctl-$i.txt" "dmg-stapler-$i.txt"
+          done <<< "$DMGS"
+
+      # P2-309: every verdict above reads bytes OUTSIDE the image — the .app
+      # under dist/ and the container's signature verdicts — but the DMG the
+      # user actually opens was never MOUNTED, so a volume without the
+      # Applications shortcut (the drag-to-install affordance the README
+      # names) or with a broken app inside only surfaced on the downloader's
+      # Mac. Attach each constraint to the real artifact: mount the
+      # arch-matching image non-interactively, check the mounted content
+      # (exactly one .app, executable, resources/daemon + web-dist, the
+      # Applications symlink → /Applications), boot the app FROM INSIDE the
+      # volume with the same hermetic contract as the boot smoke above and
+      # detach the image ALWAYS — all BEFORE the upload below. Playwright
+      # missing fails closed. Failure keeps the release a draft (P2-179).
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson);
+      # position, uniqueness, shell and timeout are pinned by
+      # scripts/bootsmokeparity.ts via the unit battery.
+      - name: Smoke-mount the macOS disk image
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          DMG="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$DMG" ] || DMG="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg' | head -1)"
+          [ -n "$DMG" ] || { echo "dmg-smoke: no .dmg found under apps/desktop/dist — nothing to mount"; exit 1; }
+          echo "dmg-smoke: smoke-mounting $DMG"
+          node apps/desktop/scripts/dmg-smoke.mjs "$DMG"
 
       # P2-146: build the Squirrel.Mac JSON feed from the packed dist root —
       # the zip the mac target now produces + latest-mac.yml become the
@@ -152,13 +256,15 @@ jobs:
   # shell: bash on every run step so globs expand (pwsh won't).
   desktop-win:
     runs-on: windows-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 60
     needs: release
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -226,6 +332,55 @@ jobs:
           npx --yes tsx@4.23.12 scripts/authenticode-verify.ts \
             "${{ steps.win-signing.outputs.mode }}" authenticode.txt
 
+      # P2-208: dist-smoke only INSPECTS the package and Authenticode only
+      # reads the signature — a regression that only shows up at runtime (asar
+      # missing an asset the renderer asks for, main throwing at boot, the
+      # process dying in the first second) used to sail past this job and
+      # surface on the stage-5 user's machine through the installer. Boot the
+      # real packaged exe hermetically (temp userData, no sidecar, hidden
+      # window) and fail BEFORE the upload below — same shape as the P2-204
+      # mac boot smoke. Playwright missing fails closed (exit 1). shell: bash
+      # (P2-126/P2-164 lessons): pwsh does not expand globs.
+      - name: Smoke-boot the packaged app
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $DIR"
+          node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
+      # P2-251: same daemon-sidecar smoke the mac job runs — the boot smoke
+      # above never spawns the sidecar, so the packaged resources/daemon/
+      # index.js must prove it boots and serves /api/health on the packaged
+      # Electron-as-Node runtime BEFORE the upload below. Hermetic (temp
+      # HOME, relay off, ephemeral port), fail closed. shell: bash (P2-126
+      # lesson) and its own timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-daemon-smoke: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$DIR"
+
+      # P2-304: everything above proves the UNPACKED bundle — the setup exe a
+      # Windows user actually runs (NSIS install dir, shortcut, uninstall
+      # entry) still had zero proof. Install it silently into a temp dir, check
+      # the installed layout, boot the INSTALLED executable with the same
+      # hermetic contract as the boot smoke above, uninstall silently and
+      # require the install dir to disappear — all BEFORE the upload below.
+      # Playwright missing fails closed. shell: bash (P2-126 lesson) and its
+      # own timeout (P2-245 lesson).
+      - name: Smoke-install the Windows installer
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          EXE="$(find apps/desktop/dist -maxdepth 1 -type f -name '*.exe' | head -1)"
+          [ -n "$EXE" ] || { echo "installer-smoke: no setup exe found under apps/desktop/dist — nothing to install"; exit 1; }
+          echo "installer-smoke: smoke-installing $EXE"
+          node apps/desktop/scripts/installer-smoke.mjs "$EXE"
+
       - name: Attach setup exe + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -245,11 +400,13 @@ jobs:
   # download asset. P2-126 lesson: shell: bash on every run step.
   release-verify:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 10
     needs: [desktop-dmg, desktop-win]
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Verify the published release carries every platform asset
         env:
@@ -269,19 +426,21 @@ jobs:
   # crypto surface.
   relay-image:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 30
     needs: release
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Compute image references
         id: refs
         run: npx --yes tsx@4.23.12 scripts/relay-image.ts "$GITHUB_REF_NAME"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -341,14 +500,21 @@ jobs:
   # an installer that was never uploaded, used to ship green and then break
   # auto-update (P2-146/P2-131) for every installed app with no signal. This
   # job downloads both feeds and checks their contents against the tag and the
-  # published asset names. P2-126 lesson: shell: bash on every run step.
+  # published asset names. P2-212: the per-architecture feeds
+  # (update-mac-arm64.json / update-mac-x64.json) are the ones real machines
+  # consult since P2-191, so they are downloaded and content-checked too —
+  # each must point at a published zip carrying its own architecture, and the
+  # legacy update-mac.json alias must stay identical to the arm64 document.
+  # P2-126 lesson: shell: bash on every run step.
   release-feeds:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 20
     needs: [desktop-dmg, desktop-win]
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Verify the update feeds point at this release's artifacts
         env:
@@ -356,9 +522,60 @@ jobs:
         shell: bash
         run: |
           mkdir -p feeds
-          gh release download "$GITHUB_REF_NAME" --pattern update-mac.json --pattern latest.yml --dir feeds
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern update-mac.json --pattern latest.yml \
+            --pattern update-mac-arm64.json --pattern update-mac-x64.json \
+            --dir feeds
           gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' \
-            | npx --yes tsx@4.23.12 scripts/feed-consistency.ts "$GITHUB_REF_NAME" feeds/update-mac.json feeds/latest.yml
+            | npx --yes tsx@4.23.12 scripts/feed-consistency.ts "$GITHUB_REF_NAME" \
+                feeds/update-mac.json feeds/latest.yml \
+                feeds/update-mac-arm64.json feeds/update-mac-x64.json
+
+      # P2-308: names and versions are not integrity. The Windows app
+      # (apps/desktop/src/winupdate.ts) fail-closed refuses any installer whose
+      # measured sha512 diverges from the digest the feed announces — so a
+      # published feed with a mismatched hash used to block every installed
+      # Windows machine from updating forever while the release sailed green,
+      # because this job never hashed a single byte. This step downloads the
+      # release artifacts, measures sha512 (base64) and byte size with
+      # node:crypto and confronts declaration vs measurement through the pure
+      # module scripts/feedhash.ts, printing every problem at once; any problem
+      # fails the job and the release stays a draft under the P2-179 contract
+      # (release-publish needs this job). The Squirrel.Mac JSON feeds declare
+      # no digest (documented in the README), so only feeds that declare
+      # sha512 — today latest.yml, read from the feeds/ dir the consistency
+      # step downloaded — are confronted; everything else is measured but has
+      # nothing to be confronted against. Position (after the consistency
+      # step), single occurrence, shell: bash (P2-126 lesson) and timeout are
+      # pinned by scripts/bootsmokeparity.ts via the unit battery.
+      - name: Verify the feeds' declared sha512 digests against the published artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          gh release download "$GITHUB_REF_NAME" --dir artifacts
+          node - <<'NODE'
+            const { readFileSync, writeFileSync, readdirSync, statSync } = require("node:fs");
+            const { createHash } = require("node:crypto");
+            const measured = [];
+            for (const name of readdirSync("artifacts").sort()) {
+              const bytes = readFileSync("artifacts/" + name);
+              measured.push({
+                fileName: name,
+                sha512: createHash("sha512").update(bytes).digest("base64"),
+                size: statSync("artifacts/" + name).size,
+              });
+            }
+            const input = {
+              feeds: [{ label: "latest.yml", yml: readFileSync("feeds/latest.yml", "utf8") }],
+              measured,
+            };
+            writeFileSync("feedhash-input.json", JSON.stringify(input));
+          NODE
+          npx --yes tsx@4.23.12 scripts/feedhash.ts < feedhash-input.json
 
   # P2-179: the draft only goes public here, after release-verify AND
   # release-feeds passed. scripts/release-publish.ts reads the draft flag +
@@ -374,11 +591,13 @@ jobs:
   # release. P2-126 lesson: shell: bash on every run step.
   release-publish:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 20
     needs: [release-verify, release-feeds]
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # P2-186: make every download verifiable. The job downloads the release's
       # own assets back, hashes each file with node (sha256), builds the
@@ -413,6 +632,160 @@ jobs:
           '
           npx --yes tsx@4.23.12 scripts/release-checksums.ts "$GITHUB_REF_NAME" entries.json checksums.txt
           gh release upload "$GITHUB_REF_NAME" checksums.txt --clobber
+
+      # P2-245: Windows gets the same reproducible install path the Homebrew
+      # formula gives the Mac. This step builds the three winget manifests of
+      # the documented caiovicentino.opencode-remote package from the tag and
+      # the sha256 already hashed into checksums.txt above, verifies them
+      # against the release facts (scripts/wingetmanifest.ts — pure: declared
+      # version, installer URL, hash and package id) and attaches them as
+      # assets. Any problem fails the job and the release stays a draft under
+      # the P2-179 contract. Nothing is committed by CI, nothing is pushed to
+      # any Microsoft manifest repository, and no credential beyond the job's
+      # github.token is read. shell: bash (P2-126/P2-164 lessons): the step
+      # writes a throwaway driver and handles asset names with spaces
+      # verbatim.
+      - name: Attach the winget manifests to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > winget-assets.txt
+          cat > winget-driver.mts <<'DRIVER'
+          import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          import {
+            buildWingetManifests,
+            wingetProblems,
+            WINGET_PACKAGE_ID,
+            WINGET_RELEASES_BASE,
+          } from "./scripts/wingetmanifest";
+
+          const tag = process.argv[2] ?? "";
+          const assets = readFileSync("winget-assets.txt", "utf8")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          const checksums = readFileSync("checksums.txt", "utf8");
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+          const setup = assets.find((name) => name.endsWith(".exe") && name.includes(version));
+          if (!setup) {
+            console.error(`winget: no Windows setup exe for ${version} in the published asset list`);
+            process.exit(1);
+          }
+          const line = checksums.split(/\r?\n/).find((l) => l.endsWith(`  ${setup}`));
+          if (!line) {
+            console.error(`winget: checksums.txt carries no sha256 line for ${setup}`);
+            process.exit(1);
+          }
+          const sha = line.split("  ")[0] ?? "";
+          const url = `${WINGET_RELEASES_BASE}${tag}/${encodeURIComponent(setup)}`;
+          const manifests = buildWingetManifests(WINGET_PACKAGE_ID, version, url, sha);
+          mkdirSync("winget", { recursive: true });
+          for (const doc of manifests) writeFileSync(join("winget", doc.fileName), doc.text, "utf8");
+          const problems = wingetProblems(manifests, tag, assets, checksums);
+          if (problems.length > 0) {
+            for (const problem of problems) console.error(`  - ${problem}`);
+            console.error(`winget: ${problems.length} problem(s) found — the release stays a draft`);
+            process.exit(1);
+          }
+          console.log(`winget: OK ${tag} — ${manifests.length} manifest(s) verified against the published assets`);
+          DRIVER
+          npx --yes tsx@4.23.12 winget-driver.mts "$GITHUB_REF_NAME"
+          rm -f winget-driver.mts winget-assets.txt
+          gh release upload "$GITHUB_REF_NAME" winget/*.yaml --clobber
+
+      # P2-255: the Mac gets the same package-manager install path winget gave
+      # Windows. This step builds the Homebrew cask of the documented
+      # opencode-remote token from the tag and the two per-arch DMG assets,
+      # with the sha256 each one carries in checksums.txt above, verifies the
+      # cask against the release facts (scripts/caskmanifest.ts — pure:
+      # declared version, both DMG addresses, both hashes, both download
+      # targets) and attaches the cask file as a release asset, so a Mac user
+      # can run `brew install --cask ./opencode-remote-cask.rb` instead of
+      # dragging a DMG by hand. Any problem fails the job and the release
+      # stays a draft under the P2-179 contract. Nothing is committed by CI,
+      # no tap and no third-party repository is touched, and no credential
+      # beyond the job's github.token is read. shell: bash (P2-126/P2-164
+      # lessons) and its own timeout (P2-245 lesson).
+      - name: Attach the Homebrew cask to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > cask-assets.txt
+          cat > cask-driver.mts <<'DRIVER'
+          import { readFileSync, writeFileSync } from "node:fs";
+          import {
+            buildCaskManifest,
+            caskProblems,
+            CASK_RELEASES_BASE,
+          } from "./scripts/caskmanifest";
+
+          const tag = process.argv[2] ?? "";
+          const assets = readFileSync("cask-assets.txt", "utf8")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          const checksums = readFileSync("checksums.txt", "utf8");
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+          const dmg = (arch: string): { name: string; sha: string } => {
+            const name = assets.find((n) => n.endsWith(".dmg") && n.includes(version) && n.includes(arch));
+            if (!name) {
+              console.error(`cask: no macOS DMG carrying ${version} for ${arch} in the published asset list`);
+              process.exit(1);
+            }
+            const line = checksums.split(/\r?\n/).find((l) => l.endsWith(`  ${name}`));
+            if (!line) {
+              console.error(`cask: checksums.txt carries no sha256 line for ${name}`);
+              process.exit(1);
+            }
+            return { name, sha: line.split("  ")[0] ?? "" };
+          };
+          const arm = dmg("arm64");
+          const intel = dmg("x64");
+          const cask = buildCaskManifest(
+            version,
+            `${CASK_RELEASES_BASE}${tag}/${encodeURIComponent(arm.name)}`,
+            `${CASK_RELEASES_BASE}${tag}/${encodeURIComponent(intel.name)}`,
+            arm.sha,
+            intel.sha,
+          );
+          writeFileSync(cask.fileName, cask.text, "utf8");
+          const problems = caskProblems(cask, tag, assets, checksums);
+          if (problems.length > 0) {
+            for (const problem of problems) console.error(`  - ${problem}`);
+            console.error(`cask: ${problems.length} problem(s) found — the release stays a draft`);
+            process.exit(1);
+          }
+          console.log(`cask: OK ${tag} — ${cask.fileName} verified against the published assets`);
+          DRIVER
+          npx --yes tsx@4.23.12 cask-driver.mts "$GITHUB_REF_NAME"
+          rm -f cask-driver.mts cask-assets.txt
+          gh release upload "$GITHUB_REF_NAME" opencode-remote-cask.rb --clobber
+
+      # P2-216: the auto-generated body is a wall of pilot commit titles — a
+      # stage-5 user cannot tell which file fits their machine. This step
+      # writes a short download guide into the DRAFT body
+      # (scripts/release-notes.ts): one line per audience (Mac Apple Silicon,
+      # Mac Intel, Windows) naming ONLY files taken from the actual asset
+      # list, plus the first-open warning and the checksums.txt how-to. It
+      # runs after the checksum manifest upload (the guide points at it) and
+      # before the publish step: any problem fails the job and the release
+      # stays a draft under the P2-179 contract instead of publishing wrong
+      # guidance. shell: bash (P2-126/P2-164 lessons): the step handles asset
+      # names verbatim, spaces included.
+      - name: Write the download guide into the release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > guide-assets.txt
+          gh release view "$GITHUB_REF_NAME" --json body --jq '.body' > guide-body.md
+          npx --yes tsx@4.23.12 scripts/release-notes.ts "$GITHUB_REF_NAME" guide-assets.txt guide-body.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file guide-body.md
 
       - name: Publish the draft release only when every required asset is attached
         env:

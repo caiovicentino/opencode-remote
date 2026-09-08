@@ -4,7 +4,8 @@ import { useT, getLang } from "../lib/i18n";
 import { greetingKey, homeIdeas, type HomeIdeaIcon } from "../lib/home";
 import { composerSelectorLabel } from "../lib/composer";
 import { useModelSelector } from "../lib/models";
-import { transcribeBlob } from "../lib/transcribe";
+import { transcribeBlob, useSttStatus } from "../lib/transcribe";
+import { useModelStatus } from "../lib/modelstatus";
 import { WavRecorder } from "../lib/recorder";
 import ModelMenuItems from "./ModelMenuItems";
 import {
@@ -51,6 +52,17 @@ export default function HomeView({ machineName, request, voice, creating, onStar
   // mic: real press-and-hold recording, same flow as the ChatView mic
   const [recState, setRecState] = useState<RecState>("idle");
   const recorder = useRef<WavRecorder | null>(null);
+  // P2-201: host speech-to-text verdict — fail open while unknown (null),
+  // disable with the actionable phrase once the daemon reports a problem.
+  const stt = useSttStatus(request);
+  const sttBlocked = !!stt && stt.state !== "ready";
+  // P2-210: host model-readiness verdict. DELIBERATELY fail-open: this hint
+  // never disables the composer and never blocks sending — blocking the
+  // conversation because a probe says the machine has no credentials would be
+  // worse than the late raw upstream error this calm line replaces. The
+  // reason it exists at all is to explain the failure BEFORE the first send.
+  const modelStatus = useModelStatus(request);
+  const modelHint = modelStatus && modelStatus.state !== "ready" ? modelStatus : null;
 
   // close the model menu on outside clicks, like the ChatView dropdown
   useEffect(() => {
@@ -75,7 +87,7 @@ export default function HomeView({ machineName, request, voice, creating, onStar
   }
 
   async function micDown() {
-    if (!voice || recState !== "idle") return;
+    if (!voice || sttBlocked || recState !== "idle") return;
     setError("");
     try {
       recorder.current = new WavRecorder();
@@ -119,6 +131,11 @@ export default function HomeView({ machineName, request, voice, creating, onStar
         </div>
 
         <div className="home-composer">
+          {modelHint && (
+            <p className="composer-hint" role="status">
+              {modelHint.message}
+            </p>
+          )}
           <div className="composer">
             <textarea
               ref={taRef}
@@ -172,9 +189,17 @@ export default function HomeView({ machineName, request, voice, creating, onStar
                   void micDown();
                 }}
                 onPointerUp={() => void micUp()}
-                disabled={!voice || recState === "busy"}
+                disabled={!voice || recState === "busy" || sttBlocked}
                 aria-label={recState === "rec" ? t("stopRecording") : t("recordVoice")}
-                title={!voice ? t("micNeedsPermission") : recState === "rec" ? t("stopRecording") : t("recordVoice")}
+                title={
+                  sttBlocked
+                    ? stt.message
+                    : !voice
+                      ? t("micNeedsPermission")
+                      : recState === "rec"
+                        ? t("stopRecording")
+                        : t("recordVoice")
+                }
               >
                 {recState === "busy" ? (
                   "…"
@@ -195,6 +220,11 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               </button>
             </div>
           </div>
+          {sttBlocked && (
+            <p className="composer-hint" role="status">
+              {stt.message}
+            </p>
+          )}
           {error && (
             <div className="home-error" role="alert">
               {error}

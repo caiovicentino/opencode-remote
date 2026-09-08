@@ -25,6 +25,8 @@
 // download is logged and swallowed — it must never block or crash the shell.
 import { app, autoUpdater } from "electron";
 import { activeDaemonPort } from "./daemon";
+import { assetUrlFrom, parseWindowsFeed } from "./winupdate";
+import { updateGuard } from "./updateguard";
 
 /** Shape of the subset of Electron's autoUpdater we need (tests inject fakes). */
 export interface UpdaterLike {
@@ -48,6 +50,7 @@ export type UpdateStatus =
   | "disabled"
   | "update-available"
   | "update-available-manual"
+  | "update-installer-ready"
   | "update-not-available"
   | "update-downloaded"
   | "unrecognized-feed"
@@ -70,6 +73,11 @@ export function updateMenuLabel(status: UpdateStatus): string | null {
       // P2-131: yml feeds have no download engine (spike finding) — the shell
       // opens the release page instead of downloading anything in background.
       return "Update available — open release page";
+    case "update-installer-ready":
+      // P2-233: Windows explicit-action path — the installer listed by
+      // latest.yml was downloaded, digest-verified and revealed in the file
+      // manager. The app NEVER runs it; the user does, from that folder.
+      return "Update downloaded — installer ready";
     case "update-downloaded":
       return "Update ready — restart to install";
     case "update-not-available":
@@ -266,9 +274,35 @@ function parseYmlNotes(text: string): string {
   return "";
 }
 
+/** P2-233: one Windows installer download request, already validated — the
+ * file name passed the winupdate hygiene (no separators, no "..", no ":") and
+ * the URL was resolved next to the feed by assetUrlFrom. */
+export interface WinInstallerRequest {
+  version: string;
+  /** Installer file name as announced by the feed (sanitized). */
+  file: string;
+  /** Absolute installer URL, same directory as the feed document. */
+  url: string;
+  /** Digest the download must verify against (sha512, base64). */
+  expectedDigest: string;
+}
+
 export interface UpdateCheckOptions {
   /** Overrides the resolved feed URL (tests); undefined uses resolvedFeedUrl(). */
   feedUrl?: string | null;
+  /** P2-291: static update-guard inputs main.ts resolves once per execution
+   * (the boot-health verdict, the owner release mark, the harness flag and
+   * the last resolved update state). The guard itself is consulted below,
+   * BEFORE the version comparison — a feed re-offering the very version the
+   * boot-health verdict accuses is refused (nothing downloaded nor
+   * re-offered) while a new version flows through untouched. Absent → the
+   * guard runs on its own tolerant defaults, which always resolve seguir. */
+  updateGuard?: {
+    harnessSession: boolean;
+    bootVerdict: string;
+    ownerRelease: boolean;
+    lastState: string | null;
+  } | null;
   /** Overrides the public fallback feed (tests); undefined uses publicFeedUrl(). */
   publicFeed?: string | null;
   /** Overrides app.isPackaged (tests drive the packaged-default fallback path
@@ -288,12 +322,33 @@ export interface UpdateCheckOptions {
   dialog?: UpdateDialogSinks;
   /** Overrides process.platform (tests drive the darwin/win32/other paths). */
   platform?: NodeJS.Platform;
+  /** P2-211: the boot install-location verdict (installloc.ts, computed once
+   * in main.ts). When the bundle cannot be replaced by the updater (DMG
+   * volume / translocated copy) the consent dialog is never opened — offering
+   * a restart the updater has no way to complete would be worse than offering
+   * nothing. Fail-open: an unknown/absent verdict never blocks. */
+  installLocation?: { state: string; message: string } | null;
   /** P2-131: invoked when an update is detected through a yml feed — a format
    * with no download engine — and handed the release page URL. main.ts wires
    * it to shell.openExternal for user-initiated tray re-checks only; the boot
    * check never auto-opens a browser, and each version opens at most once per
    * session. */
   openReleasePage?: (url: string) => void;
+  /** P2-258: forwarded updater "download-progress" emissions (Electron's
+   * ProgressInfo shape, unvalidated — the consumer sanitizes fail-closed).
+   * The only consumer is the tray's progress label; no new network request,
+   * no new IPC channel, no new timer anywhere in this wiring. */
+  onProgress?: (info: unknown) => void;
+  /** P2-233: Windows explicit-action installer download. When wired (main.ts
+   * does it ONLY for a user-initiated tray/Help re-check — never boot, never
+   * the P2-155 scheduled recheck) and the platform is win32, a latest.yml
+   * body that parses as a Windows feed offers the sink the installer URL
+   * resolved next to the feed plus the digest to verify against. Resolving to
+   * true means "handled" (the shell finishes with update-installer-ready);
+   * every other outcome — sink absent, non-win32 platform, unparseable feed,
+   * unresolvable asset URL, sink returning false — falls through to the
+   * manual release-page flow below, which stays the fallback. */
+  winInstallerDownload?: (info: WinInstallerRequest) => Promise<boolean>;
 }
 
 // --- consent flow -------------------------------------------------------------
@@ -361,6 +416,38 @@ export function versionFromDownloadedArgs(args: unknown[]): string | null {
 }
 
 /**
+ * P2-211 (macOS) / P2-301 (Windows, additive): pure gate for the consent
+ * dialog. True ONLY when the boot install-location verdict proves the bundle
+ * on disk cannot be replaced by the updater. The blocking table, written here
+ * as a contract — one state per line, with the physical reason the running
+ * binary can never be swapped:
+ *   dmg-volume   — the bundle runs read-only straight from the mounted DMG
+ *                  volume; Squirrel.Mac cannot write into a mounted image.
+ *   translocated — Gatekeeper runs a randomized read-only copy under
+ *                  AppTranslocation; the original bundle is never touched.
+ *   zip-temp     — Windows Explorer unpacked the exe into the profile's temp
+ *                  dir; the NSIS installer writes to the Programs area while
+ *                  the temp copy the person reopens stays exactly as it is.
+ *   unc-share    — the exe runs straight off a network share; the installer
+ *                  writes to the local disk while the shared copy the person
+ *                  reopens stays on someone else's machine.
+ * Every other state (ok, downloads, unknown, absent verdict, non-object
+ * verdict) is fail-open: the dialog flow works exactly as before and nothing
+ * here blocks any other use of the app — blocking on doubt would freeze a
+ * fleet on a defective release, the explicit P2-291 lesson. Pure function:
+ * no electron, no node:fs, no node:path, no I/O of any kind (same discipline
+ * as updatespace.ts and updateguard.ts).
+ */
+export function installBlocksUpdate(verdict: { state: string; message: string } | null | undefined): boolean {
+  return (
+    verdict?.state === "dmg-volume" ||
+    verdict?.state === "translocated" ||
+    verdict?.state === "zip-temp" ||
+    verdict?.state === "unc-share"
+  );
+}
+
+/**
  * Attach the singleton's event listeners EXACTLY ONCE per updater instance.
  * This is the load-bearing fix from the round-1 review: runUpdateCheck() runs
  * at boot and on every tray click, so attaching per call would stack N
@@ -371,7 +458,15 @@ export function versionFromDownloadedArgs(args: unknown[]): string | null {
  */
 export function attachUpdateListeners(
   updater: UpdaterLike,
-  hooks: { log: (line: string) => void; dialog: UpdateDialogSinks; onStatus?: (s: UpdateStatus, v: string | null) => void },
+  hooks: {
+    log: (line: string) => void;
+    dialog: UpdateDialogSinks;
+    onStatus?: (s: UpdateStatus, v: string | null) => void;
+    /** P2-211: boot install-location verdict (see installBlocksUpdate). */
+    installLocation?: { state: string; message: string } | null;
+    /** P2-258: sink for the updater's own "download-progress" emissions. */
+    onProgress?: (info: unknown) => void;
+  },
 ): void {
   const count = typeof updater.listenerCount === "function" ? updater.listenerCount.bind(updater) : () => 0;
   if (count("error") > 0 || count("update-downloaded") > 0) return;
@@ -381,6 +476,11 @@ export function attachUpdateListeners(
     hooks.log(`update check failed (log-only, continuing): ${message}`);
   });
   updater.on("update-available", () => hooks.log("update-available (autoUpdater event) — download continues in background"));
+  // P2-258: forward the updater's own download-progress emissions to the sink
+  // the caller already injected — nothing else. No new network request, no
+  // new IPC channel, no new timer; the tray's progress label is the only
+  // consumer (main.ts sanitizes the payload fail-closed).
+  updater.on("download-progress", (info) => hooks.onProgress?.(info));
   updater.on("update-downloaded", (...args: unknown[]) => {
     const st = stateFor(updater);
     const version = versionFromDownloadedArgs(args) ?? st.version ?? "";
@@ -394,12 +494,27 @@ export function attachUpdateListeners(
 /**
  * Open the consent dialog for a downloaded version — once per version. The
  * dialog sinks are awaited so two rapid downloads can't stack dialogs.
+ * P2-211: the consent dialog is only reachable AFTER consulting the boot
+ * install-location verdict — an un-replaceable bundle (DMG volume /
+ * translocated copy) gets ONE log line (state + the same verdict phrase) and
+ * no dialog, because offering a restart the updater cannot complete would be
+ * worse than offering nothing. Fail-open on unknown/absent, and nothing here
+ * blocks the rest of the module.
  */
 async function offerInstall(
   updater: UpdaterLike,
   version: string,
-  hooks: { log: (line: string) => void; dialog: UpdateDialogSinks },
+  hooks: {
+    log: (line: string) => void;
+    dialog: UpdateDialogSinks;
+    installLocation?: { state: string; message: string } | null;
+  },
 ): Promise<void> {
+  if (installBlocksUpdate(hooks.installLocation)) {
+    const verdict = hooks.installLocation!;
+    hooks.log(`update install not offered (${verdict.state}): ${verdict.message}`);
+    return;
+  }
   const st = stateFor(updater);
   if (!version || !shouldOfferInstall(st, version)) return;
   st.offering = version;
@@ -490,6 +605,25 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     return finish("unrecognized-feed");
   }
   const current = opts.currentVersion ?? app?.getVersion?.() ?? "0.0.0";
+  // P2-291: the guard is consulted before every automatic download — placed
+  // BEFORE the version comparison so a feed still advertising the running
+  // (accused) version hits the recusar-oferta rule instead of silently
+  // no-op'ing. The refusal resolves like "no update" (the same status the
+  // version comparison would produce) plus the offer recorded upstream, so
+  // the periodic recheck is never interrupted and a genuinely NEW version
+  // keeps being perceived — and followed (rule 5 of the guard's table).
+  const guard = updateGuard({
+    harnessSession: opts.updateGuard?.harnessSession ?? false,
+    bootVerdict: opts.updateGuard?.bootVerdict ?? "",
+    runningVersion: current,
+    offeredVersion: feed.version,
+    updateState: opts.updateGuard?.lastState ?? null,
+    ownerRelease: opts.updateGuard?.ownerRelease ?? false,
+  });
+  if (guard.decision === "recusar-oferta") {
+    log(`update guard: ${guard.decision} (${guard.reason}) — ${guard.phrase}`);
+    return finish("update-not-available", feed.version);
+  }
   if (!isNewerVersion(current, feed.version)) {
     log(`update check: no update (current ${current} >= feed ${feed.version})`);
     return finish("update-not-available");
@@ -507,7 +641,7 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
     // handing a latest-*.yml to the built-in autoUpdater fails outright.
     if (updater) {
       const dialog = opts.dialog ?? { askInstall: async () => "later", quitAndInstall: () => {} };
-      attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus });
+      attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus, installLocation: opts.installLocation, onProgress: opts.onProgress });
       stateFor(updater).version = feed.version;
       try {
         updater.setFeedURL({ url: feedUrl, serverType: "json" });
@@ -525,6 +659,29 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   // does that for user-initiated tray re-checks, never for the boot check —
   // an outdated install must not auto-open a browser at every launch) and at
   // most once per version per session.
+  //
+  // P2-233: on Windows the same yml feed (latest.yml) carries everything a
+  // verified download needs. ONLY for a caller-wired sink (explicit user
+  // action — main.ts never wires it for boot or the scheduled recheck) and
+  // only on win32, parse the feed body and hand the sink the asset URL
+  // resolved next to the feed plus the announced digest. A sink verdict of
+  // true finishes with update-installer-ready; any other outcome — including
+  // an unparseable body or an unresolvable asset URL — falls through to the
+  // manual release-page flow, which stays the fallback. macOS is untouched:
+  // the gate below keeps this branch byte-for-byte inert on darwin.
+  if (opts.winInstallerDownload && platform === "win32") {
+    const winFeed = parseWindowsFeed(body);
+    const assetUrl = winFeed ? assetUrlFrom(feedUrl, winFeed.file) : null;
+    if (winFeed && assetUrl) {
+      const handled = await opts.winInstallerDownload({
+        version: winFeed.version,
+        file: winFeed.file,
+        url: assetUrl,
+        expectedDigest: winFeed.digest,
+      });
+      if (handled) return finish("update-installer-ready", winFeed.version);
+    }
+  }
   log("update check: yml feed has no download engine — update is manual, opening the release page");
   if (opts.openReleasePage && !manualOpened.has(feed.version)) {
     manualOpened.add(feed.version);

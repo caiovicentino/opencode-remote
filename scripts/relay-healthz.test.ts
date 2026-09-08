@@ -5,13 +5,18 @@
  * Run: npx tsx scripts/relay-healthz.test.ts
  */
 import { createServer, get, type IncomingMessage, type Server } from "node:http";
+import { spawn } from "node:child_process";
 import net from "node:net";
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { healthzHandler, healthzPayload } from "../apps/relay/src/healthz";
+import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE, type CertExpiryHealth, type HealthzState } from "../apps/relay/src/healthz";
+import { rejectionBreakdown, ROOM_REJECT_REASONS } from "../apps/relay/src/rejectreasons";
+import { certExpiryMetrics } from "../apps/relay/src/certmetrics";
+import { procMetrics, procMetricsJson } from "../apps/relay/src/procmetrics";
 import { metricsAuthOk, metricsBinding } from "../apps/relay/src/metricsbind";
 import { DRAIN_GRACE_MS_CEILING, MAX_FRAME_CEILING, relayLimits } from "../apps/relay/src/limits";
 import { createShutdown, DRAIN_MS, refuseUpgrade } from "../apps/relay/src/shutdown";
@@ -34,6 +39,14 @@ import {
   WEB_RATE_PER_MIN_CEILING,
   WEB_RATE_PER_MIN_DEFAULT,
 } from "../apps/relay/src/webbudget";
+import {
+  negotiateEncoding,
+  WebEncodingCache,
+  webEncodingCacheKey,
+  WEB_ENCODING_MAX_BYTES,
+  WEB_ENCODING_MIN_BYTES,
+} from "../apps/relay/src/webencoding";
+import { conditionalVerdict, etagFor } from "../apps/relay/src/webcond";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -42,9 +55,9 @@ function check(name: string, ok: boolean) {
 }
 
 setTimeout(() => {
-  console.error("relay-healthz test timed out (global 15s)");
+  console.error("relay-healthz test timed out (global 60s)");
   process.exit(1);
-}, 15_000).unref();
+}, 60_000).unref();
 
 // --- 1. pure payload: shape and uptime math ---------------------------------
 const START = 1_000_000;
@@ -293,6 +306,50 @@ check(
 drainFlag.active = false;
 check("drain: probe returns 200 once draining ends", (await probe()).status === 200);
 drainServer.close();
+
+// --- 6b. room-budget counter (P2-243): additive payload field ------------------
+const budgetState = {
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 0,
+  roomsBudgetTerminated: () => 3,
+};
+const withBudget = healthzPayload(budgetState, START + 90_000);
+check("budget-counter: payload carries the additive roomsBudgetTerminated field", withBudget.roomsBudgetTerminated === 3);
+check(
+  "budget-counter: payload keeps every pre-existing field untouched",
+  withBudget.ok === true &&
+    withBudget.version === "0.2.0" &&
+    withBudget.uptimeS === 90 &&
+    withBudget.rooms === 1 &&
+    withBudget.roomsRejected === 0,
+);
+check(
+  "budget-counter: absent getter keeps the exact pre-P2-243 five-field body",
+  (() => {
+    const p = healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 0, roomsRejected: () => 0 }, START);
+    return (
+      JSON.stringify(Object.keys(p).sort()) ===
+        JSON.stringify(["ok", "rooms", "roomsRejected", "uptimeS", "version"])
+    );
+  })(),
+);
+const budgetServer: Server = createServer(healthzHandler(budgetState));
+await new Promise<void>((r) => budgetServer.listen(0, "127.0.0.1", r));
+const budgetPort = (budgetServer.address() as { port: number }).port;
+const budgetProbe = await new Promise<string>((resolve) => {
+  get(`http://127.0.0.1:${budgetPort}/healthz`, (res) => {
+    let body = "";
+    res.on("data", (c) => (body += c));
+    res.on("end", () => resolve(body));
+  });
+});
+check(
+  "budget-counter: real /healthz body carries the counter as a number",
+  (JSON.parse(budgetProbe) as { roomsBudgetTerminated?: number }).roomsBudgetTerminated === 3,
+);
+budgetServer.close();
 
 // --- 7. ws upgrade refused while draining (P2-145) -----------------------------
 // Real server wired exactly like apps/relay/src/index.ts: noServer WSS with
@@ -1052,8 +1109,1360 @@ check("budget map: identity derivation follows TRUST_PROXY_HOPS exactly like the
   check("budget http: the probe of the exhausted identity still answers 200", (await budgetRequest("/healthz", { "x-forwarded-for": "9.9.9.1" })).status === 200);
   check("budget http: the probe consumes no budget (bucket stays empty)", (await budgetRequest("/", { "x-forwarded-for": "9.9.9.1" })).status === 429);
 
-  budgetServer.close();
+budgetServer.close();
+
+// --- 6c. certificate-expiry verdict (P2-290): additive payload fields ----------
+// Rules mirrored from the healthz.ts header, in order: a state without the
+// getter adds nothing; an absent, non-textual or out-of-table verdict adds
+// nothing and a good verdict is NEVER invented (fail-closed); a non-finite
+// deadline omits the seconds field while a negative remainder floors at
+// zero; identical inputs produce identical bodies. Only the two documented
+// fields ever appear — never certificate material.
+const CERT_NOW = 1_090_000;
+const certState = (cert: unknown): HealthzState => ({
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 2,
+  certExpiry: () => cert as CertExpiryHealth,
+});
+const FIVE_BASE_FIELDS = ["ok", "rooms", "roomsRejected", "uptimeS", "version"];
+
+check(
+  "cert: state without the getter keeps the exact pre-P2-290 body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 2 }, CERT_NOW)) ===
+    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2}',
+);
+check(
+  "cert: absent verdict (getter answers undefined) adds nothing",
+  (() => {
+    const keys = Object.keys(healthzPayload(certState(undefined), CERT_NOW)).sort();
+    return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+  })(),
+);
+check(
+  "cert: non-textual verdict adds nothing",
+  (() => {
+    const keys = Object.keys(healthzPayload(certState({ verdict: 42, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)).sort();
+    return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+  })(),
+);
+for (const outside of ["expired", "USE", "", "warn ", "healthy"]) {
+  check(
+    `cert: verdict outside the documented table adds nothing (${JSON.stringify(outside)})`,
+    (() => {
+      const keys = Object.keys(healthzPayload(certState({ verdict: outside, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)).sort();
+      return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+    })(),
+  );
+}
+for (const verdict of ["use", "warn", "refuse-expired", "refuse-not-yet-valid"]) {
+  check(
+    `cert: documented verdict "${verdict}" becomes exactly the two additive fields`,
+    (() => {
+      const p = healthzPayload(certState({ verdict, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW);
+      return (
+        p.certExpiryVerdict === verdict &&
+        p.certExpiryInS === 50 &&
+        JSON.stringify(Object.keys(p)) ===
+          JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"])
+      );
+    })(),
+  );
+}
+check(
+  "cert: negative deadline floors the seconds at zero",
+  (() => {
+    const p = healthzPayload(certState({ verdict: "warn", expiresAtMs: CERT_NOW - 250 }), CERT_NOW);
+    return p.certExpiryVerdict === "warn" && p.certExpiryInS === 0;
+  })(),
+);
+check(
+  "cert: non-finite deadline (NaN) adds no seconds field",
+  (() => {
+    const p = healthzPayload(certState({ verdict: "warn", expiresAtMs: Number.NaN }), CERT_NOW);
+    return p.certExpiryVerdict === "warn" && p.certExpiryInS === undefined;
+  })(),
+);
+check(
+  "cert: non-finite deadline (Infinity) adds no seconds field",
+  (() => {
+    const p = healthzPayload(certState({ verdict: "use", expiresAtMs: Number.POSITIVE_INFINITY }), CERT_NOW);
+    return p.certExpiryVerdict === "use" && p.certExpiryInS === undefined;
+  })(),
+);
+check(
+  "cert: additive fields ride the drain response without changing any other field",
+  JSON.stringify(healthzPayload(certState({ verdict: "warn", expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2,"certExpiryVerdict":"warn","certExpiryInS":50,"draining":true}',
+);
+check(
+  "cert: drain response without the getter stays byte-for-byte the pre-P2-290 body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 2 }, CERT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2,"draining":true}',
+);
+check(
+  "cert: identical input produces an identical body in two calls",
+  JSON.stringify(healthzPayload(certState({ verdict: "use", expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)) ===
+    JSON.stringify(healthzPayload(certState({ verdict: "use", expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)),
+);
+check(
+  "cert: body carries no key beyond the two documented and no certificate material",
+  (() => {
+    const planted = healthzPayload(
+      certState({
+        verdict: "warn",
+        expiresAtMs: CERT_NOW + 50_000,
+        subject: "CN=relay-secret",
+        issuer: "CN=Evil CA",
+        serialNumber: "DEADBEEF01",
+        fingerprint: "aa:bb:cc:dd",
+        path: "/etc/ssl/private/relay.pem",
+        host: "relay.example.com",
+      }),
+      CERT_NOW,
+    );
+    const body = JSON.stringify(planted);
+    return (
+      JSON.stringify(Object.keys(planted)) ===
+        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"]) &&
+      !body.includes("relay-secret") &&
+      !body.includes("Evil") &&
+      !body.includes("DEADBEEF") &&
+      !body.includes("aa:bb") &&
+      !body.includes("/etc/ssl") &&
+      !body.includes("relay.example.com")
+    );
+  })(),
+);
+check(
+  "cert: index.ts feeds the getter from the verdict the periodic revalidation maintains, with no new periodic timer",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    const getterAt = relayIndex.indexOf("certExpiry: () =>");
+    const getterSource = getterAt === -1 ? "" : relayIndex.slice(getterAt, getterAt + 240);
+    return (
+      getterAt > -1 &&
+      // fed by the maintained verdict variable and the already-extracted instant
+      getterSource.includes("lastCertExpiryVerdict") &&
+      getterSource.includes("CERT_EXPIRY.notAfter") &&
+      // the variable is exactly the one the sweep assigns on verdict transitions
+      relayIndex.includes("lastCertExpiryVerdict = nextCert.verdict") &&
+      // and no periodic timer beyond the pre-existing P2-067 ping sweep exists
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
+
   rmSync(root, { recursive: true, force: true });
+}
+
+// --- 23. content negotiation (P2-198, pure decision table) --------------------
+const IN_RANGE = 10_000;
+check("encoding: js asset with a plain gzip header is compressed and varies", (() => {
+  const d = negotiateEncoding("gzip", ".js", IN_RANGE);
+  return d.encoding === "gzip" && d.vary === true;
+})());
+check("encoding: absent header stays identity but still varies", (() => {
+  const d = negotiateEncoding(undefined, ".js", IN_RANGE);
+  return d.encoding === "identity" && d.vary === true;
+})());
+check("encoding: gzip with quality zero means identity (refused, not preferred)", (() => {
+  const d = negotiateEncoding("gzip;q=0", ".js", IN_RANGE);
+  return d.encoding === "identity" && d.vary === true;
+})());
+check("encoding: the wildcard accepts gzip", negotiateEncoding("*", ".js", IN_RANGE).encoding === "gzip");
+check("encoding: a zero-quality wildcard refuses gzip too", negotiateEncoding("*;q=0", ".js", IN_RANGE).encoding === "identity");
+check("encoding: case and whitespace around token and q are ignored", (() => {
+  const d = negotiateEncoding("  GZIP ; Q = 0.5 ", ".js", IN_RANGE);
+  return d.encoding === "gzip" && d.vary === true;
+})());
+check("encoding: a header without gzip stays identity", negotiateEncoding("br", ".js", IN_RANGE).encoding === "identity");
+check("encoding: gzip among other encodings is honored", negotiateEncoding("deflate, gzip, br", ".js", IN_RANGE).encoding === "gzip");
+check("encoding: an explicit gzip element wins over the wildcard quality", negotiateEncoding("gzip;q=0, *", ".js", IN_RANGE).encoding === "identity");
+check("encoding: a fractional quality above zero compresses", negotiateEncoding("gzip;q=0.5", ".js", IN_RANGE).encoding === "gzip");
+check("encoding: a non-numeric quality is a malformed header (identity)", negotiateEncoding("gzip;q=abc", ".js", IN_RANGE).encoding === "identity");
+check("encoding: a quality above one is malformed (identity)", negotiateEncoding("gzip;q=2", ".js", IN_RANGE).encoding === "identity");
+check("encoding: an empty quality is malformed (identity)", negotiateEncoding("gzip;q=", ".js", IN_RANGE).encoding === "identity");
+check("encoding: a quality with four decimals is malformed (identity)", negotiateEncoding("gzip;q=0.0001", ".js", IN_RANGE).encoding === "identity");
+check("encoding: an element without a token is malformed (identity)", negotiateEncoding(";q=1", ".js", IN_RANGE).encoding === "identity");
+check("encoding: an empty header is identity", negotiateEncoding("", ".js", IN_RANGE).encoding === "identity");
+check("encoding: png is never compressed, whatever the header says", (() => {
+  const anyHeader = negotiateEncoding("*", ".png", IN_RANGE);
+  const none = negotiateEncoding(undefined, ".png", IN_RANGE);
+  return anyHeader.encoding === "identity" && anyHeader.vary === false && none.encoding === "identity" && none.vary === false;
+})());
+check("encoding: jpg/webp/ico/woff2 are never compressible either", (() => {
+  return [".jpg", ".webp", ".ico", ".woff2"].every(
+    (ext) => negotiateEncoding("gzip", ext, IN_RANGE).encoding === "identity" && negotiateEncoding("gzip", ext, IN_RANGE).vary === false,
+  );
+})());
+check("encoding: the extension is case-insensitive and dot-tolerant", negotiateEncoding("gzip", ".JS", IN_RANGE).encoding === "gzip" && negotiateEncoding("gzip", "js", IN_RANGE).encoding === "gzip");
+check("encoding: a file below the floor is never compressed and does not vary", (() => {
+  const d = negotiateEncoding("gzip", ".js", WEB_ENCODING_MIN_BYTES - 1);
+  return d.encoding === "identity" && d.vary === false;
+})());
+check("encoding: a file at the floor is compressed", negotiateEncoding("gzip", ".js", WEB_ENCODING_MIN_BYTES).encoding === "gzip");
+check("encoding: a file at the ceiling is compressed", negotiateEncoding("gzip", ".js", WEB_ENCODING_MAX_BYTES).encoding === "gzip");
+check("encoding: a file above the ceiling is refused compression", (() => {
+  const d = negotiateEncoding("gzip", ".js", WEB_ENCODING_MAX_BYTES + 1);
+  return d.encoding === "identity" && d.vary === false;
+})());
+check("encoding: thresholds are the documented constants", WEB_ENCODING_MIN_BYTES === 1024 && WEB_ENCODING_MAX_BYTES === 8_388_608);
+
+// --- 24. compressed-body cache (P2-198, pure units) ------------------------------
+check("encoding cache: the same key compresses exactly once", (() => {
+  const c = new WebEncodingCache(8, 1_000_000);
+  let computes = 0;
+  const first = c.getOrCompute("k", () => {
+    computes++;
+    return Buffer.from("one");
+  });
+  const second = c.getOrCompute("k", () => {
+    computes++;
+    return Buffer.from("two");
+  });
+  return computes === 1 && first === second && c.hits === 1 && c.misses === 1;
+})());
+check("encoding cache: the entry cap discards the oldest entry", (() => {
+  const c = new WebEncodingCache(2, 1_000_000);
+  c.getOrCompute("a", () => Buffer.from("1"));
+  c.getOrCompute("b", () => Buffer.from("2"));
+  c.getOrCompute("c", () => Buffer.from("3")); // over the cap → a discarded
+  return c.size === 2 && c.getOrCompute("a", () => Buffer.from("fresh-a")).toString() === "fresh-a";
+})());
+check("encoding cache: the byte cap discards the oldest entry", (() => {
+  const c = new WebEncodingCache(8, 10);
+  c.getOrCompute("a", () => Buffer.alloc(6, 1));
+  c.getOrCompute("b", () => Buffer.alloc(6, 2)); // 12 total > 10 → a evicted
+  return c.bytes === 6 && c.getOrCompute("a", () => Buffer.from("fresh")).toString() === "fresh";
+})());
+check("encoding cache: an entry above the byte cap is never stored", (() => {
+  const c = new WebEncodingCache(8, 10);
+  c.getOrCompute("big", () => Buffer.alloc(11, 1));
+  return c.size === 0 && c.getOrCompute("big", () => Buffer.from("again")).toString() === "again";
+})());
+check("encoding cache: the key binds path, size and mtime together", (() => {
+  const base = webEncodingCacheKey("/a.js", 10, 1);
+  return (
+    base === webEncodingCacheKey("/a.js", 10, 1) &&
+    base !== webEncodingCacheKey("/a.js", 11, 1) &&
+    base !== webEncodingCacheKey("/a.js", 10, 2) &&
+    base !== webEncodingCacheKey("/b.js", 10, 1)
+  );
+})());
+
+// --- 25. negotiated static route over real HTTP (P2-198) --------------------------
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-webgzip-"));
+  const bigJs = 'console.log("bundle");\n'.repeat(120); // 2760 bytes, in range
+  const indexHtml = `<html>${"x".repeat(1200)}</html>`; // 1213 bytes, in range
+  writeFileSync(join(root, "app.js"), bigJs);
+  writeFileSync(join(root, "app-DbC9xY7W.js"), bigJs); // hashed asset → immutable
+  writeFileSync(join(root, "index.html"), indexHtml);
+  writeFileSync(join(root, "tiny.js"), "console.log(1)\n"); // below the floor
+  writeFileSync(join(root, "pic.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 1]));
+  writeFileSync(join(root, "huge.js"), Buffer.alloc(WEB_ENCODING_MAX_BYTES + 1, 0x61)); // above the ceiling
+
+  const gzipServer: Server = createServer(
+    healthzHandler(state, () => false, {
+      root,
+      isFile: (abs) => {
+        try {
+          return statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      },
+      send: (abs, _req, res) => createReadStream(abs).pipe(res),
+      csp: WEB_CSP_DEFAULT,
+      isTls: () => false,
+    }),
+  );
+  await new Promise<void>((r) => gzipServer.listen(0, "127.0.0.1", r));
+  const gPort = (gzipServer.address() as { port: number }).port;
+  const gzipRequest = (path: string, reqHeaders: Record<string, string> = {}, method = "GET") =>
+    new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }>((resolve) => {
+      const req = get(`http://127.0.0.1:${gPort}${path}`, { method, headers: reqHeaders }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }),
+        );
+      });
+      req.end();
+    });
+
+  const gz = await gzipRequest("/app.js", { "accept-encoding": "gzip" });
+  check("gzip http: a js asset with accept-encoding gzip answers content-encoding gzip", gz.status === 200 && gz.headers["content-encoding"] === "gzip");
+  check("gzip http: the compressed body gunzips byte for byte into the original file", gunzipSync(gz.body).toString() === bigJs);
+  check("gzip http: the content-length is the already-compressed length", gz.headers["content-length"] === String(gz.body.length));
+  check("gzip http: content-type and cache-control are untouched", String(gz.headers["content-type"]).startsWith("text/javascript") && gz.headers["cache-control"] === "no-store");
+  check("gzip http: the compressed response carries vary: accept-encoding", gz.headers["vary"] === "Accept-Encoding");
+  check("gzip http: every P2-192 security header rides on the compressed response", ALWAYS_ON_SECURITY_HEADERS.every((k) => gz.headers[k] !== undefined) && gz.headers["x-content-type-options"] === "nosniff");
+
+  const hitsBefore = WEB_ENCODING_CACHE.hits;
+  const gzAgain = await gzipRequest("/app.js", { "accept-encoding": "gzip" });
+  check(
+    "gzip http: the second request of the same asset is byte-identical and served from the cache",
+    gzAgain.body.equals(gz.body) && WEB_ENCODING_CACHE.hits === hitsBefore + 1,
+  );
+
+  const identity = await gzipRequest("/app.js");
+  check("gzip http: the same asset without the header answers without content-encoding", identity.headers["content-encoding"] === undefined && identity.body.toString() === bigJs);
+  check("gzip http: the identity variant carries vary too (shared cache never mixes variants)", identity.headers["vary"] === "Accept-Encoding");
+
+  const qZero = await gzipRequest("/app.js", { "accept-encoding": "gzip;q=0" });
+  check("gzip http: gzip with quality zero falls back to identity", qZero.headers["content-encoding"] === undefined && qZero.body.toString() === bigJs);
+  const wildcard = await gzipRequest("/app.js", { "accept-encoding": "*" });
+  check("gzip http: the wildcard answers gzip", wildcard.headers["content-encoding"] === "gzip");
+
+  const png = await gzipRequest("/pic.png", { "accept-encoding": "gzip" });
+  check("gzip http: png is never compressed and carries no vary", png.headers["content-encoding"] === undefined && png.headers["vary"] === undefined && png.body.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 1])));
+  const tiny = await gzipRequest("/tiny.js", { "accept-encoding": "gzip" });
+  check("gzip http: a file below the floor is never compressed and carries no vary", tiny.headers["content-encoding"] === undefined && tiny.headers["vary"] === undefined && tiny.body.toString() === "console.log(1)\n");
+  const huge = await gzipRequest("/huge.js", { "accept-encoding": "gzip" });
+  check("gzip http: a file above the ceiling is never compressed and carries no vary", huge.headers["content-encoding"] === undefined && huge.headers["vary"] === undefined && huge.body.length === WEB_ENCODING_MAX_BYTES + 1);
+
+  const spa = await gzipRequest("/pair", { "accept-encoding": "gzip" });
+  check("gzip http: the SPA fallback is compressed the same way", spa.status === 200 && spa.headers["content-encoding"] === "gzip" && gunzipSync(spa.body).toString() === indexHtml);
+  check("gzip http: the SPA fallback carries vary as well", spa.headers["vary"] === "Accept-Encoding");
+
+  const hashed = await gzipRequest("/app-DbC9xY7W.js", { "accept-encoding": "gzip" });
+  check("gzip http: a hashed immutable asset compresses and keeps its cache policy", hashed.headers["content-encoding"] === "gzip" && hashed.headers["cache-control"] === "public, max-age=31536000, immutable");
+
+  const head = await gzipRequest("/app.js", { "accept-encoding": "gzip" }, "HEAD");
+  check("gzip http: HEAD answers the negotiated headers with no body", head.status === 200 && head.headers["content-encoding"] === "gzip" && Number(head.headers["content-length"]) > 0 && head.body.length === 0);
+
+  const missing = await gzipRequest("/missing.js", { "accept-encoding": "gzip" });
+  check("gzip http: 404 is unchanged — no compression, no vary, empty body", missing.status === 404 && missing.headers["content-encoding"] === undefined && missing.headers["vary"] === undefined && missing.body.length === 0);
+  const notAllowed = await gzipRequest("/", { "accept-encoding": "gzip" }, "POST");
+  check("gzip http: 405 is unchanged — allow header, no compression, no vary", notAllowed.status === 405 && notAllowed.headers["allow"] === "GET, HEAD" && notAllowed.headers["content-encoding"] === undefined && notAllowed.headers["vary"] === undefined);
+
+  const probe = await gzipRequest("/healthz", { "accept-encoding": "gzip" });
+  check(
+    "gzip http: /healthz body and headers are byte-for-byte unchanged (no gzip, no vary)",
+    probe.status === 200 &&
+      probe.headers["content-type"] === "application/json" &&
+      probe.headers["content-encoding"] === undefined &&
+      probe.headers["vary"] === undefined &&
+      probe.body.toString() ===
+        `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
+  );
+
+  gzipServer.close();
+  rmSync(root, { recursive: true, force: true });
+}
+
+// --- 26. conditional validators (P2-200, pure decisions) -------------------------
+const CURRENT = etagFor(2760, 1_700_000_000_000, "gzip");
+check("etag: the validator is a quoted strong entity tag", CURRENT.startsWith('"') && CURRENT.endsWith('"') && !CURRENT.startsWith("W/"));
+check("etag: the opaque value is 16 lowercase hex digits", /^"[0-9a-f]{16}"$/.test(CURRENT));
+check("etag: stable across repeated calls for the same input", etagFor(2760, 1_700_000_000_000, "gzip") === CURRENT);
+check("etag: differs between gzip and identity for the same file", etagFor(2760, 1_700_000_000_000, "gzip") !== etagFor(2760, 1_700_000_000_000, "identity"));
+check("etag: differs when the size changes", etagFor(2760, 1_700_000_000_000, "gzip") !== etagFor(2761, 1_700_000_000_000, "gzip"));
+check("etag: differs when the mtime changes", etagFor(2760, 1_700_000_000_000, "gzip") !== etagFor(2760, 1_700_000_000_001, "gzip"));
+
+check("cond: a missing header sends", conditionalVerdict(undefined, CURRENT) === "send");
+check("cond: a non-string header sends", conditionalVerdict(42, CURRENT) === "send");
+check("cond: an empty header sends", conditionalVerdict("", CURRENT) === "send");
+check("cond: a whitespace-only header sends", conditionalVerdict("   ", CURRENT) === "send");
+check("cond: the current validator revalidates", conditionalVerdict(CURRENT, CURRENT) === "not-modified");
+check("cond: surrounding whitespace is ignored", conditionalVerdict(`  ${CURRENT}  `, CURRENT) === "not-modified");
+check("cond: the weak form revalidates (weak comparison)", conditionalVerdict(`W/${CURRENT}`, CURRENT) === "not-modified");
+check("cond: the wildcard revalidates", conditionalVerdict("*", CURRENT) === "not-modified");
+check("cond: a padded wildcard revalidates", conditionalVerdict(" * ", CURRENT) === "not-modified");
+check("cond: an unknown validator sends", conditionalVerdict('"nope-0000"', CURRENT) === "send");
+check("cond: a list revalidates when one element matches (last)", conditionalVerdict(`"nope-0000", ${CURRENT}`, CURRENT) === "not-modified");
+check("cond: a list revalidates when one element matches (first)", conditionalVerdict(`${CURRENT} , "nope-0000"`, CURRENT) === "not-modified");
+check("cond: a list without a match sends", conditionalVerdict('"nope-0000", "other-1111"', CURRENT) === "send");
+check("cond: a malformed element never matches", conditionalVerdict("W/", CURRENT) === "send");
+check("cond: a comma-only header sends", conditionalVerdict(",,", CURRENT) === "send");
+check("cond: an unterminated quote is just a non-match (send)", conditionalVerdict('"unterminated', CURRENT) === "send");
+
+// --- 27. conditional static route over real HTTP (P2-200) -------------------------
+{
+  const root = mkdtempSync(join(tmpdir(), "relay-webcond-"));
+  const bigJs = 'console.log("bundle");\n'.repeat(120); // 2760 bytes, in range
+  const indexHtml = `<html>${"x".repeat(1200)}</html>`; // 1213 bytes, in range
+  writeFileSync(join(root, "app.js"), bigJs);
+  writeFileSync(join(root, "index.html"), indexHtml);
+  writeFileSync(join(root, "tiny.js"), "console.log(1)\n"); // below the gzip floor, identity only
+
+  const condServer: Server = createServer(
+    healthzHandler(state, () => false, {
+      root,
+      isFile: (abs) => {
+        try {
+          return statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      },
+      send: (abs, req, res) => {
+        if (req.method === "HEAD") {
+          res.end();
+          return;
+        }
+        createReadStream(abs).pipe(res);
+      },
+      csp: WEB_CSP_DEFAULT,
+      isTls: () => false,
+    }),
+  );
+  await new Promise<void>((r) => condServer.listen(0, "127.0.0.1", r));
+  const cPort = (condServer.address() as { port: number }).port;
+  const condRequest = (path: string, reqHeaders: Record<string, string> = {}, method = "GET") =>
+    new Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }>((resolve) => {
+      const req = get(`http://127.0.0.1:${cPort}${path}`, { method, headers: reqHeaders }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }),
+        );
+      });
+      req.end();
+    });
+
+  const first = await condRequest("/app.js", { "accept-encoding": "gzip" });
+  const gzEtag = first.headers.etag;
+  check("cond http: the first GET answers 200 with an etag present", first.status === 200 && typeof gzEtag === "string" && gzEtag.length > 0);
+  check("cond http: the 200 gzip variant is otherwise the P2-198 response", first.headers["content-encoding"] === "gzip" && first.headers["vary"] === "Accept-Encoding");
+
+  const revalidate = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": gzEtag! });
+  check("cond http: a matching if-none-match answers 304", revalidate.status === 304);
+  check("cond http: the 304 has no body at all", revalidate.body.length === 0);
+  check("cond http: the 304 carries the validator", revalidate.headers.etag === gzEtag);
+  check("cond http: the 304 carries cache-control", revalidate.headers["cache-control"] === "no-store");
+  check("cond http: the 304 carries vary", revalidate.headers["vary"] === "Accept-Encoding");
+  check(
+    "cond http: the 304 carries every P2-192 security header",
+    ALWAYS_ON_SECURITY_HEADERS.every((k) => revalidate.headers[k] !== undefined) &&
+      revalidate.headers["x-content-type-options"] === undefined,
+  );
+  check(
+    "cond http: the 304 never carries content-encoding, content-length nor content-type",
+    revalidate.headers["content-encoding"] === undefined &&
+      revalidate.headers["content-length"] === undefined &&
+      revalidate.headers["content-type"] === undefined,
+  );
+
+  const identity = await condRequest("/app.js");
+  const idEtag = identity.headers.etag;
+  check("cond http: the identity variant answers 200 with its own etag", identity.status === 200 && identity.headers["content-encoding"] === undefined && typeof idEtag === "string");
+  check("cond http: the gzip etag differs from the identity etag", gzEtag !== idEtag);
+  check("cond http: the identity 200 keeps the P2-198 vary", identity.headers["vary"] === "Accept-Encoding");
+
+  const crossVariant = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": idEtag! });
+  check(
+    "cond http: an identity etag on a gzip-negotiated request is a mismatch — 200 with a body",
+    crossVariant.status === 200 &&
+      crossVariant.headers["content-encoding"] === "gzip" &&
+      crossVariant.body.length > 0 &&
+      crossVariant.headers.etag === gzEtag,
+  );
+
+  const wildcard = await condRequest("/app.js", { "if-none-match": "*" });
+  check("cond http: the wildcard answers 304", wildcard.status === 304 && wildcard.body.length === 0);
+
+  const unknown = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": '"totally-unknown"' });
+  check("cond http: an unknown validator answers 200 with a body", unknown.status === 200 && gunzipSync(unknown.body).toString() === bigJs && unknown.headers.etag === gzEtag);
+
+  const weak = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": `W/${gzEtag}` });
+  check("cond http: a weak validator matches the strong one (304)", weak.status === 304 && weak.body.length === 0);
+
+  const list = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": ` "nope-1" ,\t${gzEtag} , "nope-2" ` });
+  check("cond http: a list matches when one element matches, whitespace ignored", list.status === 304 && list.body.length === 0);
+
+  const malformed = await condRequest("/app.js", { "if-none-match": "W/" });
+  check("cond http: a malformed header answers 200 with a body", malformed.status === 200 && malformed.body.length > 0);
+  const malformed2 = await condRequest("/app.js", { "if-none-match": ",,," });
+  check("cond http: a comma-only header answers 200 with a body", malformed2.status === 200 && malformed2.body.length > 0);
+
+  const tiny = await condRequest("/tiny.js");
+  check("cond http: a never-compressed asset carries an identity etag too", tiny.status === 200 && typeof tiny.headers.etag === "string" && tiny.headers.vary === undefined);
+  const tinyRevalidate = await condRequest("/tiny.js", { "if-none-match": tiny.headers.etag! });
+  check(
+    "cond http: the tiny asset revalidates without vary (no variants, like its 200)",
+    tinyRevalidate.status === 304 &&
+      tinyRevalidate.headers.vary === undefined &&
+      tinyRevalidate.headers["content-type"] === undefined,
+  );
+
+  // the entry document participates the same way (SPA fallback)
+  const spa = await condRequest("/pair", { "accept-encoding": "gzip" });
+  check("cond http: the SPA fallback answers 200 with an etag", spa.status === 200 && typeof spa.headers.etag === "string");
+  const spaRevalidate = await condRequest("/pair", { "accept-encoding": "gzip", "if-none-match": spa.headers.etag! });
+  check(
+    "cond http: the SPA fallback revalidates with 304 + vary + security headers, no body",
+    spaRevalidate.status === 304 &&
+      spaRevalidate.body.length === 0 &&
+      spaRevalidate.headers.vary === "Accept-Encoding" &&
+      ALWAYS_ON_SECURITY_HEADERS.every((k) => spaRevalidate.headers[k] !== undefined),
+  );
+
+  // a rewritten file (new stat) invalidates the stored validator
+  writeFileSync(join(root, "app.js"), bigJs + "// rebuilt\n");
+  utimesSync(join(root, "app.js"), new Date(1_500_000_000_000), new Date(1_500_000_000_000));
+  const rebuilt = await condRequest("/app.js", { "accept-encoding": "gzip", "if-none-match": gzEtag! });
+  check(
+    "cond http: a rewritten file sends instead of 304 and carries a different etag",
+    rebuilt.status === 200 && rebuilt.body.length > 0 && typeof rebuilt.headers.etag === "string" && rebuilt.headers.etag !== gzEtag,
+  );
+
+  // 404, 405 and the probe are untouched by conditionals
+  const missing = await condRequest("/missing.js", { "if-none-match": "*" });
+  check("cond http: 404 is unchanged — no etag, no conditional handling", missing.status === 404 && missing.headers.etag === undefined && missing.body.length === 0);
+  const notAllowed = await condRequest("/", { "if-none-match": "*" }, "POST");
+  check("cond http: 405 is unchanged", notAllowed.status === 405 && notAllowed.headers.etag === undefined);
+  const probe = await condRequest("/healthz", { "if-none-match": "*" });
+  check(
+    "cond http: /healthz stays byte-for-byte — no etag, same JSON body",
+    probe.status === 200 &&
+      probe.headers.etag === undefined &&
+      probe.body.toString() ===
+        `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
+  );
+
+  condServer.close();
+  rmSync(root, { recursive: true, force: true });
+}
+
+// --- 28. room-rejection breakdown (P2-293, pure table + rules in order) ------
+// The rules from rejectreasons.ts's header, exercised in order: absent /
+// non-object / non-numeric input withholds the whole set and never invents
+// zeros; an out-of-table reason is never a field and never summed into
+// another; negative, non-finite and non-integer counters publish as zero;
+// each documented reason becomes exactly one field, in stable table order;
+// identical input produces an identical result on every call.
+const VALID_COUNTS = { "invalid-room-id": 7, "socket-room-cap": 2 };
+
+check("reject: absent input returns the empty set (never invented zeros)", JSON.stringify(rejectionBreakdown(undefined)) === "{}");
+check("reject: null input returns the empty set", JSON.stringify(rejectionBreakdown(null)) === "{}");
+check("reject: non-object input returns the empty set", (() => {
+  return [5, "junk", true, [], ["invalid-room-id"]].every((v) => JSON.stringify(rejectionBreakdown(v)) === "{}");
+})());
+check(
+  "reject: a non-numeric documented slot withholds the whole set (string value)",
+  JSON.stringify(rejectionBreakdown({ "invalid-room-id": "3", "socket-room-cap": 2 })) === "{}",
+);
+check(
+  "reject: a non-numeric documented slot withholds the whole set (null value)",
+  JSON.stringify(rejectionBreakdown({ "invalid-room-id": null, "socket-room-cap": 2 })) === "{}",
+);
+check(
+  "reject: an absent documented slot withholds the whole set (fail-closed against a misleading subset)",
+  JSON.stringify(rejectionBreakdown({ "invalid-room-id": 7 })) === "{}",
+);
+check(
+  "reject: a reason outside the closed table never becomes a field",
+  (() => {
+    const out = rejectionBreakdown({ ...VALID_COUNTS, "rogue-room": 50, "socket-room-cap-x": 9 });
+    return JSON.stringify(Object.keys(out)) === JSON.stringify(["roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"]);
+  })(),
+);
+check(
+  "reject: an out-of-table reason is never summed into another reason",
+  (() => {
+    const out = rejectionBreakdown({ ...VALID_COUNTS, "rogue-room": 50 });
+    return out.roomsRejectedInvalidRoomId === 7 && out.roomsRejectedSocketRoomCap === 2;
+  })(),
+);
+check("reject: a negative counter publishes as zero", rejectionBreakdown({ "invalid-room-id": -5, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check("reject: a non-finite counter publishes as zero (Infinity)", rejectionBreakdown({ "invalid-room-id": Number.POSITIVE_INFINITY, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check("reject: a non-finite counter publishes as zero (NaN)", rejectionBreakdown({ "invalid-room-id": Number.NaN, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check("reject: a non-integer counter publishes as zero", rejectionBreakdown({ "invalid-room-id": 1.5, "socket-room-cap": 2 }).roomsRejectedInvalidRoomId === 0);
+check(
+  "reject: each documented reason becomes exactly one field, in table order",
+  (() => {
+    const out = rejectionBreakdown(VALID_COUNTS);
+    return (
+      JSON.stringify(Object.keys(out)) ===
+        JSON.stringify(ROOM_REJECT_REASONS.map((r) => r.field)) &&
+      out.roomsRejectedInvalidRoomId === 7 &&
+      out.roomsRejectedSocketRoomCap === 2
+    );
+  })(),
+);
+check(
+  "reject: measured zero counters publish as zeros (a real slot, not an invention)",
+  (() => {
+    const out = rejectionBreakdown({ "invalid-room-id": 0, "socket-room-cap": 0 });
+    return out.roomsRejectedInvalidRoomId === 0 && out.roomsRejectedSocketRoomCap === 0;
+  })(),
+);
+check(
+  "reject: stable ordering — two inputs with the keys in different orders produce identical output",
+  JSON.stringify(rejectionBreakdown({ "socket-room-cap": 2, "invalid-room-id": 7 })) ===
+    JSON.stringify(rejectionBreakdown({ "invalid-room-id": 7, "socket-room-cap": 2 })),
+);
+check(
+  "reject: rule order — an out-of-table reason and a negative counter together ignore the former and clamp the latter",
+  (() => {
+    const out = rejectionBreakdown({ "invalid-room-id": -5, "socket-room-cap": 2, "rogue-room": 9 });
+    return (
+      out.roomsRejectedInvalidRoomId === 0 &&
+      out.roomsRejectedSocketRoomCap === 2 &&
+      JSON.stringify(Object.keys(out)) === JSON.stringify(["roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"])
+    );
+  })(),
+);
+check(
+  "reject: identical input produces an identical result in two calls",
+  JSON.stringify(rejectionBreakdown(VALID_COUNTS)) === JSON.stringify(rejectionBreakdown({ ...VALID_COUNTS })),
+);
+
+// --- 28b. breakdown on the probe body (P2-293): additive getter ----------------
+const REJECT_NOW = START + 90_000;
+const rejectState = (counters: unknown): HealthzState => ({
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 9,
+  roomsRejectedBreakdown: () => counters,
+});
+const FIVE_FIELD_BODY = '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9}';
+
+check(
+  "reject-probe: state without the getter keeps the exact pre-P2-293 body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, REJECT_NOW)) === FIVE_FIELD_BODY,
+);
+check(
+  "reject-probe: state without the getter keeps the exact pre-P2-293 drain body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, REJECT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"draining":true}',
+);
+check(
+  "reject-probe: valid counters add exactly the two documented fields after the anchor fields",
+  JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW)) ===
+    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2}',
+);
+check(
+  "reject-probe: the breakdown rides the drain response without changing any other field",
+  JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2,"draining":true}',
+);
+check(
+  "reject-probe: a getter answering undefined adds nothing",
+  JSON.stringify(healthzPayload(rejectState(undefined), REJECT_NOW)) === FIVE_FIELD_BODY,
+);
+check(
+  "reject-probe: a getter answering a non-object adds nothing",
+  (() => (["junk", 42, true, []] as unknown[]).every((v) => JSON.stringify(healthzPayload(rejectState(v), REJECT_NOW)) === FIVE_FIELD_BODY))(),
+);
+check(
+  "reject-probe: a getter with non-numeric slots adds nothing",
+  JSON.stringify(healthzPayload(rejectState({ "invalid-room-id": "x", "socket-room-cap": 1 }), REJECT_NOW)) === FIVE_FIELD_BODY,
+);
+check(
+  "reject-probe: identical input produces an identical body in two calls",
+  JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW)) ===
+    JSON.stringify(healthzPayload(rejectState({ ...VALID_COUNTS }), REJECT_NOW)),
+);
+check(
+  "reject-probe: the body carries no key beyond the documented fields and no room id, address or IP",
+  (() => {
+    const planted = healthzPayload(
+      rejectState({
+        "invalid-room-id": 3,
+        "socket-room-cap": 1,
+        "room-abc123def456": 5,
+        "ip-10.0.0.1": 2,
+        "conn-s1abcd": 1,
+        "envelope-payload": "secret",
+      }),
+      REJECT_NOW,
+    );
+    const body = JSON.stringify(planted);
+    return (
+      JSON.stringify(Object.keys(planted)) ===
+        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"]) &&
+      !body.includes("abc123") &&
+      !body.includes("10.0.0.1") &&
+      !body.includes("s1abcd") &&
+      !body.includes("secret")
+    );
+  })(),
+);
+check(
+  "reject: index.ts feeds the two existing increment points into the per-reason counters, keeps the total surfaces unchanged and adds no timer",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    return (
+      // exactly the two pre-existing refusal points increment the total
+      (relayIndex.match(/m\.roomsRejected\+\+/g) ?? []).length === 2 &&
+      // each of those two points feeds exactly its own reason — and no
+      // third feeding point exists
+      relayIndex.includes('m.roomsRejectedByReason["invalid-room-id"]++') &&
+      relayIndex.includes('m.roomsRejectedByReason["socket-room-cap"]++') &&
+      (relayIndex.match(/m\.roomsRejectedByReason\["/g) ?? []).length === 2 &&
+      // the total line and the total JSON field stay byte-for-byte present
+      relayIndex.includes("relay_rooms_rejected ${m.roomsRejected}") &&
+      relayIndex.includes("rooms_rejected: m.roomsRejected,") &&
+      // the getter is wired from the same counter object
+      relayIndex.includes("roomsRejectedBreakdown: () => m.roomsRejectedByReason") &&
+      // observation only: no new periodic timer beyond the P2-067 ping sweep
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
+
+// --- 28c. certificate-expiry metrics (P2-294): pure line table, rules in order
+// The rules from certmetrics.ts's header, exercised in order: a missing,
+// non-textual or out-of-table verdict publishes nothing and never invents a
+// healthy line (fail-closed); the no-cert mode publishes nothing instead of
+// invented zeros; a negative or non-finite remainder floors at zero; each
+// documented verdict becomes exactly the documented numeric state lines;
+// the output is deterministic.
+const CERT_LINE_TABLE: Record<string, string[]> = {
+  use: [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 0",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+  warn: [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 1",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+  "refuse-expired": [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 2",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+  "refuse-not-yet-valid": [
+    "# TYPE relay_cert_expiry_state gauge",
+    "relay_cert_expiry_state 3",
+    "# TYPE relay_cert_expiry_seconds gauge",
+    "relay_cert_expiry_seconds 50",
+  ],
+};
+
+check("cert-metrics: absent verdict returns the empty set", JSON.stringify(certExpiryMetrics(undefined, 50)) === "[]");
+check("cert-metrics: null verdict returns the empty set", JSON.stringify(certExpiryMetrics(null, 50)) === "[]");
+check("cert-metrics: non-textual verdict returns the empty set", (() => {
+  return [42, true, 1.5, {}, [], { verdict: "use" }].every((v) => JSON.stringify(certExpiryMetrics(v, 50)) === "[]");
+})());
+for (const outside of [
+  "expired", "USE", "", "warn ", "healthy",
+  // inherited property names must resolve as out-of-table, never through
+  // the plain-object prototype chain (a garbage "state" nobody measured)
+  "constructor", "toString", "hasOwnProperty", "isPrototypeOf",
+  "propertyIsEnumerable", "toLocaleString", "valueOf", "__proto__",
+]) {
+  check(
+    `cert-metrics: verdict outside the documented table returns the empty set (${JSON.stringify(outside)})`,
+    JSON.stringify(certExpiryMetrics(outside, 50)) === "[]",
+  );
+}
+for (const [verdict, lines] of Object.entries(CERT_LINE_TABLE)) {
+  check(
+    `cert-metrics: documented verdict "${verdict}" becomes exactly the documented lines`,
+    JSON.stringify(certExpiryMetrics(verdict, 50)) === JSON.stringify(lines),
+  );
+}
+check("cert-metrics: negative remainder floors at zero", (() => {
+  const out = certExpiryMetrics("warn", -250);
+  return out.includes("relay_cert_expiry_state 1") && out.includes("relay_cert_expiry_seconds 0");
+})());
+check("cert-metrics: non-finite remainder (NaN) floors at zero", (() => {
+  const out = certExpiryMetrics("use", Number.NaN);
+  return out.includes("relay_cert_expiry_state 0") && out.includes("relay_cert_expiry_seconds 0");
+})());
+check("cert-metrics: non-finite remainder (Infinity) floors at zero", (() => {
+  const out = certExpiryMetrics("use", Number.POSITIVE_INFINITY);
+  return out.includes("relay_cert_expiry_state 0") && out.includes("relay_cert_expiry_seconds 0");
+})());
+check("cert-metrics: fractional remainder publishes as whole seconds", certExpiryMetrics("use", 50.9).includes("relay_cert_expiry_seconds 50"));
+check("cert-metrics: no-cert mode (plain ws://) publishes nothing instead of invented zeros", JSON.stringify(certExpiryMetrics(undefined, 0)) === "[]");
+check(
+  "cert-metrics: rule order — an out-of-table verdict and a negative remainder together publish nothing at all",
+  JSON.stringify(certExpiryMetrics("bogus", -5)) === "[]",
+);
+check(
+  "cert-metrics: deterministic — identical inputs produce identical lines in two calls",
+  JSON.stringify(certExpiryMetrics("warn", 1234)) === JSON.stringify(certExpiryMetrics("warn", 1234)),
+);
+check(
+  "cert-metrics: no line ever carries certificate material — the whole table is exactly the documented lines",
+  (() => {
+    const planted = [
+      ...Object.keys(CERT_LINE_TABLE).map((verdict) => certExpiryMetrics(verdict, 50)),
+      certExpiryMetrics("warn", -1),
+    ].flat();
+    const documented = [...Object.values(CERT_LINE_TABLE).flat(), ...certExpiryMetrics("warn", 0)];
+    return (
+      JSON.stringify(planted) === JSON.stringify(documented) &&
+      planted.every((l) => !l.includes("CN=") && !l.includes("BEGIN") && !l.includes("DEADBEEF") && !l.includes("/") && !l.includes(":"))
+    );
+  })(),
+);
+check(
+  "cert-metrics: index.ts feeds /metrics from the verdict the periodic revalidation maintains, with no new periodic timer and every existing line unchanged",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    const callAt = relayIndex.indexOf("...certExpiryMetrics(");
+    const callSource = callAt === -1 ? "" : relayIndex.slice(callAt, callAt + 220);
+    return (
+      callAt > -1 &&
+      // fed by the maintained verdict variable and the already-extracted instant
+      callSource.includes("lastCertExpiryVerdict") &&
+      callSource.includes("CERT_EXPIRY.notAfter") &&
+      // appended after the last pre-existing line, which stays byte for byte
+      relayIndex.includes("# TYPE relay_rooms_active gauge") &&
+      relayIndex.indexOf("relay_rooms_active ${rooms.size}") < callAt &&
+      // the verdict variable is exactly the one the sweep assigns on transitions
+      relayIndex.includes("lastCertExpiryVerdict = nextCert.verdict") &&
+      // observation only: no new periodic timer beyond the P2-067 ping sweep
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
+
+// --- 28d. room-budget termination series on /metrics (P2-302) ----------------
+// The P2-243 counter the /healthz body already publishes (roomsBudgetTerminated)
+// now also rides the /metrics endpoint in BOTH formats, from the SAME
+// in-memory counter read at scrape time. Over the real relay subprocess: the
+// zero publishes as zero (never omitted), one budget termination flips it to 1
+// in Prometheus and JSON with the same value, every pre-existing line and key
+// keeps today's name and order, nothing identifiable leaks, and two scrapes
+// without a counter change are identical.
+
+const ROOM_BUDGET_PROM_ORDER = [
+  "relay_connections_total",
+  "relay_connections_active",
+  "relay_frames_routed",
+  "relay_bytes_routed",
+  "relay_rejects",
+  "relay_rate_limited_total",
+  "relay_rooms_rejected",
+  "relay_rooms_rejected_invalid_room_id",
+  "relay_rooms_rejected_socket_room_cap",
+  "relay_stale_terminated",
+  "relay_slow_consumers_total",
+  "relay_capacity_refused_total",
+  "relay_idle_unjoined_closed",
+  "relay_room_budget_terminated",
+  "relay_rooms_active",
+];
+const ROOM_BUDGET_JSON_ORDER = [
+  "uptime_s",
+  "connections_total",
+  "connections_active",
+  "frames_routed",
+  "bytes_routed",
+  "rejects",
+  "rate_limited_total",
+  "rooms_rejected",
+  "rooms_rejected_invalid_room_id",
+  "rooms_rejected_socket_room_cap",
+  "stale_terminated",
+  "slow_consumers_total",
+  "capacity_refused_total",
+  "idle_unjoined_closed",
+  "room_budget_terminated",
+  "rooms_active",
+];
+
+// P2-313: the additive process series (Prometheus names, in order) and their
+// JSON body twins — appended AFTER every pre-existing series by procmetrics.ts
+const PROC_SERIES = [
+  "relay_resident_bytes",
+  "relay_heap_used_bytes",
+  "relay_heap_total_bytes",
+  "relay_uptime_seconds",
+  "relay_scheduling_delay_ms",
+] as const;
+const PROC_JSON_KEYS = [
+  "resident_bytes",
+  "heap_used_bytes",
+  "heap_total_bytes",
+  "scheduling_delay_ms",
+] as const;
+// a process gauge is SUPPOSED to move between scrapes (that is the point of
+// observing a live process), so identity checks on the pre-existing surface
+// strip the process series before comparing
+const stripProcSeries = (text: string) =>
+  text
+    .split("\n")
+    .filter((l) => l !== "" && !PROC_SERIES.some((n) => l === `# TYPE ${n} gauge` || l.startsWith(`${n} `)))
+    .join("\n");
+
+check(
+  "room-budget-metrics: index.ts publishes the SAME counter the /healthz getter uses, with no new counter, route or timer",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    // exact adjacent source of the Prometheus pair: TYPE line immediately
+    // before the value line, both fed by the one in-memory counter
+    const promPair =
+      '# TYPE relay_room_budget_terminated counter",\n' +
+      "          `relay_room_budget_terminated ${m.roomBudgetTerminated}`,";
+    return (
+      // the /healthz getter and the /metrics publication read the one counter
+      relayIndex.includes("roomsBudgetTerminated: () => m.roomBudgetTerminated") &&
+      // declared once, incremented once: no new counter
+      (relayIndex.match(/roomBudgetTerminated: 0/g) ?? []).length === 1 &&
+      (relayIndex.match(/m\.roomBudgetTerminated\+\+/g) ?? []).length === 1 &&
+      // TYPE line and value line each appear exactly once, adjacent
+      (relayIndex.match(/# TYPE relay_room_budget_terminated counter/g) ?? []).length === 1 &&
+      (relayIndex.match(/relay_room_budget_terminated \$\{m\.roomBudgetTerminated\}/g) ?? [])
+        .length === 1 &&
+      relayIndex.includes(promPair) &&
+      // JSON key in the same snake_case grammar as its neighbors, same counter
+      (relayIndex.match(/room_budget_terminated: m\.roomBudgetTerminated/g) ?? []).length === 1 &&
+      // no new route and no new timer (one /metrics route literal, the two
+      // servers the relay already had, the one pre-existing sweep)
+      (relayIndex.match(/\/metrics"/g) ?? []).length === 1 &&
+      (relayIndex.match(/createHttpServer\(/g) ?? []).length === 2 &&
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1
+    );
+  })(),
+);
+
+{
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  const mport = port + 1;
+  const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
+    cwd: join(import.meta.dirname, ".."),
+    env: {
+      ...process.env,
+      RELAY_PORT: String(port),
+      RELAY_METRICS_PORT: String(mport),
+      // any forwarded frame's serialized byte count exceeds one byte: the
+      // first frame of the room terminates it (policy untouched, knob only)
+      RELAY_ROOM_BUDGET_BYTES: "1",
+      OCR_E2E_MARKER: "1",
+    },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  process.on("exit", () => proc.kill("SIGTERM"));
+
+  const fetchMetricsBody = (p: number, qs = "") =>
+    new Promise<string>((resolve) => {
+      get(`http://127.0.0.1:${p}/metrics${qs}`, (res) => {
+        let s = "";
+        res.on("data", (c) => (s += c));
+        res.on("end", () => resolve(s));
+      });
+    });
+
+  // wait for the relay listener like relay-liveness does
+  let up = false;
+  for (let attempt = 0; attempt < 30 && !up; attempt++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const w = new WebSocket(`ws://127.0.0.1:${port}`);
+        w.on("open", () => {
+          w.close();
+          resolve();
+        });
+        w.on("error", reject);
+      });
+      up = true;
+    } catch {
+      await sleep(300);
+    }
+  }
+  if (up) {
+    const promBefore = await fetchMetricsBody(mport, "?format=prom");
+    check(
+      "room-budget-metrics: the zero publishes as a zero line, never omitted",
+      (promBefore.match(/^relay_room_budget_terminated 0$/gm) ?? []).length === 1,
+    );
+    check(
+      "room-budget-metrics: TYPE line immediately before the value line, exactly once",
+      promBefore.includes("# TYPE relay_room_budget_terminated counter\nrelay_room_budget_terminated 0") &&
+        (promBefore.match(/^relay_room_budget_terminated /gm) ?? []).length === 1,
+    );
+
+    // one forwarded frame with a 1-byte cap: the room is terminated (1013)
+    const room = `rmb-${Date.now()}`;
+    const sock = await new Promise<WebSocket>((resolve, reject) => {
+      const w = new WebSocket(`ws://127.0.0.1:${port}`);
+      w.on("open", () => resolve(w));
+      w.on("error", reject);
+    });
+    const closed = new Promise<number>((r) => sock.on("close", (c) => r(c)));
+    sock.send(JSON.stringify({ room, from: "b1", payload: "" }));
+    check(
+      "room-budget-metrics: positive value reflects the counter after a budget termination",
+      (await Promise.race([closed, sleep(5_000).then(() => -1)])) === 1013 &&
+        (await fetchMetricsBody(mport, "?format=prom")).includes(
+          "\nrelay_room_budget_terminated 1",
+        ),
+    );
+
+    const prom = await fetchMetricsBody(mport, "?format=prom");
+    const jsonRaw = await fetchMetricsBody(mport);
+    const json = JSON.parse(jsonRaw) as Record<string, unknown>;
+    check(
+      "room-budget-metrics: today's Prometheus line table keeps its names and order, with only the P2-313 process series after it",
+      (() => {
+        const dataNames = prom
+          .split("\n")
+          .filter((l) => l !== "" && !l.startsWith("#"))
+          .map((l) => l.split(" ")[0]);
+        return (
+          JSON.stringify(dataNames) ===
+          JSON.stringify([...ROOM_BUDGET_PROM_ORDER, ...PROC_SERIES])
+        );
+      })(),
+    );
+    check(
+      "room-budget-metrics: each series keeps its TYPE header immediately before its value line",
+      ROOM_BUDGET_PROM_ORDER.every((n) => {
+        const kind = n === "relay_connections_active" || n === "relay_rooms_active" ? "gauge" : "counter";
+        return prom.includes(`# TYPE ${n} ${kind}\n${n} `);
+      }),
+    );
+    check(
+      "room-budget-metrics: JSON keeps every existing key in today's order, with only the P2-313 process keys after them",
+      JSON.stringify(Object.keys(json)) ===
+        JSON.stringify([...ROOM_BUDGET_JSON_ORDER, ...PROC_JSON_KEYS]),
+    );
+    check(
+      "room-budget-metrics: JSON of the same scrape carries the new key with exactly the Prometheus value",
+      json["room_budget_terminated"] === 1 &&
+        prom.includes("\nrelay_room_budget_terminated 1\n"),
+    );
+    check(
+      "room-budget-metrics: no output carries the room id, address or IP",
+      !prom.includes(room) &&
+        !prom.includes("127.0.0.1") &&
+        !jsonRaw.includes(room) &&
+        !jsonRaw.includes("127.0.0.1") &&
+        !promBefore.includes(room),
+    );
+    const again1 = await fetchMetricsBody(mport, "?format=prom");
+    const again2 = await fetchMetricsBody(mport, "?format=prom");
+    check(
+      "room-budget-metrics: two consecutive scrapes keep every pre-existing line identical (the P2-313 process gauges may move)",
+      stripProcSeries(again1) === stripProcSeries(again2) &&
+        stripProcSeries(again1) === stripProcSeries(prom),
+    );
+    const jsonAgain = (JSON.parse(await fetchMetricsBody(mport)) ?? {}) as Record<string, unknown>;
+    const stripVolatile = (o: Record<string, unknown>) =>
+      JSON.stringify({ ...o, uptime_s: 0, ...Object.fromEntries(PROC_JSON_KEYS.map((k) => [k, 0])) });
+    check(
+      "room-budget-metrics: consecutive JSON scrapes keep every pre-existing value identical apart from uptime_s and the P2-313 process fields",
+      stripVolatile(jsonAgain) === stripVolatile(json) && jsonAgain["room_budget_terminated"] === 1,
+    );
+  } else {
+    check("room-budget-metrics: relay subprocess came up", false);
+  }
+  proc.kill("SIGTERM");
+}
+
+// --- 23. process metrics (P2-313, pure module) ----------------------------------
+// Table tests: each series with a valid input publishes exactly one TYPE +
+// value pair; a missing, negative, non-numeric or non-finite input omits the
+// series entirely (fail-closed, never an invented zero).
+
+const PROC_VALID = [2048, 1024, 4096, 42, 7];
+
+check(
+  "proc-metrics: every valid input publishes TYPE + value pairs, in order",
+  (() => {
+    const lines = procMetrics(PROC_VALID[0], PROC_VALID[1], PROC_VALID[2], PROC_VALID[3], PROC_VALID[4]);
+    const expected = PROC_SERIES.flatMap((name, i) => [`# TYPE ${name} gauge`, `${name} ${PROC_VALID[i]}`]);
+    return JSON.stringify(lines) === JSON.stringify(expected);
+  })(),
+);
+
+// each series × each invalid input class: that series vanishes, the others stay
+const PROC_INVALID: Array<[string, unknown]> = [
+  ["missing", undefined],
+  ["null", null],
+  ["non-numeric", "1024"],
+  ["NaN", Number.NaN],
+  ["+Infinity", Number.POSITIVE_INFINITY],
+  ["-Infinity", Number.NEGATIVE_INFINITY],
+  ["negative", -1],
+  ["negative fractional", -0.5],
+  ["object", {}],
+  ["boolean", true],
+];
+for (let series = 0; series < PROC_SERIES.length; series++) {
+  for (const [label, value] of PROC_INVALID) {
+    const inputs = PROC_VALID.map((v, i) => (i === series ? value : v)) as [
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+    ];
+    const lines = procMetrics(...inputs);
+    const dataLines = lines.filter((l) => !l.startsWith("# TYPE"));
+    check(
+      `proc-metrics: ${PROC_SERIES[series]} with ${label} input omits the series`,
+      !lines.some((l) => l.includes(PROC_SERIES[series])) &&
+        dataLines.length === PROC_SERIES.length - 1 &&
+        dataLines.every((l) => !Number.isNaN(Number(l.split(" ")[1]))),
+    );
+  }
+}
+
+check(
+  "proc-metrics: identical inputs produce byte-identical lines on every call",
+  JSON.stringify(procMetrics(2048, 1024, 4096, 42, 7)) ===
+    JSON.stringify(procMetrics(2048, 1024, 4096, 42, 7)),
+);
+
+check(
+  "proc-metrics: no line carries an address, port, room id or token material",
+  (() => {
+    const lines = procMetrics(2048, 1024, 4096, 42, 7).join("\n");
+    return !lines.includes("127.0.0.1") && !lines.includes(":") && /^[\w\n #.-]+$/.test(lines);
+  })(),
+);
+
+check(
+  "proc-metrics json: same numbers as the Prometheus lines for the same inputs",
+  (() => {
+    const lines = procMetrics(2048, 1024, 4096, 42, 7);
+    const json = procMetricsJson(2048, 1024, 4096, 7);
+    const fromProm: Record<string, number> = {};
+    for (const l of lines) if (!l.startsWith("# TYPE")) fromProm[l.split(" ")[0]!] = Number(l.split(" ")[1]);
+    return (
+      fromProm.relay_resident_bytes === json.resident_bytes &&
+      fromProm.relay_heap_used_bytes === json.heap_used_bytes &&
+      fromProm.relay_heap_total_bytes === json.heap_total_bytes &&
+      fromProm.relay_scheduling_delay_ms === json.scheduling_delay_ms
+    );
+  })(),
+);
+
+check(
+  "proc-metrics json: exactly the four additive fields, no uptime twin (the body already publishes uptime_s)",
+  (() => {
+    const json = procMetricsJson(2048, 1024, 4096, 7);
+    return (
+      JSON.stringify(Object.keys(json)) ===
+        JSON.stringify(["resident_bytes", "heap_used_bytes", "heap_total_bytes", "scheduling_delay_ms"]) &&
+      !("uptime_s" in json) && !("uptime_seconds" in json)
+    );
+  })(),
+);
+
+for (const [label, value] of PROC_INVALID) {
+  check(`proc-metrics json: ${label} resident input omits the field`, !("resident_bytes" in procMetricsJson(value, 1, 1, 1)));
+  check(`proc-metrics json: ${label} heap-used input omits the field`, !("heap_used_bytes" in procMetricsJson(1, value, 1, 1)));
+  check(`proc-metrics json: ${label} heap-total input omits the field`, !("heap_total_bytes" in procMetricsJson(1, 1, value, 1)));
+  check(`proc-metrics json: ${label} delay input omits the field`, !("scheduling_delay_ms" in procMetricsJson(1, 1, 1, value)));
+}
+
+check(
+  "proc-metrics json: identical inputs produce an identical object on every call",
+  JSON.stringify(procMetricsJson(2048, 1024, 4096, 7)) ===
+    JSON.stringify(procMetricsJson(2048, 1024, 4096, 7)),
+);
+
+// purity: the module imports nothing at all — no node:fs, no node:process, no
+// network, no timer — so the unit battery can load it without booting anything
+{
+  const procSrc = readFileSync(
+    fileURLToPath(new URL("../apps/relay/src/procmetrics.ts", import.meta.url)),
+    "utf8",
+  );
+  const codeOnly = procSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  check(
+    "proc-metrics purity: the module has zero imports, no process, no network and no timer",
+    codeOnly.trim().length > 0 &&
+      !/^import /m.test(codeOnly) &&
+      !codeOnly.includes("from \"") &&
+      !codeOnly.includes("node:") &&
+      !/require\(/.test(codeOnly) &&
+      !/\bprocess\b/.test(codeOnly) &&
+      !/setInterval|setTimeout/.test(codeOnly) &&
+      !/fetch\(/.test(codeOnly),
+  );
+}
+
+// real-source assertions on index.ts: the measurement rides the EXISTING
+// sweep, and no timer, route or dependency entered with it
+{
+  const relayIndex = readFileSync(
+    fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+    "utf8",
+  );
+  const setIntervalAt = relayIndex.indexOf("setInterval(");
+  const delayCalcAt = relayIndex.indexOf("const sweepLateMs = now - lastSweepAt - PING_INTERVAL_S * 1000");
+  const lastSweepAt = relayIndex.indexOf("lastSweepAt = now");
+  const metricsRouteAt = relayIndex.indexOf('startsWith("/metrics")');
+  // the reset (not the `let` declaration, which also assigns 0) sits after it
+  const resetAt = relayIndex.indexOf("sweepDelayMaxMs = 0;", metricsRouteAt);
+  const promSpreadAt = relayIndex.indexOf("...procMetrics(");
+  const certSpreadAt = relayIndex.indexOf("...certExpiryMetrics(");
+  const jsonSpreadAt = relayIndex.indexOf("...procMetricsJson(");
+  check(
+    "proc-metrics source: the delay is measured inside the existing sweep tick",
+    setIntervalAt > -1 && delayCalcAt > setIntervalAt && lastSweepAt > delayCalcAt,
+  );
+  check(
+    "proc-metrics source: no new timer entered (the one pre-existing sweep)",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1,
+  );
+  check(
+    "proc-metrics source: no new route entered (the one /metrics route literal)",
+    (relayIndex.match(/\/metrics"/g) ?? []).length === 1,
+  );
+  check(
+    "proc-metrics source: the read-and-reset happens once, inside the /metrics branch, before both formats",
+    resetAt > -1 &&
+      (relayIndex.match(/(?<!let )sweepDelayMaxMs = 0/g) ?? []).length === 1 &&
+      resetAt < relayIndex.indexOf("format=prom"),
+  );
+  check(
+    "proc-metrics source: the Prometheus spread is the LAST element, after the certificate series",
+    promSpreadAt > certSpreadAt &&
+      certSpreadAt > -1 &&
+      /\.\.\.procMetrics\([^\n]*\),\s*\n\s*\];/.test(relayIndex),
+  );
+  check(
+    "proc-metrics source: the JSON spread sits additively next to rooms_active",
+    jsonSpreadAt > relayIndex.indexOf("rooms_active: rooms.size") && jsonSpreadAt > -1,
+  );
+  check(
+    "proc-metrics source: no new bare-specifier import (dependency surface unchanged)",
+    [...relayIndex.matchAll(/from "([^".][^"]*)"/g)]
+      .map((x) => x[1])
+      .every((s) => ["ws", "node:http", "node:https", "node:fs", "node:path", "node:crypto"].includes(s ?? "")),
+  );
+}
+
+// live endpoint: the real relay subprocess on ephemeral loopback ports — every
+// pre-existing Prometheus line byte-for-byte as before, each new series exactly
+// once in both formats
+{
+  const freePort = () =>
+    new Promise<number>((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close(() => resolve(p));
+      });
+      srv.on("error", reject);
+    });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const port = await freePort();
+  const mport = await freePort();
+  const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
+    cwd: join(import.meta.dirname, ".."),
+    env: { ...process.env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(mport), OCR_E2E_MARKER: "1" },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  process.on("exit", () => proc.kill("SIGTERM"));
+
+  // wait for readiness through the documented probe
+  let up = false;
+  for (let attempt = 0; attempt < 30 && !up; attempt++) {
+    up = await new Promise<boolean>((resolve) => {
+      get(`http://127.0.0.1:${port}/healthz`, (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      }).on("error", () => resolve(false));
+    });
+    if (!up) await sleep(300);
+  }
+
+  if (up) {
+    const fetchBody = (qs: string) =>
+      new Promise<string>((resolve) => {
+        get(`http://127.0.0.1:${mport}/metrics${qs}`, (res) => {
+          let s = "";
+          res.on("data", (c) => (s += c));
+          res.on("end", () => resolve(s));
+        });
+      });
+    const jsonRaw = await fetchBody("");
+    const prom = await fetchBody("?format=prom");
+    const json = JSON.parse(jsonRaw) as Record<string, number>;
+
+    // every pre-existing line, reconstructed from the JSON body: with no
+    // clients connected the counters are frozen between the two scrapes, so
+    // a byte-for-byte prefix match proves the old lines did not move
+    const PRE_EXISTING: Array<[string, string, "counter" | "gauge"]> = [
+      ["connections_total", "relay_connections_total", "counter"],
+      ["connections_active", "relay_connections_active", "gauge"],
+      ["frames_routed", "relay_frames_routed", "counter"],
+      ["bytes_routed", "relay_bytes_routed", "counter"],
+      ["rejects", "relay_rejects", "counter"],
+      ["rate_limited_total", "relay_rate_limited_total", "counter"],
+      ["rooms_rejected", "relay_rooms_rejected", "counter"],
+      ["rooms_rejected_invalid_room_id", "relay_rooms_rejected_invalid_room_id", "counter"],
+      ["rooms_rejected_socket_room_cap", "relay_rooms_rejected_socket_room_cap", "counter"],
+      ["stale_terminated", "relay_stale_terminated", "counter"],
+      ["slow_consumers_total", "relay_slow_consumers_total", "counter"],
+      ["capacity_refused_total", "relay_capacity_refused_total", "counter"],
+      ["idle_unjoined_closed", "relay_idle_unjoined_closed", "counter"],
+      ["room_budget_terminated", "relay_room_budget_terminated", "counter"],
+      ["rooms_active", "relay_rooms_active", "gauge"],
+    ];
+    const expectedPrefix = PRE_EXISTING.flatMap(([key, name, type]) => [
+      `# TYPE ${name} ${type}`,
+      `${name} ${json[key]}`,
+    ]).join("\n");
+    check(
+      "proc-metrics live: every pre-existing Prometheus line stays byte-for-byte identical (prefix block)",
+      prom.startsWith(expectedPrefix + "\n"),
+    );
+    const tail = prom.startsWith(expectedPrefix + "\n") ? prom.slice(expectedPrefix.length + 1) : prom;
+    const tailDataNames = tail
+      .split("\n")
+      .filter((l) => l && !l.startsWith("# TYPE"))
+      .map((l) => l.split(" ")[0]);
+    check(
+      "proc-metrics live: the new series are the only lines after the pre-existing block, in order",
+      JSON.stringify(tailDataNames) === JSON.stringify([...PROC_SERIES]),
+    );
+    for (const name of PROC_SERIES) {
+      check(
+        `proc-metrics live: ${name} appears exactly once (data + TYPE), as a whole number`,
+        (prom.match(new RegExp(`^${name} \\d+$`, "gm")) ?? []).length === 1 &&
+          (prom.match(new RegExp(`# TYPE ${name} gauge`, "g")) ?? []).length === 1,
+      );
+    }
+    for (const key of ["resident_bytes", "heap_used_bytes", "heap_total_bytes", "scheduling_delay_ms"]) {
+      check(
+        `proc-metrics live: ${key} appears exactly once in the JSON body as a finite non-negative number`,
+        (jsonRaw.match(new RegExp(`"${key}"`, "g")) ?? []).length === 1 &&
+          typeof json[key] === "number" &&
+          Number.isFinite(json[key]) &&
+          json[key]! >= 0,
+      );
+    }
+    const keys = Object.keys(json);
+    check(
+      "proc-metrics live: the JSON body is the pre-existing key set plus exactly the four additive fields",
+      keys.length === ROOM_BUDGET_JSON_ORDER.length + PROC_JSON_KEYS.length &&
+        keys.every(
+          (k) => ROOM_BUDGET_JSON_ORDER.includes(k) || (PROC_JSON_KEYS as readonly string[]).includes(k),
+        ),
+    );
+    check(
+      "proc-metrics live: no series carries an address, port or room id",
+      !prom.includes("127.0.0.1") && !jsonRaw.includes("127.0.0.1") && !prom.includes("rmb-"),
+    );
+  } else {
+    check("proc-metrics live: relay subprocess came up", false);
+  }
+  proc.kill("SIGTERM");
 }
 
 if (failures) process.exit(1);

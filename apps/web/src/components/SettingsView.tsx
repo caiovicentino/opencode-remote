@@ -3,7 +3,10 @@ import { copyText } from "../lib/clipboard";
 import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
+import { routineHistoryRows } from "../lib/routinehistoryview";
+import { IconChevronDown } from "./icons";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
+import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
@@ -32,6 +35,21 @@ export interface WebAppSettingWriteResult extends WebAppSetting {
   ok: boolean;
 }
 
+/** P2-289: machine-proxy owner choice from the desktop shell (mirrors
+ * apps/desktop/src/preload.ts). mode is the stored choice (null = no choice
+ * yet), origin says whether the ACTIVE boot mode came from the stored choice
+ * or the machine environment. */
+export interface ProxySetting {
+  mode: "system" | "direct" | "fixed" | null;
+  address: string | null;
+  origin: "owner" | "environment";
+  reason: string;
+}
+
+export interface ProxySettingWriteResult extends ProxySetting {
+  ok: boolean;
+}
+
 interface Props {
   request: (
     method: string,
@@ -53,6 +71,9 @@ interface Props {
   /** P2-189: desktop shell only — app address the phone opens, read + validated write. */
   getWebAppUrl?: () => Promise<WebAppSetting>;
   setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
+  /** P2-289: desktop shell only — machine proxy read + validated write. */
+  getProxySetting?: () => Promise<ProxySetting>;
+  setProxyChoice?: (choice: { mode: "system" | "direct" | "fixed"; address?: string }) => Promise<ProxySettingWriteResult>;
   /** P2-138: upstream (opencode) notice — renders the help section the calm
    * card's secondary button links to; absent when the agent server is fine. */
   upstream?: UpstreamNotice | null;
@@ -77,17 +98,22 @@ interface Routine {
   intervalMinutes?: number;
   lastStatus?: "ok" | "error";
   lastError?: string;
+  /** P2-318: raw per-trigger history exactly as the route delivers it —
+   * parsed tolerantly by lib/routinehistoryview.ts, never trusted. */
+  history?: unknown;
 }
 
-const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_NAME_KEYS = ["daySun", "dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat"];
+const DAY_LETTER_KEYS = ["dayLetter0", "dayLetter1", "dayLetter2", "dayLetter3", "dayLetter4", "dayLetter5", "dayLetter6"];
 
-function scheduleLabel(r: Routine): string {
+type TranslateFn = (key: string, vars?: Record<string, string | number>) => string;
+
+function scheduleLabel(r: Routine, t: TranslateFn): string {
   const hm = `${String(r.hour).padStart(2, "0")}:${String(r.minute).padStart(2, "0")}`;
-  if (r.mode === "interval") return `every ${r.intervalMinutes}m`;
+  if (r.mode === "interval") return t("routineEvery", { n: r.intervalMinutes ?? 0 });
   if (r.mode === "days")
-    return `${(r.days ?? []).map((d) => DAY_NAMES[d]).join(" ")} · ${hm}`;
-  return `daily ${hm}`;
+    return `${(r.days ?? []).map((d) => t(DAY_NAME_KEYS[d] as string)).join(" ")} · ${hm}`;
+  return t("routineDaily", { time: hm });
 }
 
 interface Skill {
@@ -146,7 +172,54 @@ export function applyTheme() {
   document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, upstream }: Props) {
+/** P2-287/P2-297: deterministic-evidence hatch (the P2-218 lesson, web
+ * edition) — localStorage overrides force capability verdicts for
+ * screenshots WITHOUT touching any network path, one key per capability:
+ * `ocr.browseStateOverride`, `ocr.docsStateOverride`, `ocr.voiceStateOverride`,
+ * `ocr.ttsStateOverride` (P2-305),
+ * `ocr.relayStateOverride` (value "down") and `ocr.agentStateOverride` (value
+ * "missing"). Fail-closed twice over: only the DEGRADED states of the tables
+ * owned by machinestate.ts are honored — never "ready"/"complete", never
+ * ok/binaryFound — so the hatch can never fabricate an approval for a machine
+ * that never measured one, and the real payload always wins when it exists.
+ * No phrase is ever forced or invented (the label alone carries the row).
+ * Documented in docs/troubleshooting.md beside the daemon hatches. */
+const HATCH_STATES: readonly string[] = BROWSE_STATES.filter((s) => s !== "ready");
+const DOCS_HATCH_STATES: readonly string[] = DOC_STATES.filter((s) => s !== "complete");
+const VOICE_HATCH_STATES: readonly string[] = VOICE_STATES.filter((s) => s !== "ready");
+const TTS_HATCH_STATES: readonly string[] = TTS_STATES.filter((s) => s !== "ready");
+
+function forcedBrowseState(): string | undefined {
+  const forced = localStorage.getItem("ocr.browseStateOverride") ?? "";
+  return HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+function forcedDocsState(): string | undefined {
+  const forced = localStorage.getItem("ocr.docsStateOverride") ?? "";
+  return DOCS_HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+function forcedVoiceState(): string | undefined {
+  const forced = localStorage.getItem("ocr.voiceStateOverride") ?? "";
+  return VOICE_HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+function forcedTtsState(): string | undefined {
+  const forced = localStorage.getItem("ocr.ttsStateOverride") ?? "";
+  return TTS_HATCH_STATES.includes(forced) ? forced : undefined;
+}
+
+/** The boolean verdicts have a single degraded value each: a relay this
+ * machine cannot reach and an agent binary nobody found. */
+function forcedRelayOk(): boolean | undefined {
+  return localStorage.getItem("ocr.relayStateOverride") === "down" ? false : undefined;
+}
+
+function forcedAgentFound(): boolean | undefined {
+  return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
+}
+
+export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -171,6 +244,9 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [pushMsg, setPushMsg] = useState("");
   const [pushSubs, setPushSubs] = useState(0);
   const [routines, setRoutines] = useState<Routine[]>([]);
+  // P2-318: which routine history panels are expanded (id → open), closed by
+  // default — a calm collapsible per PRODUCT.md principle 2.
+  const [openHistory, setOpenHistory] = useState<Record<string, boolean>>({});
   const [nrName, setNrName] = useState("");
   const [nrTime, setNrTime] = useState("07:00");
   const [nrPrompt, setNrPrompt] = useState("");
@@ -179,6 +255,38 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [nsPrompt, setNsPrompt] = useState("");
   const [auditEntries, setAuditEntries] = useState<{ ts: string; event: string; data?: Record<string, unknown> }[]>([]);
   const [daemonVersion, setDaemonVersion] = useState("");
+  // P2-213: version readiness of the opencode on the machine hosting the
+  // daemon — rides the existing /__ocr/settings read (additive field).
+  const [opencodeVersion, setOpencodeVersion] = useState<{ state?: string; message?: string } | null>(null);
+  // P2-215: disk-space verdict for the volume hosting the daemon's state dir —
+  // same channel as above (additive `disk` field on /__ocr/settings).
+  const [disk, setDisk] = useState<{ state?: string; message?: string } | null>(null);
+  // P2-287: browse-readiness verdict (site opening) — additive fields on
+  // /__ocr/settings; daemons do not send them yet (the daemon-side mirror is
+  // the registered continuation), so the read yields no browse row until
+  // then and only the documented evidence hatch below can force one,
+  // fail-closed.
+  const [browse, setBrowse] = useState<{ state?: string; message?: string } | null>(null);
+  // P2-297: the remaining capability groups — the relay link, the agent
+  // binary, doc conversion and voice transcription — ride the SAME
+  // /__ocr/settings read (the daemon's P2-292/P2-296 mirror publishes them):
+  // still no new route, no new request, no new poll, no new timer. Same
+  // tolerant read as browse above — an absent field is null and therefore
+  // no row.
+  // NAMING (P2-297): the voice-readiness state below CANNOT be called
+  // `voice` — that identifier is already the voice PREFERENCES state (the
+  // getVoiceSettings() draft at the `const [voice, setVoice]` line above)
+  // and the collision would silently break both. It is `voiceVerdict`; do
+  // not "simplify" it back.
+  const [relayVerdict, setRelayVerdict] = useState<{ ok?: boolean; reason?: string | null } | null>(null);
+  const [agentVerdict, setAgentVerdict] = useState<{ binaryFound?: boolean; binarySource?: string | null } | null>(null);
+  const [docsVerdict, setDocsVerdict] = useState<{ state?: string; message?: string } | null>(null);
+  const [voiceVerdict, setVoiceVerdict] = useState<{ state?: string; message?: string } | null>(null);
+  // NAMING (P2-305): the spoken-reply verdict is `ttsVerdict` — deliberately
+  // NOT `voice*`, that family is the transcription verdict (voiceVerdict)
+  // and the voice PREFERENCES state above; the daemon's pair is
+  // ttsState/ttsMessage and the view keeps the same names.
+  const [ttsVerdict, setTtsVerdict] = useState<{ state?: string; message?: string } | null>(null);
   const [nrMode, setNrMode] = useState<"daily" | "days" | "interval">("daily");
   const [nrDays, setNrDays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [nrInterval, setNrInterval] = useState(60);
@@ -190,6 +298,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // draft/resolution discipline as the relay setting above.
   const [webApp, setWebApp] = useState<WebAppSetting | null>(null);
   const [webAppDraft, setWebAppDraft] = useState("");
+  // P2-289: machine proxy (desktop shell only) — the radio choice, the fixed
+  // address draft and the module's static refusal reason (rendered verbatim).
+  const [proxy, setProxy] = useState<ProxySetting | null>(null);
+  const [proxyMode, setProxyMode] = useState<"system" | "direct" | "fixed">("system");
+  const [proxyAddress, setProxyAddress] = useState("");
+  const [proxyRefusal, setProxyRefusal] = useState("");
 
   useEffect(() => {
     if (!getRelaySetting) return;
@@ -200,6 +314,17 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       })
       .catch(() => {});
     // Mount-time read only: the bridge is stable for the app's lifetime.
+  }, []);
+
+  useEffect(() => {
+    if (!getProxySetting) return;
+    void getProxySetting()
+      .then((s) => {
+        setProxy(s);
+        if (s.mode) setProxyMode(s.mode);
+        setProxyAddress(s.address ?? "");
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -231,6 +356,43 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         setNotify((s.body as { notify?: { permission: boolean; idle: boolean } }).notify ?? { permission: true, idle: true });
         setAutoMode((s.body as { autoMode?: boolean }).autoMode === true);
         setDaemonVersion((s.body as { version?: string }).version ?? "");
+        setOpencodeVersion((s.body as { opencodeVersion?: { state?: string; message?: string } }).opencodeVersion ?? null);
+        setDisk((s.body as { disk?: { state?: string; message?: string } }).disk ?? null);
+        setBrowse((s.body as { browseState?: string; browseMessage?: string }).browseState !== undefined
+          ? {
+              state: (s.body as { browseState?: string }).browseState,
+              message: (s.body as { browseMessage?: string }).browseMessage,
+            }
+          : null);
+        // P2-297: same read, same tolerant shape — the relay object and the
+        // agent binary pair are object-typed fields (a non-object payload
+        // entry is null and therefore no row); the doc and voice pairs are
+        // flat state+message pairs read exactly like browse above.
+        const relayField = (s.body as { relay?: { ok?: boolean; reason?: string | null } }).relay;
+        setRelayVerdict(relayField && typeof relayField === "object" ? relayField : null);
+        const agentField = (s.body as { opencode?: { binaryFound?: boolean; binarySource?: string | null } }).opencode;
+        setAgentVerdict(agentField && typeof agentField === "object" ? agentField : null);
+        setDocsVerdict((s.body as { docConvertState?: string }).docConvertState !== undefined
+          ? {
+              state: (s.body as { docConvertState?: string }).docConvertState,
+              message: (s.body as { docConvertMessage?: string }).docConvertMessage,
+            }
+          : null);
+        setVoiceVerdict((s.body as { voiceState?: string }).voiceState !== undefined
+          ? {
+              state: (s.body as { voiceState?: string }).voiceState,
+              message: (s.body as { voiceMessage?: string }).voiceMessage,
+            }
+          : null);
+        // P2-305: the spoken-reply pair rides the SAME mount read, read
+        // exactly like the voice pair above — absent field is null and
+        // therefore no row.
+        setTtsVerdict((s.body as { ttsState?: string }).ttsState !== undefined
+          ? {
+              state: (s.body as { ttsState?: string }).ttsState,
+              message: (s.body as { ttsMessage?: string }).ttsMessage,
+            }
+          : null);
       }
       const cs = await request("GET", "/__ocr/clip-style");
       if (cs.status === 200) setStyle((cs.body as Record<string, unknown>) ?? {});
@@ -305,10 +467,32 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     }
   }
 
+  /** P2-289: apply the drafted proxy choice in the main process (validated
+   * there, fail-closed) — the live session is never reconfigured; the choice
+   * takes effect at the next app start. A refusal renders the module's own
+   * static reason, verbatim. */
+  async function saveProxy() {
+    if (!setProxyChoice) return;
+    setProxyRefusal("");
+    try {
+      const res = await setProxyChoice(
+        proxyMode === "fixed" ? { mode: "fixed", address: proxyAddress } : { mode: proxyMode },
+      );
+      if (res.ok) {
+        setProxy(res);
+        setMsg(t("proxySaved"));
+      } else {
+        setProxyRefusal(res.reason || t("proxyInvalid"));
+      }
+    } catch {
+      setProxyRefusal(t("proxyInvalid"));
+    }
+  }
+
   async function saveMcp(name: string, config?: Partial<McpServer>, remove = false) {
     const res = await request("PUT", "/__ocr/mcp", remove ? { name, remove: true } : { name, config });
     if (res.status === 200) {
-      setMsg("salvo");
+      setMsg(t("saved"));
       setMcpServers((res.body as { servers?: McpServer[] }).servers ?? []);
     } else {
       setMsg(t("saveError", { msg: JSON.stringify(res.body).slice(0, 100) }));
@@ -332,7 +516,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     const next = { ...style, ...patch };
     setStyle(next);
     await request("PUT", "/__ocr/clip-style", next);
-    setMsg("caption style saved");
+    setMsg(t("captionSaved"));
   }
 
   async function revoke(pub: string) {
@@ -340,11 +524,46 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     setDevices((prev) => prev.filter((d) => d.pub !== pub));
   }
 
+  // P2-232: machine readiness rows from the SAME /__ocr/settings object this
+  // view already fetches on mount — no new request, no new poll. The module
+  // ignores absent or malformed verdicts, so a legacy daemon yields the calm
+  // empty state. The daemon's phrases render verbatim; the app never rewrites
+  // them and never invents its own.
+  // P2-287: the browse verdict turns into the site-browsing row from the
+  // same read.
+  // P2-297: every capability is wired — relay, agent binary, docs and voice
+  // join version, disk and browse, all from that one mount read (the
+  // P2-292/P2-296 mirror publishes them). The hatch below only fills
+  // verdicts the payload does not carry, and only in its degraded states.
+  // P2-305: spoken replies (ttsState/ttsMessage) ride the same read.
+  const machineRows = readinessRows({
+    relay: {
+      ok: relayVerdict?.ok ?? forcedRelayOk(),
+      reason: relayVerdict?.reason ?? null,
+    },
+    opencode: {
+      binaryFound: agentVerdict?.binaryFound ?? forcedAgentFound(),
+      versionState: opencodeVersion?.state,
+      versionMessage: opencodeVersion?.message,
+    },
+    diskState: disk?.state,
+    diskMessage: disk?.message,
+    docConvertState: docsVerdict?.state ?? forcedDocsState(),
+    docConvertMessage: docsVerdict?.message,
+    browseState: browse?.state ?? forcedBrowseState(),
+    browseMessage: browse?.message,
+    voiceState: voiceVerdict?.state ?? forcedVoiceState(),
+    voiceMessage: voiceVerdict?.message,
+    ttsState: ttsVerdict?.state ?? forcedTtsState(),
+    ttsMessage: ttsVerdict?.message,
+  });
+  const machineSummary = summarize(machineRows);
+
   return (
     <div className="screen">
       <header>
         <button onClick={onBack}>←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Settings</h1>
+        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>{t("navSettings")}</h1>
       </header>
 
       <div className="list">
@@ -367,9 +586,9 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         )}
 
         <div className="card">
-          <h3>About</h3>
+          <h3>{t("aboutTitle")}</h3>
           <p className="muted" style={{ margin: 0 }}>
-            app {APP_VERSION} · daemon {daemonVersion || "?"}
+            {t("aboutVersions", { app: APP_VERSION, daemon: daemonVersion || "?" })}
             {daemonVersion && daemonVersion !== APP_VERSION && (
               <span style={{ color: "var(--danger)" }}>
                 {" "}
@@ -380,6 +599,20 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           <p className="muted" style={{ margin: "2px 0 0" }}>
             {transport === "local" ? t("connLocal") : t("connRelay")}
           </p>
+        </div>
+
+        <div className="card machine-state">
+          <h3>{t("machineStateTitle")}</h3>
+          <p className="machine-state-summary">{t(machineSummary.titleKey)}</p>
+          {machineRows.map((row) => (
+            <div className="machine-row" key={row.key}>
+              <span className={`status-dot ${MACHINE_SEVERITY_DOT[row.severity]}`} aria-hidden="true" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ fontSize: "var(--font-size-sm)" }}>{t(row.labelKey)}</b>
+                {row.message && <p className="muted machine-row-msg">{row.message}</p>}
+              </div>
+            </div>
+          ))}
         </div>
 
         <div className="card">
@@ -410,6 +643,20 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             </p>
             <button className="pair-remote-entry" onClick={onPairRemote}>
               {t("pairRemoteAction")}
+              <svg
+                className="pair-remote-chevron"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
             </button>
           </div>
         )}
@@ -501,6 +748,52 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           </div>
         )}
 
+        {/* P2-289: machine proxy — desktop shell only; the PWA has no shell
+            bridge, so the section simply never renders there. */}
+        {getProxySetting && setProxyChoice && proxy && (
+          <div className="card proxy-setting">
+            <h3>{t("proxyTitle")}</h3>
+            <p className="muted" style={{ margin: "0 0 6px" }}>
+              {t("proxyHint")}
+            </p>
+            {(["system", "direct", "fixed"] as const).map((m) => (
+              <label key={m} style={{ display: "block" }}>
+                <input
+                  type="radio"
+                  name="proxy-mode"
+                  checked={proxyMode === m}
+                  onChange={() => setProxyMode(m)}
+                />{" "}
+                {t(m === "system" ? "proxyModeSystem" : m === "direct" ? "proxyModeDirect" : "proxyModeFixed")}
+              </label>
+            ))}
+            {proxyMode === "fixed" && (
+              <input
+                style={{ width: "100%", marginTop: 6 }}
+                value={proxyAddress}
+                onChange={(e) => setProxyAddress(e.target.value)}
+                placeholder="proxy.exemplo.corp"
+                aria-label={t("proxyAddressLabel")}
+                spellCheck={false}
+              />
+            )}
+            {proxyRefusal && (
+              <p className="muted" style={{ margin: "6px 0 0", color: "var(--danger)" }}>
+                {proxyRefusal}
+              </p>
+            )}
+            <button className="primary" style={{ marginTop: 8 }} onClick={() => void saveProxy()}>
+              {t("proxySave")}
+            </button>
+            <p className="muted" style={{ margin: "6px 0 0" }}>
+              {t("proxyNextStart")}
+            </p>
+            <p className="muted" style={{ margin: "2px 0 0" }}>
+              {proxy.origin === "owner" ? t("proxyOriginOwner") : t("proxyOriginEnvironment")}
+            </p>
+          </div>
+        )}
+
         <div className="card">
           <h3>{t("language")}</h3>
           <select
@@ -523,15 +816,36 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               style={{ flex: 1 }}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="machine name"
+              placeholder={t("machineNamePlaceholder")}
             />
             <button className="primary" onClick={() => void saveSettings({ name })}>
-              Save
+              {t("save")}
             </button>
           </div>
           <p className="muted" style={{ marginBottom: 0 }}>
-            Notifications
+            {t("settingsNotifications")}
           </p>
+          {/* P2-213: version readiness is advice about the machine hosting the
+              daemon, never a gate — a probe that can flip must not lock the
+              conversation, so this deliberately fails open: only too-old says
+              anything (ok/unknown stay silent) and no control is ever disabled
+              or hidden here. */}
+          {opencodeVersion?.state === "too-old" && (
+            <p className="muted opencode-version-hint" style={{ margin: "8px 0 0", color: "var(--warn)" }}>
+              {opencodeVersion.message ?? ""}
+            </p>
+          )}
+          {/* P2-215: disk-space readiness is advice about the machine hosting
+              the daemon, never a gate — blocking the conversation because of a
+              disk reading would be worse than the raw failure it warns about,
+              so this deliberately fails open: only low/critical say anything
+              (ok/unknown stay silent) and no control is ever disabled or
+              hidden because of it. */}
+          {(disk?.state === "low" || disk?.state === "critical") && (
+            <p className="muted disk-hint" style={{ margin: "8px 0 0", color: "var(--warn)" }}>
+              {disk?.message ?? ""}
+            </p>
+          )}
           <label style={{ display: "block" }}>
             <input
               type="checkbox"
@@ -559,7 +873,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         </div>
 
         <div className="card">
-          <h3>MCP</h3>
+          <h3>{t("mcp")}</h3>
           <p className="muted" style={{ margin: "0 0 6px" }}>
             {t("mcpHint", { file: configFile.split("/").pop() ?? "" })}
           </p>
@@ -577,7 +891,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   {s.type === "remote" ? s.url : (s.command ?? []).join(" ")}
                 </span>
               </div>
-              <button className="danger" aria-label="Remove" onClick={() => void saveMcp(s.name, undefined, true)}>
+              <button className="danger" aria-label={t("remove")} onClick={() => void saveMcp(s.name, undefined, true)}>
                 ✕
               </button>
             </div>
@@ -587,8 +901,8 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
               <input style={{ flex: 1 }} placeholder={t("mcpName")} value={newMcp.name} onChange={(e) => setNewMcp({ ...newMcp, name: e.target.value })} />
               <select value={newMcp.type} onChange={(e) => setNewMcp({ ...newMcp, type: e.target.value })}>
-                <option value="local">local</option>
-                <option value="remote">remote</option>
+                <option value="local">{t("mcpTypeLocal")}</option>
+                <option value="remote">{t("mcpTypeRemote")}</option>
               </select>
             </div>
             <input
@@ -616,7 +930,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
         </div>
 
         <div className="card">
-          <h3>AutoMode</h3>
+          <h3>{t("autoMode")}</h3>
           <label style={{ display: "block" }}>
             <input
               type="checkbox"
@@ -645,13 +959,13 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             {t("voiceAutoSend")}
           </label>
           <label style={{ display: "block", marginTop: 8 }}>
-            Language:{" "}
+            {t("voiceInLang")}:{" "}
             <select value={voice.lang} onChange={(e) => saveVoice({ ...voice, lang: e.target.value })}>
-              <option value="auto">Auto-detect</option>
-              <option value="pt">Portuguese</option>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
+              <option value="auto">{t("voiceLangAuto")}</option>
+              <option value="pt">{t("voiceLangPt")}</option>
+              <option value="en">{t("voiceLangEn")}</option>
+              <option value="es">{t("voiceLangEs")}</option>
+              <option value="fr">{t("voiceLangFr")}</option>
             </select>
           </label>
           <label style={{ display: "block", marginTop: 8 }}>
@@ -664,23 +978,23 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 setTtsLangState(next);
               }}
             >
-              <option value="pt-BR">Português (Antonio)</option>
-              <option value="en-US">English (Andrew)</option>
-              <option value="es-ES">Español (Alvaro)</option>
+              <option value="pt-BR">{t("ttsVoicePt")}</option>
+              <option value="en-US">{t("ttsVoiceEn")}</option>
+              <option value="es-ES">{t("ttsVoiceEs")}</option>
             </select>
           </label>
         </div>
 
         <div className="card">
-          <h3>Caption style (clips)</h3>
+          <h3>{t("captionStyleTitle")}</h3>
           {(
             [
-              ["font", "Font (e.g. Helvetica Bold)"],
-              ["fontSize", "Size"],
-              ["primary", "Primary color (&H..)"],
-              ["secondary", "Highlight color (&H..)"],
-              ["outlineColor", "Outline color (&H..)"],
-              ["marginV", "Bottom margin"],
+              ["font", t("captionFont")],
+              ["fontSize", t("captionFontSize")],
+              ["primary", t("captionPrimary")],
+              ["secondary", t("captionHighlight")],
+              ["outlineColor", t("captionOutline")],
+              ["marginV", t("captionMargin")],
             ] as [string, string][]
           ).map(([k, label]) => (
             <label key={k} style={{ display: "block", marginBottom: 6 }}>
@@ -694,35 +1008,35 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             </label>
           ))}
           <button className="primary" onClick={() => void saveStyle({})}>
-            Save style
+            {t("captionSave")}
           </button>
         </div>
 
         <div className="card">
-          <h3>Appearance</h3>
+          <h3>{t("appearanceTitle")}</h3>
           <label style={{ display: "block" }}>
-            Theme:{" "}
+            {t("themeLabel")}:{" "}
             <select
               value={theme}
               onChange={(e) => saveTheme(e.target.value as ThemeChoice, font)}
             >
-              <option value="system">System</option>
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
+              <option value="system">{t("themeSystem")}</option>
+              <option value="dark">{t("themeDark")}</option>
+              <option value="light">{t("themeLight")}</option>
             </select>
           </label>
           <label style={{ display: "block", marginTop: 8 }}>
-            Font size:{" "}
+            {t("fontLabel")}:{" "}
             <select value={font} onChange={(e) => saveTheme(theme, e.target.value)}>
-              <option value="small">Small</option>
-              <option value="normal">Normal</option>
-              <option value="large">Large</option>
+              <option value="small">{t("fontSmall")}</option>
+              <option value="normal">{t("fontNormal")}</option>
+              <option value="large">{t("fontLarge")}</option>
             </select>
           </label>
         </div>
 
         <div className="card">
-          <h3>Push notifications</h3>
+          <h3>{t("pushTitle")}</h3>
           <button
             className="primary"
             disabled={pushTesting}
@@ -735,12 +1049,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   const { results } = res.body as {
                     results?: { endpoint: string; ok: boolean; status?: number; error?: string }[];
                   };
-                  if (!results?.length) setPushMsg("no device subscribed — tap Re-subscribe");
+                  if (!results?.length) setPushMsg(t("pushNoDevices"));
                   else {
                     const bad = results.filter((r) => !r.ok);
                     setPushMsg(
                       bad.length === 0
-                        ? "sent OK — check the phone"
+                        ? t("pushSentOk")
                         : bad
                             .map(
                               (r) =>
@@ -761,7 +1075,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               })()
             }
           >
-            {pushTesting ? "Sending…" : "Send test notification"}
+            {pushTesting ? t("pushSending") : t("pushSendTest")}
           </button>
           <button
             style={{ marginLeft: 8 }}
@@ -771,7 +1085,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 try {
                   const { enablePush } = await import("../lib/push");
                   await enablePush(request);
-                  setPushMsg("subscribed");
+                  setPushMsg(t("pushSubscribed"));
                   const st = await request("GET", "/__ocr/push/status");
                   setPushSubs((st.body as { subscribers?: number }).subscribers ?? 0);
                 } catch (err) {
@@ -780,27 +1094,25 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
               })()
             }
           >
-            Re-subscribe
+            {t("pushResubscribe")}
           </button>
           {pushMsg && <p className="muted" style={{ marginBottom: 0 }}>{pushMsg}</p>}
           <p className="muted" style={{ marginBottom: 0 }}>
-            {pushSubs} device(s) subscribed · iOS: app must be on the Home Screen
+            {t("pushSubsCount", { n: pushSubs })}
           </p>
         </div>
 
         <div className="card">
-          <h3>Share to agent</h3>
+          <h3>{t("shareTitle")}</h3>
           <p className="muted" style={{ margin: 0 }}>
-            <b>Android/desktop</b>: the system share sheet offers "OpenCode Remote" directly.
+            <b>{t("shareAndroidLabel")}</b>: {t("shareAndroidBody")}
             <br />
-            <b>iOS</b>: copy the link anywhere, open the app, long-press the message field → Colar,
-            add your instruction and send. Or create a Shortcut (Shortcuts app) that copies the
-            shared text and opens "OpenCode Remote".
+            <b>{t("shareIosLabel")}</b>: {t("shareIosBody")}
           </p>
         </div>
 
         <div className="card">
-          <h3>Skills (1-tap prompts)</h3>
+          <h3>{t("skillsTitle")}</h3>
           {skills.map((s) => (
             <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
@@ -826,14 +1138,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   })()
                 }
               >
-                Delete
+                {t("delete")}
               </button>
             </div>
           ))}
           <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
             <input
               style={{ flex: 1, minWidth: 0 }}
-              placeholder="label (e.g. Daily report)"
+              placeholder={t("skillLabelPlaceholder")}
               value={nsLabel}
               onChange={(e) => setNsLabel(e.target.value)}
               maxLength={40}
@@ -841,7 +1153,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           </div>
           <textarea
             rows={2}
-            placeholder="prompt sent to the agent on tap"
+            placeholder={t("skillPromptPlaceholder")}
             style={{ width: "100%", marginTop: 6 }}
             value={nsPrompt}
             onChange={(e) => setNsPrompt(e.target.value)}
@@ -859,57 +1171,91 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   setSkills((prev) => [...prev, skill]);
                   setNsLabel("");
                   setNsPrompt("");
-                  setMsg("skill added");
+                  setMsg(t("skillAdded"));
                 } else {
-                  setMsg("skill rejected — label and prompt required");
+                  setMsg(t("skillRejected"));
                 }
               })()
             }
           >
-            Add skill
+            {t("skillAdd")}
           </button>
         </div>
 
         <div className="card">
-          <h3>Scheduled routines</h3>
-          {routines.map((r) => (
-            <div key={r.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <b>{scheduleLabel(r)}</b> · {r.name}
-                <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {r.prompt}
+          <h3>{t("routinesTitle")}</h3>
+          {routines.map((r) => {
+            const rows = routineHistoryRows(r.history, Date.now(), t);
+            const open = !!openHistory[r.id];
+            return (
+              <div key={r.id} style={{ marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <b>{scheduleLabel(r, t)}</b> · {r.name}
+                    <div className="muted" style={{ fontSize: "0.72rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {r.prompt}
+                    </div>
+                  </span>
+                  <span
+                    title={r.lastError ? t("routineLastError", { err: r.lastError }) : r.lastStatus === "ok" ? t("routineLastOk") : t("routineNeverRan")}
+                    style={{ fontSize: "0.85rem" }}
+                  >
+                    <span
+                      className={`status-dot ${r.lastStatus === "ok" ? "ok" : r.lastStatus === "error" ? "err" : "idle"}`}
+                    />
+                  </span>
+                  <button
+                    className="danger"
+                    onClick={() =>
+                      void (async () => {
+                        await request("DELETE", "/__ocr/routines", { id: r.id });
+                        setRoutines((prev) => prev.filter((x) => x.id !== r.id));
+                      })()
+                    }
+                  >
+                    {t("delete")}
+                  </button>
                 </div>
-              </span>
-              <span
-                title={r.lastError ? `last error: ${r.lastError}` : r.lastStatus === "ok" ? "last run: ok" : "never ran"}
-                style={{ fontSize: "0.85rem" }}
-              >
-                <span
-                  className={`status-dot ${r.lastStatus === "ok" ? "ok" : r.lastStatus === "error" ? "err" : "idle"}`}
-                />
-              </span>
-              <button
-                className="danger"
-                onClick={() =>
-                  void (async () => {
-                    await request("DELETE", "/__ocr/routines", { id: r.id });
-                    setRoutines((prev) => prev.filter((x) => x.id !== r.id));
-                  })()
-                }
-              >
-                Delete
-              </button>
-            </div>
-          ))}
+                {rows.length === 0 ? (
+                  <p className="routine-history-empty">{t("routineHistoryEmpty")}</p>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="routine-history-head"
+                      aria-expanded={open}
+                      onClick={() => setOpenHistory((prev) => ({ ...prev, [r.id]: !prev[r.id] }))}
+                    >
+                      <span className={`routine-history-chevron${open ? " open" : ""}`} aria-hidden>
+                        <IconChevronDown size={14} />
+                      </span>
+                      {t("routineHistoryToggle", { n: rows.length })}
+                    </button>
+                    {open && (
+                      <ul className="routine-history-list">
+                        {rows.map((row, i) => (
+                          <li key={`${row.at}-${i}`}>
+                            <span className="routine-history-when">{row.whenLabel}</span>
+                            <span className={`routine-history-outcome ${row.outcome}`}>{row.outcomeLabel}</span>
+                            <span className="routine-history-dur">{row.durationLabel}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
           <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
             <select
               value={nrMode}
               onChange={(e) => setNrMode(e.target.value as typeof nrMode)}
-              aria-label="Schedule mode"
+              aria-label={t("routineModeLabel")}
             >
-              <option value="daily">Every day</option>
-              <option value="days">Specific days</option>
-              <option value="interval">Loop every N min</option>
+              <option value="daily">{t("routineEveryDay")}</option>
+              <option value="days">{t("routineSpecificDays")}</option>
+              <option value="interval">{t("routineLoop")}</option>
             </select>
             {nrMode !== "interval" ? (
               <input style={{ width: 90 }} type="time" value={nrTime} onChange={(e) => setNrTime(e.target.value)} />
@@ -921,14 +1267,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 max={10080}
                 value={nrInterval}
                 onChange={(e) => setNrInterval(Number(e.target.value))}
-                aria-label="Interval in minutes"
+                aria-label={t("routineIntervalLabel")}
               />
             )}
-            <input style={{ width: 90, flexGrow: 1 }} placeholder="name" value={nrName} onChange={(e) => setNrName(e.target.value)} />
+            <input style={{ width: 90, flexGrow: 1 }} placeholder={t("routineNamePlaceholder")} value={nrName} onChange={(e) => setNrName(e.target.value)} />
           </div>
           {nrMode === "days" && (
             <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
-              {DAY_LABELS.map((d, i) => (
+              {DAY_LETTER_KEYS.map((key, i) => (
                 <button
                   key={i}
                   onClick={() =>
@@ -943,21 +1289,21 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                     background: nrDays.includes(i) ? "var(--accent)" : "transparent",
                     color: nrDays.includes(i) ? "var(--on-accent)" : "inherit",
                   }}
-                  aria-label={DAY_NAMES[i]}
+                  aria-label={t(DAY_NAME_KEYS[i] as string)}
                 >
-                  {d}
+                  {t(key)}
                 </button>
               ))}
             </div>
           )}
           {nrMode === "interval" && (
             <p className="muted" style={{ margin: "6px 0 0", fontSize: "0.72rem" }}>
-              runs immediately, then every N minutes while the daemon is up (min 5)
+              {t("routineIntervalHint")}
             </p>
           )}
           <textarea
             rows={2}
-            placeholder="prompt for the agent (e.g. summarize crypto news and save a report)"
+            placeholder={t("routinePromptPlaceholder")}
             style={{ width: "100%", marginTop: 6 }}
             value={nrPrompt}
             onChange={(e) => setNrPrompt(e.target.value)}
@@ -981,14 +1327,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                   setRoutines((prev) => [...prev, routine]);
                   setNrName("");
                   setNrPrompt("");
-                  setMsg("routine added");
+                  setMsg(t("routineAdded"));
                 } else {
-                  setMsg("routine rejected — check fields");
+                  setMsg(t("routineRejected"));
                 }
               })()
             }
           >
-            Add routine
+            {t("routineAdd")}
           </button>
         </div>
 
@@ -997,7 +1343,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           {devices.map((d) => (
             <div key={d.pub} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <span style={{ flex: 1 }}>
-                {d.label ?? "device"} · …{d.pub.slice(-6)}
+                {d.label ?? t("deviceFallback")} · …{d.pub.slice(-6)}
                 <br />
                 <span style={{ opacity: 0.6, fontSize: 12 }}>
                   {d.lastSeenAt
@@ -1007,14 +1353,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 </span>
               </span>
               <button className="danger" onClick={() => void revoke(d.pub)}>
-                Revoke
+                {t("revoke")}
               </button>
             </div>
           ))}
         </div>
 
         <div className="card">
-          <h3>Security log</h3>
+          <h3>{t("securityLog")}</h3>
           {auditEntries.length === 0 && <p className="muted" style={{ margin: 0 }}>{t("noAudit")}</p>}
           {auditEntries.map((e, i) => (
             <div key={i} className="muted" style={{ fontSize: "0.72rem", marginBottom: 4 }}>

@@ -30,6 +30,7 @@ import {
   workspaceCoversArtifacts,
 } from "../apps/daemon/src/sessionctx";
 import { CLOSE_HINT_LOG } from "../apps/desktop/src/closehint";
+import { shellLabels } from "../apps/desktop/src/shelllang";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -150,7 +151,10 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // P2-150 added the taskbar-overlay badge beat (push 12 → bridge round-trip,
 // one-window aliveness probe, 1440x900 shot) inside the same budget; P2-152
 // added the close-to-tray hint beat (fresh-userData close from the renderer +
-// a second same-userData boot proving the one-shot flag), growing it to 300s.
+// a second same-userData boot proving the one-shot flag), growing it to 300s;
+// P2-323 added the rename-dialog beat (prefilled in-app dialog over the fake
+// backend's session list, identical-title refusal, focus round-trip, a real
+// PATCH on confirm and 1440/390 evidence shots) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 300_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -426,14 +430,20 @@ try {
     );
   }
   run("P2-148: advance to the pairing step", ["click", ".welcome-next"], 15_000);
-  const pairStep = run("P2-148: pairing invitation rendered", ["ipc", "document.querySelector('.welcome .pair-section-title')?.textContent ?? 'MISS'"], 15_000);
+  // P3-337: the card heading is the single pairing title — the InlinePair
+  // section carries only the QR/status, with no all-caps kicker repeating it.
+  const pairStep = run("P2-148: pairing invitation rendered", ["ipc", "document.querySelector('.welcome-pair .welcome-step-title')?.textContent ?? 'MISS'"], 15_000);
   if (pairStep.ok) check("P2-148: host section title inside the welcome", /Pair a phone|Parear um celular/.test(pairStep.stdout), pairStep.stdout);
+  const pairTitleCount = run("P3-337: h2 count in the pairing card", ["ipc", "String(document.querySelectorAll('.welcome-pair h2').length)"], 15_000);
+  if (pairTitleCount.ok) check("P3-337: exactly one pairing title in the card", pairTitleCount.stdout.replace(/"/g, "").trim() === "1", pairTitleCount.stdout);
   const later = run("P2-148: explicit 'do this later' option", ["ipc", "!!document.querySelector('.welcome-later')"], 15_000);
   if (later.ok) check("P2-148: .welcome-later present", /true/.test(later.stdout));
   const welcomeShot390 = join(shotsDir, "P2-148-welcome-390.png");
   const w2 = run("P2-148: 390 welcome shot", ["shot", welcomeShot390, "390", "844"], 15_000);
   if (w2.ok) check("P2-148: 390 welcome shot is a real PNG", pngSize(welcomeShot390)[0] === 390);
-  run("P2-148: skip the onboarding", ["click", ".welcome-skip"], 15_000);
+  const skipGone = run("P3-338: global skip absent on the final step", ["ipc", "!!document.querySelector('.welcome-skip')"], 15_000);
+  if (skipGone.ok) check("P3-338: .welcome-skip hidden on the pairing step", /false/.test(skipGone.stdout));
+  run("P2-148: leave via the in-context exit", ["click", ".welcome-later"], 15_000);
   const welcomeGone = run("P2-148: welcome absent after skip", ["ipc", "!!document.querySelector('.welcome')"], 15_000);
   if (welcomeGone.ok) check("P2-148: .welcome unmounted after skip", /false/.test(welcomeGone.stdout));
   const homeBack = run("P2-148: home rendered after skip", ["ipc", "!!document.querySelector('.degraded')"], 15_000);
@@ -512,12 +522,16 @@ try {
   // (1) two titled sections on the ceremony screen, (2) scanner route,
   // (3) styled invalid-code error with the inline format helper, and (4) the
   // QR overlay with the demoted "pair later" link (local-boot beat below).
-  const connectTitle = run("P2-106: client section title", ["ipc", "document.querySelector('.pair-section-title')?.textContent ?? ''"], 15_000);
-  if (connectTitle.ok) {
+  // P3-334: the host section leads — pairing a phone is the primary story on
+  // the desktop — and the client ceremony follows as the secondary option.
+  const sectionTitles = run("P3-334: section order host → client", ["ipc", "[...document.querySelectorAll('.pair-section-title')].map((el) => el.textContent).join('|')"], 15_000);
+  if (sectionTitles.ok) {
+    const titles = sectionTitles.stdout.replace(/"/g, "").trim();
     check(
-      "P2-106: 'connect to another machine' section title (en|pt)",
-      /Connect to another machine|Conectar a outra máquina/.test(connectTitle.stdout),
-      connectTitle.stdout,
+      "P3-334: host section first, client ceremony second (en|pt)",
+      titles === "Pair a phone with this machine|Connect to another machine" ||
+        titles === "Parear um celular com esta máquina|Conectar a outra máquina",
+      sectionTitles.stdout,
     );
   }
   const sectionCount = run("P2-106: titled section count", ["ipc", "String(document.querySelectorAll('.pair-section').length)"], 15_000);
@@ -658,22 +672,24 @@ try {
   // The paired two-column layout can't render hermetically (needs real E2E
   // keys, see the P1-051 note above), but the shortcut WIRING is fully
   // observable: the preload bridge must expose onMenuAction and the app menu
-  // must carry the Go (Ir, pt-BR since P2-176) items whose click handlers
-  // broadcast ocr:menu-action.
+  // must carry the Go items whose click handlers broadcast ocr:menu-action.
+  // Since P2-276 the labels follow the language the renderer pushes (en or
+  // pt) — assert against the shell vocabulary, never the machine locale.
   const bridge = run("P1-046: preload exposes onMenuAction", ["ipc", "typeof window.ocrDesktop.onMenuAction"], 15_000);
   if (bridge.ok) check("P1-046: onMenuAction is a function", /function/.test(bridge.stdout));
-  const menuIds: [string, string][] = [
-    ["go-new-chat", "Nova conversa"],
-    ["go-palette", "Paleta de comandos"],
-    ["go-pane-chat", "Conversas"],
-    ["go-pane-artifacts", "Artifacts"],
-    ["go-pane-browser", "Browser"],
-    ["go-pane-files", "Arquivos"],
-    ["go-pane-settings", "Configurações"],
+  const menuIds: [string, keyof ReturnType<typeof shellLabels>["menu"]][] = [
+    ["go-new-chat", "newChat"],
+    ["go-palette", "commandPalette"],
+    ["go-pane-chat", "paneConversations"],
+    ["go-pane-artifacts", "paneArtifacts"],
+    ["go-pane-browser", "paneBrowser"],
+    ["go-pane-files", "paneFiles"],
+    ["go-pane-settings", "paneSettings"],
   ];
-  for (const [id, label] of menuIds) {
+  for (const [id, key] of menuIds) {
     const res = run(`P1-046: Go menu item ${id}`, ["menu", id], 15_000);
-    if (res.ok) check(`P1-046: ${id} is labeled "${label}"`, res.stdout.includes(label));
+    const labels = [shellLabels("en").menu[key], shellLabels("pt").menu[key]];
+    if (res.ok) check(`P1-046: ${id} carries a shell-vocabulary label`, labels.some((l) => res.stdout.includes(l)));
   }
   // Real click on the menu item: runs the main-process handler that
   // broadcasts ocr:menu-action to every window (renderer ignores it while
@@ -851,10 +867,15 @@ try {
   // Two hermetic boots cover the four spec states:
   //   boot 1 (OCR_DESKTOP_CAMERA_BLOCK=1): "sem camera" → unavailable panel
   //     with the paste CTA → "colar codigo" (back on the primary form);
+  //     P2-319 adds the camera verdict — the permission refusal shows the
+  //     actionable pt-BR phrase + the system-panel action instead of the
+  //     static sentence;
   //   boot 2 (OCR_DESKTOP_MEDIA_FAKE=1): live "preview" (incl. the 390px
   //     layout beat) → feed killed → "NO SIGNAL" unavailable state.
   const scanShot1440 = join(shotsDir, "P2-117-scan-1440.png");
   const scanShot390 = join(shotsDir, "P2-117-scan-390.png");
+  const blockedShot1440 = join(shotsDir, "P2-319-scan-1440.png");
+  const blockedShot390 = join(shotsDir, "P2-319-scan-390.png");
   const scannerState = "document.querySelector('.qr-scanner')?.dataset.state ?? ''";
   {
     const scanBlockEnv = {
@@ -879,6 +900,22 @@ try {
         await waitProbe("scan: unavailable state rendered", scannerState, (v) => v.includes("unavailable"), scanBlockEnv);
         const cta = run("scan: paste CTA present", ["ipc", "!!document.querySelector('.qr-paste-cta')"], 15_000, scanBlockEnv);
         if (cta.ok) check("scan: paste CTA visible in the unavailable state", /true/.test(cta.stdout));
+        // P2-319: the shell answers app:camAccess with "denied" under the
+        // hatch — the verdict phrase (pt-BR, static) replaces the old
+        // dictionary sentence and the system-panel action appears.
+        const blockedTitle = run("scan-blocked: verdict phrase rendered", ["ipc", "document.querySelector('.qr-unavailable-title')?.textContent ?? ''"], 15_000, scanBlockEnv);
+        if (blockedTitle.ok) {
+          check(
+            "scan-blocked: OS verdict phrase replaces the static sentence",
+            /negado no sistema/.test(blockedTitle.stdout) && !/Permissão de câmera negada/.test(blockedTitle.stdout),
+          );
+        }
+        const panelBtn = run("scan-blocked: system-panel action present", ["ipc", "!!document.querySelector('.qr-panel-cta')"], 15_000, scanBlockEnv);
+        if (panelBtn.ok) check("scan-blocked: panel action visible", /true/.test(panelBtn.stdout));
+        const b1 = run("scan-blocked: 1440x900 evidence shot", ["shot", blockedShot1440, "1440", "900"], 15_000, scanBlockEnv);
+        if (b1.ok) check("scan-blocked: 1440x900 shot is a real PNG", pngSize(blockedShot1440).join("x") === "1440x900");
+        const b2 = run("scan-blocked: 390 evidence shot", ["shot", blockedShot390, "390", "844"], 15_000, scanBlockEnv);
+        if (b2.ok) check("scan-blocked: 390 shot is a real PNG", pngSize(blockedShot390)[0] === 390);
         // "colar codigo": the CTA returns to the primary paste form.
         run("scan: click paste CTA", ["click", ".qr-paste-cta"], 15_000, scanBlockEnv);
         const back = run("scan: primary paste form restored", ["ipc", "!!document.querySelector('.pair-submit')"], 15_000, scanBlockEnv);
@@ -1128,6 +1165,61 @@ try {
           if (pl2.ok) check("P2-193: pair-link 390 shot is a real PNG", pngSize(pairLinkShot390)[0] === 390);
           // resize vehicle only — the settled 1440 evidence was already taken
           run("P2-193: resize back to desktop width", ["shot", join(shotsDir, "P2-193-resize-back-1440.png"), "1440", "900"], 15_000, localEnv);
+
+          // --- P2-197: reach probe — dead app address warns, QR stays --------
+          // A dead loopback port is a VALID stored address (http to 127.0.0.1
+          // passes webAppUrlProblems), so the shell probes it once per tick,
+          // fails fast (ECONNREFUSED → unreachable) and the overlay must say
+          // so calmly — WITHOUT hiding the QR: the Mac not reaching the relay
+          // proves nothing about the phone's network.
+          const deadPort = await new Promise<number>((resolve, reject) => {
+            const srv = createServer();
+            srv.listen(0, "127.0.0.1", () => {
+              const { port } = srv.address() as AddressInfo;
+              srv.close(() => resolve(port));
+            });
+            srv.on("error", reject);
+          });
+          run("P2-197: point the app address at a dead local port", ["ipc", `window.ocrDesktop.setWebAppUrl('http://127.0.0.1:${deadPort}')`], 15_000, localEnv);
+          await waitProbe(
+            "P2-197: reach warning renders next to the (still visible) QR",
+            "(() => { const card = document.querySelector('.pair-overlay-card'); return (card?.textContent ?? '') + '|' + (!!document.querySelector('.pair-overlay-qr')) + '|' + (!!document.querySelector('.pair-reach-retry')); })()",
+            // ipc stdout is JSON-encoded (trailing quote) — match by inclusion
+            (v) => v.includes(`127.0.0.1:${deadPort}`) && /não respondeu|Testar de novo|Test again/.test(v) && v.includes("true|true"),
+            localEnv,
+            24,
+            500,
+          );
+          const reachShot1440 = join(shotsDir, "P2-197-reach-1440.png");
+          const rc1 = run("P2-197: 1440x900 reach shot", ["shot", reachShot1440, "1440", "900"], 15_000, localEnv);
+          if (rc1.ok) check("P2-197: reach 1440x900 shot is a real PNG", pngSize(reachShot1440).join("x") === "1440x900");
+          const reachShot390 = join(shotsDir, "P2-197-reach-390.png");
+          const rc2 = run("P2-197: 390 reach shot", ["shot", reachShot390, "390", "844"], 15_000, localEnv);
+          if (rc2.ok) check("P2-197: reach 390 shot is a real PNG", pngSize(reachShot390)[0] === 390);
+          // restore the P2-193 leftover so later beats see the same state
+          run("P2-197: restore the stored app address", ["ipc", "window.ocrDesktop.setWebAppUrl('https://app.example.com')"], 15_000, localEnv);
+
+          // --- P2-199: daemon↔relay link — dead relay warns, QR stays --------
+          // The hermetic daemon dials RELAY_URL ws://127.0.0.1:1 (a dead
+          // port), so its /api/health says relayConnected:false with a retry
+          // attempt in flight while relay.ok stays true. The overlay must say
+          // so calmly — WITHOUT hiding the QR: the link can come back up
+          // before the phone finishes pairing.
+          await waitProbe(
+            "P2-199: relay-link line renders next to the (still visible) QR",
+            "(() => { const line = document.querySelector('.pair-relaylink'); return (line?.textContent ?? '') + '|' + (!!document.querySelector('.pair-overlay-qr')); })()",
+            // ipc stdout is JSON-encoded (trailing quote) — match by inclusion
+            (v) => /relay|Relay/.test(v) && v.includes("true"),
+            localEnv,
+            24,
+            500,
+          );
+          const linkShot1440 = join(shotsDir, "P2-199-relaylink-1440.png");
+          const rl1 = run("P2-199: 1440x900 relay-link shot", ["shot", linkShot1440, "1440", "900"], 15_000, localEnv);
+          if (rl1.ok) check("P2-199: relay-link 1440x900 shot is a real PNG", pngSize(linkShot1440).join("x") === "1440x900");
+          const linkShot390 = join(shotsDir, "P2-199-relaylink-390.png");
+          const rl2 = run("P2-199: 390 relay-link shot", ["shot", linkShot390, "390", "844"], 15_000, localEnv);
+          if (rl2.ok) check("P2-199: relay-link 390 shot is a real PNG", pngSize(linkShot390)[0] === 390);
 
           run("P2-106: dismiss via the quiet link", ["click", ".pair-overlay-later"], 15_000, localEnv);
           await waitProbe(
@@ -2560,6 +2652,105 @@ try {
                 run("P2-108: close the filter menu", ["click", ".sess-menu-scrim"], 15_000, localEnv2);
               }
             }
+
+            // --- P2-323: rename dialog replaces the dead window.prompt --------
+            // The pencil action used to call window.prompt — unimplemented in
+            // the Electron shell, so rename died silently. The in-app dialog
+            // opens prefilled, focuses the field, survives a 390px drop and
+            // its confirm reaches the backend as a real PATCH. The row actions
+            // are hover-revealed (display:none until :hover), so the open is
+            // driven through a JS click — Playwright actionability would time
+            // out on a zero-box button.
+            phase("P2-323: rename dialog over the session list");
+            const p323Top = run("P2-323: read the top row title", ["ipc", "document.querySelector('.sess-row .sess-title')?.textContent ?? ''"], 15_000, localEnv2);
+            const p323Open = run("P2-323: open the rename dialog", ["ipc", "(() => { const row = document.querySelector('.sess-row'); const b = document.querySelector('.sess-row .row-rename'); if (!row || !b) return 'MISS'; row.focus(); b.focus(); b.click(); return 'ok'; })()"], 15_000, localEnv2);
+            if (p323Open.ok) {
+              const p323Up = await waitProbe(
+                "P2-323: rename dialog rendered",
+                "!!document.querySelector('.ask-dialog')",
+                (v) => /true/.test(v),
+                localEnv2,
+              );
+              if (p323Up) {
+                const p323Pre = run("P2-323: read the dialog input", ["ipc", "document.querySelector('.ask-dialog input')?.value ?? 'MISS'"], 15_000, localEnv2);
+                if (p323Pre.ok) {
+                  let want = p323Top.stdout.trim();
+                  let got = p323Pre.stdout.trim();
+                  try {
+                    want = JSON.parse(want) as string;
+                    got = JSON.parse(got) as string;
+                  } catch {}
+                  check("P2-323: dialog input echoes the row title", want.length > 0 && got === want, `${want!} vs ${got}`);
+                }
+                const p323Focus = run("P2-323: focus is on the input", ["ipc", "document.activeElement === document.querySelector('.ask-dialog input')"], 15_000, localEnv2);
+                if (p323Focus.ok) check("P2-323: input takes focus on open", /true/.test(p323Focus.stdout), p323Focus.stdout);
+                run("P2-323: rename dialog evidence shot", ["shot", join(shotsDir, "P2-323-rename-1440.png"), "1440", "900"], 15_000, localEnv2);
+                // identical title stays refused: the confirm button is disabled
+                const p323Gate = run("P2-323: confirm with an identical title", ["ipc", "document.querySelector('.ask-dialog .ask-confirm')?.disabled ?? 'MISS'"], 15_000, localEnv2);
+                if (p323Gate.ok) check("P2-323: identical title keeps confirm disabled", /true/.test(p323Gate.stdout), p323Gate.stdout);
+                run("P2-323: close the dialog (Escape)", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))"], 15_000, localEnv2);
+                await waitProbe(
+                  "P2-323: dialog closed by Escape",
+                  "!!document.querySelector('.ask-dialog')",
+                  (v) => /false/.test(v),
+                  localEnv2,
+                );
+                const p323Back = run(
+                  "P2-323: focus after close",
+                  // the hidden pencil falls back to its focusable row
+                  ["ipc", "(() => { const el = document.activeElement; const ok = !!el && (el.classList.contains('row-rename') || !!el.querySelector('.row-rename')); return JSON.stringify({ ok, cls: el?.className ?? '' }); })()"],
+                  15_000,
+                  localEnv2,
+                );
+                if (p323Back.ok) {
+                  let back = p323Back.stdout.trim();
+                  try {
+                    back = JSON.parse(back) as string;
+                  } catch {}
+                  check("P2-323: focus returns to the opener", /"ok":true/.test(back), back);
+                }
+                // reopen and actually rename: confirm sends a real PATCH
+                run("P2-323: reopen the dialog", ["ipc", "(() => { const row = document.querySelector('.sess-row'); const b = document.querySelector('.sess-row .row-rename'); if (!row || !b) return 'MISS'; row.focus(); b.focus(); b.click(); return 'ok'; })()"], 15_000, localEnv2);
+                await waitProbe("P2-323: dialog rendered again", "!!document.querySelector('.ask-dialog')", (v) => /true/.test(v), localEnv2);
+                const p323Type = run("P2-323: type a new title", ["type", ".ask-dialog input", "Renamed by P2-323"], 15_000, localEnv2);
+                if (p323Type.ok) {
+                  run("P2-323: confirm the rename", ["click", ".ask-dialog .ask-confirm"], 15_000, localEnv2);
+                  await waitProbe("P2-323: dialog closed after confirm", "!!document.querySelector('.ask-dialog')", (v) => /false/.test(v), localEnv2);
+                  let patchSeen = false;
+                  for (let i = 0; i < 8 && !patchSeen; i++) {
+                    await new Promise((r) => setTimeout(r, 500));
+                    const hits323 = await fetch(`${fakeUrl}/__hits`)
+                      .then((r) => r.json() as Promise<{ method: string; path: string }[]>)
+                      .catch(() => [] as { method: string; path: string }[]);
+                    patchSeen = hits323.some((h) => h.method === "PATCH" && /^\/session\/.+/.test(h.path));
+                  }
+                  check("P2-323: rename PATCH reached the backend", patchSeen);
+                }
+              }
+            }
+            // phone-width evidence: the board's card action opens the same dialog
+            run("P2-323: drop to phone width", ["shot", join(shotsDir, "P2-323-390-prep.png"), "390", "844"], 15_000, localEnv2);
+            run("P2-323: leave the chat for the board", ["click", ".chat-back"], 15_000, localEnv2);
+            const p323Card = run("P2-323: open rename from a session card", ["ipc", "document.querySelector('.session-card .card-rename')?.click() ?? 'MISS'"], 15_000, localEnv2);
+            if (p323Card.ok) {
+              const p323Narrow = await waitProbe(
+                "P2-323: rename dialog rendered at 390",
+                "!!document.querySelector('.ask-dialog')",
+                (v) => /true/.test(v),
+                localEnv2,
+              );
+              if (p323Narrow) {
+                run("P2-323: rename dialog narrow evidence shot", ["shot", join(shotsDir, "P2-323-rename-390.png"), "390", "844"], 15_000, localEnv2);
+                run("P2-323: close the narrow dialog", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))"], 15_000, localEnv2);
+              } else {
+                const p323Dump = run("P2-323: board state on failure", ["ipc", "JSON.stringify({ phase: document.querySelector('.app-root')?.getAttribute('data-phase'), hash: location.hash, cards: document.querySelectorAll('.session-card').length, dialog: !!document.querySelector('.ask-dialog'), board: !!document.querySelector('.session-grid'), chat: !!document.querySelector('.messages') })"], 15_000, localEnv2);
+                if (p323Dump.ok) check("P2-323: board state dump", true, p323Dump.stdout);
+              }
+            }
+            // restore the chat surface: P3-085 expects its session on screen
+            run("P2-323: return to the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
+            await waitProbe("P2-323: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            run("P2-323: restore desktop width", ["shot", join(shotsDir, "P2-323-restore-1440.png"), "1440", "900"], 15_000, localEnv2);
           }
 
           // --- P3-085: collapsible thinking block + streaming polish -----------

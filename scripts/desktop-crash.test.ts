@@ -7,10 +7,17 @@
  */
 import {
   installFatalErrorHandlers,
+  newHangEpisodeState,
+  onHangWindowClosed,
   onRendererGone,
+  onReloadBudgetExhausted,
+  onResponsive,
+  onUnresponsive,
   RELOAD_BUDGET,
   RELOAD_WINDOW_MS,
   ReloadGuard,
+  type HangContext,
+  type HangTimers,
   type ReloadableWindow,
 } from "../apps/desktop/src/crash";
 
@@ -124,6 +131,184 @@ function fakeWindow(): { win: ReloadableWindow; reloads: () => number; destroy()
   handlers.dispose();
   process.emit("uncaughtException", new Error("after-dispose"));
   check("fatal: dispose removes handlers", quits === 1);
+}
+
+// --- P2-223: unresponsive-window watch (onUnresponsive/onResponsive) ----------
+{
+  // Injectable fake clock + timers: the cleanup guarantees are proven by
+  // counting pending handles, with no real waits.
+  function fakeTimers(): HangTimers & { pendingCount(): number; fireAll(): void } {
+    const pending = new Map<number, () => void>();
+    let nextId = 1;
+    return {
+      setTimeout(fn: () => void, _ms: number): unknown {
+        const id = nextId++;
+        pending.set(id, fn);
+        return id;
+      },
+      clearTimeout(handle: unknown): void {
+        pending.delete(handle as number);
+      },
+      pendingCount: () => pending.size,
+      fireAll(): void {
+        const fns = [...pending.values()];
+        pending.clear();
+        for (const fn of fns) fn();
+      },
+    };
+  }
+
+  function hangCtx(opts: {
+    harness: boolean;
+    clock: () => number;
+    timers: ReturnType<typeof fakeTimers>;
+    budgetExhausted?: boolean;
+  }): HangContext & { logs: string[]; notes: string[]; boxes: number } {
+    const state = { logs: [] as string[], notes: [] as string[], boxes: 0 };
+    const ctx = {
+      harnessSession: opts.harness,
+      budget: { exhausted: () => opts.budgetExhausted ?? false },
+      sinks: {
+        log: (line: string) => state.logs.push(line),
+        notify: (body: string) => state.notes.push(body),
+        showDialog: () => {
+          state.boxes++;
+        },
+      },
+      timers: opts.timers,
+      now: opts.clock,
+      logs: state.logs,
+      notes: state.notes,
+      get boxes() {
+        return state.boxes;
+      },
+    } as HangContext & { logs: string[]; notes: string[]; boxes: number };
+    return ctx;
+  }
+
+  let clock = 0;
+  const timers = fakeTimers();
+
+  // Harness session: the timer may fire, but NOTHING user-facing happens —
+  // no dialog, no notification (the verdict's first rule).
+  {
+    const episode = newHangEpisodeState();
+    const ctx = hangCtx({ harness: true, clock: () => clock, timers });
+    onUnresponsive(episode, ctx);
+    clock = 60_000;
+    timers.fireAll();
+    check("hang: harness session opens no dialog", ctx.boxes === 0);
+    check("hang: harness session shows no notification", ctx.notes.length === 0);
+    check("hang: harness session still logs the freeze", ctx.logs.length > 0);
+  }
+
+  // Real session: fresh freeze → warn (tip, no box) at the tip threshold,
+  // then the box if the freeze keeps going — and no pending timer after.
+  {
+    const episode = newHangEpisodeState();
+    const ctx = hangCtx({ harness: false, clock: () => clock, timers });
+    clock = 0;
+    onUnresponsive(episode, ctx);
+    check("hang: one timer armed for the episode", timers.pendingCount() === 1);
+    clock = 5_000;
+    timers.fireAll();
+    check("hang: fresh freeze warns without a box", ctx.boxes === 0 && ctx.notes.length === 1);
+    check("hang: the episode's timer is re-armed once for the dialog beat", timers.pendingCount() === 1);
+    clock = 30_000;
+    timers.fireAll();
+    check("hang: a freeze past the dialog beat offers the box", ctx.boxes === 1);
+    check("hang: no timer pending after the box", timers.pendingCount() === 0);
+  }
+
+  // Going responsive cancels the pending warning and logs the real duration.
+  {
+    const episode = newHangEpisodeState();
+    const ctx = hangCtx({ harness: false, clock: () => clock, timers });
+    clock = 0;
+    onUnresponsive(episode, ctx);
+    clock = 2_000;
+    onResponsive(episode, ctx);
+    check("hang: responsive cancels the pending warning", timers.pendingCount() === 0);
+    check("hang: responsive logs the real episode duration", ctx.logs.some((l) => l.includes("2s")));
+    timers.fireAll();
+    check("hang: nothing fires after responsive", ctx.boxes === 0 && ctx.notes.length === 0);
+    check("hang: diagnostics record the resolved episode", episode.last?.outcome === "responsive");
+  }
+
+  // Two consecutive episodes leak no timer.
+  {
+    const episode = newHangEpisodeState();
+    const ctx = hangCtx({ harness: false, clock: () => clock, timers });
+    clock = 0;
+    onUnresponsive(episode, ctx);
+    clock = 5_000;
+    timers.fireAll(); // warn beat, timer re-armed
+    onResponsive(episode, ctx);
+    check("hang: first episode ends with zero pending timers", timers.pendingCount() === 0);
+    clock = 10_000;
+    onUnresponsive(episode, ctx); // second episode starts clean
+    check("hang: second episode arms exactly one timer", timers.pendingCount() === 1);
+    clock = 15_000;
+    onResponsive(episode, ctx);
+    check("hang: second episode also ends with zero pending timers", timers.pendingCount() === 0);
+  }
+
+  // Reload budget exhausted (definitive white screen): the same verdict
+  // speaks — log, tray tip and, outside a harness session, the box.
+  {
+    const episode = newHangEpisodeState();
+    const harness = hangCtx({ harness: true, clock: () => clock, timers, budgetExhausted: true });
+    onReloadBudgetExhausted(episode, harness);
+    check("hang: exhausted budget in a harness session opens no box", harness.boxes === 0);
+    check("hang: exhausted budget in a harness session still logs", harness.logs.length === 1);
+
+    const real = hangCtx({ harness: false, clock: () => clock, timers, budgetExhausted: true });
+    onReloadBudgetExhausted(episode, real);
+    check("hang: exhausted budget outside harness offers the box", real.boxes === 1);
+    check("hang: exhausted budget shows the tray tip", real.notes.length === 1);
+    check("hang: exhausted budget logs and records the outcome", real.logs.length === 1 && episode.last?.outcome === "budget-exhausted");
+    check("hang: exhausted budget leaves no timer behind", timers.pendingCount() === 0);
+  }
+
+  // Window closed: the pending timer dies with it and nothing fires after.
+  {
+    const episode = newHangEpisodeState();
+    const ctx = hangCtx({ harness: false, clock: () => clock, timers });
+    clock = 0;
+    onUnresponsive(episode, ctx);
+    onHangWindowClosed(episode, ctx);
+    check("hang: window close cancels the episode timer", timers.pendingCount() === 0);
+    clock = 60_000;
+    timers.fireAll();
+    check("hang: nothing fires after the window is gone", ctx.boxes === 0 && ctx.notes.length === 0);
+  }
+
+  // onRendererGone calls the budget hook only when the budget is exhausted.
+  {
+    const { win, reloads } = fakeWindow();
+    const guard = new ReloadGuard();
+    let exhaustedCalls = 0;
+    for (let i = 0; i < RELOAD_BUDGET; i++) onRendererGone(win, { reason: "crashed", exitCode: 1 }, guard);
+    onRendererGone(win, { reason: "oom", exitCode: 2 }, guard, () => {}, () => {}, () => exhaustedCalls++);
+    check("hang: the budget-exhausted hook fires on the white screen", exhaustedCalls === 1);
+    check("hang: the white screen does not reload", reloads() === RELOAD_BUDGET);
+    const guard2 = new ReloadGuard();
+    onRendererGone(win, { reason: "crashed", exitCode: 1 }, guard2, () => {}, () => {}, () => exhaustedCalls++);
+    check("hang: the hook stays silent while the budget lasts", exhaustedCalls === 1 && reloads() > RELOAD_BUDGET);
+  }
+
+  // ReloadGuard.exhausted: read-only probe, budget semantics untouched.
+  {
+    const guard = new ReloadGuard();
+    const t0 = 2_000_000;
+    guard.allow(t0);
+    guard.allow(t0 + 1);
+    check("hang: exhausted() is false under the budget", !guard.exhausted(t0 + 2));
+    guard.allow(t0 + 2);
+    check("hang: exhausted() is true at the budget ceiling", guard.exhausted(t0 + 3));
+    check("hang: exhausted() consumes nothing (still true, allow still false)", guard.exhausted(t0 + 3) && !guard.allow(t0 + 3));
+    check("hang: exhausted() follows the rolling window down", !guard.exhausted(t0 + RELOAD_WINDOW_MS + 1));
+  }
 }
 
 console.log(failures === 0 ? "\ndesktop crash tests: all green" : `\nFAILURES: ${failures}`);

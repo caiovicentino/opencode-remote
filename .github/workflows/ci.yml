@@ -8,16 +8,89 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout — GitHub's undeclared default is 360 minutes,
+    # so a hung install or download would hold the runner for six hours
+    # without aborting or reporting. Coherent with the work (docs/security.md).
+    timeout-minutes: 60
+    # P2-271: every job declares its own least-privilege block — the
+    # repository default is never trusted unseen (docs/security.md).
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
 
       - name: Install
         run: npm ci
+
+      # P2-271: the permissions gate runs right after the install step and
+      # before the build — it re-reads both real workflow files, normalizes
+      # every job and fails this job on a reject verdict alone (a warning
+      # never blocks). shell: bash (P2-126 lesson) and its own timeout
+      # (P2-245/P2-255 lessons).
+      - name: Workflow permissions gate
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:workflow-perms
+
+      # P2-269: dependency advisory gate — before this, the only
+      # dependency-security check in the repo was the Electron CVE list, so a
+      # known vulnerability in any other runtime dependency could travel
+      # inside the signed installer with the pipeline green. The job is
+      # reproved on the reject verdict alone (high or critical advisory in a
+      # runtime dependency); a failed collection, a dev-only advisory, a
+      # still-valid exemption or a below-floor severity only warns. Deadlined
+      # exemptions: scripts/audit-exemptions.json (docs/security.md).
+      - name: Dependency advisories
+        shell: bash
+        timeout-minutes: 5
+        run: npm run audit:deps
+
+      # P2-278: action-pinning gate — before this, every third-party action
+      # was referenced by a mutable version tag, so whoever controlled the
+      # tag could run code inside the job that signs and publishes the
+      # user's package. The step re-reads both real workflow files, normalizes
+      # every `uses:` reference and fails this job on a reject verdict alone
+      # (a warning never blocks). shell: bash (P2-126 lesson) and its own
+      # timeout (P2-245/P2-255 lessons). Deadlined exemptions:
+      # scripts/action-exemptions.json (docs/security.md).
+      - name: Action pins gate
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:action-pins
+
+      # P2-322: job-timeout gate — no job of either workflow used to declare
+      # a job-level timeout-minutes, so a hung install, image download or
+      # disk mount held a runner for GitHub's 360-minute default without
+      # aborting or reporting. The step re-reads both real workflow files and
+      # fails this job on any problem (a job without a declared timeout, one
+      # that is not a positive integer, one above the documented ceiling, or
+      # a failed read). shell: bash (P2-126 lesson) and its own timeout
+      # (P2-245/P2-255 lessons).
+      - name: Job timeouts gate
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:job-timeouts
+
+      # P2-283: lockfile-integrity gate — package-lock.json is the only file
+      # that decides which third-party code is installed inside the job that
+      # packages the notarized DMG and the signed installer, yet nothing
+      # verified where each package came from. The step re-reads the real
+      # lockfile, normalizes every entry and fails this job on a reject
+      # verdict alone: an origin outside the documented public registries
+      # (a git dependency, an arbitrary tarball) or a registry origin without
+      # an integrity hash. A failed read, an unusual hash algorithm or a
+      # still-valid exemption only warns. shell: bash (P2-126 lesson) and its
+      # own timeout (P2-245/P2-255 lessons). Deadlined exemptions:
+      # scripts/lock-exemptions.json (docs/security.md).
+      - name: Lock integrity gate
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:lock-integrity
 
       - name: Lint
         run: npx eslint apps packages scripts --quiet
@@ -57,10 +130,17 @@ jobs:
   # below only runs when the diff can actually change the bundle.
   scope:
     runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 10
+    # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
+    permissions:
+      contents: read
     outputs:
       desktop: ${{ steps.scope.outputs.desktop }}
+      relay-image: ${{ steps.scope.outputs.relay-image }}
+      portable-suite: ${{ steps.scope.outputs.portable-suite }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -81,12 +161,17 @@ jobs:
   # bundle with the installer checks skipped (--no-installer).
   desktop-package:
     runs-on: macos-14
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 60
+    # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
+    permissions:
+      contents: read
     needs: scope
     if: needs.scope.outputs.desktop == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -111,3 +196,230 @@ jobs:
 
       - name: Smoke-check the packaged bundle (installer checks skipped)
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+      # P2-242: dist-smoke only INSPECTS the bundle; a regression that only
+      # shows up at runtime — main throwing at boot, an asar missing an asset
+      # the renderer asks for, a blank window — used to surface only on
+      # release day, where the real boot lived alone (release.yml). Boot the
+      # real packaged .app here too, reusing the release boot script and its
+      # hermetic contract unchanged (temp userData, run-own session, no
+      # sidecar, Playwright missing fails closed). Nothing is uploaded,
+      # signed, notarized or published.
+      - name: Smoke-boot the packaged app
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-boot: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $APP"
+          node apps/desktop/scripts/packaged-boot.mjs "$APP"
+
+      # P2-253: the boot smoke above deliberately never spawns the sidecar, so
+      # the daemon bundle built by bundle-daemon.mjs used to reach the release
+      # without ever executing in the PR. Run the same daemon smoke the
+      # release workflow runs (packaged resources/daemon/index.js via the
+      # package's own Electron as the Node runtime), hermetically — temp HOME,
+      # relay off, ephemeral metrics port — against the same resolved bundle
+      # as the boot step. Nothing is uploaded, signed or published. shell:
+      # bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          ARCH_DIR="$(uname -m | sed 's/x86_64/x64/')"
+          APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | grep -F "$ARCH_DIR" | head -1)"
+          [ -n "$APP" ] || APP="$(find apps/desktop/dist -maxdepth 3 -type d -name '*.app' | head -1)"
+          [ -n "$APP" ] || { echo "packaged-daemon-smoke: no .app under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"
+
+  # P2-219: the Windows packaging surface (nsis/win config, signing profile,
+  # win-unpacked layout) was only exercised inside the release workflow, so a
+  # packaging regression surfaced as a red job on publication day. This job
+  # mirrors desktop-package on windows-latest: same scope indicator, dir
+  # target only — never the installer, never signing, never notarization —
+  # then the same deterministic bundle smoke with installer checks skipped.
+  # Nothing is uploaded or published; a broken package fails the PR.
+  desktop-package-win:
+    runs-on: windows-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 60
+    # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
+    permissions:
+      contents: read
+    needs: scope
+    if: needs.scope.outputs.desktop == 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # P2-126 lesson: pwsh (the windows-latest default shell) does not expand
+      # globs — every run step below declares shell: bash explicitly.
+      - name: Install dependencies
+        shell: bash
+        timeout-minutes: 15
+        run: npm ci
+
+      - name: Build
+        shell: bash
+        timeout-minutes: 20
+        run: npm run build
+
+      - name: Package Windows bundle (dir target only)
+        shell: bash
+        timeout-minutes: 30
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run dist --workspace @ocr/desktop -- --win --dir
+
+      - name: Smoke-check the packaged bundle (installer checks skipped)
+        shell: bash
+        timeout-minutes: 10
+        run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+      # P2-242: same parity for Windows — boot the real win-unpacked bundle
+      # in the PR, reusing the release boot script and its hermetic contract
+      # unchanged. shell: bash (P2-126/P2-164 lessons) with its own timeout;
+      # nothing is uploaded, signed or published.
+      - name: Smoke-boot the packaged app
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          echo "packaged-boot: booting $DIR"
+          node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
+      # P2-253: same daemon-sidecar smoke the release win job runs — the
+      # packaged resources/daemon/index.js boots via the package's own
+      # Electron as the Node runtime, hermetically (temp HOME, relay off,
+      # ephemeral metrics port), against the same resolved win-unpacked
+      # bundle as the boot step. Nothing is uploaded or published. shell:
+      # bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Smoke the packaged daemon sidecar
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+          [ -n "$DIR" ] || { echo "packaged-daemon-smoke: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
+          node apps/desktop/scripts/packaged-daemon-smoke.mjs "$DIR"
+
+  # P2-224: the unit battery only ever ran on ubuntu-latest, so the Windows
+  # half of the path logic (relay webroot, installloc, loginitem, desktop-log,
+  # tray logsDirPath, sidecar-log, ci-scope, versions) was exercised solely
+  # against the POSIX separator and a regression surfaced on the machine of a
+  # non-technical user, after the signed installer shipped. This job runs the
+  # typecheck plus the portable, Windows-safe subset of the unit battery
+  # (scripts/portable-suite.ts) on windows-latest for every PR touching the
+  # desktop surface — same scope indicator as the packaging jobs above.
+  # P2-317: the battery also exercises apps/daemon and apps/relay path logic
+  # (agent binary resolution, document-converter install locations, the relay
+  # webroot), so the job now runs when the portable-suite indicator is true
+  # too — a daemon- or relay-only PR can no longer stay green with zero
+  # Windows-specific lines executed on Windows (the P2-299 failure mode).
+  #
+  # PUBLISHING PROHIBITION (deliberate): this job does NOT log in to any
+  # registry, does NOT use any third-party login/push action, does NOT
+  # publish anything, does NOT attach artifacts and does NOT read any
+  # secret — a pure verification job, publication stays with release.yml.
+  verify-win:
+    runs-on: windows-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 40
+    # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
+    permissions:
+      contents: read
+    needs: scope
+    if: needs.scope.outputs.desktop == 'true' || needs.scope.outputs.portable-suite == 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # P2-126/P2-164 lessons: pwsh (the windows-latest default shell) does
+      # not expand globs and can break a run silently — every step below
+      # declares shell: bash explicitly, heavy steps carry their own timeout
+      # so a hung runner cannot hold the CI queue.
+      - name: Install dependencies
+        shell: bash
+        timeout-minutes: 15
+        run: npm ci
+
+      - name: Typecheck
+        shell: bash
+        timeout-minutes: 20
+        run: npm run typecheck
+
+      - name: Portable unit tests (Windows-safe subset)
+        shell: bash
+        timeout-minutes: 20
+        run: npm run test:unit-win
+
+  # P2-222: the relay image surface (deploy/relay/Dockerfile, the embedded
+  # bundle dir the P2-188 stage serves, the boot preflight, the non-root
+  # container user) was only exercised by the relay-image job of release.yml —
+  # a Dockerfile regression arrived as a red job on tag day, with the release
+  # already drafted (the exact cost P2-219 removed for the Windows packaging).
+  # This PR-scoped job mirrors that gate on every PR touching the relay
+  # surface: same build, same ephemeral loopback port, same 30×1s /healthz
+  # wait ceiling and the same scripts/relay-image-smoke.ts battery, so an
+  # image that compiles but does not boot fails the pull request.
+  #
+  # PUBLISHING PROHIBITION (deliberate): this job does NOT log in to any
+  # registry, does NOT use any third-party login/push action, does NOT push
+  # or publish the image, does NOT attach artifacts and does NOT read any
+  # secret — building on a PR must never become an accidental publishing
+  # path. Publication stays exclusively with the release workflow.
+  relay-image:
+    runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 20
+    # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
+    permissions:
+      contents: read
+    needs: scope
+    if: needs.scope.outputs.relay-image == 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build image (ephemeral local tag only — never a registry ref)
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .
+
+      # Same shape as the release relay-image smoke (P2-196): boot on an
+      # ephemeral loopback port, wait at most 30 attempts × 1s for /healthz,
+      # run the probe battery, remove the container no matter how the step
+      # ends. shell: bash (P2-126/P2-164 lessons).
+      - name: Boot the built image and smoke it (same battery as release)
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          PORT=$(( (RANDOM % 20000) + 30000 ))
+          docker run -d --name relay-smoke \
+            -p "127.0.0.1:${PORT}:8787" \
+            relay-smoke:pr
+          trap 'docker rm -f relay-smoke >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$i" = 30 ]; then
+              echo "relay-image-smoke: /healthz never answered after 30 attempts — the image does not boot"
+              docker logs relay-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          CONTAINER_USER="$(docker exec relay-smoke whoami)"
+          npx --yes tsx@4.23.12 scripts/relay-image-smoke.ts "http://127.0.0.1:${PORT}" "$CONTAINER_USER"

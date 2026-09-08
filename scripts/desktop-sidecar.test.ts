@@ -73,7 +73,12 @@ process.on("exit", () => {
 // unauthenticated request and only sends the bearer token to responders that
 // reproduce this signature.
 const TOKEN = "tok-test";
+// P2-321: wedge mode models a daemon wedged ALIVE — it accepts connections
+// but never answers (its event loop is pinned), so healthOnce's fetch aborts
+// after the probe timeout. The fixture child stays alive the whole time.
+let wedgeMode = false;
 const server = createServer((req, res) => {
+  if (wedgeMode) return;
   const ok = req.headers.authorization === `Bearer ${TOKEN}`;
   res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
   res.end(
@@ -94,6 +99,9 @@ delete process.env.OCR_DAEMON_ENTRY;
 // P2-017: shrink the respawn backoff (5s/15s/45s in production) so the
 // give-up path completes in ~1s instead of ~65s.
 process.env.OCR_DAEMON_RESPAWN_DELAYS = "200,200,200";
+// P2-321: 100ms wedge probes so the wedged-daemon episode completes in ~15s
+// (each unanswered probe still costs PROBE_TIMEOUT_MS=1500ms inside healthOnce).
+process.env.OCR_DAEMON_WEDGE_PROBE_MS = "100";
 
 // Capture the sidecar's log lines — the give-up message is part of the spec.
 const logLines: string[] = [];
@@ -113,15 +121,23 @@ const {
   getPairUrl,
   healthOnce,
   isDaemonDown,
+  lastStopExit,
   reconnectDelayMs,
   reconnectState,
   restartDaemon,
   resolveEntry,
   respawnState,
+  setSidecarRelayUrl,
+  sidecarWedgeState,
   startDaemonSidecar,
   stopDaemonSidecar,
   waitForDaemonHealth,
 } = await import("../apps/desktop/src/daemon.ts");
+import {
+  SIDECAR_WEDGE_MAX_RECOVERIES,
+  SIDECAR_WEDGE_PROBES_FOR_RESTART,
+  planSidecarWedge,
+} from "../apps/desktop/src/sidecarwedge.ts";
 
 // --- port wiring: one source of truth ---------------------------------------
 check("module honors OCR_DAEMON_METRICS_PORT", DAEMON_METRICS_PORT === port);
@@ -368,6 +384,86 @@ check(
   reconnectDelayMs(1, [200, 200, 200]) === 200 && reconnectDelayMs(4, [200, 200, 200]) === 400,
 );
 
+// --- P2-321: planSidecarWedge decision table -----------------------------------
+// Every combination of failed probes × child alive/dead × stop in flight ×
+// budget spent, plus missing, negative and non-numeric inputs. Closed verdict
+// set: observe | degraded | restart | give-up.
+const W = (failedProbes: unknown, childAlive: unknown, transitionInFlight: unknown, recoveriesUsed: unknown) => ({
+  failedProbes,
+  childAlive,
+  transitionInFlight,
+  recoveriesUsed,
+});
+const wedgeCases: Array<[string, unknown, string]> = [
+  ["0 failed probes (healthy) → observe", W(0, true, false, 0), "observe"],
+  ["1 failed probe → degraded", W(1, true, false, 0), "degraded"],
+  ["2 failed probes → degraded", W(2, true, false, 0), "degraded"],
+  [
+    `threshold (${SIDECAR_WEDGE_PROBES_FOR_RESTART}) probes with budget left → restart`,
+    W(SIDECAR_WEDGE_PROBES_FOR_RESTART, true, false, 0),
+    "restart",
+  ],
+  [
+    "way past the threshold with budget left → restart",
+    W(50, true, false, 0),
+    "restart",
+  ],
+  [
+    `threshold probes with budget spent (${SIDECAR_WEDGE_MAX_RECOVERIES}) → give-up`,
+    W(SIDECAR_WEDGE_PROBES_FOR_RESTART, true, false, SIDECAR_WEDGE_MAX_RECOVERIES),
+    "give-up",
+  ],
+  ["stop/respawn in flight → observe (never interrupts)", W(99, true, true, 0), "observe"],
+  ["stop in flight beats a spent budget → observe", W(99, true, true, 9), "observe"],
+  ["dead child → observe (the exit path owns it)", W(99, false, false, 0), "observe"],
+  ["dead child with stop in flight → observe", W(99, false, true, 0), "observe"],
+  ["missing input (undefined) → observe", undefined, "observe"],
+  ["null input → observe", null, "observe"],
+  ["array input → observe", [], "observe"],
+  ["missing failedProbes → observe", { childAlive: true, transitionInFlight: false, recoveriesUsed: 0 }, "observe"],
+  ["negative failedProbes → observe", W(-1, true, false, 0), "observe"],
+  ["non-numeric failedProbes → observe", W("3", true, false, 0), "observe"],
+  ["NaN failedProbes → observe", W(Number.NaN, true, false, 0), "observe"],
+  ["fractional failedProbes → observe", W(1.5, true, false, 0), "observe"],
+  ["non-boolean childAlive → observe", W(3, "yes", false, 0), "observe"],
+  ["missing childAlive → observe", { failedProbes: 3, transitionInFlight: false, recoveriesUsed: 0 }, "observe"],
+  ["non-boolean transitionInFlight → observe", W(3, true, 0, 0), "observe"],
+  ["missing transitionInFlight → observe", { failedProbes: 3, childAlive: true, recoveriesUsed: 0 }, "observe"],
+  ["negative recoveriesUsed → observe", W(3, true, false, -1), "observe"],
+  ["non-numeric recoveriesUsed → observe", W(3, true, false, "none"), "observe"],
+  ["missing recoveriesUsed → observe", { failedProbes: 3, childAlive: true, transitionInFlight: false }, "observe"],
+];
+for (const [name, input, kind] of wedgeCases) {
+  check(`wedge table: ${name}`, planSidecarWedge(input).kind === kind);
+}
+check(
+  "wedge ceiling constant is the documented 1",
+  SIDECAR_WEDGE_MAX_RECOVERIES === 1 && SIDECAR_WEDGE_PROBES_FOR_RESTART === 3,
+);
+// Determinism: the same input yields the exact same verdict on every call.
+const wedgeDet = W(SIDECAR_WEDGE_PROBES_FOR_RESTART, true, false, 0);
+check(
+  "wedge verdict is deterministic (same input, two calls, identical result)",
+  JSON.stringify(planSidecarWedge(wedgeDet)) === JSON.stringify(planSidecarWedge(wedgeDet)) &&
+    planSidecarWedge(wedgeDet).kind === "restart",
+);
+// Every verdict carries a short static pt-BR phrase with no path, port,
+// identifier or secret: no separators, no digits, no loopback reference.
+const wedgeMsgs = wedgeCases.map(([, input]) => planSidecarWedge(input).message);
+check(
+  "wedge verdict messages are static, path/port/identifier-free pt-BR",
+  wedgeMsgs.every((m) => typeof m === "string" && m.length > 0 && !m.includes("/") && !/\d/.test(m) && !m.includes("127")),
+);
+// Purity: the REAL sidecarwedge.ts source imports no electron, no node
+// builtins, no timers and no I/O of any kind (unit tests run it in plain Node).
+const wedgeSource = readFileSync(join(repoRoot, "apps", "desktop", "src", "sidecarwedge.ts"), "utf8");
+check("sidecarwedge.ts is pure (no electron import)", !wedgeSource.includes('from "electron"'));
+check("sidecarwedge.ts is pure (no node:fs import)", !wedgeSource.includes("node:fs"));
+check(
+  "sidecarwedge.ts is pure (no node builtins, timers, fetch or require)",
+  !wedgeSource.includes("node:") && !wedgeSource.includes("setTimeout") && !wedgeSource.includes("setInterval") && !wedgeSource.includes("fetch(") && !wedgeSource.includes("require("),
+);
+
 // --- P1-053: adopted-daemon outage → infinite reconnect, no give-up -----------
 // Reuse mode: the desktop adopts the healthy fixture server (reuse path).
 // Killing it must NEVER set gaveUp and NEVER spawn a child — only the active
@@ -405,6 +501,132 @@ check(
   reconnectState().reconnecting === false && reconnectState().attempts === 0,
 );
 delete process.env.OCR_DAEMON_ENTRY;
+
+// --- P2-315: the REAL daemon stops gracefully through the shell (code 0) ------
+// The dev entry (OCR_DAEMON_ENTRY deleted) resolves to the daemon's TypeScript
+// source via tsx, so startDaemonSidecar spawns the real daemon. Its stop must
+// ride the IPC message channel (no signal) into the SIGTERM drain and exit
+// with code 0 — the exact behavior Windows gets, exercised on this machine.
+// A throwaway HOME keeps the real 0600 state file out of the operator's
+// machine; OCR_DAEMON_STATE_FILE points the shell's reader at the same file.
+{
+  const realHome = mkdtempSync(join(tmpdir(), "ocr-reald-"));
+  const realState = join(realHome, ".opencode-remote", "daemon.json");
+  const prevHome = process.env.HOME;
+  const prevStateFile = process.env.OCR_DAEMON_STATE_FILE;
+  process.env.HOME = realHome;
+  process.env.OCR_DAEMON_STATE_FILE = realState;
+  // Dead loopback relay: the daemon's dial fails fast, offline, forever.
+  setSidecarRelayUrl("ws://127.0.0.1:1");
+  // Free the test port so the real daemon can bind it (fixture server is off).
+  await new Promise<void>((r) => {
+    server.closeAllConnections();
+    server.close(() => r());
+  });
+  let realPid = 0;
+  process.on("exit", () => {
+    try {
+      if (realPid) process.kill(realPid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  });
+  check(
+    "real daemon: starts via the dev entry (tsx)",
+    (await startDaemonSidecar(join(repoRoot, "apps", "desktop"), undefined)) === true,
+  );
+  realPid = Number(/pid (\d+)/.exec(logLines.find((l) => l.includes("daemon sidecar spawned")) ?? "")?.[1] ?? 0);
+  // The daemon mints its apiToken on the first probe, so poke the 401
+  // challenge first (same dance as the bundle smoke below) — healthOnce
+  // refuses to fetch while the shell has no token.
+  let challenged = false;
+  const challengeDeadline = Date.now() + 20_000;
+  while (Date.now() < challengeDeadline && !challenged) {
+    try {
+      challenged = (await fetch(`http://127.0.0.1:${port}/api/health`)).status === 401;
+    } catch {
+      /* not up yet */
+    }
+    if (!challenged) await new Promise((r) => setTimeout(r, 100));
+  }
+  check("real daemon: boot challenge answered (401)", challenged);
+  check("real daemon: becomes healthy on the test port", await waitForDaemonHealth({ timeoutMs: 15_000 }));
+  await stopDaemonSidecar();
+  check(
+    "real daemon: stopped via the graceful IPC path with code 0 (no signal)",
+    lastStopExit()?.code === 0 && lastStopExit()?.signal === null,
+  );
+  check("real daemon: pid is gone", realPid === 0 || !pidAlive(realPid));
+  const tSecond = Date.now();
+  await stopDaemonSidecar();
+  check("real daemon: second stop is harmless (idempotent, no grace)", Date.now() - tSecond < 1000);
+  process.env.HOME = prevHome;
+  process.env.OCR_DAEMON_STATE_FILE = prevStateFile ?? fakeState;
+}
+
+// --- P2-321: wedged (alive, unresponsive) child → exactly one recovery --------
+// A daemon whose event loop is pinned never exits: the exit handler never
+// fires and the old supervision never notices. Here the fixture child stays
+// alive forever while the fixture server (the daemon's health endpoint) is
+// switched into wedge mode — connections accepted, never answered. The shell
+// must detect the wedge through its own probes, recover EXACTLY once through
+// the existing respawn path (stop → backoff → fresh child), never act while a
+// stop/respawn is in flight, and give up after the documented ceiling instead
+// of restart-looping.
+{
+  const wedgeLogStart = logLines.length;
+  const sawWedgeLog = (needle: string): boolean =>
+    logLines.slice(wedgeLogStart).some((l) => l.includes(needle));
+  const wedgedEntry = fixture("wedge.cjs", "setInterval(() => {}, 1000);");
+  process.env.OCR_DAEMON_ENTRY = wedgedEntry;
+  // Server is closed at this point (the real-daemon block released the port):
+  // healthOnce answers false fast, so the shell spawns its own child…
+  check("wedge: sidecar spawns its own child", (await startDaemonSidecar(tmp, undefined)) === true);
+  check("wedge: child starts", await until(() => existsSync(wedgedEntry + ".pid")));
+  const wedgePid1 = Number(readFileSync(wedgedEntry + ".pid", "utf8"));
+  // …and the first healthy boot arms the wedge prober (spawned child + 200).
+  await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
+  check("wedge: first boot is healthy (prober armed)", await waitForDaemonHealth({ timeoutMs: 10_000 }));
+  check("wedge: no verdict while healthy", sidecarWedgeState() === null);
+  // The daemon wedges: alive, port bound, never answers again.
+  wedgeMode = true;
+  // 3 unanswered probes (≈1.6s each: PROBE_TIMEOUT inside healthOnce) →
+  // restart verdict → stop (3s grace: the wedged child ignores the IPC
+  // request, SIGKILL ends it) → 200ms backoff → fresh child.
+  const wedgePid2 = await pidChangesTo(wedgedEntry + ".pid", wedgePid1, 30_000);
+  check("wedge: wedged child was recovered exactly once", wedgePid2 !== null && pidAlive(wedgePid2));
+  check("wedge: recovery rode the existing respawn path", sawWedgeLog("daemon sidecar respawn in"));
+  check("wedge: restart verdict reached the log", sawWedgeLog("daemon sidecar wedge:"));
+  // No recovery while a stop or respawn is in flight: the whole episode
+  // scheduled exactly ONE respawn — probes during the 3s stop grace and the
+  // backoff window were answered "observe" by the pure verdict.
+  const wedgeRespawns = logLines
+    .slice(wedgeLogStart)
+    .filter((l) => l.includes("daemon sidecar respawn in")).length;
+  check("wedge: exactly one respawn scheduled (no recovery mid-stop)", wedgeRespawns === 1);
+  // The replacement child is wedged too (the server never un-wedges): the
+  // second detection hits the spent budget → give-up, prober stops, no second
+  // recovery, and the verdict travels to the pairing payload accessor.
+  check(
+    "wedge: give-up verdict after the ceiling",
+    await until(() => sawWedgeLog("reinício automático suspenso"), 30_000),
+  );
+  check("wedge: give-up verdict travels in the pairing payload", sidecarWedgeState()?.state === "give-up");
+  await new Promise((r) => setTimeout(r, 4_000));
+  check(
+    "wedge: no second recovery after the ceiling",
+    Number(readFileSync(wedgedEntry + ".pid", "utf8")) === wedgePid2 && pidAlive(wedgePid2),
+  );
+  wedgeMode = false;
+  await stopDaemonSidecar();
+  check("wedge: replacement child is stopped", wedgePid2 === null || !pidAlive(wedgePid2));
+  check("wedge: verdict cleared after the stop", sidecarWedgeState() === null);
+  await new Promise<void>((r) => {
+    server.closeAllConnections();
+    server.close(() => r());
+  });
+  delete process.env.OCR_DAEMON_ENTRY;
+}
 
 // --- bundled artifact smoke (P2-006) -----------------------------------------
 // The packaged app runs dist-daemon/index.js (shipped as resources/daemon/

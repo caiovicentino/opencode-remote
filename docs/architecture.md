@@ -75,8 +75,9 @@ or zero value (zero is valid only for the proxy hops) or a value above the
 knob's documented ceiling refuses to start the relay instead of silently
 keeping the default. `GET /healthz` is the one
 public HTTP endpoint on the relay port — an unauthenticated liveness probe
-answering `{ok, version, uptimeS, rooms, roomsRejected}` (counters only,
-never room ids) for load balancers in the hosted stage; `/metrics` stays
+answering `{ok, version, uptimeS, rooms, roomsRejected, roomsBudgetTerminated}`
+(counters only, never room ids; the P2-243 room-budget counter is additive)
+for load balancers in the hosted stage; `/metrics` stays
 loopback-only. Optional TLS (`wss://`)
 or termination via Caddy.
 Note the per-IP cap reads (a normalized form of) `req.socket.remoteAddress`
@@ -95,7 +96,11 @@ Runs next to `opencode serve`. Responsibilities:
   for the agent's ffmpeg), whisper transcription, file delivery with an
   allowlist of roots (uploads dir, Desktop, Downloads, Documents, repo cwd).
 - **Routines**: local-time scheduled prompts, result saved as markdown and
-  pushed with deep-link.
+  pushed with deep-link; a fire only happens within a 30-minute window after
+  the scheduled time (a routine created after its time is marked done for
+  today) and fire failures are capped at 3 attempts per local day before the
+  day closes with an error state — interval mode intentionally keeps its own
+  pacing (decision in the pure `apps/daemon/src/routinedue.ts`).
 - **Skills**: saved prompts rendered as 1-tap chips in the composer.
 - **Security**: client allowlist (first QR pairing bootstraps it, 0600
   state file, fresh read per handshake), audit log of pairing events
@@ -109,6 +114,19 @@ multi-machine switcher. Service worker keeps an installable shell and routes
 notification taps to hash deep-links. On the desktop shell (served over
 `file://`) the service worker is not registered and Web Push stays
 unavailable — registration there can only reject.
+
+### apps/desktop
+Electron shell around the same web build. Since P2-276 the native menu bar
+and the tray follow the language chosen inside the app: the renderer pushes
+its saved choice over a one-way IPC channel (`ocr:shell-lang`), the pure
+verdict in `src/shelllang.ts` resolves it (a supported preference always
+wins; without one, the OS locale decides; anything else falls back to en)
+and the shell rebuilds both surfaces from that module's static label tables —
+ids, order and accelerators never move. Quitting the app stops its daemon
+sidecar gracefully on both platforms (P2-315): the request rides the spawn
+IPC channel into the same drain SIGTERM runs, and the fixed signal walk
+(SIGTERM → 3s → SIGKILL) remains only as the fallback when the channel is not
+connected.
 
 ### PWA static origin (deploy/pwa-server.mjs + launchd, P2-075)
 The phone's origin is **not** a dev server: `deploy/install.sh` installs
@@ -142,7 +160,12 @@ a clean reboot leaves the PWA reachable at
 4. Response sealed back with AAD(daemon room, seq); bodies >900KB travel as
    `res-chunk` frames the client reassembles byte-exact
 5. Client state machine (`connecting → paired`) drives the heartbeat: 20s
-   app-level ping/pong, forced reconnect on resume-from-background
+   app-level ping/pong, forced reconnect on resume-from-background. Liveness
+   moves only on sealed frames: the daemon answers a ping with a **sealed
+   pong**, and a clear `reconnect` from the relay room is an unauthenticated
+   hint the client verifies (one ping, 1500 ms grace) before rehandshaking —
+   hints are rate-floored at 10 000 ms so a room member can never forge
+   liveness nor force a rehandshake loop (RT-341)
 
 ## Constraints worth knowing
 

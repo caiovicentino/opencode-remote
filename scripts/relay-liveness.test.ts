@@ -7,11 +7,14 @@
  * silently disabling the sweep.
  * Run: npx tsx scripts/relay-liveness.test.ts
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { get } from "node:http";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import WebSocket from "ws";
 import { decideStale, type LivenessPeer } from "../apps/relay/src/liveness";
+import { JOIN_UNJOINED_CLOSE_CODE } from "../apps/relay/src/joindeadline";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -159,6 +162,71 @@ check("liveness: reaped socket frees the per-IP slot", third !== null);
 const prom = await fetchMetrics(strict.port + 1, "?format=prom");
 check("metrics: relay_stale_terminated exposed in prom format", /relay_stale_terminated \d+/.test(prom));
 
+// --- P2-294: certificate-expiry series on the real /metrics endpoint ---------
+// Plain mode has no certificate: every pre-existing documented line must
+// still be present and unchanged, NO line beyond the documented set may
+// appear, and the cert series must be entirely absent — never an invented
+// healthy state, never zeros (fail-closed). No certificate material may
+// travel in the response.
+const P2_294_EXISTING_LINES = [
+  "relay_connections_total",
+  "relay_connections_active",
+  "relay_frames_routed",
+  "relay_bytes_routed",
+  "relay_rejects",
+  "relay_rate_limited_total",
+  "relay_rooms_rejected",
+  "relay_rooms_rejected_invalid_room_id",
+  "relay_rooms_rejected_socket_room_cap",
+  "relay_stale_terminated",
+  "relay_slow_consumers_total",
+  "relay_capacity_refused_total",
+  "relay_idle_unjoined_closed",
+  // P2-302: the room-budget termination counter joined the documented set
+  "relay_room_budget_terminated",
+  "relay_rooms_active",
+];
+const P2_294_CERT_LINES = ["relay_cert_expiry_state", "relay_cert_expiry_seconds"];
+const P2_294_ALL = [...P2_294_EXISTING_LINES, ...P2_294_CERT_LINES];
+// P2-313: the additive process gauges joined the documented set, appended
+// after every pre-existing series (plain mode included — the process is
+// observed whatever the TLS mode is)
+const P2_313_PROC_LINES = [
+  "relay_resident_bytes",
+  "relay_heap_used_bytes",
+  "relay_heap_total_bytes",
+  "relay_uptime_seconds",
+  "relay_scheduling_delay_ms",
+];
+const P2_313_ALL = [...P2_294_ALL, ...P2_313_PROC_LINES];
+check(
+  "cert-metrics: plain-mode endpoint keeps every existing documented line with its TYPE header and a value",
+  P2_294_EXISTING_LINES.every((name) =>
+    prom.includes(`# TYPE ${name} `) && new RegExp(`(^|\\n)${name} \\S+`).test(prom),
+  ),
+);
+check(
+  "cert-metrics: plain-mode endpoint publishes no line beyond the documented set",
+  prom
+    .split("\n")
+    .filter((l) => l !== "" && !l.startsWith("#"))
+    .every((l) => P2_313_ALL.includes(l.split(" ")[0] ?? "")),
+);
+check(
+  "cert-metrics: plain-mode endpoint publishes no cert series at all (never invented healthy, never zeros)",
+  !prom.includes("relay_cert_expiry_"),
+);
+check(
+  "cert-metrics: no certificate material travels in the metrics response",
+  !prom.includes("BEGIN") &&
+    !prom.includes("CN=") &&
+    !prom.includes("serial") &&
+    !prom.includes("fingerprint") &&
+    !prom.includes("issuer") &&
+    !prom.includes("subject") &&
+    !prom.includes(".pem"),
+);
+
 third?.close();
 live.close();
 strict.proc.kill("SIGTERM");
@@ -171,6 +239,152 @@ const offExit = new Promise<number | null>((r) => off.proc.on("exit", (c) => r(c
 check("liveness: zero RELAY_PING_INTERVAL_S refuses the boot with exit 1 (fail-closed)", (await offExit) === 1);
 check("liveness: refused boot never opens the listener", (await tryOpen(`ws://127.0.0.1:${off.port}`)) === null);
 off.proc.kill("SIGTERM");
+
+// --- 5. P2-230: join-deadline reaper — idle socket closed, joined socket holds --
+// 1s sweep + 1s deadline: a socket that never sends a frame is closed even
+// though its ws pong answers every ping automatically.
+const joinRelay = startRelay({ RELAY_PING_INTERVAL_S: "1", RELAY_JOIN_DEADLINE_MS: "1000" });
+await waitReady(joinRelay.port);
+const joinUrl = `ws://127.0.0.1:${joinRelay.port}`;
+
+// doomed shape: connects and stays silent — the browser-protocol pong keeps
+// it "alive" for the liveness verdict; only the join deadline closes it
+const idle = await open(joinUrl);
+const idleClosed = new Promise<number>((r) => idle.on("close", (c) => r(c)));
+
+// healthy shape: sends a frame and enters a room
+const joined = await open(joinUrl);
+const jdRoom = `lv-join-${Date.now()}`;
+joinRoom(joined, jdRoom, "joined-1");
+
+const idleCode = await Promise.race([idleClosed, sleep(9_000).then(() => -1)]);
+check("join-deadline: socket that never sends a frame is closed with the policy code", idleCode === JOIN_UNJOINED_CLOSE_CODE);
+await sleep(2_500); // several sweep cycles past the deadline
+check("join-deadline: socket that joined a room stays open past the deadline", joined.readyState === WebSocket.OPEN);
+
+const joinMetrics = JSON.parse(await fetchMetrics(joinRelay.port + 1)) as {
+  idle_unjoined_closed?: number;
+  connections_active?: number;
+};
+check("join-deadline: idle_unjoined_closed counter incremented", (joinMetrics.idle_unjoined_closed ?? 0) >= 1);
+check("join-deadline: only the joined peer remains connected", joinMetrics.connections_active === 1);
+
+const promJoin = await fetchMetrics(joinRelay.port + 1, "?format=prom");
+check("join-deadline: relay_idle_unjoined_closed exposed in prom format", /relay_idle_unjoined_closed \d+/.test(promJoin));
+
+joined.close();
+joinRelay.proc.kill("SIGTERM");
+
+// zero deadline is refused at boot like every other invalid knob (fail-closed)
+const zeroJoin = startRelay({ RELAY_JOIN_DEADLINE_MS: "0" });
+const zeroJoinExit = new Promise<number | null>((r) => zeroJoin.proc.on("exit", (c) => r(c)));
+check("join-deadline: zero RELAY_JOIN_DEADLINE_MS refuses the boot with exit 1 (fail-closed)", (await zeroJoinExit) === 1);
+zeroJoin.proc.kill("SIGTERM");
+
+// --- 6. wiring pins against the real index.ts source -----------------------------
+{
+  const relayIndexSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"),
+    "utf8",
+  );
+  // open stamp is marked at the connection event, joined flag inside join()
+  check(
+    "join-deadline: index.ts marks openedAt on the connection event and joinedRoom in join()",
+    relayIndexSrc.includes("socket.openedAt = Date.now();") &&
+      relayIndexSrc.includes("socket.joinedRoom = true;") &&
+      relayIndexSrc.indexOf("function join(") < relayIndexSrc.indexOf("socket.joinedRoom = true;"),
+  );
+  // the verdict is consulted inside the existing liveness sweep, and no new
+  // periodic timer was introduced
+  const sweepAt = relayIndexSrc.indexOf("setInterval(() => {");
+  const verdictAt = relayIndexSrc.indexOf("idleUnjoined(now, wss.clients");
+  const sweepEndAt = relayIndexSrc.indexOf("}, PING_INTERVAL_S * 1000);");
+  check(
+    "join-deadline: idleUnjoined is consulted inside the existing sweep — no new periodic timer",
+    sweepAt > -1 && verdictAt > sweepAt && verdictAt < sweepEndAt &&
+      (relayIndexSrc.match(/setInterval\(/g) ?? []).length === 1,
+  );
+  check(
+    "join-deadline: index.ts resolves the deadline fail-closed and advertises it on `relay listening`",
+    relayIndexSrc.includes("const JOIN_DEADLINE = parseJoinDeadline(process.env);") &&
+      relayIndexSrc.includes('ev("warn", "invalid relay join deadline, refusing to start (fail-closed)"') &&
+      relayIndexSrc.includes("joinDeadlineMs,"),
+  );
+}
+
+// --- 7. P2-294: the cert series really appears on the TLS relay's endpoint ----
+// Throwaway self-signed pair (openssl is present on macOS dev machines and
+// CI runners); no openssl → the beat is skipped. A 30-day validity window is
+// comfortably outside the 14-day warn window, so the documented verdict is
+// "use" → the numeric state gauge publishes 0.
+const cert_oc = spawnSync("openssl", ["version"]);
+if (cert_oc.status === 0) {
+  const tlsDir = mkdtempSync(join(tmpdir(), "relay-certmetrics-"));
+  const cert = join(tlsDir, "cert.pem");
+  const key = join(tlsDir, "key.pem");
+  const gen = spawnSync(
+    "openssl",
+    [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", key, "-out", cert, "-days", "30",
+      "-subj", "/CN=localhost",
+      "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    ],
+    { stdio: "ignore" },
+  );
+  check("cert-metrics: openssl generated the throwaway certificate", gen.status === 0);
+  if (gen.status === 0) {
+    const tlsRelay = startRelay({ RELAY_TLS_CERT: cert, RELAY_TLS_KEY: key });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const w = new WebSocket(`wss://127.0.0.1:${tlsRelay.port}`, { rejectUnauthorized: false });
+          w.on("open", () => {
+            w.close();
+            resolve();
+          });
+          w.on("error", reject);
+        });
+        break;
+      } catch {
+        if (attempt > 30) throw new Error("tls relay never came up");
+        await sleep(300);
+      }
+    }
+    const tlsProm = await fetchMetrics(tlsRelay.port + 1, "?format=prom");
+    check(
+      "cert-metrics: TLS relay publishes the documented state gauge with the 'use' value",
+      /(^|\n)relay_cert_expiry_state 0(\n|$)/.test(tlsProm) && /(^|\n)# TYPE relay_cert_expiry_state gauge/.test(tlsProm),
+    );
+    const seconds = tlsProm.match(/(^|\n)relay_cert_expiry_seconds (\d+)(\n|$)/);
+    check(
+      "cert-metrics: TLS relay publishes positive whole seconds to expiry",
+      seconds !== null && Number(seconds[2]) > 0,
+    );
+    check(
+      "cert-metrics: TLS endpoint publishes no line beyond the documented set",
+      tlsProm
+        .split("\n")
+        .filter((l) => l !== "" && !l.startsWith("#"))
+        .every((l) => P2_313_ALL.includes(l.split(" ")[0] ?? "")),
+    );
+    check(
+      "cert-metrics: TLS endpoint carries no certificate material either",
+      !tlsProm.includes("BEGIN") &&
+        !tlsProm.includes("CN=") &&
+        !tlsProm.includes("serial") &&
+        !tlsProm.includes("fingerprint") &&
+        !tlsProm.includes("issuer") &&
+        !tlsProm.includes("subject") &&
+        !tlsProm.includes(".pem") &&
+        !tlsProm.includes("localhost"),
+    );
+    tlsRelay.proc.kill("SIGTERM");
+  }
+  rmSync(tlsDir, { recursive: true, force: true });
+} else {
+  console.log("SKIP cert-metrics TLS beat: openssl not available");
+}
 
 if (failures) process.exit(1);
 console.log("relay-liveness: ALL OK");

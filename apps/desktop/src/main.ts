@@ -1,7 +1,8 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, screen, session, Tray, shell } from "electron";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, systemPreferences, Tray, shell } from "electron";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join, sep } from "node:path";
 import QRCode from "qrcode";
 import {
   activeDaemonPort,
@@ -9,11 +10,15 @@ import {
   fetchDaemonHealth,
   getPairUrl,
   isDaemonDown,
+  nextRespawnInMs,
   readApiToken,
   readDaemonState,
   reconnectState,
   restartDaemon,
+  respawnState,
+  setSidecarRelayProxy,
   sidecarExitInfo,
+  sidecarWedgeState,
   setSidecarRelayUrl,
   startDaemonSidecar,
   stateFilePath,
@@ -24,6 +29,71 @@ import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredR
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
+import { hasAppMarker, probeVerdict, rawDateHeader, type ReachProbeOutcome, type ReachVerdict } from "./webreach";
+import { clockSkewMessage, skewVerdict, type ClockSkewVerdict } from "./clockskew";
+import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
+import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
+import { loginItemMessage, loginItemPlan, type LoginItemVerdict } from "./loginitem";
+import { readStartupDecided, startupSettingFile, writeStartupDecided } from "./startupstore";
+import {
+  QUIT_BUTTON_INDEX,
+  QUIT_BUTTON_NEVER,
+  QUIT_BUTTON_QUIT,
+  QUIT_BUTTON_STAY,
+  QUIT_DIALOG_DETAIL,
+  QUIT_DIALOG_MESSAGE,
+  QUIT_DIALOG_TITLE,
+  quitVerdict,
+  type QuitVerdict,
+} from "./quithint";
+import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "./quitstore";
+import { uninstallCleanupPlan, type UninstallCleanupPlan } from "./uninstallplan";
+import {
+  dataWipeVerdict,
+  wipePlannedChildren,
+  WIPE_BUTTON_CANCEL,
+  WIPE_BUTTON_INDEX,
+  WIPE_BUTTON_NEXT,
+  WIPE_BUTTON_WIPE,
+  WIPE_DIALOG_TITLE,
+  WIPE_REASON_UNCONFIRMED,
+  WIPE_STEP1_DETAIL,
+  WIPE_STEP1_MESSAGE,
+  WIPE_STEP2_DETAIL,
+  WIPE_STEP2_MESSAGE,
+  type WipeFs,
+} from "./datawipe";
+import {
+  accelerationPlan,
+  gpuVerdict,
+  NOTIFY_GPU_DISABLED_BODY,
+} from "./gpuplan";
+import { gpuStateFile, readGpuState, writeGpuState } from "./gpustore";
+import {
+  bootHealthVerdict,
+  BOOT_HEALTH_BUTTON_CONTINUE,
+  BOOT_HEALTH_BUTTON_DIAGNOSTIC,
+  BOOT_HEALTH_BUTTON_INDEX,
+  BOOT_HEALTH_DIALOG_DETAIL,
+  BOOT_HEALTH_DIALOG_MESSAGE,
+  BOOT_HEALTH_DIALOG_TITLE,
+  BOOT_HEALTH_OPENING_FLOOR,
+} from "./boothealth";
+import {
+  bootHealthRecordFile,
+  markOpeningInProgress,
+  nodeBootHealthFs,
+  promoteHealthyOpening,
+  readBootHealthRecord,
+  readOwnerRelease,
+  writeOwnerRelease,
+} from "./boothealthstore";
+import { updateGuard } from "./updateguard";
+import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
+import { parseProxyAddress, proxyPlan, type ProxyPlanVerdict } from "./proxyplan";
+import { proxyApplyDecision, type ProxyApplySnapshot } from "./proxyapply";
+import { proxySettingFile, readProxyChoice, writeProxyChoice } from "./proxystore";
+import { HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
 import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
@@ -31,16 +101,51 @@ import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
+import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
-import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "./tray";
+import { micAccessVerdict } from "./micaccess";
+import { camAccessVerdict } from "./camaccess";
+import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "./tray";
+import { trayStatus } from "./traystatus";
+import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, type ShellLabels } from "./shelllang";
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
-import { checkForUpdatesOnBoot, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus } from "./update";
+import { checkForUpdatesOnBoot, installBlocksUpdate, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
+import { UPDATE_DOWNLOADED_TRAY_LABEL, UPDATE_REMIND_LIMITS, updateReminderPlan, type UpdateOfferRecord } from "./updateremind";
+import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./winupdate";
 import { menuSpec, type MenuItemSpec } from "./menu";
+import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
 import { nextCheckDelayMs } from "./updateschedule";
+import { UPDATE_PROGRESS_LIMITS, updateProgressView, type UpdateProgressView } from "./updateprogress";
+import { UPDATE_SPACE_LIMITS, updateSpaceVerdict } from "./updatespace";
 import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
-import { installFatalErrorHandlers, onRendererGone, ReloadGuard } from "./crash";
+import { DEFAULT_ZOOM_LEVEL, zoomStartupPlan, zoomVerdict, type ZoomAction } from "./zoomlevel";
+import {
+  installFatalErrorHandlers,
+  newHangEpisodeState,
+  onHangWindowClosed,
+  onRendererGone,
+  onReloadBudgetExhausted,
+  onResponsive,
+  onUnresponsive,
+  ReloadGuard,
+  type HangContext,
+  type HangEpisodeState,
+} from "./crash";
+import {
+  HANG_BUTTON_INDEX,
+  HANG_BUTTON_RELOAD,
+  HANG_BUTTON_WAIT,
+  HANG_DIALOG_MESSAGE,
+  HANG_DIALOG_TITLE,
+  HANG_NOTIFY_TITLE,
+} from "./hangwatch";
+import {
+  loadFailMessage,
+  loadFailVerdict,
+  sanitizeLoadFailure,
+} from "./loadfail";
 import { clientLogsDir, writeCrashReport } from "./crash-log";
 import {
   instanceRecordPath,
@@ -65,6 +170,15 @@ const TRAY_ICON_PNG =
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let daemonStopped = false;
+// P2-238: the remembered View-menu zoom level. `zoomLevel` is the level the
+// shell wants (applied again on every finished load), `zoomPersistable` is
+// false only for a harness session (OCR_DESKTOP_SESSION — the level stays the
+// default and nothing zoom-related is written to disk, or every evidence
+// screenshot would inherit another run's framing). No IPC, no timer: the
+// level moves only through the View menu and persists through the same
+// window-state file the bounds already use.
+let zoomLevel = DEFAULT_ZOOM_LEVEL;
+let zoomPersistable = false;
 // P2-021: set by every real quit path (tray Quit, before-quit, will-quit) so
 // the window's close handler can tell "user closed the window" apart from
 // "app is shutting down" — close-to-tray on every platform.
@@ -76,6 +190,17 @@ let lastUpdateStatus: UpdateStatus | null = null;
 // the dock badge is (or would be) showing. Exposed via app:unreadBadge for
 // the desktop harness; never derived from the OS itself.
 let lastUnreadBadge = 0;
+// P2-276: the native shell's language (menu bar + tray). Resolved once at
+// boot from the OS locale (rule: no preference yet → the system decides) and
+// re-resolved on every ocr:shell-lang push the renderer sends after that —
+// the saved in-app choice always wins there. The tables for both surfaces
+// come from shelllang.ts; nothing below carries a literal phrase anymore.
+let shellLangState: ShellLangDecision = { lang: "en", origin: "default" };
+
+/** The vocabulary both OS surfaces share, for the current shell language. */
+function currentShellLabels(): ShellLabels {
+  return shellLabels(shellLangState.lang);
+}
 // P2-155: periodic update recheck. The app can stay alive for weeks with the
 // window closed to the tray (P2-152), so the boot-only check would pin the
 // installed version forever. `updateRecheckTimer` holds the single pending
@@ -84,6 +209,67 @@ let lastUnreadBadge = 0;
 // consecutive dead-feed checks and drives the 15 min → 6 h backoff.
 let updateRecheckTimer: NodeJS.Timeout | null = null;
 let updateFeedFailures = 0;
+// P2-257: deferred-offer bookkeeping, process memory only (no new state file).
+// `lastDownloadedVersion` is the release the tray is talking about;
+// `reminderOffer` records the offers already shown for one version (version,
+// instant, count) — askInstall is the single recording point, so the original
+// P1-050 dialog and the reminder reopen bookkeep identically.
+let lastDownloadedVersion: string | null = null;
+let reminderOffer: UpdateOfferRecord = { version: null, at: 0, count: 0 };
+let reminderDialogOpen = false;
+
+// P2-211: install-location verdict, computed EXACTLY ONCE at boot (in
+// onReady, before the first update check) and reused by every surface: the
+// pairing-state payload, the update consent gate and the diagnostics bundle.
+// No periodic re-probe on purpose — the bundle location cannot change while
+// the process runs.
+let bootInstallLocation: InstallLocationVerdict | null = null;
+
+// P2-218: login-item verdict, computed EXACTLY ONCE at boot (in onReady,
+// after the install-location verdict and before the first update check) and
+// reused by every surface: the pairing-state payload and the diagnostics
+// bundle. No periodic re-probe on purpose — the owner's decision is recorded
+// the moment it is made and never re-derived while the process runs.
+let bootStartup: LoginItemVerdict | null = null;
+
+// P2-221: latest quit-confirmation verdict of the explicit quit path, for the
+// diagnostics bundle. null until the user asks to quit this session — the
+// verdict itself is consulted exactly once, inside explicitQuit().
+let lastQuitVerdict: QuitVerdict | null = null;
+// P2-221: while the native confirmation box is open, further explicit quits
+// are ignored — a double-click on the tray item must never stack two modals.
+let quitDialogShown = false;
+
+// P2-229: the global-hotkey plan, resolved EXACTLY ONCE at boot (in onReady,
+// before the first menu/tray build so both surfaces show its outcome) and
+// reused by every surface: the registration, the Help menu item and the tray
+// item. null only before ready — nothing consults it that early.
+let hotkey: HotkeyPlan | null = null;
+
+// P2-285: the machine's proxy verdict, computed EXACTLY ONCE per boot (in
+// onReady, before the first window load) and reused by the diagnostics bundle.
+// null only before ready. The verdict text never carries a credential, an
+// absolute path or the raw environment (the proxyplan.ts privacy contract).
+let bootProxyPlan: ProxyPlanVerdict | null = null;
+// P2-289: where that mode came from — the owner's stored choice or the
+// machine environment. Static labels only, never an address or credential.
+const PROXY_ORIGIN_OWNER = "escolha do dono";
+const PROXY_ORIGIN_ENVIRONMENT = "ambiente";
+let bootProxyOrigin: string = PROXY_ORIGIN_ENVIRONMENT;
+// P2-307: the verdict IN EFFECT right now — the boot verdict to begin with,
+// then the last applied save. Remembered so saving the same choice twice is
+// a keep: restarting the sidecar without need drops the phone's live chat.
+let liveProxyVerdict: ProxyPlanVerdict | null = null;
+let liveProxyRelay: string | null = null;
+
+// P2-244: GPU-crash policy state. `gpuDisabledThisBoot` mirrors the boot
+// plan's action so the tray hint can fire once the notification surface is
+// actually available (inside onReady); `gpuHintShown` caps the tip at ONE per
+// start, no matter how many GPU crashes or which path asked for it. No new
+// timer, no new IPC — only the boot block and the single crash listener
+// below ever touch them.
+let gpuDisabledThisBoot = false;
+let gpuHintShown = false;
 
 // P3-012: file logging installed before anything can log — console.* in the
 // packaged app is invisible to the stage-5 user (no terminal), so every
@@ -174,6 +360,33 @@ function buildDiagnostics(): string {
     sidecarLogTail,
     crashFiles,
     updateStatus: lastUpdateStatus,
+    // P2-211: the state only, never the bundle path (privacy contract below).
+    installLocation: bootInstallLocation?.state ?? null,
+    // P2-214: the clock-skew state and the rounded offset in seconds only —
+    // the machine's time itself never enters the bundle (privacy contract).
+    clockSkew: lastClockSkew
+      ? {
+          state: lastClockSkew.state,
+          skewSeconds: lastClockSkew.skewMs === null ? null : Math.round(lastClockSkew.skewMs / 1000),
+        }
+      : null,
+    // P2-218: the login-item action and its short reason only — never a path,
+    // never the decision-file location (privacy contract in this header).
+    startup: bootStartup ? { state: bootStartup.action, reason: bootStartup.reason } : null,
+    // P2-221: the quit-confirmation action and its short reason only — never
+    // a path, never the decision-file location (privacy contract in this
+    // header). null until the user asks to quit this session.
+    quitConfirm: lastQuitVerdict ? { state: lastQuitVerdict.action, reason: lastQuitVerdict.reason } : null,
+    // P2-223: the last frozen-window episode — duration and outcome only,
+    // one line in the bundle (privacy contract in this header).
+    lastHang: hangEpisode.last,
+    // P2-285/P2-289: the boot proxy verdict — mode, static reason and the
+    // mode origin only, never the address or the raw environment (privacy
+    // contract in this header).
+    proxy: bootProxyPlan ? { mode: bootProxyPlan.mode, reason: bootProxyPlan.reason, origin: bootProxyOrigin } : null,
+    // P2-291: the update guard's last verdict and short reason only — never a
+    // path, an address or a secret (privacy contract in diagnostics.ts).
+    updateGuard: updateGuardVerdict ? { state: updateGuardVerdict, reason: updateGuardReason ?? "" } : null,
   });
 }
 
@@ -185,6 +398,55 @@ installFatalErrorHandlers(app, {
 });
 // P3-011: shared crash-recovery budget — max 3 renderer reloads per 60s.
 const rendererReloadGuard = new ReloadGuard();
+
+// P2-223: the unresponsive-window watch. One episode state per window
+// (recreated in createWindow) plus one shared context. The verdict's first
+// rule (harness session) keeps every headless gate run free of modal boxes,
+// and the episode's single timer lives in crash.ts — canceled on responsive
+// and on window close.
+let hangEpisode: HangEpisodeState = newHangEpisodeState();
+const hangContext: HangContext = {
+  harnessSession: HERMETIC_E2E,
+  budget: rendererReloadGuard,
+  sinks: {
+    log: (line) => log(line),
+    notify: (body) => showHangTip(body),
+    showDialog: () => void showHangDialog(),
+  },
+  timers: {
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+  },
+  now: () => Date.now(),
+};
+
+// --- boot health (P2-270) ------------------------------------------------------
+// The shell's memory of which version last truly opened a useful window. The
+// verdict is computed once at boot, BEFORE the app is ready (a crash during
+// startup is exactly an opening that never reached a window); the record is
+// read and written through boothealthstore.ts with the fs injected, and the
+// harness-session rule inside bootHealthVerdict keeps every test session on
+// "normal" with nothing written, nothing opened and no screenshot framing
+// changed. The "recuperar" verdict is non-destructive by contract: it only
+// suspends the AUTOMATIC update check for this execution, swaps the tray
+// label and asks the owner one question.
+let bootHealthFile = "";
+let bootRecoveryActive = false;
+let bootHealthAlarmLabel: string | null = null;
+let bootHealthPromoted = false;
+// P2-291: the update guard's inputs and last verdict. `bootHealthVerdictName`
+// mirrors the P2-270 verdict (the guard's first-class input); the owner
+// release mark is read once at boot from the same boothealth.json record and
+// flipped in memory the moment the owner releases;
+// `lastOfferedUpdateVersion` is the version the feed last offered (recorded
+// by the onStatus sink) — the "versão oferecida pelo feed" input of the pure
+// guard. `updateGuardVerdict`/`updateGuardReason` feed the tray item and the
+// diagnostics line. No timer and no I/O here — the guard itself is pure.
+let bootHealthVerdictName = "normal";
+let ownerUpdateRelease = false;
+let lastOfferedUpdateVersion: string | null = null;
+let updateGuardVerdict: string | null = null;
+let updateGuardReason: string | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -231,6 +493,60 @@ if (!gotLock) {
     // the single-instance winner receives it here.
     handleDeepLink(deepLinkFromArgv(argv));
   });
+  // P2-244: the GPU-crash plan is consulted BEFORE the app is ready — the
+  // only point where Electron still honors disableHardwareAcceleration. The
+  // harness-session rule inside accelerationPlan keeps every test session on
+  // "enable" with nothing written to disk. The crash watch below registers
+  // the shell's ONE child-process-gone listener; the verdict is persisted
+  // through the same tolerant store (a failed write is log-only).
+  const gpuFile = gpuStateFile(app.getPath("userData"));
+  const gpuPlan = accelerationPlan({
+    harnessSession: HERMETIC_E2E,
+    state: readGpuState(gpuFile, Date.now()),
+    nowMs: Date.now(),
+  });
+  gpuDisabledThisBoot = gpuPlan.action === "disable";
+  if (gpuDisabledThisBoot) app.disableHardwareAcceleration();
+  log(`[desktop] gpu acceleration: ${gpuPlan.action} (${gpuPlan.reason})`);
+  registerGpuCrashWatch(gpuFile, gpuPlan.persist);
+  // P2-270: the boot-health decision rides the same pre-ready point — the
+  // record read from disk describes the PAST openings, the mark below adds
+  // the one in progress (which has not reached a useful window yet), and the
+  // promotion to "healthy" only happens when the main window truly finishes
+  // loading (the did-finish-load path). Every store failure is a log line.
+  bootHealthFile = bootHealthRecordFile(app.getPath("userData"));
+  const storedBootRecord = readBootHealthRecord(bootHealthFile, nodeBootHealthFs);
+  const bootHealth = bootHealthVerdict({
+    harnessSession: HERMETIC_E2E,
+    runningVersion: app.getVersion(),
+    record: storedBootRecord,
+    nowMs: Date.now(),
+    floor: BOOT_HEALTH_OPENING_FLOOR,
+  });
+  if (bootHealth.verdict === "recuperar") {
+    bootRecoveryActive = true;
+    bootHealthAlarmLabel = bootHealth.label;
+  }
+  // P2-291: the guard's static inputs, resolved exactly once at boot — the
+  // verdict name (consumed before every check) and the owner's release mark,
+  // read tolerantly from the same record (absent/corrupted/non-boolean → no
+  // release). The owner tray item flips the flag in memory the moment it
+  // writes it.
+  bootHealthVerdictName = bootHealth.verdict;
+  ownerUpdateRelease = readOwnerRelease(storedBootRecord);
+  log(`[desktop] boot health: ${bootHealth.verdict} (${bootHealth.phrase})`);
+  const bootHealthMark = markOpeningInProgress({
+    file: bootHealthFile,
+    fs: nodeBootHealthFs,
+    harnessSession: HERMETIC_E2E,
+    runningVersion: app.getVersion(),
+    base: bootHealth.record,
+    effectiveCount: bootHealth.count,
+    nowMs: Date.now(),
+  });
+  if (!bootHealthMark.written && bootHealthMark.reason !== "harness") {
+    log(`[desktop] boot health mark not written (${bootHealthMark.reason})`);
+  }
   app
     .whenReady()
     .then(() => onReady())
@@ -289,6 +605,207 @@ function startKeeperLeash(keeperPid: number): void {
   }, WATCHDOG_MS);
 }
 
+// --- GPU crash watch (P2-244) ---------------------------------------------------
+// The shell's ONE "child-process-gone" listener, registered once at boot right
+// after the acceleration plan. Each event produces exactly one static log line
+// (the pure verdict's reason — no paths, no URL schemes, no secrets) and, when
+// the verdict reaches the ceiling, ONE tray tip per start. Renderer crashes
+// keep flowing through their own render-process-gone path (P3-011) — this
+// watch never accumulates them.
+
+/** Registers the single child-process-gone listener. `persistable` is the
+ * boot plan's flag — a harness session never writes the state to disk. */
+function registerGpuCrashWatch(file: string, persistable: boolean): void {
+  app.on("child-process-gone", (_event, details) => {
+    const nowMs = Date.now();
+    const verdict = gpuVerdict(readGpuState(file, nowMs), nowMs, details?.type ?? "");
+    log(`[desktop] ${verdict.reason}`);
+    if (verdict.plan === "ignore") return;
+    if (persistable) writeGpuState(file, verdict.state);
+    if (verdict.plan === "disable") showGpuDisabledHint();
+  });
+}
+
+/** The at-most-one-per-start tray tip for a disabled acceleration. Best-effort
+ * and silent in hermetic runs (defense in depth — a harness plan is always
+ * "enable" anyway); no native dialog, no new IPC, no timer. */
+function showGpuDisabledHint(): void {
+  if (gpuHintShown) return;
+  try {
+    if (HERMETIC_E2E) return;
+    if (!Notification.isSupported()) return;
+    new Notification({ title: NOTIFY_TITLE, body: NOTIFY_GPU_DISABLED_BODY, silent: true }).show();
+    // Stamped only after the tip went out — a failed construction/show keeps
+    // the one-per-start chance available for the next crash event.
+    gpuHintShown = true;
+  } catch (err) {
+    logError("[desktop] gpu hint failed:", err);
+  }
+}
+
+// --- proxy verdict (P2-285) -----------------------------------------------------
+// The shell reads the machine's proxy configuration ONCE per boot and applies
+// the pure verdict (proxyplan.ts) to the default session before the first
+// window load — a corporate proxy must already cover the very first request,
+// update check included. The log line carries mode + origin + static reason
+// only, never the address, a credential or the raw environment (the P2-182
+// redaction bar). An apply failure is log-only and never takes the shell
+// down. Since P2-289 the verdict also consumes the owner's stored choice
+// (proxystore.ts): the choice wins over the machine environment, and the log
+// says which of the two produced the mode.
+
+/** The stored owner preference in the planner's vocabulary ("sistema",
+ * "direto" or one address) — null when there is no stored choice or when a
+ * stored fixed address no longer validates (a hand-edited file): the planner
+ * would discard it, so the origin stays honest about what decided the mode. */
+function storedProxyPreference(): string | null {
+  try {
+    const choice = readProxyChoice(proxySettingFile(app.getPath("userData")));
+    if (!choice) return null;
+    if (choice.mode === "system") return "sistema";
+    if (choice.mode === "direct") return "direto";
+    return choice.address && parseProxyAddress(choice.address) ? choice.address : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Normalizes this machine's proxy environment for the pure planner: the
+ * documented variable names win over their lowercase twins. */
+function proxyEnvSet(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "PAC_URL"]) {
+    env[name] = process.env[name] ?? process.env[name.toLowerCase()];
+  }
+  return env;
+}
+
+/** The machine's local hostname(s) for the planner — empty when unavailable;
+ * the planner's constants already cover loopback in that case. */
+function proxyLocalNames(): string[] {
+  try {
+    const localName = hostname().trim().toLowerCase();
+    return localName === "" ? [] : [localName];
+  } catch {
+    return [];
+  }
+}
+
+/** The one session application site (P2-307): the boot verdict and an applied
+ * save both land here, so the session rule is never assembled twice. */
+function applySessionProxy(verdict: ProxyPlanVerdict): void {
+  if (verdict.mode === "desconhecido") return;
+  try {
+    const mode: "system" | "direct" | undefined =
+      verdict.mode === "sistema" ? "system" : verdict.mode === "direto" ? "direct" : undefined;
+    const config = mode ? { mode } : { proxyRules: verdict.rule, proxyBypassRules: verdict.exceptions.join(",") };
+    session.defaultSession
+      .setProxy(config)
+      .catch(() => logError("[desktop] proxy: falha ao aplicar a regra — a sessão segue no padrão"));
+  } catch {
+    logError("[desktop] proxy: falha ao aplicar a regra — a sessão segue no padrão");
+  }
+}
+
+/** The address that rides to every sidecar spawn for a verdict — the owner's
+ * non-socks fixed choice, or null when no fixed choice applies (P2-303
+ * semantics, unchanged: a socks choice applies to the shell session only —
+ * the relay dial speaks HTTP CONNECT, so a socks address is NOT injected:
+ * the daemon fails closed to direct and /api/health's relayProxyReason says
+ * so with its static phrase). */
+function sidecarRelayProxyFor(verdict: ProxyPlanVerdict, preference: string | null, origin: string): string | null {
+  const fixedPref = preference !== null ? parseProxyAddress(preference) : null;
+  return verdict.mode === "fixo" && origin === PROXY_ORIGIN_OWNER && fixedPref !== null && !fixedPref.scheme.startsWith("socks")
+    ? preference
+    : null;
+}
+
+/** The one application of the boot proxy verdict. Runs exactly once, before
+ * the first window load. */
+function applyProxyVerdict(): void {
+  const preference = storedProxyPreference();
+  const verdict = proxyPlan({
+    env: proxyEnvSet(),
+    preference,
+    localNames: proxyLocalNames(),
+  });
+  bootProxyPlan = verdict;
+  bootProxyOrigin = preference ? PROXY_ORIGIN_OWNER : PROXY_ORIGIN_ENVIRONMENT;
+  liveProxyVerdict = verdict;
+  log(`[desktop] proxy: ${verdict.mode} — origem ${bootProxyOrigin} (${verdict.reason})`);
+  // P2-303: the owner's fixed choice must reach the daemon sidecar's relay
+  // dial — the child reads the machine environment by itself, but the stored
+  // choice (proxy.json) is invisible to it, so it rides OCR_RELAY_PROXY. A
+  // fixed mode decided by the machine environment needs no injection: the
+  // child inherits that environment verbatim.
+  liveProxyRelay = sidecarRelayProxyFor(verdict, preference, bootProxyOrigin);
+  setSidecarRelayProxy(liveProxyRelay);
+  applySessionProxy(verdict);
+}
+
+/** The current proxy-setting state for the Settings surface: the stored
+ * choice (mode + address, null when none), where the ACTIVE boot mode came
+ * from and the boot verdict's static reason. No path, no port text, no
+ * credential — the address is the owner's own stored value riding back to
+ * the owner's UI (the relay-setting precedent). */
+function currentProxySetting(): {
+  mode: "system" | "direct" | "fixed" | null;
+  address: string | null;
+  origin: "owner" | "environment";
+  reason: string;
+} {
+  let stored: ReturnType<typeof readProxyChoice> = null;
+  try {
+    stored = readProxyChoice(proxySettingFile(app.getPath("userData")));
+  } catch {
+    stored = null;
+  }
+  const usedOwnerChoice = storedProxyPreference() !== null;
+  return {
+    mode: stored?.mode ?? null,
+    address: stored?.address ?? null,
+    origin: usedOwnerChoice ? "owner" : "environment",
+    reason: bootProxyPlan?.reason ?? "",
+  };
+}
+
+// --- boot-health recovery dialog (P2-270) ---------------------------------------
+// One native question for the "recuperar" verdict, offering the outputs that
+// already exist: the P2-163 diagnostic bundle (copied to the clipboard by the
+// same handler as the Help-menu "Copiar diagnóstico" item) or "continue
+// anyway" — valid for this execution only, never persisted. Non-destructive
+// by contract: no rollback, no uninstall, no data deletion, no install. The
+// harness-session rule runs BEFORE any dialog opening (the verdict already
+// returned "normal" for it — this guard is defense in depth, same shape as
+// showGpuDisabledHint above).
+
+async function showBootHealthRecoveryDialog(): Promise<void> {
+  if (!bootRecoveryActive) return;
+  if (HERMETIC_E2E) return;
+  const options: Electron.MessageBoxOptions = {
+    type: "warning",
+    title: BOOT_HEALTH_DIALOG_TITLE,
+    message: BOOT_HEALTH_DIALOG_MESSAGE,
+    detail: BOOT_HEALTH_DIALOG_DETAIL,
+    buttons: [BOOT_HEALTH_BUTTON_DIAGNOSTIC, BOOT_HEALTH_BUTTON_CONTINUE],
+    defaultId: BOOT_HEALTH_BUTTON_INDEX.diagnostic,
+    cancelId: BOOT_HEALTH_BUTTON_INDEX.continue,
+    noLink: true,
+  };
+  try {
+    const { response } =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+    if (response === BOOT_HEALTH_BUTTON_INDEX.diagnostic) {
+      clipboard.writeText(buildDiagnostics());
+      log("[desktop] boot health: diagnostic bundle copied to the clipboard");
+    }
+  } catch (err) {
+    logError("[desktop] boot health dialog failed:", err);
+  }
+}
+
 // --- auto-update flow (P1-050) ------------------------------------------------
 // One entry point shared by the boot check and the tray's "Check for updates"
 // item. The heavy lifting (feed fetch, decision, download wiring, consent
@@ -300,6 +817,10 @@ function startKeeperLeash(keeperPid: number): void {
  * release is the updater's own quitAndInstall (Squirrel.Mac swaps the bundle). */
 const updateDialogSinks: UpdateDialogSinks = {
   askInstall: async (version) => {
+    // P2-257: the offer's instant and count are recorded the moment the
+    // consent dialog is actually shown — the single recording point shared by
+    // the original flow and the reminder reopen (process memory only).
+    recordUpdateOffer(version);
     const options: Electron.MessageBoxOptions = {
       type: "info",
       title: "Update ready",
@@ -319,8 +840,54 @@ const updateDialogSinks: UpdateDialogSinks = {
 };
 
 function runUpdateCheck(source: string): void {
+  // P2-270: boot-health recovery suspends the AUTOMATIC checks (boot and the
+  // scheduled recheck) for this execution — the owner's explicit "Check for
+  // updates" stays available, as does the whole P1-050 consent flow: nothing
+  // here touches quitAndInstall, the Windows installer path or any dialog.
+  if (bootRecoveryActive && source !== "tray") {
+    log(`[desktop] update check (${source}) skipped: boot-health recovery active for this execution`);
+    return;
+  }
+  // P2-291: the guard is consulted BEFORE every check and every automatic
+  // download (the download-time consultation itself lives in update.ts, fed
+  // by the option below). Its recusar-oferta verdict skips ONLY the download
+  // step — never this check and never the periodic recheck, so the arrival of
+  // a NEW version keeps being perceived and followed (the escape route is the
+  // guard's own rule 5). One log line with the verdict and the reason — no
+  // path, no address, no secret.
+  const guard = updateGuard({
+    harnessSession: HERMETIC_E2E,
+    bootVerdict: bootHealthVerdictName,
+    runningVersion: app.getVersion(),
+    offeredVersion: lastOfferedUpdateVersion,
+    updateState: lastUpdateStatus,
+    ownerRelease: ownerUpdateRelease,
+  });
+  updateGuardVerdict = guard.decision;
+  updateGuardReason = guard.reason;
+  log(`[desktop] update guard: ${guard.decision} (${guard.reason})`);
+  // P2-264: the disk-space gate rides the SAME tick updateschedule.ts feeds —
+  // only the scheduled recheck consults it (never boot, never the user's
+  // explicit "Check for updates"). A postpone skips this check entirely: the
+  // download is not started, one static line lands in the log and the tray
+  // label explains why until the next tick re-evaluates the space.
+  if (source === "scheduled" && updateSpaceGateSkip()) return;
   void checkForUpdatesOnBoot({
     dialog: updateDialogSinks,
+    // P2-291: static guard inputs for the download-time consultation inside
+    // update.ts — before the automatic download, fed by the same state the
+    // check-time consultation above used.
+    updateGuard: {
+      harnessSession: HERMETIC_E2E,
+      bootVerdict: bootHealthVerdictName,
+      ownerRelease: ownerUpdateRelease,
+      lastState: lastUpdateStatus,
+    },
+    // P2-211: the boot verdict gates the consent dialog — a bundle the
+    // updater cannot replace (DMG volume / translocated copy) is never
+    // offered a restart it cannot apply. Fail-open: unknown/absent never
+    // blocks (see update.ts).
+    installLocation: bootInstallLocation,
     // P2-131 (round-2 review): yml feeds have no download engine — the manual
     // flow hands the user the release page — but only for an explicit tray
     // re-check. The boot check never auto-opens a browser tab, and update.ts
@@ -338,8 +905,62 @@ function runUpdateCheck(source: string): void {
             void shell.openExternal(decision.href).catch((err) => logError("[desktop] opening release page failed:", err));
           }
         : undefined,
+    // P2-233: Windows installer download — wired ONLY for the explicit tray /
+    // Help-menu re-check ("tray"). Boot and the P2-155 scheduled recheck pass
+    // no sink, so they can never download; a skipped/failed download falls
+    // back to the release page inside update.ts.
+    winInstallerDownload: source === "tray" ? downloadWinInstaller : undefined,
+    // P2-258: the updater's own download-progress events feed the tray label.
+    onProgress: onUpdateProgress,
     onStatus: (status, version) => {
       lastUpdateStatus = status;
+      // P2-291: the version the feed offered — any version-carrying
+      // resolution records it (including the guard's refused re-offer).
+      // P2-291 review round 3: the sink RECOMPUTES the tray verdict with the
+      // just-recorded offer — the download-time refusal in update.ts resolves
+      // before this sink runs, so without this recompute the release item
+      // would only appear after a SECOND manual check with zero feedback
+      // after the first (on the target machine boot + scheduled checks are
+      // suspended and the first manual check consults the guard with no offer
+      // known yet). The tray rebuild further below in this sink then runs
+      // with the fresh verdict.
+      if (version) {
+        lastOfferedUpdateVersion = version;
+        const sinkGuard = updateGuard({
+          harnessSession: HERMETIC_E2E,
+          bootVerdict: bootHealthVerdictName,
+          runningVersion: app.getVersion(),
+          offeredVersion: lastOfferedUpdateVersion,
+          updateState: lastUpdateStatus,
+          ownerRelease: ownerUpdateRelease,
+        });
+        updateGuardVerdict = sinkGuard.decision;
+        updateGuardReason = sinkGuard.reason;
+      }
+      // P2-257: track the downloaded release so the reminder plan can tell it
+      // apart from the version whose offers were already recorded, and hand
+      // the SAME timer over to the reminder once the download completes (the
+      // P2-155 recheck has nothing left to do in this state).
+      if (status === "update-downloaded") {
+        if (version) lastDownloadedVersion = version;
+        scheduleUpdateReminder();
+      }
+      // P2-258: the progress label describes a background download in flight.
+      // Statuses with no such download behind them clear it ("update-available"
+      // does NOT — the download it announces is exactly what the label tracks,
+      // and feed failures don't either: Squirrel keeps downloading).
+      if (
+        status === "update-downloaded" ||
+        status === "update-not-available" ||
+        status === "update-available-manual" ||
+        status === "update-installer-ready" ||
+        status === "disabled"
+      ) {
+        clearUpdateProgress();
+        // P2-264: with no download pending, a postpone label is stale — the
+        // tray goes back to the status the new state speaks for itself.
+        setUpdateSpaceLabel(null);
+      }
       refreshTrayMenu();
       // P2-176: the Help menu carries the same status label — rebuild it at
       // the same trigger point so the label never goes stale.
@@ -358,6 +979,82 @@ function runUpdateCheck(source: string): void {
     });
 }
 
+// P2-233: Windows explicit-action installer download. The ONLY trigger is the
+// user clicking the existing "Check for updates" item (tray or Help menu) —
+// never boot, never a timer, never the P2-155 scheduled recheck, because this
+// handler is wired into checkForUpdatesOnBoot only for the "tray" source.
+//
+// The installer is downloaded to a staging folder inside userData, verified
+// against the feed digest fail-closed (diverging bytes are deleted) and
+// revealed in the file manager on success. The app NEVER executes it — see
+// the header of src/winupdate.ts for why that surface stays closed.
+const WIN_DOWNLOAD_TIMEOUT_MS = 300_000;
+const WIN_STAGING_DIR = "update-staging";
+
+async function downloadWinInstaller(info: WinInstallerRequest): Promise<boolean> {
+  // Rule-order contract (P2-221): the pure decision is the FIRST thing
+  // consulted, and inside it the harness-session rule comes before any
+  // platform/packaged consideration — the hermetic harness (tools/desktop.mjs,
+  // test:desktop-flow, packaged-boot smokes) must never fetch internet bytes.
+  // P2-301: the boot install-location verdict resolved once at boot rides
+  // along — no new disk access, no new system call, no new timer.
+  const decision = winDownloadDecision({
+    harnessSession: HERMETIC_E2E,
+    packaged: app.isPackaged,
+    platform: process.platform,
+    explicitAction: true,
+    installLocation: bootInstallLocation,
+  });
+  if (decision.action !== "download") {
+    // P2-301: the location refusal speaks the SAME one-line format the
+    // install route already logs (update.ts offerInstall) — state + the
+    // verdict's static phrase, never a path, port, address or secret. No new
+    // dialog, no new menu item, no new tray label, no new surface.
+    if (decision.reason === "install-location-blocks" && bootInstallLocation) {
+      log(`[desktop] update install not offered (${bootInstallLocation.state}): ${bootInstallLocation.message}`);
+    } else {
+      log(`[desktop] win update: download skipped (${decision.reason}) — release page stays the fallback`);
+    }
+    return false;
+  }
+  if (!installerNameIsSafe(info.file)) {
+    log("[desktop] win update: download skipped (unsafe-installer-name) — release page stays the fallback");
+    return false;
+  }
+  let dest = "";
+  try {
+    const staging = join(app.getPath("userData"), WIN_STAGING_DIR);
+    mkdirSync(staging, { recursive: true });
+    dest = join(staging, info.file);
+    const res = await fetch(info.url, { signal: AbortSignal.timeout(WIN_DOWNLOAD_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    writeFileSync(dest, bytes);
+    // electron-builder publishes sha512 as base64 — measured the same way.
+    const measured = createHash("sha512").update(bytes).digest("base64");
+    const verdict = integrityVerdict(info.expectedDigest, measured);
+    if (!verdict.ok) {
+      rmSync(dest, { force: true });
+      log(`[desktop] win update: ${verdict.message}`);
+      return false;
+    }
+    // Reveal (never execute): the file manager shows the verified installer.
+    shell.showItemInFolder(dest);
+    log(`[desktop] win update: ${verdict.message} (${info.version})`);
+    return true;
+  } catch (err) {
+    // Network/mount failure: clean the partial file, keep the manual
+    // release-page flow as the fallback (one log line either way).
+    try {
+      if (dest) rmSync(dest, { force: true });
+    } catch {
+      // best-effort cleanup only
+    }
+    log(`[desktop] win update: download failed (${err instanceof Error ? err.message : String(err)}) — release page stays the fallback`);
+    return false;
+  }
+}
+
 // P2-155: plan and arm the next update check from the status the last one
 // resolved with. Derived from checkForUpdatesOnBoot's return value — never
 // from onStatus — so the autoUpdater's own update-downloaded emission doesn't
@@ -371,16 +1068,311 @@ function scheduleNextUpdateCheck(status: UpdateStatus): void {
   if (status === "feed-unreachable" || status === "unrecognized-feed") updateFeedFailures++;
   else updateFeedFailures = 0;
   const delay = nextCheckDelayMs(status, updateFeedFailures, Math.random);
-  if (delay == null) return;
+  if (delay == null) {
+    // P2-257: "update-downloaded" never re-checks (updateschedule.ts) — the
+    // SAME timer carries the reminder plan instead, so a deferred offer comes
+    // back instead of dying with the closed dialog (P2-152: the app keeps
+    // running indefinitely).
+    if (status === "update-downloaded") scheduleUpdateReminder();
+    return;
+  }
   log(`[desktop] update recheck (${status}) in ${Math.round(delay / 60_000)} min`);
-  updateRecheckTimer = setTimeout(() => runUpdateCheck("scheduled"), delay);
+  updateRecheckTimer = setTimeout(() => {
+    // P2-258: the stalled-download verdict rides the SAME tick
+    // updateschedule.ts already feeds — no new timer anywhere.
+    evaluateUpdateProgressSilence();
+    runUpdateCheck("scheduled");
+  }, delay);
   updateRecheckTimer.unref?.();
 }
 
+// --- download progress in the tray (P2-258) -----------------------------------
+// The updater's own "download-progress" event (forwarded by update.ts to the
+// sink below) is the only new input: no new network request, no new IPC
+// channel, no new timer. The verdict is computed by the pure module
+// src/updateprogress.ts; the ONLY effect is the tray's update-status label
+// plus one static log line for the stalled verdict — never a cancel, never a
+// downgrade, never a new download, never an install. The stalled condition is
+// evaluated on the SAME tick updateschedule.ts feeds (see
+// scheduleNextUpdateCheck) because a stalled download emits no events of its
+// own. Dedup: identical labels never rebuild the tray menu (same contract as
+// updateTrayStatus), and the harness-session rule has nothing to gate — this
+// block opens no window, dialog or focus (OCR_DESKTOP_SESSION changes no
+// framing; see the header of src/updateprogress.ts).
+
+/** The last progress the updater reported (bytes, announced total, instant). */
+let updateProgressBytes = 0;
+let updateProgressTotal = 0;
+let updateProgressAt = 0;
+/** The label the tray currently shows for the download — the dedup key. */
+let lastUpdateProgressLabel: string | null = null;
+/** The last progress verdict ("downloading" = a download is in flight). */
+let lastUpdateProgressVerdict: UpdateProgressView["verdict"] | null = null;
+
+function setUpdateProgress(view: UpdateProgressView | null): void {
+  const label = view ? view.label : null;
+  lastUpdateProgressVerdict = view?.verdict ?? null;
+  if (lastUpdateProgressLabel === label) return;
+  lastUpdateProgressLabel = label;
+  if (view?.verdict === "stuck") {
+    log("[desktop] update progress: download stalled — label only, nothing cancelled, downgraded, re-downloaded or installed");
+  }
+  refreshTrayMenu();
+}
+
+/** The runUpdateCheck sink: one live progress event from the updater. */
+function onUpdateProgress(info: unknown): void {
+  const raw = info as { transferred?: unknown; total?: unknown };
+  const bytes = typeof raw?.transferred === "number" && Number.isFinite(raw.transferred) ? raw.transferred : 0;
+  const total = typeof raw?.total === "number" && Number.isFinite(raw.total) ? raw.total : 0;
+  const now = Date.now();
+  updateProgressBytes = bytes;
+  updateProgressTotal = total;
+  updateProgressAt = now;
+  // P2-264: a download is factually running — a postpone label from an older
+  // tick must never outlive it (the live progress label takes the tray).
+  setUpdateSpaceLabel(null);
+  // At event time the age is zero by construction: the view can only answer
+  // "downloading" or "unknown" here — exactly the live label the user needs.
+  setUpdateProgress(updateProgressView(bytes, total, now, now, UPDATE_PROGRESS_LIMITS));
+}
+
+/** Clear the progress label when no download can be talking anymore. */
+function clearUpdateProgress(): void {
+  updateProgressBytes = 0;
+  updateProgressTotal = 0;
+  updateProgressAt = 0;
+  setUpdateProgress(null);
+}
+
+/** Re-evaluate the view with the last observed progress at the recheck tick —
+ * a download whose silence exceeds the documented limit flips the label, and
+ * nothing else happens anywhere in this process. */
+function evaluateUpdateProgressSilence(): void {
+  if (updateProgressAt <= 0) return;
+  const now = Date.now();
+  setUpdateProgress(updateProgressView(updateProgressBytes, updateProgressTotal, updateProgressAt, now, UPDATE_PROGRESS_LIMITS));
+}
+
+// --- disk-space gate for the scheduled update (P2-264) -------------------------
+// The download used to start without ever looking at how much free space the
+// machine has: on a nearly full volume it died at the very end and the tray
+// went back to inviting a new check as if nothing had happened. The pure
+// verdict lives in src/updatespace.ts; here only the wiring: ONE statfs read
+// of the volume hosting userData per decision, on the SAME tick
+// updateschedule.ts feeds (see scheduleNextUpdateCheck) — no new timer, no
+// new IPC channel, no new network request (a postpone SKIPS the scheduled
+// fetch instead of adding one). Postpone means: the download is not started,
+// one static log line is written and the tray label changes — it NEVER
+// cancels a download in flight, never deletes a file to free space and never
+// installs anything; the same timer simply re-evaluates on the next tick, so
+// freed space (or the existing "Check for updates" item) unlocks the update.
+// Harness-session rule (OCR_DESKTOP_SESSION): this path opens no window, no
+// dialog and steals no focus by construction — it computes a verdict, writes
+// a log line and rewrites an operating-system tray label, a surface that
+// never appears in an evidence screenshot (same reasoning as
+// src/updateprogress.ts) — so nothing is opened and no framing changes in a
+// hermetic run.
+
+/** The postpone label currently in the tray (null = none); the dedup key. */
+let updateSpaceLabel: string | null = null;
+
+function setUpdateSpaceLabel(label: string | null): void {
+  if (updateSpaceLabel === label) return;
+  updateSpaceLabel = label;
+  refreshTrayMenu();
+}
+
+/**
+ * The scheduled tick's disk-space gate. Returns true when the check — and
+ * with it the background download — must be skipped. Only the SCHEDULED
+ * recheck consults it: the boot check and the user's explicit "Check for
+ * updates" are untouched (P1-050 consent flow intact), exactly the seam
+ * where a download is STARTED by the shell itself.
+ */
+function updateSpaceGateSkip(): boolean {
+  // A download in flight owns this tick — the gate only refuses to START one
+  // (and without live progress there is no announced size but the updater's
+  // own, which the in-flight events are the source of).
+  if (lastUpdateProgressVerdict === "downloading") return false;
+  let freeBytes: number | null = null;
+  try {
+    const stats = statfsSync(app.getPath("userData"));
+    freeBytes = stats.bavail * stats.bsize;
+  } catch {
+    freeBytes = null; // unreadable volume → the pure verdict fails closed
+  }
+  // The announced size is the updater's own announcement for the release this
+  // decision is about: a STALLED download is the same release the scheduled
+  // check would restart, so its total is the best size knowledge there is.
+  // Any other progress state (no download this session, unknown total, or a
+  // release the feed may have moved past) reads as unknown — the pure verdict
+  // then answers "warn" and the update proceeds (never refused for a missing
+  // size), so a stale total cannot postpone a fitting new release.
+  const announced = lastUpdateProgressVerdict === "stuck" && updateProgressTotal > 0 ? updateProgressTotal : null;
+  const view = updateSpaceVerdict(freeBytes, announced, UPDATE_SPACE_LIMITS);
+  if (view.verdict === "download") {
+    setUpdateSpaceLabel(null);
+    return false;
+  }
+  // warn and postpone both say why, once per decision, in one static line.
+  log(`[desktop] update space: ${view.phrase}`);
+  if (view.verdict === "postpone") {
+    setUpdateSpaceLabel(view.label);
+    scheduleNextUpdateCheck("update-available");
+    return true;
+  }
+  setUpdateSpaceLabel(null);
+  return false;
+}
+
+// --- deferred-update reminder (P2-257) ----------------------------------------
+// After the user answers "Later" once, the offer used to vanish forever:
+// update.ts never re-schedules a decided release and a plain restart installs
+// nothing. The plan lives in src/updateremind.ts (pure, unit-tested); here
+// only the SAME timer already feeding the recheck is re-armed — no new timer,
+// no new IPC channel, no new network request, no new state file — and the
+// EXACT consent dialog is reopened. Nothing installs by itself: accepting the
+// dialog applies the release through the same quitAndInstall call the
+// P1-050 flow makes; deferring records the offer and re-arms.
+
+function reminderState() {
+  return {
+    status: lastUpdateStatus ?? "disabled",
+    version: lastDownloadedVersion,
+    harnessSession: HERMETIC_E2E,
+  };
+}
+
+/** Record an offer the moment the consent dialog is shown (see askInstall). */
+function recordUpdateOffer(version: string): void {
+  const now = Date.now();
+  reminderOffer =
+    reminderOffer.version === version
+      ? { version, at: now, count: reminderOffer.count + 1 }
+      : { version, at: now, count: 1 };
+  scheduleUpdateReminder();
+}
+
+/** Arm the reminder on the SAME timer updateschedule.ts feeds. */
+function scheduleUpdateReminder(): void {
+  if (updateRecheckTimer) {
+    clearTimeout(updateRecheckTimer);
+    updateRecheckTimer = null;
+  }
+  // Reminders exist only for offers already shown: the first dialog for a
+  // release belongs to the consent flow itself (update.ts offerInstall).
+  if (!lastDownloadedVersion || reminderOffer.version !== lastDownloadedVersion) return;
+  // P2-211: a bundle the updater cannot replace (DMG volume / translocated
+  // copy) never gets a dialog — reminding would offer an unapplicable update.
+  if (installBlocksUpdate(bootInstallLocation)) return;
+  const now = Date.now();
+  const plan = updateReminderPlan(reminderState(), reminderOffer, now, UPDATE_REMIND_LIMITS);
+  if (plan.reason === "cap-reached") {
+    log(`[desktop] update reminder: cap reached for ${lastDownloadedVersion} — tray item stays available`);
+    return;
+  }
+  if (plan.action !== "remind" && plan.reason !== "interval-not-elapsed") {
+    log(`[desktop] update reminder: idle (${plan.reason})`);
+    return;
+  }
+  const age = Math.max(0, now - reminderOffer.at);
+  const delay = Math.max(0, UPDATE_REMIND_LIMITS.minIntervalMs - age);
+  log(`[desktop] update reminder for ${lastDownloadedVersion} in ${Math.round(delay / 60_000)} min`);
+  updateRecheckTimer = setTimeout(() => fireUpdateReminder(), delay);
+  updateRecheckTimer.unref?.();
+}
+
+/** Timer fired: re-consult the plan (the state may have moved on) and reopen. */
+function fireUpdateReminder(): void {
+  updateRecheckTimer = null;
+  const plan = updateReminderPlan(reminderState(), reminderOffer, Date.now(), UPDATE_REMIND_LIMITS);
+  if (plan.action !== "remind") return;
+  const version = reminderOffer.version;
+  if (!version) return;
+  void offerUpdateReminderDialog(version);
+}
+
+async function offerUpdateReminderDialog(version: string): Promise<void> {
+  // P2-257 harness-session rule FIRST — before any other consideration — so
+  // a hermetic run never opens a window or steals focus (P2-235/P2-238) and
+  // no evidence screenshot changes framing.
+  if (HERMETIC_E2E) return;
+  if (lastUpdateStatus !== "update-downloaded") return;
+  if (reminderDialogOpen) return;
+  if (installBlocksUpdate(bootInstallLocation)) {
+    log(`[desktop] update reminder: install not offered (${bootInstallLocation?.state ?? "unknown"})`);
+    return;
+  }
+  reminderDialogOpen = true;
+  try {
+    const choice = await updateDialogSinks.askInstall(version);
+    if (choice === "install") {
+      // The user just consented — applying is the SAME single call the
+      // P1-050 flow makes (update.ts offerInstall → quitAndInstall).
+      log(`[desktop] update reminder: accepted — applying ${version}`);
+      autoUpdater.quitAndInstall();
+      return;
+    }
+    log(`[desktop] update reminder: deferred ${version} — the offer will come back`);
+  } finally {
+    reminderDialogOpen = false;
+  }
+  // The "Later" choice was recorded by askInstall; re-arm from scratch.
+  scheduleUpdateReminder();
+}
+
+// P2-218: the ONLY caller of app.setLoginItemSettings — the tray checkbox and
+// the boot plan both go through it, and both record the owner's decision, so
+// turning the toggle off in the tray is definitive: no future boot turns it
+// back on. Best-effort: a failed apply/write is log-only and never takes the
+// shell down (the decision file may still record the intent, which is safe —
+// the OS setting itself is re-read from app.getLoginItemSettings each boot).
+function setLoginItemEnabled(enabled: boolean): void {
+  try {
+    app.setLoginItemSettings({ openAtLogin: enabled });
+  } catch (err) {
+    logError("[desktop] login item apply failed:", err);
+  }
+  writeStartupDecided(startupSettingFile(app.getPath("userData")), true);
+}
+
 async function onReady(): Promise<void> {
+  // P2-244: when the boot plan disabled the acceleration before ready, say so
+  // now that the notification surface exists — the lay user's only visible
+  // trace of the decision (at most one tip per start, shared with the crash
+  // watch's own cap).
+  if (gpuDisabledThisBoot) showGpuDisabledHint();
   logInstanceBoot();
+  // P2-285: the proxy verdict is applied ONCE on the default session, before
+  // the first window load — never re-applied, never late for the first
+  // request the shell makes.
+  applyProxyVerdict();
+  // P2-229: the global-hotkey plan is resolved ONCE after the app is ready,
+  // before the first menu/tray build — both surfaces display its outcome.
+  // Registration goes through the plan (harness session first, then the
+  // documented kill switch, then the owner choice, then the platform
+  // default); the shortcut itself calls the same showMainWindow() the tray
+  // uses.
+  hotkey = hotkeyPlan({
+    harnessSession: HERMETIC_E2E,
+    env: process.env,
+    userAccelerator: process.env[HOTKEY_USER_ENV],
+    platform: process.platform,
+  });
+  log(`[desktop] global hotkey: ${hotkey.register ? hotkey.accelerator : "off"} (${hotkey.reason})`);
+  registerGlobalHotkey();
+  // P2-276: resolve the shell language ONCE at boot — no renderer preference
+  // has arrived yet, so the OS locale decides (shelllang.ts rules 3-4). The
+  // ocr:shell-lang pushes then apply the in-app choice on top of this.
+  shellLangState = shellLang(null, app.getLocale(), SUPPORTED_SHELL_LANGS);
+  log(`[desktop] shell language: ${shellLangState.lang} (${shellLangState.origin})`);
   buildMenu();
   buildTray();
+  // P2-270: the boot-health recovery question — fire-and-forget; the
+  // harness-session rule and the verdict itself keep it silent except on a
+  // real machine that really needs it.
+  void showBootHealthRecoveryDialog();
 
   // P3-009: real app icon (build/icon.png, generated by scripts/make-icon.mjs)
   // for the macOS dock — on Windows/Linux the BrowserWindow icon below does
@@ -392,6 +1384,51 @@ async function onReady(): Promise<void> {
     applicationName: "OpenCode Remote",
     applicationVersion: app.getVersion(),
   });
+
+  // P2-211: the install-location verdict is computed ONCE at boot, reading the
+  // running bundle path and the applications-folder signal guarded by method
+  // availability — a platform without the signal keeps today's behavior
+  // exactly (null flows into the classifier, which degrades to a neutral
+  // unknown on macOS and short-circuits to ok elsewhere). No new periodic
+  // probe, no new request, no existing timer touched.
+  // P2-211 test hatch (scripts + builder shots, same test-only OCR_* policy as
+  // OCR_DAEMON_FORCE_*): OCR_DESKTOP_FORCE_DMG_VOLUME=1
+  // forces the dmg-volume verdict so the pairing-overlay line renders
+  // deterministically on hosts that installed the app the right way. Never
+  // set in production.
+  if (process.env.OCR_DESKTOP_FORCE_DMG_VOLUME === "1") {
+    bootInstallLocation = { state: "dmg-volume", message: installMessage("dmg-volume") };
+  } else {
+    const inApplicationsFolder =
+      typeof app.isInApplicationsFolder === "function" ? app.isInApplicationsFolder() : null;
+    bootInstallLocation = installVerdict(process.platform, process.execPath, inApplicationsFolder, app.isPackaged);
+  }
+  log(`[desktop] install location: ${bootInstallLocation.state}`);
+
+  // P2-218: the login-item verdict is computed ONCE at boot, from the packaged
+  // flag, the platform, the OS toggle and the recorded owner decision — no new
+  // periodic probe, no new request, no existing timer touched. On "enable" it
+  // goes through the SAME path the tray checkbox uses (setLoginItemEnabled),
+  // which also records the decision, so the owner can still turn it off
+  // definitively in the tray afterwards.
+  // P2-218 test hatch (builder shots, same test-only OCR_* policy as
+  // OCR_DESKTOP_FORCE_DMG_VOLUME): OCR_DESKTOP_FORCE_LOGIN_ITEM=1 forces the
+  // enable verdict into the payload/diagnostics for deterministic screenshots
+  // WITHOUT touching the machine — no setLoginItemEnabled call and no
+  // decision recorded on purpose. Never set in production.
+  bootStartup = loginItemPlan({
+    packaged: app.isPackaged,
+    platform: process.platform,
+    alreadyEnabled: app.getLoginItemSettings().openAtLogin,
+    ownerDecided: readStartupDecided(startupSettingFile(app.getPath("userData"))),
+  });
+  if (process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM === "1") {
+    bootStartup = { action: "enable", reason: "veredito forçado pelo hatch de teste" };
+  }
+  if (bootStartup.action === "enable" && process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM !== "1") {
+    setLoginItemEnabled(true);
+  }
+  log(`[desktop] login item: ${bootStartup.action} (${bootStartup.reason})`);
 
   // P1-050: real update flow — boot check, background download, then a
   // consent dialog before anything restarts. Fire-and-forget: a slow or dead
@@ -545,6 +1582,12 @@ async function onReady(): Promise<void> {
       return false;
     }),
   );
+  // P2-197: the pairing overlay's "test again" action — re-runs the pairing
+  // tick right away (which re-probes the app address) instead of waiting for
+  // the next poll. Fire-and-forget: the next push carries the fresh verdict.
+  ipcMain.handle("app:recheckWebApp", () => {
+    void refreshPairingState();
+  });
   // P2-187: the phone relay address — read (Settings render) and write (Save /
   // "use the local relay" action). Validation ALWAYS happens here in the main
   // process: a hostile renderer can submit any payload shape and nothing is
@@ -608,6 +1651,59 @@ async function onReady(): Promise<void> {
     log(`[desktop] web app setting saved — origin ${res.origin}`);
     return { ok: true, ...res };
   });
+  // P2-289 + P2-307: the machine-proxy owner choice — read + validated write
+  // beside the relay handlers above, same trust model: validation ALWAYS
+  // happens here in the main process (proxystore.ts is fail-closed) and a
+  // hostile renderer can submit any payload shape — nothing is persisted
+  // before the store accepts it. Since P2-307 the save takes effect right
+  // away: the plan is resolved through the SAME path as the boot verdict
+  // (proxyplan.ts + the owner preference, no rule duplicated) and the pure
+  // proxyapply.ts verdict decides — the session rule follows immediately,
+  // and only a changed sidecar address restarts the daemon (an unneeded
+  // restart drops the phone's live conversation). One static pt-BR line per
+  // verdict: no address, no environment variable, no path.
+  ipcMain.handle("app:proxySetting", () => currentProxySetting());
+  ipcMain.handle("app:saveProxyChoice", (_e, payload: unknown) => {
+    const result = writeProxyChoice(proxySettingFile(app.getPath("userData")), payload);
+    if (!result.ok) {
+      // Nothing persists — the UI shows the module's static reason instead.
+      logError(`[desktop] proxy choice rejected: ${result.reason}`);
+      return { ...currentProxySetting(), ok: false, reason: result.reason };
+    }
+    const preference = storedProxyPreference();
+    const origin = preference !== null ? PROXY_ORIGIN_OWNER : PROXY_ORIGIN_ENVIRONMENT;
+    const resolved = proxyPlan({
+      env: proxyEnvSet(),
+      preference,
+      localNames: proxyLocalNames(),
+    });
+    const relayProxy = sidecarRelayProxyFor(resolved, preference, origin);
+    const inEffect: ProxyApplySnapshot = {
+      mode: liveProxyVerdict?.mode,
+      rule: liveProxyVerdict?.rule,
+      exceptions: liveProxyVerdict?.exceptions ?? [],
+      relayProxy: liveProxyRelay,
+    };
+    const decision = proxyApplyDecision(inEffect, {
+      mode: resolved.mode,
+      rule: resolved.rule,
+      exceptions: resolved.exceptions,
+      relayProxy,
+    });
+    log(`[desktop] proxy: ${decision.reason}`);
+    if (decision.kind !== "keep") {
+      applySessionProxy(resolved);
+    }
+    if (decision.kind === "apply-session-and-restart") {
+      setSidecarRelayProxy(relayProxy);
+      void restartDaemon();
+    }
+    if (decision.kind !== "keep") {
+      liveProxyVerdict = resolved;
+      liveProxyRelay = relayProxy;
+    }
+    return { ...currentProxySetting(), ok: true };
+  });
   // P3-053/P2-150: dock unread badge — the renderer derives the count
   // (lib/unread.ts) and pushes it on every change. The surface comes from
   // badgePlan (badge.ts): darwin/linux keep app.setBadgeCount, Windows draws
@@ -629,6 +1725,21 @@ async function onReady(): Promise<void> {
   // P3-053: verification surface for tools/desktop.mjs ipc and the flow test —
   // reports the last count the renderer pushed (not an OS read-back).
   ipcMain.handle("app:unreadBadge", () => lastUnreadBadge);
+  // P2-276: the renderer publishes the language the app already chose — a
+  // one-way push, same pattern as the ocr:unread channel above. An invalid
+  // payload resolves exactly like an absent preference (the system language
+  // decides), and the menu bar + tray are rebuilt on every real change. No
+  // new routes, no new requests, no new timers.
+  ipcMain.on("ocr:shell-lang", (_e, raw: unknown) => {
+    const decision = shellLang(raw, app.getLocale(), SUPPORTED_SHELL_LANGS);
+    // The state records every accepted push (origin included) even when the
+    // language is unchanged — only the rebuild is lang-change-gated.
+    const langChanged = decision.lang !== shellLangState.lang;
+    shellLangState = decision;
+    if (!langChanged) return;
+    log(`[desktop] shell language: ${decision.lang} (${decision.origin})`);
+    applyShellLanguage();
+  });
   // Host self-approval: the desktop shell runs on the same machine that owns
   // daemon.json, so it may add its own client identity to the allowlist. The
   // daemon re-reads the allowlist file on every handshake (fresh read), so
@@ -718,6 +1829,93 @@ async function onReady(): Promise<void> {
     (_wc, permission, requestingOrigin) => permissionDecision(permission, requestingOrigin, permissionCtx).allow,
   );
 
+  // P2-312: the microphone verdict the composer shows when the OS refuses
+  // media. Same form as the app:proxySetting handler beside the other app
+  // reads — and the state is read at REQUEST time, never at boot, because
+  // the user can flip the permission while the app is open. The P2-117 test
+  // hatch (cameraBlocked) answers denied: a system-level refusal is exactly
+  // what that hatch simulates, so the flow is reproducible in the harness.
+  ipcMain.handle("app:micAccess", () => {
+    let status: unknown = "unknown";
+    try {
+      status = systemPreferences.getMediaAccessStatus("microphone");
+    } catch {
+      // Unsupported platform — the pure verdict fails closed to "unknown".
+    }
+    return micAccessVerdict(process.platform, permissionCtx.cameraBlocked ? "denied" : status);
+  });
+
+  // P2-319: the camera verdict the QR scanner shows when the OS refuses the
+  // capture — the same form as the mic handler above, and the state is read
+  // at REQUEST time, never at boot, because the user can flip the permission
+  // while the app is open. The P2-117 test hatch (cameraBlocked) answers
+  // denied, so the scanner's system-blocked flow stays reproducible in the
+  // harness.
+  ipcMain.handle("app:camAccess", () => {
+    let status: unknown = "unknown";
+    try {
+      status = systemPreferences.getMediaAccessStatus("camera");
+    } catch {
+      // Unsupported platform — the pure verdict fails closed to "unknown".
+    }
+    return camAccessVerdict(process.platform, permissionCtx.cameraBlocked ? "denied" : status);
+  });
+
+  // P2-241: the single download policy for the whole shell, registered
+  // unconditionally on the default session — the one session every surface
+  // uses (main window and Browser-pane guest alike). Until this handler the
+  // event fell through to Electron's default: a native save dialog with the
+  // server's raw name, no scheme check, no ceiling, no log line. Now every
+  // download consults the pure plan first: a harness session never saves a
+  // byte (rule-order contract, see downloadplan.ts), a refused scheme /
+  // invalid name / oversize body cancels with one log line, and everything
+  // else lands in the documented Downloads folder with NO dialog — sanitized,
+  // deduped against the folder so nothing is ever overwritten — then is
+  // revealed (NEVER executed or opened, see the module header) and announced
+  // once on completion. No new IPC channel, no new timer: the done listener
+  // belongs to the item's own lifecycle, and log lines never carry paths.
+  session.defaultSession.on("will-download", (_event, item) => {
+    const plan = downloadVerdict({
+      harnessSession: HERMETIC_E2E,
+      schemeVerdict: externalOpenDecision(item.getURL()),
+      announcedName: item.getFilename(),
+      announcedBytes: item.getTotalBytes(),
+      limits: DOWNLOAD_LIMITS,
+    });
+    if (plan.action !== "salvar") {
+      item.cancel();
+      log(`[desktop] download refused — ${plan.reason}`);
+      return;
+    }
+    let existing: string[] | null = null;
+    try {
+      const dir = app.getPath("downloads");
+      mkdirSync(dir, { recursive: true });
+      existing = readdirSync(dir);
+    } catch {
+      existing = null;
+    }
+    if (!existing) {
+      item.cancel();
+      log("[desktop] download refused — downloads folder unreadable");
+      return;
+    }
+    const dest = join(app.getPath("downloads"), uniqueDownloadName(plan.name, existing));
+    item.setSavePath(dest);
+    item.once("done", (_e, state) => {
+      if (state !== "completed") {
+        log(`[desktop] download not completed — ${plan.reason}`);
+        return;
+      }
+      // Reveal (never execute): the file manager shows the file selected —
+      // the same path the P2-233 installer download uses.
+      shell.showItemInFolder(dest);
+      log(`[desktop] download done — ${plan.reason}`);
+      // At most ONE notification per download, reusing the plan's phrase.
+      new Notification({ title: NOTIFY_TITLE, body: plan.reason, silent: false }).show();
+    });
+  });
+
   // P2-184: the single guest path. Every webContents created from here on is
   // classified once by type: a Browser-pane <webview> guest has its main-frame
   // navigations (link clicks, redirects, meta refreshes) checked against the
@@ -757,6 +1955,9 @@ async function onReady(): Promise<void> {
 
   createWindow();
   startPairingWatcher();
+  // P2-209: react to the machine's return from sleep / session unlock —
+  // registered after the pairing watcher so the probe path already exists.
+  registerWakeReaction();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -779,6 +1980,10 @@ async function onReady(): Promise<void> {
       clearTimeout(updateRecheckTimer);
       updateRecheckTimer = null;
     }
+    // P2-229: the global shortcut must never outlive the process — a
+    // dangling system-wide key would keep firing into a dead app.
+    // unregisterAll() is idempotent and safe when nothing was registered.
+    globalShortcut.unregisterAll();
     // Encerra o daemon que subimos antes de sair (idempotente).
     if (daemonStopped) return;
     event.preventDefault();
@@ -829,6 +2034,17 @@ const PROBE_TIMEOUT_MS = 2_000;
 // deterministically. Never set in production — same policy as OCR_DAEMON_FORCE_*.
 const FORCE_VERSION_MISMATCH = process.env.OCR_DAEMON_FORCE_VERSION_MISMATCH === "1";
 
+// P2-214: test-only hatch (same OCR_* policy as OCR_DESKTOP_FORCE_DMG_VOLUME):
+// forces the behind clock-skew verdict so the pairing-overlay line renders
+// deterministically on hosts with a correct clock. Never set in production.
+const FORCE_CLOCK_BEHIND = process.env.OCR_DESKTOP_FORCE_CLOCK_BEHIND === "1";
+
+// P2-214: latest clock-skew verdict of the pairing tick's reach probe, for the
+// diagnostics bundle. Carries the state and the signed offset only — the
+// machine's time itself never leaves the process (diagnostics.ts privacy
+// contract). null until the first guarded probe of the session.
+let lastClockSkew: ClockSkewVerdict | null = null;
+
 let pairingState: PairingState | null = null;
 let pairingTimer: NodeJS.Timeout | null = null;
 
@@ -856,6 +2072,9 @@ function withLocalMode(state: PairingState): PairingState {
  * the daemon died, not only that it gave up. */
 function daemonDownState(): PairingState {
   const exit = sidecarExitInfo();
+  // P2-321: the wedge verdict rides along when the daemon stopped ANSWERING
+  // (wedged alive) rather than dying — additive, renderer-ignored for now.
+  const wedge = sidecarWedgeState();
   return {
     uri: null,
     qrDataUrl: null,
@@ -863,6 +2082,7 @@ function daemonDownState(): PairingState {
     phonePaired: false,
     daemonDown: true,
     sidecarExit: exit ? { kind: exit.kind, reason: exit.reason, hint: exit.hint } : undefined,
+    sidecarWedge: wedge ?? undefined,
   };
 }
 
@@ -872,6 +2092,8 @@ function daemonDownState(): PairingState {
  * the QR overlay can never open from it, and nothing re-pairs on recovery. */
 function reconnectingState(): PairingState {
   const { attempts } = reconnectState();
+  // P2-321: the wedge verdict rides along additively when it is in effect.
+  const wedge = sidecarWedgeState();
   return {
     uri: null,
     qrDataUrl: null,
@@ -879,6 +2101,7 @@ function reconnectingState(): PairingState {
     phonePaired: false,
     reconnecting: true,
     reconnectAttempts: attempts,
+    sidecarWedge: wedge ?? undefined,
   };
 }
 
@@ -895,18 +2118,38 @@ function setPairingState(next: PairingState | null): void {
   }
 }
 
-// --- tray tooltip as sidecar health indicator (P3-007) -----------------------
-// Fed by the pairing watcher's 3s poll below: the last authenticated request
-// against the daemon decides ok/down. Deduplicated so the tooltip is only
-// rewritten on actual transitions.
+// --- tray status: tooltip + menu line (P3-007, P2-252) ------------------------
+// Fed by the pairing watcher's 3s poll below. Since P2-252 the tray speaks
+// about the whole journey — sidecar health, the daemon↔relay link verdict the
+// same tick already computed (P2-199) and the paired-phone count from the
+// devices route — not just the local process. Decision logic is pure
+// (src/traystatus.ts) and tested in scripts/unit.test.ts. ONE write path
+// below: updateTrayStatus is the only place that touches setToolTip, and the
+// dedup key (tooltip + menu line) keeps the tray from being rewritten unless
+// the text actually changed.
 
 let trayHealthy: boolean | null = null;
+let trayStatusKey: string | null = null;
+let trayMenuLine = trayStatus(false, null, 0).menuLine;
+// P2-276: the last state the pairing tick fed the tray with, so a language
+// push can re-run the SAME single write path without inventing new data.
+let trayLinkState: string | null = null;
+let trayPhones = 0;
 
-function setTrayHealthy(healthy: boolean): void {
-  if (trayHealthy === healthy) return;
+function updateTrayStatus(healthy: boolean, linkState: string | null, phones: number): void {
   trayHealthy = healthy;
-  tray?.setToolTip(daemonTooltip(healthy));
-  log(`[desktop] tray tooltip: ${daemonTooltip(healthy)}`);
+  trayLinkState = linkState;
+  trayPhones = phones;
+  const status = trayStatus(healthy, linkState, phones, currentShellLabels());
+  const key = `${status.tooltip}\u0000${status.menuLine}`;
+  if (trayStatusKey === key) return;
+  trayStatusKey = key;
+  trayMenuLine = status.menuLine;
+  tray?.setToolTip(status.tooltip);
+  log(`[desktop] tray status: ${status.tooltip}`);
+  // Rebuilds the context menu in place so the status line at the top follows
+  // the tooltip — same dedup: only real text changes reach the menu.
+  refreshTrayMenu();
 }
 
 // --- native daemon notifications (P3-013) -------------------------------------
@@ -964,6 +2207,53 @@ function maybeShowCloseHint(): void {
   }
 }
 
+/** P2-223 tray tip for a frozen window — same notification discipline as
+ * observeDaemonHealth(): best-effort, never fatal. The verdict's harness
+ * rule already keeps test sessions on "log"; this guard is defense in
+ * depth so a headless run never even fires a toast. */
+function showHangTip(body: string): void {
+  try {
+    if (HERMETIC_E2E) return;
+    if (!Notification.isSupported()) return;
+    new Notification({ title: HANG_NOTIFY_TITLE, body, silent: true }).show();
+  } catch (err) {
+    logError("[desktop] hang notification failed:", err);
+  }
+}
+
+// P2-223: the native two-way box for a window frozen far past the tip —
+// Recarregar (reload in place; the conversation lives in the daemon, nothing
+// is lost) or Aguardar (it may still recover). Test hatch, same OCR_* policy:
+// OCR_DESKTOP_HANG_DIALOG_ANSWER=reload|wait auto-answers in place so a
+// screenshot flow stays deterministic — never set in production, and a
+// harness session never reaches the box (the verdict's first rule).
+async function showHangDialog(): Promise<void> {
+  const preset = process.env.OCR_DESKTOP_HANG_DIALOG_ANSWER;
+  if (preset === "reload" || preset === "wait") {
+    log(`[desktop] hang dialog auto-answered by test hatch: ${preset}`);
+    if (preset === "reload" && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+    return;
+  }
+  const options: Electron.MessageBoxOptions = {
+    type: "warning",
+    title: HANG_DIALOG_TITLE,
+    message: HANG_DIALOG_MESSAGE,
+    buttons: [HANG_BUTTON_RELOAD, HANG_BUTTON_WAIT],
+    defaultId: HANG_BUTTON_INDEX.wait,
+    // Escape/Enter keep the app alive — waiting is the conservative default.
+    cancelId: HANG_BUTTON_INDEX.wait,
+    noLink: true,
+  };
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  if (response === HANG_BUTTON_INDEX.reload) {
+    log("[desktop] hang dialog: owner chose to reload the frozen window");
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+    return;
+  }
+  log("[desktop] hang dialog: owner chose to wait");
+}
+
 /** P3-054: deterministic mismatch state for the harness (see the hatch note
  * above). uri/qrDataUrl stay null so the QR overlay can never open from it —
  * same shape discipline as reconnectingState(). */
@@ -992,6 +2282,54 @@ function currentWebAppResolution() {
   return resolveWebAppUrl(relay, readStoredWebAppUrl(file));
 }
 
+// P2-197: probe the app address's reachability once per pairing tick. The
+// probe always hits the ORIGIN of the resolved webApp address — NEVER the
+// pairLink address, which carries the pairing credential in its fragment —
+// and never sends a credential header. Every path returns a verdict; this
+// must never throw, or the surrounding tick would drop the whole pairing
+// state (and the QR with it).
+// P2-214: the return is additive (ReachProbeOutcome) — the same answer now
+// also carries its raw Date response header and elapsed ms for the clock-skew
+// classifier. Still exactly ONE request, same timeout, no new probe.
+async function probeWebAppReach(url: string): Promise<ReachProbeOutcome> {
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    return {
+      verdict: probeVerdict({ status: null, elapsedMs: 0, errorName: "probe-unparseable-address", appMarker: false }),
+      dateHeader: null,
+      elapsedMs: 0,
+    };
+  }
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(origin, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), redirect: "follow" });
+    const elapsedMs = Date.now() - startedAt;
+    // The body is only read on a 200 (the only status that can be "ok") and
+    // truncated: the marker check needs a prefix, not the whole page.
+    const appMarker = res.status === 200 ? hasAppMarker((await res.text()).slice(0, 32_768)) : false;
+    return {
+      verdict: probeVerdict({ status: res.status, elapsedMs, errorName: "", appMarker }),
+      dateHeader: rawDateHeader(res),
+      elapsedMs,
+    };
+  } catch (err) {
+    const e = err as { name?: string; cause?: { code?: string } };
+    const elapsedMs = Date.now() - startedAt;
+    return {
+      verdict: probeVerdict({
+        status: null,
+        elapsedMs,
+        errorName: e?.cause?.code ?? e?.name ?? "",
+        appMarker: false,
+      }),
+      dateHeader: null,
+      elapsedMs,
+    };
+  }
+}
+
 async function refreshPairingState(): Promise<void> {
   // Test-only override first: the hermetic harness has no apiToken, so without
   // this the happy path (the only place a real mismatch is detected) is
@@ -1003,7 +2341,7 @@ async function refreshPairingState(): Promise<void> {
   const token = readApiToken();
   if (!token) {
     // Cannot prove health without the token — report down until proven ok.
-    setTrayHealthy(false);
+    updateTrayStatus(false, null, 0);
     observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
       setPairingState(withLocalMode(daemonDownState()));
@@ -1021,7 +2359,6 @@ async function refreshPairingState(): Promise<void> {
     if (!devRes.ok) throw new Error(`devices ${devRes.status}`);
     const { devices } = (await devRes.json()) as { devices?: { pub: string; label?: string }[] };
     if (!Array.isArray(devices)) throw new Error("malformed devices payload");
-    setTrayHealthy(true);
     // The daemon answers (adopted or sidecar) — control is back.
     observeDaemonHealth(false);
 
@@ -1034,7 +2371,7 @@ async function refreshPairingState(): Promise<void> {
     // detail (P2-135 classifier verdict) — propagated additively next to the
     // version fields so the renderer can explain WHY the agent is unreachable.
     const appVersion = app.getVersion();
-    const { version: daemonVersion, opencode } = await fetchDaemonHealth(token);
+    const { version: daemonVersion, opencode, relay } = await fetchDaemonHealth(token);
     const mismatch = versionMismatch(appVersion, daemonVersion);
     if (mismatch) {
       log(`[desktop] daemon version mismatch: daemon ${daemonVersion ?? "?"} · app ${appVersion}`);
@@ -1098,6 +2435,48 @@ async function refreshPairingState(): Promise<void> {
           ? await QRCode.toDataURL(pairLinkRes.url, { margin: 1, width: 480 })
           : null,
     };
+    // P2-197: one reach probe per tick, only while the overlay may still be
+    // needed and only for a problem-free address — the same guard that mints
+    // the QR. Probing the ORIGIN of webAppRes.url (probeWebAppReach), never
+    // the credential-bearing pairLink. A failed probe only travels as the
+    // additive `reach` field: it never blocks pairing nor hides the QR.
+    // P2-214: the clock-skew verdict rides the SAME response the probe already
+    // obtained — no new request, no new timeout, no time server — under the
+    // SAME overlay guard. A wrong clock only travels as the additive `clock`
+    // field: it never blocks pairing nor hides the QR.
+    let reach: ReachVerdict | undefined;
+    let clock: ClockSkewVerdict | undefined;
+    if (!quietLocal && (!paired || remotePairingRequested) && webAppRes.problems.length === 0 && webAppRes.url !== "") {
+      const outcome = await probeWebAppReach(webAppRes.url);
+      reach = outcome.verdict;
+      // Logged without the URL or body: the address may embed the relay host
+      // and desktop.log lives on disk unencrypted.
+      log(`[desktop] app reach: ${reach.state}`);
+      clock = FORCE_CLOCK_BEHIND
+        ? { state: "behind", message: clockSkewMessage("behind"), skewMs: -86_400_000 }
+        : skewVerdict(Date.now(), outcome.dateHeader, outcome.elapsedMs);
+      lastClockSkew = clock;
+    }
+    // P2-199: the daemon↔relay link — the link that actually delivers the
+    // conversation — judged from the SAME /api/health answer the tick already
+    // fetched, under the SAME overlay guard the P2-197 reach probe uses (the
+    // probe above additionally requires a problem-free address).
+    // localMode receives quietLocal, NOT the raw localMode flag: an explicit
+    // remote-pairing request uses the real relay, so local mode must not
+    // silence the diagnosis. A down link only travels as the additive
+    // `relayLink` field: it never blocks pairing nor hides the QR — the link
+    // can come back up before the phone finishes scanning. Logged without any
+    // URL (desktop.log lives on disk unencrypted).
+    let relayLink: RelayLinkVerdict | undefined;
+    if (!quietLocal && (!paired || remotePairingRequested) && relay) {
+      relayLink = linkVerdict({ ...relay, localMode: quietLocal });
+      log(`[desktop] relay link: ${relayLink.state}`);
+    }
+    // P2-252: the tray rides the SAME tick and the SAME verdict — local mode
+    // maps to the link's "local" state (what linkVerdict would mint from it),
+    // a tick without a computed verdict degrades to the neutral phrase. No new
+    // request, no new timer, no new IPC channel.
+    updateTrayStatus(true, quietLocal ? "local" : relayLink?.state ?? null, devices.length);
     setPairingState({
       mode: quietLocal ? "local" : remotePairingRequested ? "remote" : undefined,
       uri,
@@ -1113,6 +2492,37 @@ async function refreshPairingState(): Promise<void> {
       // the P2-189 field — the legacy real-source assertion keeps matching.
       pairLink,
       webApp,
+      // P2-197: additive reach verdict, AFTER webApp so the P2-189/P2-193
+      // real-source assertions keep matching; absent = unknown to the renderer.
+      reach,
+      // P2-199: additive relay-link verdict, AFTER reach so the
+      // P2-189/P2-193/P2-197 real-source assertions keep matching; absent =
+      // unknown to the renderer.
+      relayLink,
+      // P2-211: additive install-location verdict, AFTER relayLink so the
+      // P2-189/P2-193/P2-197/P2-199 real-source assertions keep matching;
+      // absent = unknown to the renderer (renders nothing). A wrong install
+      // location never blocks pairing and never hides the QR.
+      installLocation: bootInstallLocation
+        ? { state: bootInstallLocation.state, message: bootInstallLocation.message }
+        : undefined,
+      // P2-214: additive clock-skew verdict, AFTER installLocation so the
+      // P2-189/P2-193/P2-197/P2-199/P2-211 real-source assertions keep
+      // matching; absent = unknown to the renderer (renders nothing). A wrong
+      // clock never blocks pairing and never hides the QR.
+      clock: clock ? { state: clock.state, message: clock.message } : undefined,
+      // P2-218: additive login-item verdict, AFTER clock so the
+      // P2-189/P2-193/P2-197/P2-199/P2-211/P2-214 real-source assertions keep
+      // matching; absent = unknown to the renderer (renders nothing). The
+      // announce never blocks pairing and never hides the QR.
+      startup: bootStartup
+        ? { state: bootStartup.action, message: loginItemMessage(bootStartup.action) }
+        : undefined,
+      // P2-321: additive wedged-daemon verdict (sidecarwedge.ts), AFTER the
+      // P2-218 field so the real-source assertions keep matching; absent
+      // unless the shell's own child stopped answering while alive. The
+      // renderer never renders it yet — the verdict's surface is desktop.log.
+      sidecarWedge: sidecarWedgeState() ?? undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
@@ -1120,7 +2530,7 @@ async function refreshPairingState(): Promise<void> {
     // rebuilds everything from scratch. When the sidecar exhausted its
     // respawn budget (P2-017), tell the renderer instead of staying silent.
     logError(`[desktop] pairing poll failed: ${err instanceof Error ? err.message : err}`);
-    setTrayHealthy(false);
+    updateTrayStatus(false, null, 0);
     observeDaemonHealth(isDaemonDown());
     if (isDaemonDown()) {
       setPairingState(withLocalMode(daemonDownState()));
@@ -1129,7 +2539,15 @@ async function refreshPairingState(): Promise<void> {
       // instead of silence, so the UI never falls back to the pairing screen.
       setPairingState(withLocalMode(reconnectingState()));
     } else {
-      setPairingState(null);
+      // P2-321: a sidecar that wedged alive answers nothing, so the tick lands
+      // here — report the wedge verdict instead of silence. The renderer only
+      // knows the field additively: no verdict in effect keeps the old null.
+      const wedge = sidecarWedgeState();
+      setPairingState(
+        wedge
+          ? { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, sidecarWedge: wedge }
+          : null,
+      );
     }
   }
 }
@@ -1138,6 +2556,56 @@ function startPairingWatcher(): void {
   if (pairingTimer) return;
   void refreshPairingState();
   pairingTimer = setInterval(() => void refreshPairingState(), PAIRING_POLL_MS);
+}
+
+// --- wake-from-sleep reaction (P2-209) ----------------------------------------
+// A Mac that sleeps overnight can wake with the sidecar out of respawn budget
+// or with its next retry minutes away; the phone then finds no machine even
+// though the app is open and paired. When the OS reports the machine is back
+// (powerMonitor resume/unlock-screen), the pure verdict of src/wakeplan.ts is
+// applied through paths that already exist — the pairing tick's health probe
+// (refreshPairingState) and the already-exported restartDaemon. No new
+// periodic probe, no extra request per tick, no existing timer is touched.
+
+let lastWakeHandledAt: number | null = null;
+
+function handleWakeEvent(eventType: string): void {
+  const now = Date.now();
+  const plan = wakePlan({
+    eventType,
+    gaveUp: isDaemonDown(),
+    failures: respawnState().failures,
+    msUntilNextRespawn: nextRespawnInMs(),
+    daemonHealthy: trayHealthy === true,
+    msSinceLastHandled: lastWakeHandledAt === null ? null : now - lastWakeHandledAt,
+  });
+  // Ignored events (debounced repeats, unknown types) stay silent by design —
+  // a wake must never turn into a log flood.
+  if (plan.action === "ignore") return;
+  lastWakeHandledAt = now;
+  // Exactly one line per handled event: action + motive (static pt-BR from
+  // the planner — no paths, no URLs, no secrets).
+  log(`[desktop] wake event (${eventType}): ${plan.action} — ${plan.reason}`);
+  if (plan.action === "reset-and-respawn") {
+    void restartDaemon().catch((err) => logError("[desktop] wake respawn failed:", err));
+    return;
+  }
+  void refreshPairingState();
+}
+
+function registerWakeReaction(): void {
+  // Availability guard: a platform or build without the module keeps today's
+  // behavior exactly — no registration, no error, nothing new to tick.
+  if (typeof powerMonitor?.on !== "function") {
+    log("[desktop] powerMonitor unavailable — wake reaction not registered");
+    return;
+  }
+  for (const eventType of WAKE_EVENT_TYPES) {
+    // Electron types .on per event literal — the explicit branches keep the
+    // registration honest against the documented vocabulary.
+    if (eventType === "resume") powerMonitor.on("resume", () => handleWakeEvent("resume"));
+    if (eventType === "unlock-screen") powerMonitor.on("unlock-screen", () => handleWakeEvent("unlock-screen"));
+  }
 }
 
 // P3-009: the packaged app ships build/icon.png inside the asar (files list in
@@ -1191,6 +2659,13 @@ function createWindow(): BrowserWindow {
   // runs after app.whenReady().
   const stateFile = windowStateFile(app.getPath("userData"));
   const restored = loadWindowBounds(stateFile, screen.getAllDisplays());
+  // P2-238: the zoom decision consults the harness-session rule FIRST (the
+  // zoomlevel.ts contract) — a test session always starts at the default
+  // level and persists nothing, so the flow battery's framing is stable.
+  const zoomPlan = zoomStartupPlan({ harnessSession: HERMETIC_E2E, saved: restored.zoom });
+  zoomLevel = zoomPlan.level;
+  zoomPersistable = zoomPlan.persist;
+  log(`[desktop] zoom: ${zoomPlan.reason}`);
   // P2-172: bounds feed the constructor; the maximized flag is applied in the
   // ready-to-show handler below.
   const { maximized, ...bounds } = restored;
@@ -1259,7 +2734,13 @@ function createWindow(): BrowserWindow {
     // is the full work area, which would reopen as a fake-maximized window
     // nobody could restore. The normal rect plus the live isMaximized() flag
     // restore both states faithfully.
-    saveWindowBounds(stateFile, { ...win.getNormalBounds(), maximized: win.isMaximized() });
+    // P2-238: the zoom level rides the same existing persistence path; a
+    // harness session writes no zoom field at all (JSON drops undefined).
+    saveWindowBounds(stateFile, {
+      ...win.getNormalBounds(),
+      maximized: win.isMaximized(),
+      zoom: zoomPersistable ? zoomLevel : undefined,
+    });
     if (!quitting) {
       event.preventDefault();
       win.hide();
@@ -1269,6 +2750,8 @@ function createWindow(): BrowserWindow {
     }
   });
   win.on("closed", () => {
+    // P2-223: the episode's pending hang timer dies with the window.
+    onHangWindowClosed(hangEpisode, hangContext);
     if (mainWindow === win) mainWindow = null;
   });
   // Open external links (docs, GitHub) in the browser, never in-app.
@@ -1287,17 +2770,138 @@ function createWindow(): BrowserWindow {
   // Log the crash reason and reload the page (bounded by the shared budget).
   // P1-050: non-clean exits also land a crash report file in the shared
   // client-logs folder before the (possibly successful) in-place recovery.
+  // P2-223: when the budget is gone the white screen goes through the
+  // hang-watch verdict instead of dying silently.
   win.webContents.on("render-process-gone", (_event, details) => {
     if (details && details.reason !== "clean-exit") {
       reportCrash("renderer", `reason=${details.reason} exitCode=${details.exitCode}`);
     }
-    onRendererGone(win, details, rendererReloadGuard, log, logError);
+    onRendererGone(win, details, rendererReloadGuard, log, logError, () =>
+      onReloadBudgetExhausted(hangEpisode, hangContext),
+    );
   });
+  // P2-223: a frozen window used to say nothing at all. The watch is driven
+  // by webContents "unresponsive"/"responsive"; hangwatch.ts decides how loud
+  // to be (log / tray tip / native box) with the harness-session rule first,
+  // and crash.ts owns the episode's single timer — canceled on responsive and
+  // on window close, never a new periodic timer.
+  hangEpisode = newHangEpisodeState();
+  win.webContents.on("unresponsive", () => onUnresponsive(hangEpisode, hangContext));
+  win.webContents.on("responsive", () => onResponsive(hangEpisode, hangContext));
   // A stray OS file-drop or rogue link must never navigate the window away
   // from the app shell (the renderer's own drag&drop handler is the supported
   // path; this is the last line of defense). In-app reloads stay allowed.
   win.webContents.on("will-navigate", (event, url) => {
     if (url !== win.webContents.getURL()) event.preventDefault();
+  });
+  // P2-235: the lay user's most basic gesture — right-click — gets a native
+  // context menu: edit actions in editable fields, copy for selected text,
+  // open/copy link and spelling suggestions. The ordered spec is pure
+  // (src/ctxmenu.ts, unit-tested): the harness-session rule is FIRST (an empty
+  // list — tools/desktop.mjs and test:desktop-flow must never have a native
+  // popup steal focus) and the packaged rule is second (never Inspect
+  // Element). A link opens only through the P2-178 extlink verdict — a
+  // refused scheme offers at most "copy address", never open. One listener,
+  // no new IPC channel, no timer; an empty spec renders no menu at all.
+  win.webContents.on("context-menu", (_event, params) => {
+    const decision = externalOpenDecision(params.linkURL);
+    const selection = params.selectionText ?? "";
+    const suggestions = params.dictionarySuggestions.slice(0, SPELLING_SUGGESTIONS_MAX);
+    const items = contextMenuSpec(HERMETIC_E2E, app.isPackaged, decision, {
+      editable: params.isEditable,
+      canCut: params.isEditable && selection.length > 0,
+      canCopy: selection.length > 0,
+      canPaste: params.isEditable,
+      canSelectAll: params.isEditable,
+      selectionText: selection,
+      linkUrl: params.linkURL ?? "",
+      misspelledWord: params.misspelledWord ?? "",
+      suggestions,
+    });
+    // Nothing to offer — no menu at all (the spec never returns a dangling
+    // separator, so a non-empty list is always popup-safe).
+    if (items.length === 0) return;
+    const handlers: Record<string, () => void> = {
+      "ctx-cut": () => win.webContents.cut(),
+      "ctx-copy": () => win.webContents.copy(),
+      "ctx-paste": () => win.webContents.paste(),
+      "ctx-select-all": () => win.webContents.selectAll(),
+      "ctx-open-link": () => {
+        if (!decision.allow) return;
+        void shell.openExternal(decision.href);
+      },
+      "ctx-copy-link": () => clipboard.writeText(params.linkURL ?? ""),
+      "ctx-inspect": () => win.webContents.openDevTools({ mode: "detach" }),
+    };
+    suggestions.forEach((word, index) => {
+      handlers[`ctx-spell-${index}`] = () => win.webContents.replaceMisspelling(word);
+    });
+    Menu.buildFromTemplate(toElectronItems(items, handlers)).popup({ window: win });
+  });
+  // P2-247: a load that never completes (corrupted packaged asset, partially
+  // written update, antivirus quarantine, slow volume) used to leave the
+  // definitive white window with no word, no log line and no recovery. ONE
+  // "did-fail-load" listener beside the "did-finish-load" one, bound only to
+  // the main window's webContents — guest frames keep their own P2-092/P2-184
+  // guards. loadfail.ts owns the verdict (secondary frames and deliberate
+  // ERR_ABORTED navigations never count); a retry reloads through the same
+  // webContents.reload() path as the P3-011 recovery after the documented
+  // one-shot wait (no periodic timer, no IPC, no native dialog); every
+  // decision writes exactly one log line; the give-up plan paints the message
+  // into the window itself, same data:-URL pattern as loadUi's fallback.
+  let loadFailAttempts = 0;
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    const record = sanitizeLoadFailure({
+      code: errorCode,
+      description: errorDescription,
+      address: validatedURL,
+      isMainFrame,
+    });
+    const verdict = loadFailVerdict(record, loadFailAttempts, Date.now());
+    loadFailAttempts = verdict.count;
+    if (verdict.plan === "retry") {
+      log(`[desktop] load watch: ${verdict.reason}`);
+      setTimeout(() => {
+        if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.reload();
+      }, verdict.waitMs ?? 0);
+      return;
+    }
+    if (verdict.plan === "giveup") {
+      const messages = loadFailMessage(record);
+      log(`[desktop] load watch: ${messages.log}`);
+      void win.loadURL(
+        "data:text/html," +
+          encodeURIComponent(
+            `<body style="font-family:-apple-system,sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100dvh;margin:0"><div style="text-align:center;max-width:34em;padding:0 24px"><p style="font-size:15px;line-height:1.6">${messages.user}</p></div></body>`,
+          ),
+      );
+      return;
+    }
+    log(`[desktop] load watch: ${verdict.reason}`);
+  });
+  // P2-238: apply the remembered level after every finished load — the first
+  // boot with the persisted value and every manual reload with the level the
+  // session already moved to (zoomLevel is updated in place by the menu).
+  // P2-247: a completed load also ends the failure episode — the load-fail
+  // budget refills on every success.
+  win.webContents.on("did-finish-load", () => {
+    if (win.isDestroyed()) return;
+    loadFailAttempts = 0;
+    win.webContents.setZoomLevel(zoomLevel);
+    // P2-270: the running version is promoted to "healthy" ONLY here — a
+    // main-window load that truly finished. One promotion per process is
+    // enough; a failed write retries on the next finished load.
+    if (!bootHealthPromoted) {
+      const promote = promoteHealthyOpening({
+        file: bootHealthFile,
+        fs: nodeBootHealthFs,
+        harnessSession: HERMETIC_E2E,
+        runningVersion: app.getVersion(),
+        nowMs: Date.now(),
+      });
+      if (promote.written) bootHealthPromoted = true;
+      else if (promote.reason !== "harness") log(`[desktop] boot health promotion not written (${promote.reason})`);
+    }
   });
   loadUi(win);
   return win;
@@ -1368,9 +2972,40 @@ const menuShellHandlers: Record<string, () => void> = {
   // Same diagnostics bundle the app:diagnostics handler serves the renderer,
   // written straight to the clipboard from the menu item.
   "help-diagnostics": () => clipboard.writeText(buildDiagnostics()),
+  // P2-221: the menu quit goes through the same explicit-quit path as the
+  // tray Quit item (verdict + native confirmation), not the bare role.
+  "app-quit": () => void explicitQuit(),
+  // P2-238: the three View zoom items. Each one computes the pure verdict
+  // (clamped level + limit flag), applies it live and rebuilds the menu so the
+  // item at its limit renders disabled. Nothing is written here — the level
+  // reaches disk through the close handler's saveWindowBounds call.
+  "view-zoom-in": () => applyZoomAction("increase"),
+  "view-zoom-out": () => applyZoomAction("decrease"),
+  "view-zoom-reset": () => applyZoomAction("restore"),
+  // P2-267: the macOS data wipe — two-step native confirmation, then the
+  // plan-scoped deletion, then a quit (running on wiped state serves nobody).
+  "help-wipe-data": () => void runDataWipe(),
 };
 
-function toElectronItems(items: MenuItemSpec[]): Electron.MenuItemConstructorOptions[] {
+// P2-238: one menu click = one Chromium zoom step, clamped by the pure
+// zoomlevel.ts verdict. Applies to every live window (the shell has one) and
+// refreshes the menu enablement; the next did-finish-load reapplies it too.
+function applyZoomAction(action: ZoomAction): void {
+  const verdict = zoomVerdict(zoomLevel, action);
+  zoomLevel = verdict.level;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.setZoomLevel(verdict.level);
+  }
+  buildMenu();
+}
+
+function toElectronItems(
+  items: MenuItemSpec[],
+  // P2-235: per-event click wiring for the context menu (suggestion words and
+  // the link verdict change with every context-menu event). The application
+  // menu path passes nothing and keeps the menuShellHandlers contract.
+  extraHandlers?: Record<string, () => void>,
+): Electron.MenuItemConstructorOptions[] {
   return items.map((item) => {
     const entry: Electron.MenuItemConstructorOptions = {};
     if (item.id) entry.id = item.id;
@@ -1380,7 +3015,9 @@ function toElectronItems(items: MenuItemSpec[]): Electron.MenuItemConstructorOpt
     if (item.enabled !== undefined) entry.enabled = item.enabled;
     if (item.type) entry.type = item.type;
     const action = item.action;
+    const extra = item.id !== undefined && extraHandlers ? extraHandlers[item.id] : undefined;
     if (action) entry.click = () => sendMenuAction(action);
+    else if (extra) entry.click = extra;
     else if (item.id && menuShellHandlers[item.id]) entry.click = menuShellHandlers[item.id];
     if (item.submenu) entry.submenu = toElectronItems(item.submenu);
     return entry;
@@ -1388,13 +3025,43 @@ function toElectronItems(items: MenuItemSpec[]): Electron.MenuItemConstructorOpt
 }
 
 /** The tray's update-status label, shared with the menu so both surfaces can
- * never drift apart on what the last check decided (P2-176). */
+ * never drift apart on what the last check decided (P2-176). P2-257: for a
+ * downloaded release the label tells the truth — installation happens by
+ * accepting the offer, never by a plain restart (updateMenuLabel's
+ * "restart to install" is false under the consent flow). */
 function currentUpdateLabel(): string | null {
+  if (lastUpdateStatus === "update-downloaded") return UPDATE_DOWNLOADED_TRAY_LABEL;
+  // P2-264: a postponed download explains itself. The label outranks the
+  // progress label in every reachable state: a live download clears it on
+  // its first progress event (onUpdateProgress), so when it is set the gate
+  // has in fact refused to (re)start the download — the deeper truth over a
+  // stalled-download invite it would otherwise keep showing.
+  if (updateSpaceLabel) return updateSpaceLabel;
+  // P2-258: while the background download is in flight (or stalled) the
+  // progress label replaces the "check for updates" invite that the mere
+  // availability status would keep showing for the whole download.
+  if (lastUpdateStatus === "update-available" && lastUpdateProgressLabel) return lastUpdateProgressLabel;
   return lastUpdateStatus === null ? null : updateMenuLabel(lastUpdateStatus);
 }
 
 function buildMenu(): void {
-  Menu.setApplicationMenu(Menu.buildFromTemplate(toElectronItems(menuSpec(process.platform, currentUpdateLabel(), updatesEnabled()))));
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      toElectronItems(
+        menuSpec(process.platform, currentUpdateLabel(), updatesEnabled(), hotkey, zoomLevel, currentShellLabels()),
+      ),
+    ),
+  );
+}
+
+// P2-276: rebuild both OS surfaces with the current shell language. The tray
+// dedup key holds the phrase text, so it resets before the re-run — the
+// language change must land even when the health state is unchanged. No new
+// timer, no new request: the same updateTrayStatus write path as always.
+function applyShellLanguage(): void {
+  buildMenu();
+  trayStatusKey = null;
+  updateTrayStatus(trayHealthy ?? false, trayLinkState, trayPhones);
 }
 
 // P3-015: prefer the monochrome template asset (build/trayTemplate.png;
@@ -1412,13 +3079,39 @@ function trayImage(): Electron.NativeImage {
   return img;
 }
 
+// --- global reopen hotkey (P2-229) ---------------------------------------------
+// After close-to-tray (P2-021) the only way back was hunting the tray icon.
+// The plan is pure (src/hotkey.ts, unit-tested): the harness-session rule is
+// FIRST — tools/desktop.mjs and test:desktop-flow run on the operator's
+// machine and a test session must never steal system-wide keys — then the
+// documented kill switch, then the owner's accelerator (invalid → register
+// nothing, never a silent default) and finally the platform default. The
+// shortcut calls the SAME showMainWindow() the tray uses (no new window
+// type, nothing new to compose). Registration failure — normally the
+// combination already taken by another application — is the normal case and
+// fails OPEN on purpose: one log line, no dialog, the tray stays the
+// guaranteed way back.
+function registerGlobalHotkey(): void {
+  if (!hotkey?.register || !hotkey.accelerator) return;
+  try {
+    const ok = globalShortcut.register(hotkey.accelerator, showMainWindow);
+    if (!ok) {
+      log(`[desktop] global hotkey not registered: ${hotkey.accelerator} — combination likely taken by another application`);
+    }
+  } catch (err) {
+    logError("[desktop] global hotkey registration failed:", err);
+  }
+}
+
 function buildTray(): void {
   tray = new Tray(trayImage());
   // P3-007: tooltip doubles as the sidecar health indicator; starts pessimistic
-  // and is corrected by the first pairing-watcher poll (see setTrayHealthy).
-  trayHealthy = false;
-  tray.setToolTip(daemonTooltip(false));
-  tray.setContextMenu(Menu.buildFromTemplate(trayMenuItems()));
+  // and is corrected by the first pairing-watcher poll (see updateTrayStatus).
+  // P2-252: the pessimistic start flows through the SAME single write path —
+  // the only setToolTip call site in this file — so tooltip, dedup key and the
+  // menu's status line can never drift apart.
+  trayStatusKey = null;
+  updateTrayStatus(false, null, 0);
   tray.on("click", showMainWindow);
 }
 
@@ -1457,10 +3150,242 @@ function revealLogsFolder(): void {
   });
 }
 
+// --- quit confirmation (P2-221) ------------------------------------------------
+// Sair pelo menu ou pela bandeja encerra o sidecar do daemon no will-quit e,
+// desde a P2-218, o app abre no login justamente para o telefone sempre
+// encontrar a máquina — sair sem dizer nada virou a forma silenciosa de
+// derrubar o acesso remoto. O caminho de saída EXPLÍCITO (item Sair da
+// bandeja e item Encerrar do menu) consulta o veredito puro de quithint.ts
+// UMA única vez e, no "confirmar", abre a caixa nativa com três saídas. O
+// fechamento da janela (P2-152), o gancho de will-quit, a limpeza do sidecar,
+// o lock de instância única e a persistência de bounds ficam intocados —
+// nenhuma sonda nova, nenhuma requisição nova, nenhum timer novo.
+//
+// P2-221 test hatches (same test-only OCR_* policy as OCR_DAEMON_FORCE_*):
+//   OCR_DESKTOP_FORCE_QUIT_CONFIRM=1 forces the "confirm" verdict so the
+//   dialog flow is reachable on a dev/test machine; and
+//   OCR_DESKTOP_QUIT_DIALOG_ANSWER=quit|stay|never auto-answers the native
+//   box so the flow stays deterministic (a modal would block the gate).
+//   Never set in production — a harness session already quits silently via
+//   the verdict's first rule.
+
+/** The one real-quit body the old tray Quit item ran (P2-021): flag before
+ * app.quit() so the close handler lets the window die, and drop the tray so
+ * the shutting-down shell doesn't rebuild its menu. */
+function realQuit(): void {
+  quitting = true;
+  tray = null;
+  app.quit();
+}
+
+/** Native three-way box: quit for real, keep running in the tray, or record
+ * "don't ask again" (which quits now AND forever after). The test hatch
+ * OCR_DESKTOP_QUIT_DIALOG_ANSWER answers in place instead of opening a modal
+ * on the gate's headless path. */
+async function askQuitDialog(): Promise<"quit" | "stay" | "never"> {
+  const preset = process.env.OCR_DESKTOP_QUIT_DIALOG_ANSWER;
+  if (preset === "quit" || preset === "stay" || preset === "never") {
+    log(`[desktop] quit dialog auto-answered by test hatch: ${preset}`);
+    return preset;
+  }
+  const options: Electron.MessageBoxOptions = {
+    type: "question",
+    title: QUIT_DIALOG_TITLE,
+    message: QUIT_DIALOG_MESSAGE,
+    detail: QUIT_DIALOG_DETAIL,
+    buttons: [QUIT_BUTTON_QUIT, QUIT_BUTTON_STAY, QUIT_BUTTON_NEVER],
+    defaultId: QUIT_BUTTON_INDEX.quit,
+    // Escape/Cancel keeps the app — and the phone's access — alive.
+    cancelId: QUIT_BUTTON_INDEX.stay,
+    noLink: true,
+  };
+  const { response } =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+  if (response === QUIT_BUTTON_INDEX.quit) return "quit";
+  if (response === QUIT_BUTTON_INDEX.never) return "never";
+  return "stay";
+}
+
+/** The single explicit-quit entry point, shared by the tray Quit item and the
+ * menu's Encerrar item. Consults the pure verdict once; every input already
+ * exists at quit time (no probe, no request, no timer). */
+async function explicitQuit(): Promise<void> {
+  const forced = process.env.OCR_DESKTOP_FORCE_QUIT_CONFIRM === "1";
+  const verdict = forced
+    ? ({ action: "confirm", reason: "hatch de teste que força a confirmação de saída" } as QuitVerdict)
+    : quitVerdict({
+        packaged: app.isPackaged,
+        harnessSession: HERMETIC_E2E,
+        daemonHealthy: trayHealthy === true,
+        phonePaired: pairedNow(),
+        dontAskAgain: readQuitDontAsk(quitAskFile(app.getPath("userData"))),
+      });
+  lastQuitVerdict = verdict;
+  // Exactly one line per explicit quit: action + motive (static pt-BR from
+  // the planner — no paths, no URLs, no secrets).
+  log(`[desktop] quit confirm: ${verdict.action} (${verdict.reason})`);
+  if (verdict.action !== "confirm") {
+    realQuit();
+    return;
+  }
+  if (quitDialogShown) return;
+  quitDialogShown = true;
+  try {
+    const choice = await askQuitDialog();
+    if (choice === "stay") {
+      log("[desktop] quit cancelled — the app keeps running in the tray");
+      return;
+    }
+    if (choice === "never") {
+      const written = writeQuitDontAsk(quitAskFile(app.getPath("userData")), true);
+      if (!written) log("[desktop] quit-ask flag write failed (continuing)");
+    }
+    realQuit();
+  } finally {
+    quitDialogShown = false;
+  }
+}
+
+// --- data wipe (P2-267, datawipe.ts) -------------------------------------------
+// On macOS there is no uninstaller: dragging the bundle to the Trash leaves
+// daemon.json (the machine ECDH identity and the VAPID keys), the
+// paired-phone list, the shell state files and the logs folder on a disk that
+// may be sold or shared. The Help menu item below is the owner's way to erase
+// exactly the app's own data. The pure plan is uninstallplan.ts's (the P2-249
+// vocabulary) and the verdict is datawipe.ts's — whose FIRST rule is the
+// harness session, consulted here BEFORE any dialog can open, so no test path
+// ever reaches a modal or deletes operator files (P2-235/P2-238). The
+// executor deletes only the plan's removable immediate children with the fs
+// injected (same pattern as LogFs) and reports failures instead of throwing;
+// the flow is click-driven end to end — no new probe, no new timer.
+
+const nodeWipeFs: WipeFs = {
+  rmSync: (p, opts) => rmSync(p, opts),
+};
+
+function dataWipePlan(): UninstallCleanupPlan {
+  let observed: string[] = [];
+  try {
+    observed = readdirSync(app.getPath("userData"));
+  } catch {
+    observed = []; // unreadable root → empty plan → the verdict says noop
+  }
+  return uninstallCleanupPlan("OpenCode Remote", observed);
+}
+
+/** Help → "Apagar dados do app…". Two verdict consultations, one pure plan:
+ * the gate call (confirmed: false) runs the harness and root rules before any
+ * dialog and only lets the unconfirmed-refusal through to the confirmation
+ * flow; the final call — now with the user's real confirmation — is the only
+ * path that reaches the executor. Afterwards the app quits instead of
+ * running on top of state that just disappeared. */
+async function runDataWipe(): Promise<void> {
+  const dataRoot = app.getPath("userData");
+  const plan = dataWipePlan();
+  const gate = dataWipeVerdict({
+    harnessSession: HERMETIC_E2E,
+    dataRoot,
+    confirmed: false,
+    removableNames: plan.remove,
+  });
+  log(`[desktop] data wipe: ${gate.action} (${gate.reason})`);
+  if (gate.action !== "refuse" || gate.reason !== WIPE_REASON_UNCONFIRMED) return;
+  if (!(await askDataWipeDialog())) {
+    log("[desktop] data wipe cancelled at the confirmation");
+    return;
+  }
+  const verdict = dataWipeVerdict({
+    harnessSession: HERMETIC_E2E,
+    dataRoot,
+    confirmed: true,
+    removableNames: plan.remove,
+  });
+  log(`[desktop] data wipe: ${verdict.action} (${verdict.reason})`);
+  if (verdict.action !== "wipe") return;
+  const report = wipePlannedChildren(dataRoot, plan, nodeWipeFs, sep);
+  log(`[desktop] data wipe: ${report.removed.length} item(ns) apagado(s)`);
+  for (const f of report.failed) {
+    // Bare name + stable code only — never the error text (it carries paths).
+    log(`[desktop] data wipe: falha ao remover ${f.name} (${f.code})`);
+  }
+  realQuit();
+}
+
+/** The two-step native confirmation: step 1 lists what goes and what stays,
+ * step 2 warns that every paired phone loses access. Reached only after the
+ * verdict's harness rule already gated the flow; each step needs a deliberate
+ * click — Cancel (or Escape) at either step ends the wipe. */
+async function askDataWipeDialog(): Promise<boolean> {
+  const options = (message: string, detail: string, primary: string): Electron.MessageBoxOptions => ({
+    type: "warning",
+    title: WIPE_DIALOG_TITLE,
+    message,
+    detail,
+    buttons: [primary, WIPE_BUTTON_CANCEL],
+    defaultId: WIPE_BUTTON_INDEX.primary,
+    cancelId: WIPE_BUTTON_INDEX.cancel,
+    noLink: true,
+  });
+  const show = (opts: Electron.MessageBoxOptions) =>
+    mainWindow && !mainWindow.isDestroyed() ? dialog.showMessageBox(mainWindow, opts) : dialog.showMessageBox(opts);
+  const step1 = await show(options(WIPE_STEP1_MESSAGE, WIPE_STEP1_DETAIL, WIPE_BUTTON_NEXT));
+  if (step1.response !== WIPE_BUTTON_INDEX.primary) return false;
+  const step2 = await show(options(WIPE_STEP2_MESSAGE, WIPE_STEP2_DETAIL, WIPE_BUTTON_WIPE));
+  return step2.response === WIPE_BUTTON_INDEX.primary;
+}
+
 function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   const items: Electron.MenuItemConstructorOptions[] = [
+    // P2-252: the journey status at the very top — disabled and non-clickable
+    // (informational only, same pattern as the update-status line), fed by the
+    // pairing tick through updateTrayStatus. Every item below keeps its order.
+    { label: trayMenuLine, enabled: false },
+    // P2-270: the recovery alarm, present only while this execution runs with
+    // the automatic update check suspended — one disabled informational line
+    // (static label from the pure verdict; the tray never appears in a
+    // window screenshot).
+    ...(bootHealthAlarmLabel ? [{ label: bootHealthAlarmLabel, enabled: false }] : []),
+    // P2-291: the owner's way out of a refused re-offer — present ONLY while
+    // the guard's last verdict is "recusar-oferta", right beside the disabled
+    // alarm label above. One enabled item that records the owner's release
+    // (the additive boothealth.json field) and fires an immediate check; the
+    // label goes through the same pure tray.ts text mechanism as every other
+    // item and carries no emoji (P2-107).
+    ...(updateGuardVerdict === "recusar-oferta"
+      ? [
+          {
+            label: updateGuardReleaseLabel(),
+            click: () => {
+              const release = writeOwnerRelease({
+                file: bootHealthFile,
+                fs: nodeBootHealthFs,
+                harnessSession: HERMETIC_E2E,
+                runningVersion: app.getVersion(),
+                nowMs: Date.now(),
+              });
+              // The in-memory flag flips only when the write landed, so a
+              // failed write keeps the guard refusing (the reason is logged).
+              if (release.written) ownerUpdateRelease = true;
+              log(`[desktop] update guard: release recorded (${release.reason})`);
+              checkForUpdates();
+            },
+          },
+        ]
+      : []),
     { label: "Open OpenCode Remote", click: showMainWindow },
   ];
+  // P2-229: the same truth the Help menu carries — the active accelerator as
+  // a disabled informational item, or the plan's reason when nothing is
+  // registered (never a lying combination).
+  if (hotkey) {
+    items.push(
+      hotkey.register && hotkey.accelerator
+        ? { label: `Atalho global: ${hotkey.accelerator}`, enabled: false }
+        : { label: hotkey.reason, enabled: false },
+    );
+  }
   // P3-019/P1-050: update items exist only when a feed is configured — for an
   // unpackaged dev run without OCR_UPDATE_FEED the tray is byte-for-byte
   // identical to the pre-P3-019 menu. Packaged builds always have a feed: the
@@ -1468,9 +3393,19 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
   if (updatesEnabled()) {
     const statusLabel = currentUpdateLabel();
     if (statusLabel) {
-      // Informational-only state line; the install itself needs the consent
-      // dialog (updateDialogSinks), never a tray mis-click.
-      items.push({ label: statusLabel, enabled: false });
+      // P2-257: the downloaded-release item carries the truthful label and is
+      // clickable — it opens the SAME consent dialog, never installs by
+      // itself. Every other state stays an informational-only line.
+      if (lastUpdateStatus === "update-downloaded") {
+        items.push({
+          label: statusLabel,
+          click: () => {
+            if (lastDownloadedVersion) void offerUpdateReminderDialog(lastDownloadedVersion);
+          },
+        });
+      } else {
+        items.push({ label: statusLabel, enabled: false });
+      }
     }
     items.push({
       label: "Check for updates",
@@ -1494,9 +3429,11 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
       type: "checkbox",
       checked: app.getLoginItemSettings().openAtLogin,
       // For checkbox items `item.checked` is the state after the user toggled,
-      // which is exactly what setLoginItemSettings must persist (macOS launch
+      // which is exactly what the OS-backed setting must persist (macOS launch
       // services / Windows registry) — so the choice survives app restarts.
-      click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+      // P2-218: the shared helper also records the owner's decision, making a
+      // tray "off" definitive — no future boot turns it back on.
+      click: (item) => setLoginItemEnabled(item.checked),
     });
   }
   // P3-016: the persistent desktop.log (P3-012) is useless to a lay user if
@@ -1514,11 +3451,11 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
     {
       label: "Quit",
       click: () => {
-        // P2-021: real quit — flag before app.quit() so the close handler
-        // doesn't hide; will-quit then stops the daemon sidecar with cleanup.
-        quitting = true;
-        tray = null;
-        app.quit();
+        // P2-221: the explicit quit path consults the pure verdict (P2-221
+        // section above) and may confirm before the real quit; realQuit()
+        // keeps the P2-021 contract — flag before app.quit() so the close
+        // handler doesn't hide; will-quit stops the daemon sidecar.
+        void explicitQuit();
       },
     },
   );

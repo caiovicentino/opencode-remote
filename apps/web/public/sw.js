@@ -1,38 +1,106 @@
-// Placeholder service worker: makes the PWA installable and keeps a shell
-// cache. Real precache/invalidate strategy lands with the offline roadmap.
-// P2-097: the name is versioned so shipping a new SW evicts every cache
-// written by older (possibly poisoned) versions — activate deletes the rest.
-const CACHE = "ocr-shell-v2";
+// P2-239: this worker is event orchestration only — every decision (what to
+// precache, which strategy serves a path, the offline page, what is stale)
+// lives in sw-policy.js, loaded first so the handlers can consult it.
+importScripts("/sw-policy.js");
+
+// P2-097/P2-239: the name is versioned so a new publication never inherits
+// entries written by an older (possibly stale) cache — activate deletes the rest.
+const CACHE = "ocr-shell-v3";
+
+// Targets of the publication that ran install in this worker instance; used
+// by activate to shed versioned leftovers of an earlier publication.
+let precacheList = [];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/"])));
-  self.skipWaiting();
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE);
+      let root = "";
+      try {
+        const res = await fetch("/", { cache: "no-store" });
+        if (res.ok) {
+          root = await res.clone().text();
+          await cache.put("/", res);
+        }
+      } catch {
+        // No document: install still succeeds and the policy's offline page
+        // covers the next navigation.
+      }
+      precacheList = self.precacheTargets(root);
+      await Promise.all(
+        precacheList.map(async (path) => {
+          try {
+            const res = await fetch(path, { cache: "no-store" });
+            if (!res.ok) throw new Error(String(res.status));
+            await cache.put(path, res);
+          } catch {
+            // Isolated failure: one line, never the whole install.
+            console.warn("[sw] precache skipped:", path);
+          }
+        }),
+      );
+      // P2-246: takeover is not unconditional anymore — while a live tab from
+      // the previous publication exists the worker waits, and the browser
+      // activates it by itself when the last controlled tab closes.
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      if (self.takeoverPlan(windows.length) === "takeover-now") self.skipWaiting();
+    })(),
+  );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))),
-    ),
+    (async () => {
+      // P2-246: the sweep consults the plan — with a live controlled client
+      // nothing is deleted, so the open document can never ask for an entry
+      // this activation just evicted.
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
+      // P2-239: sweep versioned leftovers of an earlier publication that
+      // survived inside the current cache (the plan decides, never here).
+      if (precacheList.length > 0) {
+        const cache = await caches.open(CACHE);
+        const have = (await cache.keys()).map((r) => new URL(r.url).pathname);
+        const stale = self.sweepPlan(windows.length, have, precacheList);
+        await Promise.all(stale.map((path) => cache.delete(path)));
+      }
+    })(),
   );
   self.clients.claim();
 });
 
+// P2-266: the page's only lever over this worker — the documented swap
+// message posted by the update banner's explicit action. Any other message
+// payload is ignored; skipWaiting never fires for it. The literal must stay
+// in sync with SW_SWAP_MESSAGE in apps/web/src/lib/swupdate.ts (pinned by
+// scripts/unit.test.ts).
+self.addEventListener("message", (event) => {
+  if (event.data === "ocr-sw-swap") self.skipWaiting();
+});
+
 self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET") return;
-  event.respondWith(
-    fetch(event.request)
-      .then((res) => {
-        // P2-097: only clean 200s enter the cache — errors/redirects/opaque
-        // responses used to be cached forever under the constant cache name
-        if (res.status === 200) {
-          const copy = res.clone();
-          event.waitUntil(caches.open(CACHE).then((c) => c.put(event.request, copy)));
-        }
-        return res;
-      })
-      .catch(() => caches.match(event.request)),
-  );
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
+  const plan = self.strategyFor(url.pathname, event.request.method);
+  if (plan === "cache-first") {
+    event.respondWith(
+      caches.match(event.request).then((hit) => hit || fetch(event.request)),
+    );
+  } else if (plan === "network-first") {
+    event.respondWith(
+      fetch(event.request).catch(async () => {
+        return (
+          (await caches.match(event.request)) ||
+          (await caches.match("/")) ||
+          new Response(self.offlineDocument(), {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          })
+        );
+      }),
+    );
+  }
+  // network-first-nosave: the plain network path, nothing is recorded.
 });
 
 self.addEventListener("push", (event) => {

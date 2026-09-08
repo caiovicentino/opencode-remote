@@ -31,9 +31,102 @@ import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 
+import { buildAskDialog, canConfirmAskValue } from "../apps/web/src/lib/askdialog";
+
+import {
+  classifyFrame,
+  hintVerdict,
+  readClearControl,
+  RECONNECT_HINT_VERIFY_MS,
+  REHANDSHAKE_MIN_INTERVAL_MS,
+} from "../apps/web/src/lib/framegate";
+
+import {
+  SW_SWAP_MESSAGE,
+  SW_UPDATE_MIN_INTERVAL_MS,
+  demoForced,
+  swUpdatePlan,
+  type SwUpdateInput,
+} from "../apps/web/src/lib/swupdate";
+
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
 
+import {
+  PUSH_SUBSCRIPTION_MAX_ENDPOINT_LENGTH,
+  PUSH_SUBSCRIPTIONS_MAX,
+  pushSubscriptionVerdict,
+  redactPushEndpoint,
+} from "../apps/daemon/src/pushsubs";
+
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
+import { relayDialVerdict, RELAY_DIAL_FLOOR_MS } from "../apps/daemon/src/relaydialerror";
+import {
+  DEFAULT_RUN_LEASE_MS,
+  RUN_LEASE_CEILING_MS,
+  RUN_LEASE_KILL_MESSAGE,
+  RUN_LEASE_OFF_MS,
+  leaseVerdict,
+  parseRunLease,
+  type RoutineRunFacts,
+} from "../apps/daemon/src/routinelease";
+import {
+  ROUTINE_DUE_DELAY_WINDOW_MIN,
+  ROUTINE_DUE_EXHAUSTED_MESSAGE,
+  ROUTINE_DUE_MAX_ATTEMPTS,
+  routineDue,
+  type RoutineDueFacts,
+} from "../apps/daemon/src/routinedue";
+import {
+  ROUTINE_HISTORY_CAP,
+  appendRoutineHistory,
+  isRoutineHistoryRecord,
+  normalizeRoutineHistory,
+  recordRoutineTrigger,
+  type RoutineHistoryRecord,
+} from "../apps/daemon/src/routinehistory";
+import { sttVerdict } from "../apps/daemon/src/voicecap";
+import {
+  CONVERTER_PREFERENCE,
+  CUPSFILTER_PATHS,
+  NATIVE_EXTS,
+  SOFFICE_EXTS,
+  SOFFICE_PATHS,
+  TEXTUTIL_PATHS,
+  docConvertProbe,
+  docConvertVerdict,
+} from "../apps/daemon/src/doccap";
+import {
+  IDENTITY_FIRST_RUN_MESSAGE,
+  IDENTITY_REFUSE_CONTENT_MESSAGE,
+  IDENTITY_REFUSE_READ_MESSAGE,
+  IDENTITY_USE_MESSAGE,
+  identityVerdict,
+  quarantineName,
+  type IdentityVerdict,
+} from "../apps/daemon/src/identityfile";
+import {
+  ROUTINES_FIRST_RUN_MESSAGE,
+  ROUTINES_REFUSE_CONTENT_MESSAGE,
+  ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE,
+  ROUTINES_REFUSE_READ_MESSAGE,
+  ROUTINES_USE_MESSAGE,
+  routinesVerdict,
+  type RoutinesVerdict,
+} from "../apps/daemon/src/routinesfile";
+import {
+  backupName,
+  backupWritePlan,
+  identityRecoveryPlan,
+} from "../apps/daemon/src/identitybackup";
+import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
+import { MIN_OPENCODE_VERSION, parseVersion, versionVerdict } from "../apps/daemon/src/opencodever";
+import {
+  DISK_ALERT_FREE_BYTES,
+  DISK_ALERT_FREE_FRACTION,
+  DISK_WARN_FREE_BYTES,
+  DISK_WARN_FREE_FRACTION,
+  diskVerdict,
+} from "../apps/daemon/src/diskguard";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
@@ -66,6 +159,118 @@ import {
   WEB_APP_URL_MAX_LEN,
 } from "../apps/desktop/src/webappurl";
 import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/desktop/src/pairlink";
+import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
+import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
+import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
+import { TRAY_TIP_MAX_CHARS, trayStatus } from "../apps/desktop/src/traystatus";
+import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
+import { loginItemMessage, loginItemPlan } from "../apps/desktop/src/loginitem";
+import { uninstallCleanupPlan, UNINSTALL_REMOVABLE_NAMES } from "../apps/desktop/src/uninstallplan";
+import { readStartupDecided, startupSettingFile, writeStartupDecided } from "../apps/desktop/src/startupstore";
+import {
+  QUIT_BUTTON_INDEX,
+  QUIT_BUTTON_NEVER,
+  QUIT_BUTTON_QUIT,
+  QUIT_BUTTON_STAY,
+  QUIT_DIALOG_DETAIL,
+  QUIT_DIALOG_MESSAGE,
+  QUIT_DIALOG_TITLE,
+  quitVerdict,
+} from "../apps/desktop/src/quithint";
+import {
+  dataWipeVerdict,
+  isAbsoluteDataRoot,
+  isFilesystemRoot,
+  WIPE_BUTTON_CANCEL,
+  WIPE_BUTTON_INDEX,
+  WIPE_BUTTON_NEXT,
+  WIPE_BUTTON_WIPE,
+  WIPE_DIALOG_TITLE,
+  WIPE_REASON_HARNESS,
+  WIPE_REASON_NOTHING,
+  WIPE_REASON_ROOT,
+  WIPE_REASON_UNCONFIRMED,
+  WIPE_REASON_WIPE,
+  WIPE_STEP1_DETAIL,
+  WIPE_STEP1_MESSAGE,
+  WIPE_STEP2_DETAIL,
+  WIPE_STEP2_MESSAGE,
+  wipePlannedChildren,
+  type WipeReport,
+} from "../apps/desktop/src/datawipe";
+import {
+  hangVerdict,
+  HANG_BUTTON_INDEX,
+  HANG_BUTTON_RELOAD,
+  HANG_BUTTON_WAIT,
+  HANG_DIALOG_THRESHOLD_MS,
+  HANG_DIALOG_TITLE,
+  HANG_NOTIFY_TITLE,
+  HANG_WARN_THRESHOLD_MS,
+} from "../apps/desktop/src/hangwatch";
+import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "../apps/desktop/src/quitstore";
+import {
+  accelerationPlan,
+  GPU_CRASH_CEILING,
+  GPU_CRASH_WINDOW_MS,
+  GPU_STATE_ZEROED,
+  gpuVerdict,
+  isGpuProcess,
+  sanitizeGpuState,
+  NOTIFY_GPU_DISABLED_BODY,
+} from "../apps/desktop/src/gpuplan";
+import {
+  bootHealthVerdict,
+  BOOT_HEALTH_BUTTON_CONTINUE,
+  BOOT_HEALTH_BUTTON_DIAGNOSTIC,
+  BOOT_HEALTH_DIALOG_DETAIL,
+  BOOT_HEALTH_DIALOG_MESSAGE,
+  BOOT_HEALTH_DIALOG_TITLE,
+  BOOT_HEALTH_OPENING_FLOOR,
+  normalizeBootHealthRecord,
+  type BootHealthRecord,
+} from "../apps/desktop/src/boothealth";
+import {
+  bootHealthRecordFile,
+  markOpeningInProgress,
+  promoteHealthyOpening,
+  readBootHealthRecord,
+  type BootHealthFs,
+} from "../apps/desktop/src/boothealthstore";
+import {
+  CHROMIUM_ERR_ABORTED,
+  LOAD_FAIL_MAX_ATTEMPTS,
+  LOAD_FAIL_RETRY_DELAY_MS,
+  LOAD_FAILURE_ZEROED,
+  LOAD_FAIL_USER_MESSAGE,
+  loadFailMessage,
+  loadFailVerdict,
+  sanitizeLoadFailure,
+} from "../apps/desktop/src/loadfail";
+import { installBlocksUpdate } from "../apps/desktop/src/update";
+import { winDownloadDecision } from "../apps/desktop/src/winupdate";
+import {
+  isWakeEventType,
+  RESPAWN_WAIT_CEILING_MS,
+  WAKE_DEBOUNCE_MS,
+  WAKE_EVENT_TYPES,
+  wakePlan,
+  type WakePlanInput,
+  type WakePlanVerdict,
+} from "../apps/desktop/src/wakeplan";
+import {
+  PROXY_LOOPBACK_EXCEPTIONS,
+  PROXY_SCHEMES,
+  parseProxyAddress,
+  proxyPlan,
+} from "../apps/desktop/src/proxyplan";
+import {
+  clearProxyChoice,
+  proxySettingFile,
+  readProxyChoice,
+  writeProxyChoice,
+} from "../apps/desktop/src/proxystore";
+import { proxyApplyDecision } from "../apps/desktop/src/proxyapply";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -86,6 +291,11 @@ import {
   nextDeviceLabel,
   touchDecision,
 } from "../apps/daemon/src/devicetouch";
+import {
+  DEVICE_STALE_LONG_WINDOW_MS,
+  DEVICE_STALE_SHORT_WINDOW_MS,
+  deviceStaleVerdict,
+} from "../apps/daemon/src/devicestale";
 
 import {
   admitNewUpload,
@@ -102,11 +312,35 @@ import {
   UPLOAD_MAX_MB_CEILING,
 } from "../apps/daemon/src/chunkstore";
 
+import {
+  DEFAULT_DOWNLOAD_MAX_MB,
+  DEFAULT_MAX_OPEN_DOWNLOADS,
+  DOWNLOAD_FILE_ABOVE_CAP_MESSAGE,
+  DOWNLOAD_MAX_MB_CEILING,
+  DOWNLOAD_TOO_MANY_OPEN_MESSAGE,
+  downloadCapLimits,
+  downloadVerdict as downloadStartVerdict,
+  evictOldestKeys,
+} from "../apps/daemon/src/downloadcap";
+
 import { classifyUpstream, UPSTREAM_PROBE_TIMEOUT_MS } from "../apps/daemon/src/upstream";
 
 import { opencodeCandidates, pickOpencodeBinary } from "../apps/daemon/src/opencodebin";
 
 import { copyText, hasClipboardApi, legacyCopy } from "../apps/web/src/lib/clipboard";
+
+import {
+  pastePlan,
+  PASTE_FALLBACK_FILE_NAME,
+  PASTE_FALLBACK_IMAGE_NAME,
+  PASTE_MAX_ITEM_BYTES,
+  PASTE_MAX_ITEMS,
+  PASTE_REFUSE_ITEM_BYTES,
+  PASTE_REFUSE_TOO_MANY,
+  type PasteItem,
+} from "../apps/web/src/lib/pasteattach";
+
+import { copyPlan, COPY_UNAVAILABLE_NOTHING, type CopyPart } from "../apps/web/src/lib/copymsg";
 
 import { mimeFor } from "../apps/web/src/lib/files";
 
@@ -117,6 +351,13 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
 import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import {
+  MACHINE_ROW_ORDER,
+  MACHINE_SEVERITY_DOT,
+  readinessRows,
+  summarize,
+  type MachineReadinessRow,
+} from "../apps/web/src/lib/machinestate";
 
 import { WELCOME_DONE, shouldShowWelcome } from "../apps/web/src/lib/welcome";
 
@@ -131,8 +372,21 @@ import { recencyGroup, groupByRecency, startOfLocalDay } from "../apps/web/src/l
 import { accountInitial, accountPlanKey } from "../apps/web/src/lib/account";
 
 import { toggleArchived, ARCHIVED_MAX } from "../apps/web/src/lib/archive";
+import {
+  INSTALL_HINT_DISMISSED_KEY,
+  INSTALL_HINT_MESSAGE,
+  installHintVerdict,
+  parseInstallHintDismissed,
+  serializeInstallHintDismissed,
+} from "../apps/web/src/lib/installhint";
 
 import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
+import {
+  ROUTINE_HISTORY_VIEW_CAP,
+  formatDurationMs,
+  routineHistoryRows,
+  type RoutineHistoryRow,
+} from "../apps/web/src/lib/routinehistoryview";
 
 import {
   capMessagePage,
@@ -141,6 +395,8 @@ import {
   sliceMessagePage,
   PAGE_LIMIT_MAX,
 } from "../apps/daemon/src/paginate";
+
+import { backlogSections, queueView } from "../apps/daemon/src/backlogview";
 
 import {
   dropCachedSession,
@@ -287,6 +543,58 @@ import { dirname, join } from "node:path";
 import { MAX_ARTIFACT_BYTES, MAX_ARTIFACTS_LISTED, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, validSegment, type ArtifactMeta } from "../apps/daemon/src/artifacts";
 
 import {
+  RETENTION_DISABLE_ENV,
+  RETENTION_GRACE_MS,
+  RETENTION_INTERVAL_MS,
+  RETENTION_MAX_AGE_DAYS,
+  RETENTION_MAX_TOTAL_BYTES,
+  RETENTION_MIN_SESSIONS,
+  retentionDisabled,
+  retentionPlan,
+  type RetentionEntry,
+} from "../apps/daemon/src/artifactretention";
+
+import {
+  UPLOAD_RETENTION_DEFAULTS,
+  UPLOAD_RETENTION_DISABLE_ENV,
+  UPLOAD_RETENTION_GRACE_HOURS,
+  UPLOAD_RETENTION_MAX_AGE_DAYS,
+  UPLOAD_RETENTION_MAX_BYTES_CEILING,
+  UPLOAD_RETENTION_MAX_TOTAL_BYTES,
+  UPLOAD_RETENTION_MIN_FILES,
+  parseUploadRetention,
+  uploadRetentionDisabled,
+  uploadRetentionPlan,
+  type UploadEntry,
+} from "../apps/daemon/src/uploadretention";
+
+import {
+  CLIP_RETENTION_DEFAULTS,
+  CLIP_RETENTION_DISABLE_ENV,
+  CLIP_RETENTION_GRACE_HOURS,
+  CLIP_RETENTION_GRACE_HOURS_CEILING,
+  CLIP_RETENTION_MAX_AGE_DAYS,
+  CLIP_RETENTION_MAX_AGE_DAYS_CEILING,
+  CLIP_RETENTION_MAX_BYTES_CEILING,
+  CLIP_RETENTION_MAX_TOTAL_BYTES,
+  CLIP_RETENTION_MIN_GROUPS,
+  CLIP_RETENTION_MIN_GROUPS_CEILING,
+  clipRetentionDisabled,
+  clipRetentionPlan,
+  parseClipRetention,
+  type ClipGroup,
+} from "../apps/daemon/src/clipretention";
+
+import {
+  READINESS_DEFAULT_INTERVAL_MS,
+  READINESS_DISABLE_ENV,
+  READINESS_INTERVAL_CEILING_MS,
+  READINESS_INTERVAL_ENV,
+  parseReadinessKnobs,
+  readinessRefreshPlan,
+} from "../apps/daemon/src/readiness";
+
+import {
   ARTIFACTS_MARKER,
   buildArtifactsPathLine,
   buildArtifactsPrompt,
@@ -344,8 +652,9 @@ import {
 } from "../apps/pilot/src/gateprofile";
 
 import { browseTarget, clickPoint, validSession, viewportFromParams } from "../apps/daemon/src/browse";
+import { browseReadiness } from "../apps/daemon/src/browsecap";
 
-import { createShutdown, DRAIN_MS, stopAccepting } from "../apps/daemon/src/shutdown";
+import { createShutdown, DRAIN_MS, isSidecarStopMessage, stopAccepting } from "../apps/daemon/src/shutdown";
 
 import {
   createShutdown as relayCreateShutdown,
@@ -355,6 +664,10 @@ import {
 } from "../apps/relay/src/shutdown";
 
 import { tlsPlan } from "../apps/relay/src/tlsconfig";
+import { certExpiryVerdict, CERT_CLOCK_TOLERANCE_MS, CERT_WARN_WINDOW_MS } from "../apps/relay/src/certexpiry";
+import { certReloadVerdict, type CertPairImpression, type CertReloadOutcome } from "../apps/relay/src/certreload";
+import { certChainVerdict, type CertChainVerdict } from "../apps/relay/src/certchain";
+import { healthzPayload } from "../apps/relay/src/healthz";
 
 import { makeIpTagger, UNKNOWN_IP_TAG, IP_TAG_LENGTH } from "../apps/relay/src/iptag";
 
@@ -368,6 +681,44 @@ import {
 } from "../apps/relay/src/knobs";
 
 import { resolveLogLevel, shouldLog, LOG_LEVELS, LOG_LEVEL_DEFAULT } from "../apps/relay/src/loglevel";
+
+import {
+  parseBufferCap,
+  sendVerdict,
+  BUFFER_CAP_ENV,
+  BUFFER_CAP_DEFAULT,
+  BUFFER_CAP_CEILING,
+  SLOW_CONSUMER_CLOSE_CODE,
+  SLOW_CONSUMER_CLOSE_REASON,
+} from "../apps/relay/src/backpressure";
+
+import {
+  acceptVerdict,
+  parseMaxSockets,
+  CAPACITY_REFUSE_REASON,
+  MAX_SOCKETS_GLOBAL_CEILING,
+  MAX_SOCKETS_GLOBAL_DEFAULT,
+  MAX_SOCKETS_GLOBAL_ENV,
+} from "../apps/relay/src/capacity";
+
+import {
+  idleUnjoined,
+  parseJoinDeadline,
+  JOIN_DEADLINE_MS_CEILING,
+  JOIN_DEADLINE_MS_DEFAULT,
+  JOIN_DEADLINE_MS_DISABLED,
+  JOIN_DEADLINE_MS_ENV,
+  JOIN_UNJOINED_CLOSE_CODE,
+  JOIN_UNJOINED_CLOSE_REASON,
+  type JoinDeadlinePeer,
+} from "../apps/relay/src/joindeadline";
+
+import {
+  assetIntegrityPlan,
+  indexAssetPlan,
+  WEB_INDEX_MAX_BYTES,
+  type AssetProbe,
+} from "../apps/relay/src/webroot";
 
 import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
@@ -433,6 +784,11 @@ import type { PilotConfig } from "../apps/pilot/src/state";
 import { overlayVisible, phonePaired, localPairing } from "../apps/desktop/src/pairing";
 
 import { classifySidecarExit } from "../apps/desktop/src/sidecarexit";
+import {
+  planSidecarStop,
+  SIDECAR_STOP_GRACE_MS,
+  type SidecarStopStep,
+} from "../apps/desktop/src/sidecarstop";
 
 import {
   createSidecarRedactor,
@@ -446,9 +802,30 @@ import { candidatePorts, pickDaemonPort } from "../apps/desktop/src/daemonport";
 
 import { versionMismatch } from "../apps/desktop/src/versions";
 
-import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource } from "../apps/desktop/src/tray";
+import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "../apps/desktop/src/tray";
+import { updateGuard, UPDATE_GUARD_RELEASE_LABEL } from "../apps/desktop/src/updateguard";
+import { readOwnerRelease, writeOwnerRelease, type StoredBootHealthRecord } from "../apps/desktop/src/boothealthstore";
+import { buildDiagnosticReport } from "../apps/desktop/src/diagnostics";
 
 import { menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
+import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLabels } from "../apps/desktop/src/shelllang";
+import {
+  DEFAULT_ZOOM_LEVEL,
+  MAX_ZOOM_LEVEL,
+  MIN_ZOOM_LEVEL,
+  sanitizeZoom,
+  ZOOM_STEP,
+  zoomStartupPlan,
+  zoomVerdict,
+} from "../apps/desktop/src/zoomlevel";
+import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "../apps/desktop/src/ctxmenu";
+import {
+  acceleratorProblem,
+  defaultHotkeyFor,
+  hotkeyPlan,
+  HOTKEY_DISABLE_ENV,
+  HOTKEY_MAX_LEN,
+} from "../apps/desktop/src/hotkey";
 
 import { badgePlan } from "../apps/desktop/src/badge";
 
@@ -476,11 +853,37 @@ import {
   UPDATE_RECHECK_MIN_MS,
 } from "../apps/desktop/src/updateschedule";
 
+import { UPDATE_DOWNLOADED_TRAY_LABEL, UPDATE_REMIND_LIMITS, updateReminderPlan } from "../apps/desktop/src/updateremind";
+
+import { UPDATE_PROGRESS_LABEL_DOWNLOADING, UPDATE_PROGRESS_LABEL_STUCK, UPDATE_PROGRESS_LIMITS, updateProgressView } from "../apps/desktop/src/updateprogress";
+
+import {
+  UPDATE_SPACE_HEADROOM_BYTES,
+  UPDATE_SPACE_LABEL_DOWNLOAD,
+  UPDATE_SPACE_LABEL_POSTPONED,
+  UPDATE_SPACE_LABEL_POSTPONED_UNKNOWN,
+  UPDATE_SPACE_LABEL_SIZE_UNKNOWN,
+  UPDATE_SPACE_LABEL_WARN,
+  UPDATE_SPACE_LIMITS,
+  UPDATE_SPACE_SIZE_MULTIPLIER,
+  updateSpaceVerdict,
+} from "../apps/desktop/src/updatespace";
+
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 
 import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 
 import { externalOpenDecision } from "../apps/desktop/src/extlink";
+
+import {
+  downloadVerdict,
+  DOWNLOAD_LIMITS,
+  DOWNLOAD_MAX_BYTES,
+  DOWNLOAD_NAME_MAX,
+  DOWNLOAD_PHRASES,
+  safeDownloadName,
+  uniqueDownloadName,
+} from "../apps/desktop/src/downloadplan";
 
 import { guestAttachDecision, guestNavigationDecision } from "../apps/desktop/src/webviewguard";
 
@@ -517,6 +920,7 @@ import {
   avgDoneDuration,
   buildCards,
   buildForensicIndex,
+  dataTask,
   progressOf,
   shotsForTask,
   shotPath,
@@ -526,6 +930,13 @@ import {
 } from "../apps/daemon/src/pilotforensic";
 
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
+
+import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
+import { candidatePaths } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
+import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
+import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
+
+import { daemonVerdict, MODULE_RESOLUTION_RE } from "../apps/desktop/scripts/packaged-daemon-verdict.mjs";
 
 import {
   AUDIO_ENTITLEMENT,
@@ -537,7 +948,19 @@ import {
   privacyProblems,
 } from "./mac-privacy";
 
-import { touchesDesktop } from "./ci-scope";
+import { touchesDesktop, touchesPortableSuite, touchesRelayImage } from "./ci-scope";
+
+import { PORTABLE_TESTS, portableSuitePlan } from "./portable-suite";
+
+import { PORTABLE_EXCLUSION_CAUSES, PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
+
+import { bootSmokeParity, feedHashParity, parseWorkflowJobs, type WorkflowJob, type WorkflowStep } from "./bootsmokeparity";
+
+import { JOB_TIMEOUT_CEILING_MINUTES, jobTimeoutProblems, type JobTimeoutDeclaration, type JobTimeoutFacts } from "./jobtimeouts";
+
+import { collectJobTimeouts, normalizeTimeoutDeclaration } from "./check-job-timeouts";
+
+import { feedHashProblems, parseLatestYmlEntries } from "./feedhash";
 
 import { imageTags } from "./relay-image";
 
@@ -546,15 +969,57 @@ import { imageSmokeVerdict } from "./relay-image-smoke";
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 import { publishDecision } from "./release-publish";
 
-import { gatekeeperProblems } from "./gatekeeper-verify";
+import { dmgProblems, gatekeeperProblems } from "./gatekeeper-verify";
 
 import { authenticodeProblems } from "./authenticode-verify";
 
 import { checksumLines, checksumProblems, MANIFEST_NAME } from "./release-checksums";
 
-import { feedProblems } from "./feed-consistency";
+import { applyGuide, downloadGuide, GUIDE_END, GUIDE_START } from "./release-notes";
+
+import { archFeedProblems, archOfFileName, feedProblems } from "./feed-consistency";
 
 import { BUNDLE_BUDGETS, budgetProblems, type BundleEntry } from "./bundle-budget";
+import {
+  buildWingetManifests,
+  wingetProblems,
+  WINGET_PACKAGE_ID,
+  WINGET_RELEASES_BASE,
+  type WingetManifestDoc,
+} from "./wingetmanifest";
+import {
+  buildCaskManifest,
+  caskProblems,
+  CASK_FILE_NAME,
+  CASK_IDENTIFIER,
+  CASK_RELEASES_BASE,
+  type CaskManifest,
+} from "./caskmanifest";
+import {
+  AUDIT_SEVERITY_FLOOR,
+  auditVerdict,
+  type AuditAdvisory,
+  type AuditExemption,
+  type AuditSeverity,
+} from "./auditverdict";
+import { parseWorkflowPermissions } from "./check-workflow-perms";
+import {
+  BROAD_WRITE_SCOPE,
+  workflowPermsVerdict,
+  type WorkflowJobPerms,
+  type WorkflowScopeAllowlist,
+} from "./workflowperms";
+import { actionPinsVerdict, COMMIT_SHA_PATTERN, type ActionRef } from "./actionpins";
+import { parseWorkflowActionRefs } from "./check-action-pins";
+import {
+  INTEGRITY_ALGORITHM,
+  isInternalOrigin,
+  lockIntegrityVerdict,
+  originAccepted,
+  type LockEntry,
+  type LockExemption,
+} from "./lockintegrity";
+import { normalizeLockEntries } from "./check-lock-integrity";
 
 
 let failures = 0;
@@ -711,7 +1176,7 @@ check("main.ts routes every shell.openExternal through the extlink decision", op
 
 check("main.ts imports externalOpenDecision", mainTsSource.includes('from "./extlink"'));
 
-check("main.ts consults externalOpenDecision twice (window-open + release page)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 2);
+check("main.ts consults externalOpenDecision four times (window-open + release page + context menu + download gate)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 4);
 
 
 
@@ -841,6 +1306,170 @@ check("permissions.ts is pure (no fetch)", !permissionsSource.includes("fetch(")
 
 
 
+// --- microphone access verdict (P2-312) --------------------------------------
+
+import { micAccessVerdict, MIC_PANEL_MACOS, MIC_PANEL_WINDOWS } from "../apps/desktop/src/micaccess";
+
+const micExpected: Array<[string, string]> = [
+  ["granted", "ready"],
+  ["not-determined", "will-ask"],
+  ["denied", "blocked-by-system"],
+  ["restricted", "blocked-by-system"],
+  ["unknown", "unknown"],
+];
+
+const micPlatformTargets: Array<[string, string | null]> = [
+  ["darwin", MIC_PANEL_MACOS],
+  ["win32", MIC_PANEL_WINDOWS],
+  ["linux", null],
+];
+
+for (const [platform, expectedTarget] of micPlatformTargets) {
+  for (const [status, expectedVerdict] of micExpected) {
+    const verdict = micAccessVerdict(platform, status);
+    check(`micAccessVerdict ${platform}/${status} → ${expectedVerdict}`, verdict.verdict === expectedVerdict);
+    check(`micAccessVerdict ${platform}/${status} phrase non-empty`, typeof verdict.phrase === "string" && verdict.phrase.length > 0);
+    check(`micAccessVerdict ${platform}/${status} target`, verdict.settingsTarget === expectedTarget);
+  }
+  // absent + non-textual input fails closed on every platform
+  for (const absent of [undefined, null, "", 42, {}, ["denied"]]) {
+    const verdict = micAccessVerdict(platform, absent as unknown);
+    const label = typeof absent === "undefined" ? "absent" : JSON.stringify(absent) || String(absent);
+    check(`micAccessVerdict ${platform} fails closed on ${label}`, verdict.verdict === "unknown");
+    check(`micAccessVerdict ${platform} fail-closed phrase non-empty`, verdict.phrase.length > 0);
+    check(`micAccessVerdict ${platform} fail-closed target unchanged`, verdict.settingsTarget === expectedTarget);
+  }
+}
+
+// the same input twice must answer the exact same verdict
+const micTwice = [micAccessVerdict("darwin", "denied"), micAccessVerdict("darwin", "denied")];
+check(
+  "micAccessVerdict is deterministic for the same input",
+  JSON.stringify(micTwice[0]) === JSON.stringify(micTwice[1]) && micTwice[0].phrase === micTwice[1].phrase,
+);
+
+// static pt-BR sentences: no path, no user name, no address
+const micPhrases = ["granted", "not-determined", "denied", "restricted", "unknown", "", null, 42].map((s) =>
+  micAccessVerdict("darwin", s as unknown).phrase,
+);
+check(
+  "micAccessVerdict phrases carry no path, user or address",
+  micPhrases.every((p) => p.length > 0 && !p.includes("/") && !p.includes("\\") && !p.includes("@") && !p.includes("http")),
+);
+
+// micaccess.ts stays pure: no electron, no node:fs, no I/O — so the unit test
+// always exercises the real mapping.
+const micAccessSource = readFileSync(new URL("../apps/desktop/src/micaccess.ts", import.meta.url), "utf8");
+check("micaccess.ts is pure (no electron import)", !micAccessSource.includes('from "electron"'));
+check("micaccess.ts is pure (no node:fs import)", !micAccessSource.includes("node:fs"));
+check("micaccess.ts is pure (no node builtins, no fetch, no I/O)", !micAccessSource.includes("node:") && !micAccessSource.includes("require(") && !micAccessSource.includes("fetch("));
+
+// wiring: the main process answers app:micAccess through the pure verdict,
+// reading the OS state at request time; the preload bridge exposes the read.
+check("main.ts imports the mic access module", mainTsSource.includes('from "./micaccess"'));
+check("main.ts registers app:micAccess exactly once", (mainTsSource.match(/app:micAccess/g) ?? []).length === 1);
+check("main.ts reads the mic status at request time", mainTsSource.includes('getMediaAccessStatus("microphone")'));
+check("main.ts answers app:micAccess with the shared verdict", mainTsSource.includes("micAccessVerdict(process.platform,"));
+const preloadSource = readFileSync(new URL("../apps/desktop/src/preload.ts", import.meta.url), "utf8");
+check("preload exposes getMicAccess through the existing bridge", preloadSource.includes("getMicAccess") && preloadSource.includes("app:micAccess"));
+
+// the panel opening rides the existing external-link gate: both OS panel
+// targets must pass externalOpenDecision unchanged.
+check("externalOpenDecision admits the macOS mic panel target", externalOpenDecision(MIC_PANEL_MACOS).allow);
+check("externalOpenDecision admits the Windows mic panel target", externalOpenDecision(MIC_PANEL_WINDOWS).allow);
+
+// the composer swaps the phrase only when the shell bridge is present, and the
+// new copy exists in both languages of the dictionary.
+const chatViewSource = readFileSync(new URL("../apps/web/src/components/ChatView.tsx", import.meta.url), "utf8");
+check("ChatView asks the shell for the mic verdict", chatViewSource.includes("getMicAccess"));
+const i18nSource = readFileSync(new URL("../apps/web/src/lib/i18n.ts", import.meta.url), "utf8");
+check(
+  "mic copy exists in both languages",
+  (i18nSource.match(/micDeniedIos:/g) ?? []).length === 2 && (i18nSource.match(/micOpenPanel:/g) ?? []).length === 2 && (i18nSource.match(/micNoMicrophone:/g) ?? []).length === 2,
+);
+
+
+
+// --- camera access verdict (P2-319) -------------------------------------------
+
+import { camAccessVerdict, CAM_PANEL_MACOS, CAM_PANEL_WINDOWS } from "../apps/desktop/src/camaccess";
+
+const camExpected: Array<[string, string]> = [
+  ["granted", "ready"],
+  ["not-determined", "will-ask"],
+  ["denied", "blocked-by-system"],
+  ["restricted", "blocked-by-system"],
+  ["unknown", "unknown"],
+];
+
+const camPlatformTargets: Array<[string, string | null]> = [
+  ["darwin", CAM_PANEL_MACOS],
+  ["win32", CAM_PANEL_WINDOWS],
+  ["linux", null],
+];
+
+for (const [platform, expectedTarget] of camPlatformTargets) {
+  for (const [status, expectedVerdict] of camExpected) {
+    const verdict = camAccessVerdict(platform, status);
+    check(`camAccessVerdict ${platform}/${status} → ${expectedVerdict}`, verdict.verdict === expectedVerdict);
+    check(`camAccessVerdict ${platform}/${status} phrase non-empty`, typeof verdict.phrase === "string" && verdict.phrase.length > 0);
+    check(`camAccessVerdict ${platform}/${status} target`, verdict.settingsTarget === expectedTarget);
+  }
+  // absent + non-textual input fails closed on every platform
+  for (const absent of [undefined, null, "", 42, {}, ["denied"]]) {
+    const verdict = camAccessVerdict(platform, absent as unknown);
+    const label = typeof absent === "undefined" ? "absent" : JSON.stringify(absent) || String(absent);
+    check(`camAccessVerdict ${platform} fails closed on ${label}`, verdict.verdict === "unknown");
+    check(`camAccessVerdict ${platform} fail-closed phrase non-empty`, verdict.phrase.length > 0);
+    check(`camAccessVerdict ${platform} fail-closed target unchanged`, verdict.settingsTarget === expectedTarget);
+  }
+}
+
+// the same input twice must answer the exact same verdict
+const camTwice = [camAccessVerdict("darwin", "denied"), camAccessVerdict("darwin", "denied")];
+check(
+  "camAccessVerdict is deterministic for the same input",
+  JSON.stringify(camTwice[0]) === JSON.stringify(camTwice[1]) && camTwice[0].phrase === camTwice[1].phrase,
+);
+
+// static pt-BR sentences: no path, no user name, no address
+const camPhrases = ["granted", "not-determined", "denied", "restricted", "unknown", "", null, 42].map((s) =>
+  camAccessVerdict("darwin", s as unknown).phrase,
+);
+check(
+  "camAccessVerdict phrases carry no path, user or address",
+  camPhrases.every((p) => p.length > 0 && !p.includes("/") && !p.includes("\\") && !p.includes("@") && !p.includes("http")),
+);
+
+// camaccess.ts stays pure: no electron, no node:fs, no I/O — so the unit test
+// always exercises the real mapping.
+const camAccessSource = readFileSync(new URL("../apps/desktop/src/camaccess.ts", import.meta.url), "utf8");
+check("camaccess.ts is pure (no electron import)", !camAccessSource.includes('from "electron"'));
+check("camaccess.ts is pure (no node:fs import)", !camAccessSource.includes("node:fs"));
+check("camaccess.ts is pure (no node builtins, no fetch, no I/O)", !camAccessSource.includes("node:") && !camAccessSource.includes("require(") && !camAccessSource.includes("fetch("));
+
+// wiring: the main process answers app:camAccess through the pure verdict,
+// reading the OS state at request time; the preload bridge exposes the read.
+check("main.ts imports the camera access module", mainTsSource.includes('from "./camaccess"'));
+check("main.ts registers app:camAccess exactly once", (mainTsSource.match(/app:camAccess/g) ?? []).length === 1);
+check("main.ts reads the camera status at request time", mainTsSource.includes('getMediaAccessStatus("camera")'));
+check("main.ts answers app:camAccess with the shared verdict", mainTsSource.includes("camAccessVerdict(process.platform,"));
+check("preload exposes getCamAccess through the existing bridge", preloadSource.includes("getCamAccess") && preloadSource.includes("app:camAccess"));
+
+// the panel opening rides the existing external-link gate: both OS panel
+// targets must pass externalOpenDecision unchanged.
+check("externalOpenDecision admits the macOS camera panel target", externalOpenDecision(CAM_PANEL_MACOS).allow);
+check("externalOpenDecision admits the Windows camera panel target", externalOpenDecision(CAM_PANEL_WINDOWS).allow);
+
+// the scanner swaps the phrase only when the shell bridge is present, and the
+// new copy exists in both languages of the dictionary.
+const qrScannerSource = readFileSync(new URL("../apps/web/src/components/QrScanner.tsx", import.meta.url), "utf8");
+check("QrScanner asks the shell for the camera verdict", qrScannerSource.includes("getCamAccess"));
+check("QrScanner keeps the dictionary phrase when the bridge is absent", qrScannerSource.includes("scanErr_") && qrScannerSource.includes("camVerdict?.phrase"));
+check("camera copy exists in both languages", (i18nSource.match(/camOpenPanel:/g) ?? []).length === 2);
+
+
+
 // --- guest webContents guard (P2-184) ----------------------------------------
 
 const httpAttach = guestAttachDecision("http://localhost:3000/", {}, undefined);
@@ -948,6 +1577,74 @@ check("webviewguard.ts is pure (no electron import)", !webviewGuardSource.includ
 check("webviewguard.ts is pure (no node builtins)", !webviewGuardSource.includes("node:fs") && !webviewGuardSource.includes("node:path") && !webviewGuardSource.includes("node:os") && !webviewGuardSource.includes("node:child_process"));
 
 check("webviewguard.ts is pure (no fetch)", !webviewGuardSource.includes("fetch("));
+
+
+
+// --- RT-341: frame gate — liveness only on sealed frames ---------------------
+
+check("framegate RECONNECT_HINT_VERIFY_MS is 1500", RECONNECT_HINT_VERIFY_MS === 1500);
+
+check("framegate REHANDSHAKE_MIN_INTERVAL_MS is 10s", REHANDSHAKE_MIN_INTERVAL_MS === 10_000);
+
+const framegateSource = readFileSync(new URL("../apps/web/src/lib/framegate.ts", import.meta.url), "utf8");
+
+check("framegate.ts is pure (no fs/fetch/WebSocket/DOM)", !/node:fs|fetch\(|WebSocket|document\./.test(framegateSource));
+
+const gateFrame = { from: "roomx", self: "client1", room: "roomx", clearType: null as string | null, status: "paired" };
+
+check("classifyFrame ignores a missing from", classifyFrame({ ...gateFrame, from: undefined }) === "ignore");
+
+check("classifyFrame ignores self-sourced frames", classifyFrame({ ...gateFrame, from: "client1" }) === "ignore");
+
+check("classifyFrame ignores frames from outside the daemon room", classifyFrame({ ...gateFrame, from: "attacker" }) === "ignore");
+
+check("classifyFrame routes a clear reconnect to hint", classifyFrame({ ...gateFrame, clearType: "reconnect" }) === "hint");
+
+check("classifyFrame routes a clear pong to pong-clear", classifyFrame({ ...gateFrame, clearType: "pong" }) === "pong-clear");
+
+check("classifyFrame defaults a paired-room frame to sealed", classifyFrame({ ...gateFrame }) === "sealed");
+
+check("classifyFrame demands confirmation before pairing", classifyFrame({ ...gateFrame, status: "connecting", clearType: "reconnect" }) === "confirm");
+
+const hintNow = 1_000_000;
+
+check("hintVerdict ignores while already verifying", hintVerdict({ verifying: true, rehandshaking: false, lastRehandshakeAt: 0 }, hintNow) === "ignore");
+
+check("hintVerdict ignores while rehandshaking", hintVerdict({ verifying: false, rehandshaking: true, lastRehandshakeAt: 0 }, hintNow) === "ignore");
+
+check("hintVerdict ignores inside the 10s flood floor", hintVerdict({ verifying: false, rehandshaking: false, lastRehandshakeAt: hintNow - 9_999 }, hintNow) === "ignore");
+
+check("hintVerdict verifies at the 10s flood floor", hintVerdict({ verifying: false, rehandshaking: false, lastRehandshakeAt: hintNow - 10_000 }, hintNow) === "verify");
+
+check("readClearControl tolerates null", readClearControl(null) === null);
+
+check("readClearControl tolerates {}", readClearControl({}) === null);
+
+check("readClearControl tolerates a wrong field type", readClearControl({ type: 42 }) === null);
+
+check("readClearControl tolerates a bare string", readClearControl("reconnect") === null);
+
+check("readClearControl reads reconnect", readClearControl({ type: "reconnect" }) === "reconnect");
+
+check("readClearControl reads pong", readClearControl({ type: "pong" }) === "pong");
+
+// Source pins on the real client.ts: liveness may only move through
+// markAlive(), and the only rehandshake() call must sit in the hint-verify
+// timer callback — never directly on a clear frame.
+const clientSource = readFileSync(new URL("../apps/web/src/lib/client.ts", import.meta.url), "utf8");
+const onMessageAt = clientSource.indexOf("private async onMessage");
+const parseAt = clientSource.indexOf("frame = JSON.parse", onMessageAt);
+const onMessageHead = clientSource.slice(onMessageAt, parseAt);
+
+check("onMessage touches no liveness state before parsing the frame", !onMessageHead.includes("lastSeen =") && !onMessageHead.includes("awaitingPong = false"));
+
+check("client.ts never compares a clear type to \"reconnect\"", !clientSource.includes('=== "reconnect"'));
+
+check("client.ts calls rehandshake() from exactly one place", (clientSource.match(/this\.rehandshake\(\)/g) ?? []).length === 1);
+
+const lastRehandshakeAt = clientSource.indexOf("lastRehandshakeAt = Date.now()");
+const rehandshakeCall = clientSource.indexOf("this.rehandshake()");
+check("the only rehandshake() call comes from the hint-verify timer callback", lastRehandshakeAt > -1 && rehandshakeCall > lastRehandshakeAt);
 
 
 
@@ -1390,10 +2087,27 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("singleton survives garbage pidfile", readFileSync(pidFile, "utf8").trim() === String(process.pid));
 
     // child traps SIGTERM so the 2s grace expires and the SIGKILL path must fire
-    holder = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'], {
-      stdio: "ignore",
+    holder = spawn(
+      process.execPath,
+      ["-e", 'process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);'],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    // P3-336 round 3: a fixed 300ms sleep raced the child's boot — under heavy
+    // machine load (a second slot running this same battery) SIGTERM could
+    // land before the trap existed and the child died with SIGTERM instead of
+    // surviving to the SIGKILL (flaked 5/30 under load). The child now
+    // signals readiness on stdout; waiting for it is load-independent.
+    await new Promise<void>((resolve, reject) => {
+      const guard = setTimeout(() => reject(new Error("child never signaled readiness")), 10_000);
+      holder!.stdout!.once("data", () => {
+        clearTimeout(guard);
+        resolve();
+      });
+      holder!.once("error", (err) => {
+        clearTimeout(guard);
+        reject(err);
+      });
     });
-    await new Promise((r) => setTimeout(r, 300)); // let the child install its SIGTERM handler
     writeFileSync(pidFile, String(holder.pid));
     const exited = new Promise<string>((resolve) => holder!.once("exit", (_code, signal) => resolve(String(signal))));
     await ensureSingleton(pidFile);
@@ -5270,6 +5984,168 @@ check(
 }
 
 
+// --- P2-252: tray status = sidecar + relay link + paired phones (traystatus.ts) --
+{
+  // Full rule table. Rule 1 first: sidecar down wins over everything — even
+  // with a connected link and phones paired, without the local process nothing
+  // works and no other fact may leak into the phrase.
+  const down = trayStatus(false, "connected", 3);
+  check(
+    "P2-252: sidecar down with connected link and many phones → the sidecar-down phrase",
+    down.tooltip.includes("processo local fora do ar") &&
+      down.menuLine.includes("Processo local fora do ar") &&
+      !down.tooltip.includes("tudo pronto") &&
+      !down.menuLine.includes("Tudo pronto"),
+  );
+  // Rule order proven: sidecar down AND zero phones hold at the same time —
+  // the result is still the sidecar-down phrase, never the invite.
+  const downZero = trayStatus(false, "connected", 0);
+  check(
+    "P2-252: sidecar down and zero phones at once → sidecar-down wins (rule order)",
+    downZero.tooltip === down.tooltip &&
+      downZero.menuLine === down.menuLine &&
+      !downZero.menuLine.includes("pareado"),
+  );
+
+  // Rule 2: refused, misconfigured, dialing and unknown each carry their OWN
+  // phrase (sidecar up, phones irrelevant for these states).
+  const refused = trayStatus(true, "refused", 2);
+  const misconfigured = trayStatus(true, "misconfigured", 2);
+  const dialing = trayStatus(true, "dialing", 2);
+  const unknown = trayStatus(true, "unknown", 2);
+  const localWithPhones = trayStatus(true, "local", 2);
+  const ready = trayStatus(true, "connected", 1);
+  const invite = trayStatus(true, "connected", 0);
+  const inviteLocal = trayStatus(true, "local", 0);
+  check(
+    "P2-252: each link state carries its own distinct phrase",
+    refused.tooltip.includes("relay recusou a conexão") &&
+      misconfigured.tooltip.includes("recusado na partida") &&
+      dialing.tooltip.includes("conectando ao relay") &&
+      unknown.tooltip.includes("sem informação do relay") &&
+      localWithPhones.tooltip.includes("rede local") &&
+      ready.tooltip.includes("tudo pronto") &&
+      new Set([refused.tooltip, misconfigured.tooltip, dialing.tooltip, unknown.tooltip, localWithPhones.tooltip, ready.tooltip]).size === 6,
+  );
+  // Rule 3: with the sidecar up and the link connected or local, zero phones
+  // is the invite-to-pair phrase.
+  check(
+    "P2-252: connected link with zero phones → invite to pair",
+    invite.menuLine.includes("Nenhum telefone pareado") && invite.menuLine.includes("escaneie o código"),
+  );
+  check(
+    "P2-252: local link with zero phones → invite to pair too",
+    inviteLocal.menuLine === invite.menuLine && inviteLocal.tooltip === invite.tooltip,
+  );
+  // Rule 4: the remaining case — connected with phones — is the all-ready phrase.
+  check(
+    "P2-252: connected link with one phone → all ready",
+    ready.tooltip.includes("tudo pronto") && ready.menuLine.includes("Tudo pronto"),
+  );
+
+  // Fail-closed phone count: text, non-finite, fractional and negative are all
+  // treated as zero — never guessed, so a nonsense count can never read "ready".
+  check(
+    "P2-252: a textual phone count is treated as zero (fail-closed)",
+    trayStatus(true, "connected", "3").tooltip === invite.tooltip,
+  );
+  check(
+    "P2-252: non-finite phone counts (NaN, Infinity) are treated as zero",
+    trayStatus(true, "connected", Number.NaN).tooltip === invite.tooltip &&
+      trayStatus(true, "connected", Number.POSITIVE_INFINITY).tooltip === invite.tooltip,
+  );
+  check(
+    "P2-252: a negative phone count is treated as zero",
+    trayStatus(true, "connected", -1).tooltip === invite.tooltip,
+  );
+  check(
+    "P2-252: a fractional phone count is treated as zero",
+    trayStatus(true, "connected", 1.5).tooltip === invite.tooltip,
+  );
+
+  // A link state the module does not know falls to the neutral phrase instead
+  // of throwing — absence of information is never an accusation.
+  check(
+    "P2-252: an unrecognized link state falls to the neutral phrase (no throw)",
+    trayStatus(true, "alguma-coisa-nova", 1).tooltip === unknown.tooltip &&
+      trayStatus(true, null, 1).tooltip === unknown.tooltip &&
+      trayStatus(true, undefined, 1).tooltip === unknown.tooltip,
+  );
+
+  // Determinism: the same input mints the same output on every call.
+  const once = trayStatus(true, "connected", 1);
+  const twice = trayStatus(true, "connected", 1);
+  check(
+    "P2-252: identical input → identical output across calls",
+    once.tooltip === twice.tooltip && once.menuLine === twice.menuLine,
+  );
+
+  // Every phrase is static and secret-free: no path separator, no URL scheme,
+  // no address/port (no digits at all) in anything the module can emit.
+  const everyCase = [
+    down, downZero, refused, misconfigured, dialing, unknown, localWithPhones, ready, invite, inviteLocal,
+    trayStatus(true, "local", 5),
+  ];
+  check(
+    "P2-252: every phrase is path-free, scheme-free and carries no address/port/secret",
+    everyCase.every(
+      (s) =>
+        !s.tooltip.includes("/") &&
+        !s.tooltip.includes("\\") &&
+        !s.tooltip.includes("http") &&
+        !/[0-9]/.test(s.tooltip) &&
+        !s.menuLine.includes("/") &&
+        !s.menuLine.includes("\\") &&
+        !s.menuLine.includes("http") &&
+        !/[0-9]/.test(s.menuLine),
+    ),
+  );
+  // Windows truncates long tray tooltips — every tooltip must fit the budget
+  // the module documents.
+  check(
+    "P2-252: every tooltip fits the documented maximum size",
+    everyCase.every((s) => s.tooltip.length > 0 && s.tooltip.length <= TRAY_TIP_MAX_CHARS),
+  );
+
+  // Real-source: the module stays pure — it imports no electron, no node:fs
+  // and no fetch, so the same blocks run anywhere plain Node runs.
+  const trayStatusSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "traystatus.ts"), "utf8");
+  check(
+    "P2-252: the real traystatus.ts imports no electron, no node:fs and no fetch",
+    trayStatusSrc
+      .split("\n")
+      .filter((line) => line.trimStart().startsWith("import "))
+      .every((line) => !line.includes("electron") && !line.includes("node:fs") && !line.includes("fetch")),
+  );
+
+  // Real-source: main.ts wiring — one tooltip write path, no new periodic
+  // timer, existing tray items in their original order.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-252: the tray tooltip is written by a single call site in main.ts",
+    (mainSrc.match(/setToolTip\(/g) ?? []).length === 1 && mainSrc.includes("if (trayStatusKey === key) return;"),
+  );
+  check(
+    "P2-252: no new periodic timer — the pairing watcher remains the only 3s driver",
+    (mainSrc.match(/setInterval\(/g) ?? []).length === 2,
+  );
+  check(
+    "P2-252: the tray rides the pairing tick's already-computed link verdict and device count",
+    mainSrc.includes('updateTrayStatus(true, quietLocal ? "local" : relayLink?.state ?? null, devices.length)'),
+  );
+  const trayAt = mainSrc.indexOf("function trayMenuItems");
+  const trayBlock = trayAt >= 0 ? mainSrc.slice(trayAt, mainSrc.indexOf("return items;", trayAt)) : "";
+  check(
+    "P2-252: the status line is the first, disabled tray item and the existing items keep their order",
+    trayBlock.includes("{ label: trayMenuLine, enabled: false }") &&
+      trayBlock.indexOf("trayMenuLine") < trayBlock.indexOf('"Open OpenCode Remote"') &&
+      trayBlock.indexOf('"Open OpenCode Remote"') < trayBlock.indexOf('"Restart daemon"') &&
+      trayBlock.indexOf('"Restart daemon"') < trayBlock.indexOf('"Open logs folder"') &&
+      trayBlock.indexOf('"Open logs folder"') < trayBlock.indexOf('"Quit"'),
+  );
+}
+
+
 // --- desktop closehint: one-time close-to-tray hint plan (P2-152) ----------------
 {
   // Flag absent ⇒ notify; darwin speaks of the menu bar, win32/linux of the
@@ -5397,12 +6273,13 @@ check(
     check(`P2-176: ${id} is labeled "${label}"`, byId(go, id)?.label === label);
   }
 
-  // 3. the macOS app submenu: darwin-only, quit keeps its role with the
-  //    pt-BR label, and no other platform carries it.
+  // 3. the macOS app submenu: darwin-only, quit is the P2-221 id-wired item
+  //    (same explicitQuit path as the tray) with the pt-BR label, and no
+  //    other platform carries an app submenu.
   const appMenu = mac[0];
-  const quitItem = appMenu?.submenu?.find((i) => i.role === "quit");
+  const quitItem = appMenu?.submenu?.find((i) => i.id === "app-quit");
   check(
-    "P2-176: darwin app submenu with about/hide/quit and pt-BR quit label",
+    "P2-176: darwin app submenu with about/hide and the pt-BR quit item",
     appMenu?.label === "OpenCode Remote" &&
       appMenu.submenu?.some((i) => i.role === "about") === true &&
       appMenu.submenu?.some((i) => i.role === "hide") === true &&
@@ -5462,6 +6339,1321 @@ check(
   check(
     "P2-176: main.ts buildMenu consumes menuSpec with no inline labels",
     buildMenuSrc.includes("menuSpec(") && !buildMenuSrc.includes("label:") && !buildMenuSrc.includes("accelerator:"),
+  );
+}
+
+
+// --- P2-276: shell language (apps/desktop/src/shelllang.ts) ---------------------
+{
+  const en = shellLabels("en");
+  const pt = shellLabels("pt");
+
+  const tableValues = (t: ShellLabels): string[] => [
+    ...Object.values(t.menu),
+    ...Object.values(t.tray).flatMap((p) => [p.tooltip, p.menuLine]),
+  ];
+
+  // 1. the full shellLang rule table, in the documented rule order.
+  // Rule 1+3: a missing preference lets the system decide — Portuguese prefix → pt.
+  check(
+    "P2-276: absent preference + pt system (pt, pt-BR, PT-BR) → pt by system",
+    shellLang(null, "pt-BR", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang(null, "pt", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang(undefined, "PT-br", SUPPORTED_SHELL_LANGS).lang === "pt",
+  );
+  check(
+    "P2-276: absent preference + pt system reports the system origin",
+    shellLang(null, "pt-BR", SUPPORTED_SHELL_LANGS).origin === "system",
+  );
+  // Rule 1+4: a missing preference with an unknown system language → en (safe default).
+  check(
+    "P2-276: absent preference + unknown system (es-ES, empty, non-text) → en by default",
+    shellLang(null, "es-ES", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang(undefined, "", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang(null, null, SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang(null, 42, SUPPORTED_SHELL_LANGS).lang === "en",
+  );
+  // Rule 1: a non-textual or out-of-list preference is discarded, never guessed —
+  // the system language decides afterwards (or the default takes over).
+  check(
+    "P2-276: non-textual preferences (number, object, array, bool) are discarded",
+    shellLang(1, "pt-BR", SUPPORTED_SHELL_LANGS).origin === "system" &&
+      shellLang({}, "pt-BR", SUPPORTED_SHELL_LANGS).origin === "system" &&
+      shellLang(["pt"], "en-US", SUPPORTED_SHELL_LANGS).origin === "default" &&
+      shellLang(true, "en-US", SUPPORTED_SHELL_LANGS).origin === "default",
+  );
+  check(
+    "P2-276: empty, blank and out-of-list textual preferences are discarded",
+    shellLang("", "pt-BR", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang("   ", "en-US", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang("es", "en-US", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      // Case-sensitive by design: "PT" is not the documented code — no guessing.
+      shellLang("PT", "en-US", SUPPORTED_SHELL_LANGS).lang === "en",
+  );
+  // Rule 2: a supported preference wins over the system — both directions.
+  check(
+    "P2-276: supported preference wins over the system (en pref + pt system → en)",
+    shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS).lang === "en" &&
+      shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS).origin === "preference",
+  );
+  check(
+    "P2-276: supported preference wins over the system (pt pref + en system → pt)",
+    shellLang("pt", "en-US", SUPPORTED_SHELL_LANGS).lang === "pt" &&
+      shellLang("pt", "en-US", SUPPORTED_SHELL_LANGS).origin === "preference",
+  );
+  // Rule 5: deterministic — same inputs, same decision, twice.
+  check(
+    "P2-276: identical inputs produce an identical decision across two calls",
+    JSON.stringify(shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS)) ===
+      JSON.stringify(shellLang("en", "pt-BR", SUPPORTED_SHELL_LANGS)) &&
+      JSON.stringify(shellLang(null, "pt", SUPPORTED_SHELL_LANGS)) ===
+        JSON.stringify(shellLang(null, "pt", SUPPORTED_SHELL_LANGS)),
+  );
+
+  // 2. shellLabels: exact key parity between en and pt, locked.
+  check(
+    "P2-276: shellLabels menu tables have exact key parity between en and pt",
+    JSON.stringify(Object.keys(en.menu)) === JSON.stringify(Object.keys(pt.menu)),
+  );
+  check(
+    "P2-276: shellLabels tray tables have exact key parity between en and pt",
+    JSON.stringify(Object.keys(en.tray)) === JSON.stringify(Object.keys(pt.tray)),
+  );
+  check(
+    "P2-276: every tray state carries both a tooltip and a menu line in both languages",
+    ["en", "pt"].every((l) => Object.values(shellLabels(l as "en" | "pt").tray).every((p) => p.tooltip.length > 0 && p.menuLine.length > 0)),
+  );
+
+  // 3. no empty label, no emoji, no label over the documented ceiling, and
+  //    no path, address, port or secret anywhere in the vocabulary.
+  const allLabels = [...tableValues(en), ...tableValues(pt)];
+  check(
+    "P2-276: no label is empty and none exceeds the documented tray ceiling",
+    allLabels.every((s) => s.length > 0 && s.length <= TRAY_TIP_MAX_CHARS),
+  );
+  check(
+    "P2-276: no label carries an emoji (P2-107)",
+    allLabels.every((s) => !/\p{Extended_Pictographic}/u.test(s)),
+  );
+  check(
+    "P2-276: no label carries a path, URL scheme, address, port or secret",
+    allLabels.every(
+      (s) =>
+        !s.includes("/") &&
+        !s.includes("\\") &&
+        !/:\d/.test(s) &&
+        !/localhost|127\.0\.0\.1|0x[0-9a-f]/i.test(s) &&
+        !/token|secret|password|api[- ]?key/i.test(s),
+    ),
+  );
+
+  // 4. menuSpec consumes the table: the en spec is the pt spec, translated —
+  //    same ids, same order, same accelerators, same actions (P1-046 contract).
+  const specIds = (items: MenuItemSpec[]): string[] =>
+    items.flatMap((i) => (i.id ? [i.id] : i.submenu ? specIds(i.submenu) : []));
+  const specAccel = (items: MenuItemSpec[]): string[] =>
+    items.flatMap((i) => (i.accelerator ? [i.accelerator] : i.submenu ? specAccel(i.submenu) : []));
+  for (const platform of ["darwin", "win32", "linux"]) {
+    const ptSpec = menuSpec(platform, null, false, null, undefined, pt);
+    const enSpec = menuSpec(platform, null, false, null, undefined, en);
+    check(
+      `P2-276: en and pt specs share ids and order on ${platform}`,
+      JSON.stringify(specIds(ptSpec)) === JSON.stringify(specIds(enSpec)),
+    );
+    check(
+      `P2-276: en and pt specs share accelerators on ${platform}`,
+      JSON.stringify(specAccel(ptSpec)) === JSON.stringify(specAccel(enSpec)),
+    );
+    check(
+      `P2-276: en and pt specs differ in the actual labels on ${platform}`,
+      JSON.stringify(ptSpec.map((i) => i.label)) !== JSON.stringify(enSpec.map((i) => i.label)),
+    );
+  }
+
+  // 5. real-source: no visible phrase remains literal in menu.ts — every
+  //    quoted string in the file must be an id/accelerator/action, never a
+  //    label from either table.
+  const menuSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "menu.ts"), "utf8");
+  const literals = (menuSrc.match(/"([^"\\\n]|\\.)*"/g) ?? []).map((s) => s.slice(1, -1));
+  check(
+    "P2-276: the real menu.ts carries no visible phrase as a literal — labels come from the table",
+    literals.length > 0 && literals.every((lit) => !allLabels.includes(lit)),
+  );
+  check(
+    "P2-276: the real menu.ts consumes the shell vocabulary (labels param)",
+    menuSrc.includes("labels.menu.") && menuSrc.includes("labels: ShellLabels"),
+  );
+
+  // 6. real-source: shelllang.ts stays pure — no electron, no node:fs, no
+  //    node:path, no I/O, so the same blocks run anywhere plain Node runs.
+  const shellLangSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "shelllang.ts"), "utf8");
+  check(
+    "P2-276: the real shelllang.ts imports no electron, no node:fs and no node:path",
+    shellLangSrc
+      .split("\n")
+      .filter((line) => line.trimStart().startsWith("import "))
+      .every((line) => !line.includes("electron") && !line.includes("node:fs") && !line.includes("node:path")),
+  );
+
+  // 7. real-source: main.ts wiring — the one-way push rebuilds both OS
+  //    surfaces through the existing single write paths (no new timers).
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-276: main.ts listens on ocr:shell-lang and rebuilds menu + tray via applyShellLanguage",
+    mainSrc.includes('ipcMain.on("ocr:shell-lang"') &&
+      mainSrc.includes("applyShellLanguage()") &&
+      mainSrc.includes("shellLang(raw, app.getLocale(), SUPPORTED_SHELL_LANGS)"),
+  );
+  check(
+    "P2-276: main.ts feeds the resolved table to both surfaces",
+    mainSrc.includes("currentShellLabels()") &&
+      (mainSrc.match(/currentShellLabels\(\)/g) ?? []).length >= 2,
+  );
+}
+
+
+// --- P2-238: remembered zoom level (apps/desktop/src/zoomlevel.ts) ---------------
+{
+  const viewItems = (level: number | undefined) => {
+    const view = menuSpec("darwin", null, false, null, level).find((i) => i.label === "Visualizar");
+    return (view?.submenu ?? []).filter((i) => i.id?.startsWith("view-zoom-"));
+  };
+  const byId = (items: MenuItemSpec[], id: string) => items.find((i) => i.id === id);
+
+  // 1. sanitizeZoom full table: whatever the disk yields, a valid level comes
+  //    out and nothing ever throws.
+  check("P2-238: sanitizeZoom — absent state becomes the default", sanitizeZoom(undefined) === DEFAULT_ZOOM_LEVEL);
+  check("P2-238: sanitizeZoom — text becomes the default", sanitizeZoom("big") === DEFAULT_ZOOM_LEVEL);
+  check(
+    "P2-238: sanitizeZoom — non-finite values become the default",
+    sanitizeZoom(Number.NaN) === DEFAULT_ZOOM_LEVEL && sanitizeZoom(Number.POSITIVE_INFINITY) === DEFAULT_ZOOM_LEVEL && sanitizeZoom(Number.NEGATIVE_INFINITY) === DEFAULT_ZOOM_LEVEL,
+  );
+  check(
+    "P2-238: sanitizeZoom — wrong types (null/bool/object/array) become the default",
+    sanitizeZoom(null) === DEFAULT_ZOOM_LEVEL &&
+      sanitizeZoom(true) === DEFAULT_ZOOM_LEVEL &&
+      sanitizeZoom({ level: 2 }) === DEFAULT_ZOOM_LEVEL &&
+      sanitizeZoom([2]) === DEFAULT_ZOOM_LEVEL,
+  );
+  check("P2-238: sanitizeZoom — below the minimum becomes the minimum", sanitizeZoom(-99) === MIN_ZOOM_LEVEL);
+  check("P2-238: sanitizeZoom — above the maximum becomes the maximum", sanitizeZoom(99) === MAX_ZOOM_LEVEL);
+  check(
+    "P2-238: sanitizeZoom — valid levels (integer and fractional) pass through",
+    sanitizeZoom(0) === 0 && sanitizeZoom(2.3) === 2.3 && sanitizeZoom(MIN_ZOOM_LEVEL) === MIN_ZOOM_LEVEL && sanitizeZoom(MAX_ZOOM_LEVEL) === MAX_ZOOM_LEVEL,
+  );
+
+  // 2. zoomVerdict table: one step per click, honest limit flags, restore
+  //    always lands on the default.
+  const up = zoomVerdict(DEFAULT_ZOOM_LEVEL, "increase");
+  check(
+    "P2-238: zoomVerdict — increase from the default moves exactly one step up",
+    up.level === DEFAULT_ZOOM_LEVEL + ZOOM_STEP && up.atLimit === false,
+  );
+  const down = zoomVerdict(DEFAULT_ZOOM_LEVEL, "decrease");
+  check(
+    "P2-238: zoomVerdict — decrease from the default moves exactly one step down",
+    down.level === DEFAULT_ZOOM_LEVEL - ZOOM_STEP && down.atLimit === false,
+  );
+  const atCeiling = zoomVerdict(MAX_ZOOM_LEVEL, "increase");
+  check(
+    "P2-238: zoomVerdict — increase at the ceiling keeps the level and flags the limit",
+    atCeiling.level === MAX_ZOOM_LEVEL && atCeiling.atLimit === true,
+  );
+  const atFloor = zoomVerdict(MIN_ZOOM_LEVEL, "decrease");
+  check(
+    "P2-238: zoomVerdict — decrease at the floor keeps the level and flags the limit",
+    atFloor.level === MIN_ZOOM_LEVEL && atFloor.atLimit === true,
+  );
+  check(
+    "P2-238: zoomVerdict — restore always returns the default",
+    zoomVerdict(MAX_ZOOM_LEVEL, "restore").level === DEFAULT_ZOOM_LEVEL &&
+      zoomVerdict(MIN_ZOOM_LEVEL, "restore").level === DEFAULT_ZOOM_LEVEL &&
+      zoomVerdict(2.3, "restore").level === DEFAULT_ZOOM_LEVEL &&
+      zoomVerdict(DEFAULT_ZOOM_LEVEL, "restore").atLimit === true,
+  );
+  check(
+    "P2-238: zoomVerdict — stable between two calls with the same input",
+    JSON.stringify(zoomVerdict(1.4, "increase")) === JSON.stringify(zoomVerdict(1.4, "increase")) &&
+      JSON.stringify(zoomVerdict(1.4, "restore")) === JSON.stringify(zoomVerdict(1.4, "restore")),
+  );
+  let sweepInBounds = true;
+  for (const level of [-99, -3, 0, 0.5, 2.3, 6, 99, "x", undefined, Number.NaN]) {
+    for (const action of ["increase", "decrease", "restore"] as const) {
+      const v = zoomVerdict(level, action);
+      sweepInBounds = sweepInBounds && v.level >= MIN_ZOOM_LEVEL && v.level <= MAX_ZOOM_LEVEL;
+    }
+  }
+  check("P2-238: zoomVerdict — no verdict ever leaves the documented range", sweepInBounds);
+
+  // 3. Startup plan: the harness-session rule is FIRST — the default level
+  //    even when the state on disk says otherwise, and persist=false so
+  //    nothing zoom-related is ever written (stable evidence framing).
+  check(
+    "P2-238: harness session — default level, nothing persisted, even with out-of-default saved state",
+    zoomStartupPlan({ harnessSession: true, saved: 4 }).level === DEFAULT_ZOOM_LEVEL &&
+      zoomStartupPlan({ harnessSession: true, saved: 4 }).persist === false &&
+      zoomStartupPlan({ harnessSession: true, saved: -2.5 }).persist === false,
+  );
+  check(
+    "P2-238: non-harness — absent/garbage state falls back to the default and persists",
+    zoomStartupPlan({ harnessSession: false, saved: undefined }).level === DEFAULT_ZOOM_LEVEL &&
+      zoomStartupPlan({ harnessSession: false, saved: "corrupted" }).level === DEFAULT_ZOOM_LEVEL &&
+      zoomStartupPlan({ harnessSession: false, saved: undefined }).persist === true,
+  );
+  check(
+    "P2-238: non-harness — a remembered level survives the roundtrip",
+    zoomStartupPlan({ harnessSession: false, saved: 2 }).level === 2 &&
+      zoomStartupPlan({ harnessSession: false, saved: 99 }).level === MAX_ZOOM_LEVEL,
+  );
+
+  // 4. Persistence shape: the zoom field is additive in window-state.json.
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }];
+  const zoomDir = mkdtempSync(join(tmpdir(), "ocr-zoom-"));
+  const zoomFile = windowStateFile(zoomDir);
+  check(
+    "P2-238: window-state roundtrip preserves the zoom level",
+    saveWindowBounds(zoomFile, { x: 1, y: 2, width: 1280, height: 820, zoom: 2 }) &&
+      loadWindowBounds(zoomFile, displays).zoom === 2 &&
+      JSON.parse(readFileSync(zoomFile, "utf8")).zoom === 2,
+  );
+  writeFileSync(zoomFile, JSON.stringify({ x: 7, y: 8, width: 1600, height: 900 }), "utf8");
+  check(
+    "P2-238: legacy file without the zoom field stays valid and means the default",
+    loadWindowBounds(zoomFile, displays).zoom === undefined,
+  );
+  writeFileSync(zoomFile, JSON.stringify({ x: 7, y: 8, width: 1600, height: 900, zoom: 99 }), "utf8");
+  check(
+    "P2-238: out-of-range zoom on disk is clamped at load time",
+    loadWindowBounds(zoomFile, displays).zoom === MAX_ZOOM_LEVEL,
+  );
+  rmSync(zoomDir, { recursive: true, force: true });
+
+  // 5. The View menu renders the verdict: items go disabled at their limit
+  //    instead of pretending the click did something.
+  const mid = viewItems(1);
+  check(
+    "P2-238: View menu — mid-range level leaves every zoom item enabled",
+    mid.length === 3 && mid.every((i) => i.enabled !== false),
+  );
+  check(
+    "P2-238: View menu — at the ceiling only Ampliar is disabled",
+    byId(viewItems(MAX_ZOOM_LEVEL), "view-zoom-in")?.enabled === false &&
+      byId(viewItems(MAX_ZOOM_LEVEL), "view-zoom-out")?.enabled !== false,
+  );
+  check(
+    "P2-238: View menu — at the floor only Reduzir is disabled",
+    byId(viewItems(MIN_ZOOM_LEVEL), "view-zoom-out")?.enabled === false &&
+      byId(viewItems(MIN_ZOOM_LEVEL), "view-zoom-in")?.enabled !== false,
+  );
+  check(
+    "P2-238: View menu — Tamanho padrão is disabled while already at the default",
+    byId(viewItems(DEFAULT_ZOOM_LEVEL), "view-zoom-reset")?.enabled === false,
+  );
+  check(
+    "P2-238: View menu — legacy menuSpec callers keep every zoom item enabled",
+    viewItems(undefined).every((i) => i.enabled === undefined),
+  );
+  const zoomSpec = viewItems(1);
+  check(
+    "P2-238: View menu — same labels and accelerators the native roles had, no emoji, no roles",
+    byId(zoomSpec, "view-zoom-reset")?.label === "Tamanho padrão" &&
+      byId(zoomSpec, "view-zoom-reset")?.accelerator === "CmdOrCtrl+0" &&
+      byId(zoomSpec, "view-zoom-in")?.label === "Ampliar" &&
+      byId(zoomSpec, "view-zoom-in")?.accelerator === "CmdOrCtrl+Plus" &&
+      byId(zoomSpec, "view-zoom-out")?.label === "Reduzir" &&
+      byId(zoomSpec, "view-zoom-out")?.accelerator === "CmdOrCtrl+-" &&
+      zoomSpec.every((i) => i.role === undefined),
+  );
+
+  // 6. The real main.ts/menu.ts: the harness rule is consulted first, the
+  //    level persists through the existing window-state path and no periodic
+  //    timer came with the feature.
+  const menuTsSource = readFileSync(new URL("../apps/desktop/src/menu.ts", import.meta.url), "utf8");
+  const zoomTsSource = readFileSync(new URL("../apps/desktop/src/zoomlevel.ts", import.meta.url), "utf8");
+  const planAt = mainTsSource.indexOf("zoomStartupPlan({");
+  const firstApplyAt = mainTsSource.indexOf("setZoomLevel");
+  check(
+    "P2-238: main.ts consults the harness-session rule before anything applies a zoom level",
+    planAt >= 0 && firstApplyAt > planAt && mainTsSource.slice(planAt, planAt + 120).includes("harnessSession: HERMETIC_E2E"),
+  );
+  const saveAt = mainTsSource.indexOf("saveWindowBounds(stateFile, {");
+  const closeBlock = saveAt >= 0 ? mainTsSource.slice(saveAt, mainTsSource.indexOf("});", saveAt)) : "";
+  check(
+    "P2-238: main.ts persists the level through the same window-state path as the bounds",
+    closeBlock.includes("getNormalBounds()") && closeBlock.includes("zoom:") && closeBlock.includes("zoomPersistable"),
+  );
+  check(
+    "P2-238: the zoom wiring introduces no periodic timer",
+    mainTsSource
+      .split("\n")
+      .filter((l) => l.includes("setZoomLevel") || l.includes("zoomStartupPlan"))
+      .every((l) => !l.includes("setInterval") && !l.includes("setTimeout")) &&
+      !/setInterval|setTimeout/.test(zoomTsSource),
+  );
+  check(
+    "P2-238: zoomlevel.ts keeps the pure-module hygiene (no electron, no fs, no I/O)",
+    zoomTsSource
+      .split("\n")
+      .filter((l) => l.trim().startsWith("import "))
+      .every((l) => !/electron|node:fs|node:path|node:os|node:child_process/.test(l)) &&
+      !/setInterval|setTimeout/.test(zoomTsSource),
+  );
+  check(
+    "P2-238: menu.ts no longer carries the native zoom roles",
+    !menuTsSource.includes('"resetZoom"') && !menuTsSource.includes('"zoomIn"') && !menuTsSource.includes('"zoomOut"'),
+  );
+}
+
+
+// --- P2-244: GPU crash plan (apps/desktop/src/gpuplan.ts) ------------------------
+{
+  const now = 1_700_000_000_000;
+  const st = (count: number, windowStart: number) => ({ count, windowStart });
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\\\");
+  const json = (v: unknown) => JSON.stringify(v);
+
+  // 1. sanitizeGpuState full table: whatever the disk yields, a valid state
+  //    comes out and nothing ever throws.
+  check("P2-244: sanitizeGpuState — absent state becomes zeroed", json(sanitizeGpuState(undefined, now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState(null, now)) === json(GPU_STATE_ZEROED));
+  check("P2-244: sanitizeGpuState — text becomes zeroed", json(sanitizeGpuState("corrupt", now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState("3", now)) === json(GPU_STATE_ZEROED));
+  check(
+    "P2-244: sanitizeGpuState — non-finite values become zeroed",
+    json(sanitizeGpuState(st(Number.NaN, now), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(st(Number.POSITIVE_INFINITY, now), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(st(1, Number.NEGATIVE_INFINITY), now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — negative values become zeroed",
+    json(sanitizeGpuState(st(-1, now), now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState(st(2, -5), now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — wrong-typed fields become zeroed",
+    json(sanitizeGpuState(st("2", now), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(st(2, "now"), now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState(true, now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState([2], now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — missing fields become zeroed",
+    json(sanitizeGpuState({}, now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState({ count: 2 }, now)) === json(GPU_STATE_ZEROED) &&
+      json(sanitizeGpuState({ windowStart: now }, now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — a window starting in the future becomes zeroed",
+    json(sanitizeGpuState(st(2, now + 1), now)) === json(GPU_STATE_ZEROED) && json(sanitizeGpuState(st(2, now + 9_999), now)) === json(GPU_STATE_ZEROED),
+  );
+  check(
+    "P2-244: sanitizeGpuState — a valid state passes through unchanged",
+    json(sanitizeGpuState(st(2, now - 100), now)) === json(st(2, now - 100)) && json(sanitizeGpuState(st(0, now), now)) === json(st(0, now)),
+  );
+
+  // 2. gpuVerdict table: rules in the documented order, one plan per call.
+  check(
+    "P2-244: gpuVerdict — a non-GPU child process always ignores and accumulates nothing",
+    gpuVerdict(st(2, now), now, "renderer").plan === "ignore" &&
+      gpuVerdict(st(2, now), now, "utility").plan === "ignore" &&
+      gpuVerdict(st(2, now), now, "GPU").plan !== "ignore" &&
+      isGpuProcess("GPU") &&
+      !isGpuProcess("renderer"),
+  );
+  const ignored = gpuVerdict(st(2, now), now, "renderer");
+  check("P2-244: gpuVerdict — ignore leaves the state untouched", json(ignored.state) === json(st(2, now)));
+  const first = gpuVerdict(GPU_STATE_ZEROED, now, "GPU");
+  check(
+    "P2-244: gpuVerdict — the first GPU crash only logs, counting one",
+    first.plan === "log" && first.state.count === 1 && first.state.windowStart === now,
+  );
+  // Walk the window: the crash that lands the count EXACTLY on the ceiling
+  // (GPU_CRASH_CEILING, explicit here) is the one that orders the disable.
+  let walk = GPU_STATE_ZEROED;
+  const walkPlans: string[] = [];
+  for (let i = 0; i < GPU_CRASH_CEILING; i++) {
+    const v = gpuVerdict(walk, now, "GPU");
+    walkPlans.push(v.plan);
+    walk = v.state;
+  }
+  check(
+    `P2-244: gpuVerdict — exactly ${GPU_CRASH_CEILING} crashes in the window end in disable, the last at the ceiling`,
+    walkPlans[0] === "log" && walkPlans[1] === "log" && walkPlans[GPU_CRASH_CEILING - 1] === "disable" && walk.count === GPU_CRASH_CEILING,
+  );
+  check(
+    "P2-244: gpuVerdict — a count above the ceiling disables as well",
+    gpuVerdict(st(GPU_CRASH_CEILING + 2, now), now, "GPU").plan === "disable",
+  );
+  const expired = gpuVerdict(st(99, now - GPU_CRASH_WINDOW_MS - 1), now, "GPU");
+  check(
+    "P2-244: gpuVerdict — an expired window zeroes the count BEFORE any comparison",
+    expired.plan === "log" && expired.state.count === 1 && expired.state.windowStart === now,
+  );
+  const inWindow = gpuVerdict(st(99, now - GPU_CRASH_WINDOW_MS + 1), now, "GPU");
+  check("P2-244: gpuVerdict — a live window keeps counting toward the disable", inWindow.plan === "disable");
+  check(
+    "P2-244: gpuVerdict — the returned count is never negative",
+    gpuVerdict(GPU_STATE_ZEROED, now, "GPU").state.count >= 0 && gpuVerdict(st(-5, now), now, "GPU").state.count >= 0,
+  );
+  check(
+    "P2-244: gpuVerdict — stable between two calls with the same input",
+    json(gpuVerdict(st(1, now), now, "GPU")) === json(gpuVerdict(st(1, now), now, "GPU")) &&
+      json(gpuVerdict(st(9, now), now, "renderer")) === json(gpuVerdict(st(9, now), now, "renderer")),
+  );
+  check(
+    "P2-244: gpuVerdict — every generated phrase is path-free and scheme-free",
+    [first.reason, expired.reason, inWindow.reason, NOTIFY_GPU_DISABLED_BODY].every(noSlash),
+  );
+
+  // 3. accelerationPlan table: the harness rule is FIRST — enable even with a
+  //    state above the ceiling — then absent/zeroed enables, at/above the
+  //    ceiling inside the window disables.
+  const aboveCeiling = st(GPU_CRASH_CEILING + 6, now);
+  const harnessPlan = accelerationPlan({ harnessSession: true, state: aboveCeiling, nowMs: now });
+  check(
+    "P2-244: accelerationPlan — harness session enables and persists nothing even above the ceiling",
+    harnessPlan.action === "enable" && harnessPlan.persist === false,
+  );
+  check(
+    "P2-244: accelerationPlan — rule order proven: harness beats an above-ceiling state in the same call",
+    accelerationPlan({ harnessSession: true, state: st(99, now), nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — absent/zeroed state enables",
+    accelerationPlan({ harnessSession: false, state: GPU_STATE_ZEROED, nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — a count at the ceiling inside the window disables",
+    accelerationPlan({ harnessSession: false, state: st(GPU_CRASH_CEILING, now), nowMs: now }).action === "disable" &&
+      accelerationPlan({ harnessSession: false, state: st(1, now), nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — an expired window enables (the machine may have been fixed)",
+    accelerationPlan({ harnessSession: false, state: st(99, now - GPU_CRASH_WINDOW_MS - 1), nowMs: now }).action === "enable",
+  );
+  check(
+    "P2-244: accelerationPlan — phrases are path-free and scheme-free",
+    [harnessPlan.reason, accelerationPlan({ harnessSession: false, state: GPU_STATE_ZEROED, nowMs: now }).reason, accelerationPlan({ harnessSession: false, state: aboveCeiling, nowMs: now }).reason].every(noSlash),
+  );
+
+  // 4. The real main.ts: ONE child-process-gone listener, the acceleration
+  //    decision consulted BEFORE the app is ready, and no new periodic timer.
+  const listenerCount = mainTsSource.split("app.on(\"child-process-gone\"").length - 1;
+  check("P2-244: main.ts registers exactly one child-process-gone listener", listenerCount === 1);
+  const planAt = mainTsSource.indexOf("accelerationPlan({");
+  // The real readiness call is split across lines ("app" newline ".whenReady()"),
+  // so match the call shape, not the "app.whenReady()" literal — the only literal
+  // occurrence in main.ts lives in a comment far below the wiring block.
+  const readyAt = mainTsSource.search(/\.whenReady\(/);
+  check(
+    "P2-244: main.ts consults the acceleration plan before the app is ready",
+    planAt >= 0 && readyAt > planAt && mainTsSource.slice(planAt, planAt + 160).includes("harnessSession: HERMETIC_E2E"),
+  );
+  check(
+    "P2-244: main.ts calls disableHardwareAcceleration on the boot plan, before ready",
+    mainTsSource.indexOf("app.disableHardwareAcceleration()") > planAt && mainTsSource.indexOf("app.disableHardwareAcceleration()") < readyAt,
+  );
+  const gpuLines = mainTsSource
+    .split("\n")
+    .filter((l) => l.includes("Gpu") || l.includes("gpu") || l.includes("GPU"));
+  check(
+    "P2-244: the GPU wiring introduces no periodic timer",
+    gpuLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
+  );
+}
+
+// --- P2-270: boot-health plan (apps/desktop/src/boothealth.ts) --------------------
+{
+  const now = 1_700_000_000_000;
+  const json = (v: unknown) => JSON.stringify(v);
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\");
+  const FLOOR = 3;
+  const rec = (over: Partial<BootHealthRecord> = {}): BootHealthRecord => ({
+    lastSeenVersion: "1.2.0",
+    lastHealthyVersion: "1.1.0",
+    unmatchedOpenings: 0,
+    lastOpeningAt: now,
+    ...over,
+  });
+  const verdict = (over: Partial<Parameters<typeof bootHealthVerdict>[0]> = {}) =>
+    bootHealthVerdict({
+      harnessSession: false,
+      runningVersion: "1.2.0",
+      record: rec(),
+      nowMs: now,
+      floor: FLOOR,
+      ...over,
+    });
+
+  // 1. The verdict table, in the documented rule order.
+  const harness = verdict({ harnessSession: true, record: rec({ unmatchedOpenings: 99 }) });
+  check(
+    "P2-270: an active harness session is normal even with a count above the floor",
+    harness.verdict === "normal" && harness.count === 0 && harness.record === null,
+  );
+  check(
+    "P2-270: an absent record is normal and zeroes the count, never recuperar",
+    verdict({ record: undefined }).verdict === "normal" &&
+      verdict({ record: undefined }).count === 0 &&
+      verdict({ record: null }).verdict === "normal" &&
+      verdict({ record: null }).reason === "registro",
+  );
+  check(
+    "P2-270: an empty or non-object record is normal, never recuperar",
+    verdict({ record: {} }).verdict === "normal" &&
+      verdict({ record: [] }).verdict === "normal" &&
+      verdict({ record: 42 }).verdict === "normal" &&
+      verdict({ record: "corrupt" }).verdict === "normal",
+  );
+  check(
+    "P2-270: rule order — an illegible count inside an otherwise high-count record cannot accuse",
+    verdict({ record: { lastSeenVersion: "1.2.0", unmatchedOpenings: "99", lastOpeningAt: now } }).verdict === "normal" &&
+      verdict({ record: { lastSeenVersion: "1.2.0", unmatchedOpenings: Number.NaN, lastOpeningAt: now } }).verdict === "normal",
+  );
+  const changed = verdict({
+    record: rec({ lastSeenVersion: "1.1.0", lastHealthyVersion: "1.0.0", unmatchedOpenings: 99 }),
+    runningVersion: "1.2.0",
+  });
+  check(
+    "P2-270: a running version different from the last seen one zeroes the count before any comparison",
+    changed.verdict === "suspeito" && changed.count === 0 && changed.reason === "versao",
+  );
+  check(
+    "P2-270: the running version already considered healthy is normal even with a high count",
+    verdict({ record: rec({ lastHealthyVersion: "1.2.0", unmatchedOpenings: 99 }) }).verdict === "normal" &&
+      verdict({ record: rec({ lastHealthyVersion: "1.2.0", unmatchedOpenings: 99 }) }).reason === "saudavel",
+  );
+  check(
+    "P2-270: a count exactly at the explicit floor is recuperar",
+    verdict({ record: rec({ unmatchedOpenings: 4, lastHealthyVersion: "1.0.0" }), floor: 4 }).verdict === "recuperar" &&
+      verdict({ record: rec({ unmatchedOpenings: BOOT_HEALTH_OPENING_FLOOR, lastHealthyVersion: "1.0.0" }) }).verdict === "recuperar",
+  );
+  check(
+    "P2-270: one below the explicit floor is suspeito and only registers",
+    verdict({ record: rec({ unmatchedOpenings: 3, lastHealthyVersion: "1.0.0" }), floor: 4 }).verdict === "suspeito" &&
+      verdict({ record: rec({ unmatchedOpenings: 3, lastHealthyVersion: "1.0.0" }), floor: 4 }).reason === "abaixo",
+  );
+  const future = verdict({ record: rec({ unmatchedOpenings: 99, lastOpeningAt: now + 60_000, lastHealthyVersion: "1.0.0" }) });
+  check(
+    "P2-270: an opening instant in the future is treated as now — the record stays usable and the instant is clamped",
+    future.verdict === "recuperar" && future.record?.lastOpeningAt === now,
+  );
+  check(
+    "P2-270: a non-finite current instant is refused instead of guessed",
+    verdict({ nowMs: Number.NaN, record: rec({ unmatchedOpenings: 99 }) }).verdict === "normal" &&
+      verdict({ nowMs: Number.NaN, record: rec({ unmatchedOpenings: 99 }) }).reason === "relogio" &&
+      verdict({ nowMs: Number.POSITIVE_INFINITY, record: rec({ unmatchedOpenings: 99 }) }).verdict === "normal",
+  );
+  check(
+    "P2-270: the same input in two calls yields an identical view",
+    json(verdict({ record: rec({ unmatchedOpenings: 2 }) })) === json(verdict({ record: rec({ unmatchedOpenings: 2 }) })),
+  );
+
+  // 2. Label hygiene: static pt-BR, tray-budget-sized, path/volume/address/
+  //    port/secret-free across every branch the verdict can mint.
+  const allViews = [
+    verdict({ harnessSession: true }),
+    verdict({ record: null }),
+    verdict({ nowMs: Number.NaN }),
+    verdict(),
+    verdict({ record: rec({ lastHealthyVersion: "1.2.0", unmatchedOpenings: 99 }) }),
+    verdict({ record: rec({ lastSeenVersion: "1.1.0" }), runningVersion: "1.2.0" }),
+    verdict({ record: rec({ unmatchedOpenings: 99, lastHealthyVersion: "1.0.0" }) }),
+  ];
+  const allCopy = [
+    ...allViews.flatMap((v) => [v.label, v.phrase]),
+    BOOT_HEALTH_DIALOG_TITLE,
+    BOOT_HEALTH_DIALOG_MESSAGE,
+    BOOT_HEALTH_DIALOG_DETAIL,
+    BOOT_HEALTH_BUTTON_DIAGNOSTIC,
+    BOOT_HEALTH_BUTTON_CONTINUE,
+  ];
+  check(
+    "P2-270: every label and sentence is static, path-free, volume-free and secret-free",
+    allCopy.every((s) => noSlash(s) && !/[A-Za-z]:[\\/]/.test(s) && !s.includes("localhost") && !s.includes("127.0.0.1") && !/Bearer|apiToken|token/i.test(s)),
+  );
+  check(
+    "P2-270: every tray label fits inside the documented tray text budget",
+    allViews.every((v) => v.label.length <= TRAY_TIP_MAX_CHARS && v.phrase.length <= TRAY_TIP_MAX_CHARS),
+  );
+
+  // 3. normalizeBootHealthRecord: the tolerant reader behind rule 2.
+  check(
+    "P2-270: normalizeBootHealthRecord keeps a valid record and drops everything else",
+    json(normalizeBootHealthRecord(rec(), now)) === json(rec()) &&
+      normalizeBootHealthRecord(undefined, now) === null &&
+      normalizeBootHealthRecord("x", now) === null &&
+      normalizeBootHealthRecord({ lastSeenVersion: "", unmatchedOpenings: 0, lastOpeningAt: now }, now) === null &&
+      normalizeBootHealthRecord({ lastSeenVersion: "1", lastHealthyVersion: 7, unmatchedOpenings: 0, lastOpeningAt: now }, now) === null,
+  );
+
+  // 4. The executor against a fake fs (the real disk is never touched):
+  //    mark the opening in progress at boot, promote ONLY on a finished
+  //    main-window load, report failures instead of throwing, write nothing
+  //    in a harness session.
+  const memoryFs = () => {
+    const files = new Map<string, string>();
+    const failWritesFor = new Set<string>();
+    const fs: BootHealthFs = {
+      readFileSync: (file) => {
+        const value = files.get(file);
+        if (value === undefined) {
+          const err = new Error("ENOENT") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
+          throw err;
+        }
+        return value;
+      },
+      writeFileSync: (file, data, opts) => {
+        if (failWritesFor.has(file)) {
+          const err = new Error("EACCES") as NodeJS.ErrnoException;
+          err.code = "EACCES";
+          throw err;
+        }
+        files.set(file, data);
+      },
+      renameSync: (from, to) => {
+        const value = files.get(from);
+        if (value === undefined) throw new Error("missing tmp");
+        files.delete(from);
+        files.set(to, value);
+      },
+      unlinkSync: (file) => {
+        files.delete(file);
+      },
+    };
+    return { files, fs, failWritesFor };
+  };
+  const filePath = bootHealthRecordFile("/ud");
+  check("P2-270: the record file lives beside the other shell state files", filePath.endsWith("boothealth.json") && filePath.includes("ud"));
+  {
+    const { files, fs } = memoryFs();
+    const stored = readBootHealthRecord(filePath, fs);
+    const first = bootHealthVerdict({ harnessSession: false, runningVersion: "1.2.0", record: stored, nowMs: now, floor: 3 });
+    const mark = markOpeningInProgress({
+      file: filePath,
+      fs,
+      harnessSession: false,
+      runningVersion: "1.2.0",
+      base: first.record,
+      effectiveCount: first.count,
+      nowMs: now,
+    });
+    const afterMark = JSON.parse(files.get(filePath) ?? "null") as BootHealthRecord;
+    check(
+      "P2-270: the opening in progress is marked at boot with no promotion yet",
+      mark.written &&
+        afterMark.lastSeenVersion === "1.2.0" &&
+        afterMark.unmatchedOpenings === 1 &&
+        afterMark.lastHealthyVersion === undefined,
+    );
+    const promote = promoteHealthyOpening({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", nowMs: now });
+    const afterPromote = JSON.parse(files.get(filePath) ?? "null") as BootHealthRecord;
+    check(
+      "P2-270: the version is promoted to healthy only when the main window finished loading for real",
+      promote.written &&
+        afterPromote.lastHealthyVersion === "1.2.0" &&
+        afterPromote.unmatchedOpenings === 0 &&
+        afterPromote.lastOpeningAt === now &&
+        ![...files.keys()].some((k) => k.includes(".tmp")),
+    );
+  }
+  {
+    const { files, fs, failWritesFor } = memoryFs();
+    failWritesFor.add(`${filePath}.tmp`);
+    let threw = false;
+    let mark: { written: boolean; reason: string } | null = null;
+    try {
+      mark = markOpeningInProgress({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", base: null, effectiveCount: 2, nowMs: now });
+    } catch {
+      threw = true;
+    }
+    check(
+      "P2-270: a write failure becomes a report line and never an exception",
+      !threw && mark !== null && !mark.written && mark.reason === "escrita" && ![...files.keys()].some((k) => k.includes(".tmp")),
+    );
+    let promote: { written: boolean; reason: string } | null = null;
+    try {
+      promote = promoteHealthyOpening({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", nowMs: now });
+    } catch {
+      threw = true;
+    }
+    check("P2-270: a promotion write failure is also a report, never an exception", !threw && promote !== null && !promote.written && promote.reason === "escrita");
+  }
+  {
+    const { files, fs } = memoryFs();
+    const mark = markOpeningInProgress({ file: filePath, fs, harnessSession: true, runningVersion: "1.2.0", base: null, effectiveCount: 99, nowMs: now });
+    const promote = promoteHealthyOpening({ file: filePath, fs, harnessSession: true, runningVersion: "1.2.0", nowMs: now });
+    check(
+      "P2-270: with a harness session nothing is written at all",
+      !mark.written && mark.reason === "harness" && !promote.written && promote.reason === "harness" && files.size === 0,
+    );
+    const clock = markOpeningInProgress({ file: filePath, fs, harnessSession: false, runningVersion: "1.2.0", base: null, effectiveCount: 1, nowMs: Number.NaN });
+    check("P2-270: a non-finite instant refuses the write instead of guessing", !clock.written && clock.reason === "relogio" && files.size === 0);
+  }
+  check(
+    "P2-270: readBootHealthRecord degrades a missing or corrupted file to null",
+    readBootHealthRecord(filePath, memoryFs().fs) === null,
+  );
+
+  // 5. The real boothealth.ts source: no electron, no node:fs, no node:path.
+  const bootHealthSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "boothealth.ts"), "utf8");
+  check(
+    "P2-270: boothealth.ts imports no electron, node:fs nor node:path",
+    !/^\s*import\b.*(?:electron|node:fs|node:path)/m.test(bootHealthSrc) && !bootHealthSrc.includes("require("),
+  );
+
+  // 6. The real main.ts wiring: harness rule before any dialog opening, no
+  //    new periodic timer, tray order unchanged, promotion only in the
+  //    did-finish-load path, suspension only of the automatic checks.
+  const verdictAt = mainTsSource.indexOf("bootHealthVerdict({");
+  const recDialogAt = mainTsSource.indexOf("function showBootHealthRecoveryDialog");
+  const recHarnessAt = mainTsSource.indexOf("HERMETIC_E2E", recDialogAt);
+  const recShowAt = mainTsSource.indexOf("dialog.showMessageBox", recDialogAt);
+  check(
+    "P2-270: main.ts evaluates the harness-session rule before any dialog opening",
+    verdictAt >= 0 &&
+      verdictAt < recDialogAt &&
+      mainTsSource.slice(verdictAt, verdictAt + 200).includes("harnessSession: HERMETIC_E2E") &&
+      recHarnessAt > recDialogAt &&
+      recHarnessAt < recShowAt,
+  );
+  const bootHealthLines = mainTsSource
+    .split("\n")
+    .filter((l) => /BootHealth|bootHealth|boot-health|bootRecovery/.test(l));
+  check(
+    "P2-270: the boot-health wiring introduces no periodic timer",
+    bootHealthLines.length > 0 && bootHealthLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
+  );
+  const traySlice = mainTsSource.slice(mainTsSource.indexOf("function trayMenuItems"));
+  const traySeq = [
+    "trayMenuLine, enabled: false",
+    "bootHealthAlarmLabel",
+    '"Open OpenCode Remote"',
+    '"Check for updates"',
+    '"Restart daemon"',
+    '"Start at login"',
+    '"Open logs folder"',
+    'label: "Quit"',
+  ].map((needle) => traySlice.indexOf(needle));
+  check(
+    "P2-270: the existing tray menu item order stayed unchanged",
+    traySeq.every((idx) => idx >= 0) && traySeq.every((idx, i) => i === 0 || idx > traySeq[i - 1]),
+  );
+  const finishLoadAt = mainTsSource.indexOf('webContents.on("did-finish-load"');
+  const promoteCallAt = mainTsSource.indexOf("promoteHealthyOpening({");
+  check(
+    "P2-270: the promotion runs only in the did-finish-load path, exactly once",
+    finishLoadAt >= 0 && promoteCallAt > finishLoadAt && promoteCallAt < mainTsSource.indexOf("function loadUi(") && mainTsSource.split("promoteHealthyOpening({").length === 2,
+  );
+  const gateAt = mainTsSource.indexOf('bootRecoveryActive && source !== "tray"');
+  check(
+    "P2-270: recovery suspends only the automatic checks, before any updater call",
+    gateAt >= 0 && gateAt < mainTsSource.indexOf("checkForUpdatesOnBoot({"),
+  );
+}
+
+// --- P2-291: update guard (apps/desktop/src/updateguard.ts) -----------------------
+{
+  const now = 1_700_000_000_000;
+  const json = (v: unknown) => JSON.stringify(v);
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\");
+  const guard = (over: Record<string, unknown> = {}) =>
+    updateGuard({
+      harnessSession: false,
+      bootVerdict: "recuperar",
+      runningVersion: "1.2.4",
+      offeredVersion: "1.2.4",
+      updateState: null,
+      ownerRelease: false,
+      ...over,
+    });
+
+  // 1. The full verdict table, in the documented rule order.
+  check(
+    "P2-291: an active harness session is seguir even with verdict recuperar and equal versions",
+    guard({ harnessSession: true }).decision === "seguir" && guard({ harnessSession: true }).reason === "harness",
+  );
+  check(
+    "P2-291: absent input and non-object input are seguir, never segurar",
+    updateGuard(undefined).decision === "seguir" &&
+      updateGuard(null).decision === "seguir" &&
+      updateGuard(42).decision === "seguir" &&
+      updateGuard("boom").decision === "seguir" &&
+      updateGuard([]).decision === "seguir",
+  );
+  check(
+    "P2-291: non-textual fields are seguir — holding by doubt would freeze the fleet on a defective version",
+    updateGuard({ bootVerdict: "recuperar", runningVersion: 7, offeredVersion: "1.2.4" }).decision === "seguir" &&
+      updateGuard({ bootVerdict: 7, runningVersion: "1.2.4" }).decision === "seguir" &&
+      updateGuard({ bootVerdict: "recuperar", runningVersion: "1.2.4", offeredVersion: 9 }).decision === "seguir" &&
+      updateGuard({ bootVerdict: "recuperar", runningVersion: "1.2.4", updateState: {} }).decision === "seguir",
+  );
+  check(
+    "P2-291: verdict normal and verdict suspeito are seguir",
+    guard({ bootVerdict: "normal" }).decision === "seguir" &&
+      guard({ bootVerdict: "normal" }).reason === "veredito" &&
+      guard({ bootVerdict: "suspeito", offeredVersion: "1.2.4" }).decision === "seguir",
+  );
+  check(
+    "P2-291: verdict recuperar with an offered version textually equal to the running one is recusar-oferta",
+    guard().decision === "recusar-oferta" && guard().reason === "mesma-versao",
+  );
+  check(
+    "P2-291: verdict recuperar with a different offered version is seguir — a new version is the escape route",
+    guard({ offeredVersion: "1.2.5" }).decision === "seguir" && guard({ offeredVersion: "1.2.5" }).reason === "nova-versao",
+  );
+  check(
+    "P2-291: no offer known yet under verdict recuperar is seguir",
+    guard({ offeredVersion: null }).decision === "seguir" && guard({ offeredVersion: null }).reason === "nova-versao",
+  );
+  check(
+    "P2-291: the owner release is seguir even with verdict recuperar and equal versions — the owner always wins",
+    guard({ ownerRelease: true }).decision === "seguir" && guard({ ownerRelease: true }).reason === "liberacao",
+  );
+  check(
+    "P2-291: rule order — harness session and verdict recuperar hold at the same time, harness wins",
+    guard({ harnessSession: true, bootVerdict: "recuperar", offeredVersion: "1.2.4" }).decision === "seguir",
+  );
+  check(
+    "P2-291: rule order — owner release and equal versions hold at the same time, release wins",
+    guard({ ownerRelease: true, bootVerdict: "recuperar", offeredVersion: "1.2.4" }).decision === "seguir" &&
+      guard({ ownerRelease: true, bootVerdict: "recuperar", offeredVersion: "1.2.4" }).reason === "liberacao",
+  );
+  check(
+    "P2-291: the same input in two calls yields an identical view",
+    json(guard()) === json(guard()) &&
+      json(updateGuard({ bootVerdict: "normal", runningVersion: "1.0.0", offeredVersion: null, updateState: null })) ===
+        json(updateGuard({ bootVerdict: "normal", runningVersion: "1.0.0", offeredVersion: null, updateState: null })),
+  );
+  check(
+    "P2-291: segurar stays documented but no rule emits it — the guard never holds by doubt",
+    [guard(), guard({ harnessSession: true }), guard({ ownerRelease: true }), guard({ offeredVersion: "1.2.5" }), updateGuard(null)].every(
+      (view) => view.decision !== "segurar",
+    ),
+  );
+
+  // 2. Copy hygiene: static pt-BR, path/address/secret-free, tray-budget sized.
+  const allGuardViews = [
+    guard({ harnessSession: true }),
+    guard({ bootVerdict: "normal" }),
+    guard(),
+    guard({ offeredVersion: "1.2.5" }),
+    guard({ ownerRelease: true }),
+    updateGuard(null),
+  ];
+  const allGuardCopy = [
+    ...allGuardViews.flatMap((v) => [v.label, v.phrase]),
+    UPDATE_GUARD_RELEASE_LABEL,
+    updateGuardReleaseLabel(),
+  ];
+  check(
+    "P2-291: every guard label and sentence is static, path-free, address-free and secret-free",
+    allGuardCopy.every(
+      (s) =>
+        noSlash(s) &&
+        !/[A-Za-z]:[\\/]/.test(s) &&
+        !s.includes("localhost") &&
+        !s.includes("127.0.0.1") &&
+        !/Bearer|apiToken|token/i.test(s),
+    ),
+  );
+  check(
+    "P2-291: every guard label fits inside the documented tray text budget",
+    allGuardViews.every((v) => v.label.length <= TRAY_TIP_MAX_CHARS && v.phrase.length <= TRAY_TIP_MAX_CHARS) &&
+      UPDATE_GUARD_RELEASE_LABEL.length <= TRAY_TIP_MAX_CHARS,
+  );
+  check(
+    "P2-291: the tray release label goes through the same tray.ts text mechanism (one source of truth, no emoji)",
+    updateGuardReleaseLabel() === UPDATE_GUARD_RELEASE_LABEL && UPDATE_GUARD_RELEASE_LABEL.startsWith("OpenCode Remote — "),
+  );
+
+  // 3. The real updateguard.ts source: no electron, node:fs, node:path, fetch.
+  const updateGuardSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "updateguard.ts"), "utf8");
+  check(
+    "P2-291: updateguard.ts imports no electron, node:fs, node:path nor fetch",
+    !/^\s*import\b.*(?:electron|node:fs|node:path|fetch)/m.test(updateGuardSrc) &&
+      !updateGuardSrc.includes("require(") &&
+      !updateGuardSrc.includes("fetch("),
+  );
+
+  // 4. The real main.ts wiring: the guard consulted before every check and
+  //    the automatic download, the recheck never interrupted on
+  //    recusar-oferta, and no new periodic timer anywhere in the guard lines.
+  const guardCallAt = mainTsSource.indexOf("const guard = updateGuard({");
+  const downloadCallAt = mainTsSource.indexOf("checkForUpdatesOnBoot({");
+  check(
+    "P2-291: main.ts consults the guard before every check and the automatic download",
+    guardCallAt >= 0 && guardCallAt < downloadCallAt && mainTsSource.indexOf("updateGuard: {", guardCallAt) > guardCallAt,
+  );
+  const runCheckSlice = mainTsSource.slice(
+    mainTsSource.indexOf("function runUpdateCheck"),
+    mainTsSource.indexOf("function scheduleNextUpdateCheck"),
+  );
+  check(
+    "P2-291: the check-time verdict never aborts the check — the refusal lives only in update.ts, download-only",
+    runCheckSlice.includes("const guard = updateGuard({") &&
+      !runCheckSlice.includes("guard.decision ===") &&
+      runCheckSlice.includes("updateGuard: {"),
+  );
+  const sinkStart = mainTsSource.indexOf("onStatus: (status, version) => {");
+  const sinkSlice = mainTsSource.slice(sinkStart, mainTsSource.indexOf("refreshTrayMenu()", sinkStart));
+  check(
+    "P2-291: the onStatus sink recomputes the tray verdict right after recording the offer — the release item appears after the FIRST refused check",
+    sinkSlice.indexOf("lastOfferedUpdateVersion = version") >= 0 &&
+      sinkSlice.indexOf("updateGuard({") > sinkSlice.indexOf("lastOfferedUpdateVersion = version") &&
+      sinkSlice.indexOf("updateGuardVerdict =") > sinkSlice.indexOf("updateGuard({") &&
+      sinkSlice.indexOf("updateGuardReason =") > sinkSlice.indexOf("updateGuard({"),
+  );
+  const guardLines = mainTsSource
+    .split("\n")
+    .filter((l) => /updateGuard|update guard|ownerUpdateRelease|lastOfferedUpdateVersion/.test(l));
+  check(
+    "P2-291: the guard wiring introduces no periodic timer",
+    guardLines.length > 0 && guardLines.every((l) => !l.includes("setInterval") && !l.includes("setTimeout")),
+  );
+  const updateTsSource = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "update.ts"), "utf8");
+  const updateGuardAt = updateTsSource.indexOf("const guard = updateGuard({");
+  const versionGateAt = updateTsSource.indexOf("if (!isNewerVersion(current, feed.version))");
+  const refuseAt = updateTsSource.indexOf('return finish("update-not-available", feed.version)');
+  check(
+    "P2-291: the download-time consultation runs before the version comparison and refuses only the download",
+    updateGuardAt >= 0 && updateGuardAt < versionGateAt && refuseAt > updateGuardAt,
+  );
+  check(
+    "P2-291: a refused check resolves like no-update, so the periodic recheck keeps running untouched",
+    nextCheckDelayMs("update-not-available", 0, Math.random) !== null,
+  );
+  const traySliceP291 = mainTsSource.slice(mainTsSource.indexOf("function trayMenuItems"));
+  const alarmAt = traySliceP291.indexOf("bootHealthAlarmLabel");
+  const releaseItemAt = traySliceP291.indexOf('updateGuardVerdict === "recusar-oferta"');
+  const releaseLabelAt = traySliceP291.indexOf("updateGuardReleaseLabel()");
+  check(
+    "P2-291: the release tray item exists only on recusar-oferta, beside the alarm label, and records + rechecks",
+    alarmAt >= 0 &&
+      releaseItemAt > alarmAt &&
+      releaseLabelAt > releaseItemAt &&
+      traySliceP291.indexOf("writeOwnerRelease({", releaseItemAt) > releaseItemAt &&
+      traySliceP291.indexOf("checkForUpdates()", releaseItemAt) > releaseItemAt,
+  );
+
+  // 5. The owner release mark in the existing store: tolerant read, additive
+  //    write, carried over by every existing write path — no new file, no
+  //    migration.
+  const memoryFs = () => {
+    const files = new Map<string, string>();
+    const fs: BootHealthFs = {
+      readFileSync: (file) => {
+        const value = files.get(file);
+        if (value === undefined) {
+          const err = new Error("ENOENT") as NodeJS.ErrnoException;
+          err.code = "ENOENT";
+          throw err;
+        }
+        return value;
+      },
+      writeFileSync: (file, data) => {
+        files.set(file, data);
+      },
+      renameSync: (from, to) => {
+        const value = files.get(from);
+        if (value === undefined) throw new Error("missing tmp");
+        files.delete(from);
+        files.set(to, value);
+      },
+      unlinkSync: (file) => {
+        files.delete(file);
+      },
+    };
+    return { files, fs };
+  };
+  const guardFile = bootHealthRecordFile("/ud");
+  check(
+    "P2-291: readOwnerRelease — absent, corrupted and non-boolean fields all mean no release",
+    readOwnerRelease(undefined) === false &&
+      readOwnerRelease(null) === false &&
+      readOwnerRelease("x") === false &&
+      readOwnerRelease([]) === false &&
+      readOwnerRelease({}) === false &&
+      readOwnerRelease({ ownerRelease: "yes" }) === false &&
+      readOwnerRelease({ ownerRelease: 1 }) === false &&
+      readOwnerRelease({ ownerRelease: true }) === true,
+  );
+  {
+    const { files, fs } = memoryFs();
+    const outcome = writeOwnerRelease({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: now });
+    const stored = JSON.parse(files.get(guardFile) ?? "null") as StoredBootHealthRecord | null;
+    check(
+      "P2-291: the release lands as ONE additive field of the existing record — no new file",
+      outcome.written &&
+        stored !== null &&
+        stored.lastSeenVersion === "1.2.4" &&
+        stored.unmatchedOpenings === 0 &&
+        stored.ownerRelease === true &&
+        [...files.keys()].every((k) => k === guardFile || k === `${guardFile}.tmp`),
+    );
+    check(
+      "P2-291: a legacy record without the field stays legible without migration",
+      readOwnerRelease(readBootHealthRecord(guardFile, memoryFs().fs)) === false &&
+        readBootHealthRecord(guardFile, fs) !== null,
+    );
+  }
+  {
+    const { fs } = memoryFs();
+    const harness = writeOwnerRelease({ file: guardFile, fs, harnessSession: true, runningVersion: "1.2.4", nowMs: now });
+    const clock = writeOwnerRelease({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: Number.NaN });
+    check(
+      "P2-291: a harness session writes no release and a broken clock refuses instead of guessing",
+      !harness.written && harness.reason === "harness" && !clock.written && clock.reason === "relogio",
+    );
+  }
+  {
+    const { files, fs } = memoryFs();
+    writeOwnerRelease({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: now });
+    const stored = readBootHealthRecord(guardFile, fs);
+    const verdict = bootHealthVerdict({ harnessSession: false, runningVersion: "1.2.4", record: stored, nowMs: now, floor: 3 });
+    markOpeningInProgress({
+      file: guardFile,
+      fs,
+      harnessSession: false,
+      runningVersion: "1.2.4",
+      base: verdict.record,
+      effectiveCount: verdict.count,
+      nowMs: now,
+    });
+    const afterMark = readBootHealthRecord(guardFile, fs);
+    promoteHealthyOpening({ file: guardFile, fs, harnessSession: false, runningVersion: "1.2.4", nowMs: now });
+    const afterPromote = readBootHealthRecord(guardFile, fs);
+    check(
+      "P2-291: every existing write path carries the release mark over — a boot or a promotion never erases the owner's choice",
+      readOwnerRelease(afterMark) && readOwnerRelease(afterPromote),
+    );
+    check(
+      "P2-291: boothealth.ts stays untouched — normalize drops the additive tail, absence reproduces the legacy record byte-a-byte",
+      json(normalizeBootHealthRecord({ lastSeenVersion: "1.2.4", unmatchedOpenings: 1, lastOpeningAt: now }, now)) ===
+        json({ lastSeenVersion: "1.2.4", unmatchedOpenings: 1, lastOpeningAt: now }),
+    );
+  }
+  check(
+    "P2-291: the diagnostics bundle gains exactly one additive guard line — state and reason only",
+    (() => {
+      const report = buildDiagnosticReport({
+        appVersion: "0.2.0",
+        electronVersion: "44.1.1",
+        platform: "darwin arm64",
+        locale: "pt-BR",
+        packaged: true,
+        userData: "/u",
+        daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+        logTail: [],
+        sidecarLogTail: [],
+        crashFiles: [],
+        updateStatus: null,
+        updateGuard: { state: "recusar-oferta", reason: "mesma-versao" },
+      });
+      const bare = buildDiagnosticReport({
+        appVersion: "0.2.0",
+        electronVersion: "44.1.1",
+        platform: "darwin arm64",
+        locale: "pt-BR",
+        packaged: true,
+        userData: "/u",
+        daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+        logTail: [],
+        sidecarLogTail: [],
+        crashFiles: [],
+        updateStatus: null,
+      });
+      return (
+        report.includes("update guard: recusar-oferta (mesma-versao)") &&
+        bare.includes("update guard: unknown") &&
+        (bare.match(/update guard:/g) ?? []).length === 1 &&
+        (report.match(/update guard:/g) ?? []).length === 1
+      );
+    })(),
+  );
+  check(
+    "P2-291: main.ts mirrors the guard verdict and reason into the diagnostics input",
+    mainTsSource.includes("updateGuard: updateGuardVerdict ? { state: updateGuardVerdict, reason: updateGuardReason ?? \"\" } : null"),
+  );
+}
+
+// --- P2-247: load-failure plan (apps/desktop/src/loadfail.ts) ---------------------
+{
+  const now = 1_700_000_000_000;
+  const json = (v: unknown) => JSON.stringify(v);
+  const noSlash = (s: string) => !s.includes("/") && !s.includes("://") && !s.includes("\\\\");
+  const rec = (code = -6, description = "ERR_FILE_NOT_FOUND", address = "file:///App/resources/index.html", isMainFrame = true) =>
+    sanitizeLoadFailure({ code, description, address, isMainFrame });
+
+  // 1. sanitizeLoadFailure full table: whatever Electron yields, a valid
+  //    record comes out and nothing ever throws.
+  check(
+    "P2-247: sanitizeLoadFailure — absent input becomes the zeroed record",
+    json(sanitizeLoadFailure(undefined)) === json(LOAD_FAILURE_ZEROED) && json(sanitizeLoadFailure(null)) === json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — non-object input becomes zeroed",
+    json(sanitizeLoadFailure("boom")) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure(42)) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure(["a"])) === json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a text error code becomes zeroed",
+    json(sanitizeLoadFailure({ code: "-6", description: "ERR_FILE_NOT_FOUND", address: "file:///a", isMainFrame: true })) ===
+      json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — non-finite codes become zeroed",
+    json(sanitizeLoadFailure({ code: Number.NaN, description: "E", address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: Number.POSITIVE_INFINITY, description: "E", address: "file:///a", isMainFrame: true })) ===
+        json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: Number.NEGATIVE_INFINITY, description: "E", address: "file:///a", isMainFrame: true })) ===
+        json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a wrong-typed description becomes zeroed",
+    json(sanitizeLoadFailure({ code: -6, description: 6, address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, description: null, address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, address: "file:///a", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED),
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a missing or empty address becomes zeroed",
+    json(sanitizeLoadFailure({ code: -6, description: "E", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, description: "E", address: "", isMainFrame: true })) === json(LOAD_FAILURE_ZEROED) &&
+      json(sanitizeLoadFailure({ code: -6, description: "E", address: 42, isMainFrame: true })) === json(LOAD_FAILURE_ZEROED),
+  );
+  const missingFrame = sanitizeLoadFailure({ code: -6, description: "ERR_FAILED", address: "https://localhost:5173" });
+  check(
+    "P2-247: sanitizeLoadFailure — a missing frame field is treated as a secondary frame",
+    missingFrame.ok === true && missingFrame.isMainFrame === false && missingFrame.scheme === "https",
+  );
+  const good = rec();
+  check(
+    "P2-247: sanitizeLoadFailure — a valid main-frame failure passes through with the scheme only",
+    good.ok === true && good.code === -6 && good.description === "ERR_FILE_NOT_FOUND" && good.isMainFrame === true && good.scheme === "file",
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — a schemeless or garbage address carries no scheme",
+    sanitizeLoadFailure({ code: -6, description: "E", address: "C:\\Users\\x\\app", isMainFrame: true }).scheme === "" &&
+      sanitizeLoadFailure({ code: -6, description: "E", address: "no-scheme-here", isMainFrame: true }).scheme === "" &&
+      sanitizeLoadFailure({ code: -6, description: "E", address: "://broken", isMainFrame: true }).scheme === "",
+  );
+  check(
+    "P2-247: sanitizeLoadFailure — never throws on any input",
+    [undefined, null, 1, "x", {}, { code: -3 }, { code: -3, description: "E" }, { isMainFrame: true }].every(
+      (input) => json(sanitizeLoadFailure(input)) === json(sanitizeLoadFailure(input)),
+    ),
+  );
+
+  // 2. loadFailVerdict table: rules in the documented order, one plan per
+  //    call — non-main frame, then deliberate abort, then the budget.
+  const secondary = loadFailVerdict(rec(-6, "E", "file:///a", false), 99, now);
+  check(
+    "P2-247: loadFailVerdict — a secondary frame always ignores and accumulates nothing",
+    secondary.plan === "ignore" && secondary.count === 99,
+  );
+  check(
+    "P2-247: loadFailVerdict — the zeroed record ignores (it is never a main frame)",
+    loadFailVerdict(LOAD_FAILURE_ZEROED, 2, now).plan === "ignore",
+  );
+  const aborted = loadFailVerdict(rec(CHROMIUM_ERR_ABORTED, "ERR_ABORTED"), LOAD_FAIL_MAX_ATTEMPTS + 5, now);
+  check(
+    "P2-247: loadFailVerdict — rule order proven: abort and above-ceiling count at once still ignore",
+    aborted.plan === "ignore" && aborted.count === LOAD_FAIL_MAX_ATTEMPTS + 5,
+  );
+  const first = loadFailVerdict(rec(), 0, now);
+  check(
+    "P2-247: loadFailVerdict — the first failure retries, counts one and schedules the documented wait",
+    first.plan === "retry" &&
+      first.count === 1 &&
+      first.waitMs === LOAD_FAIL_RETRY_DELAY_MS &&
+      first.retryAtMs === now + LOAD_FAIL_RETRY_DELAY_MS,
+  );
+  check(
+    `P2-247: loadFailVerdict — a count exactly at the ceiling (${LOAD_FAIL_MAX_ATTEMPTS}) gives up with the warning`,
+    loadFailVerdict(rec(), LOAD_FAIL_MAX_ATTEMPTS, now).plan === "giveup",
+  );
+  check(
+    "P2-247: loadFailVerdict — a count above the ceiling gives up as well",
+    loadFailVerdict(rec(), LOAD_FAIL_MAX_ATTEMPTS + 1, now).plan === "giveup",
+  );
+  const walk: string[] = [];
+  for (let done = 0; done <= LOAD_FAIL_MAX_ATTEMPTS; done++) walk.push(loadFailVerdict(rec(), done, now).plan);
+  check(
+    "P2-247: loadFailVerdict — every count below the ceiling retries, only the ceiling gives up",
+    walk.every((plan, i) => (i < LOAD_FAIL_MAX_ATTEMPTS ? plan === "retry" : plan === "giveup")),
+  );
+  check(
+    "P2-247: loadFailVerdict — the returned count is never negative",
+    loadFailVerdict(rec(), -4, now).count >= 0 && loadFailVerdict(LOAD_FAILURE_ZEROED, -9, now).count === 0,
+  );
+  check(
+    "P2-247: loadFailVerdict — stable between two calls with the same input",
+    json(loadFailVerdict(rec(), 1, now)) === json(loadFailVerdict(rec(), 1, now)),
+  );
+  check(
+    "P2-247: loadFailVerdict — every reason is path-free and scheme-free",
+    [secondary.reason, aborted.reason, first.reason, loadFailVerdict(rec(), LOAD_FAIL_MAX_ATTEMPTS, now).reason].every(noSlash),
+  );
+
+  // 3. loadFailMessage: the in-window phrase and the log line, both stable,
+  //    with only the scheme of the address ever appearing (P2-182).
+  const leaked = "file:///Users/caio/App/resources/index.html";
+  const msg = loadFailMessage(rec(-6, "ERR_FILE_NOT_FOUND", leaked));
+  check("P2-247: loadFailMessage — the user phrase and the log line are non-empty", msg.user.length > 0 && msg.log.length > 0);
+  check(
+    "P2-247: loadFailMessage — no absolute path, no full address and no secret in either phrase",
+    [msg.user, msg.log, LOAD_FAIL_USER_MESSAGE].every(
+      (phrase) =>
+        !phrase.includes(leaked) &&
+        !phrase.includes("file:///") &&
+        !phrase.includes("/Users") &&
+        !phrase.includes("index.html") &&
+        !phrase.includes("://") &&
+        !phrase.includes("SECRET-TOKEN"),
+    ),
+  );
+  check(
+    "P2-247: loadFailMessage — only the scheme may appear from the address",
+    msg.log.includes("esquema file") && !msg.log.includes("file:") && !msg.user.includes("file"),
+  );
+  check(
+    "P2-247: loadFailMessage — an unknown scheme degrades to a fixed word without leaking the address",
+    loadFailMessage(sanitizeLoadFailure({ code: -12, description: "E", address: "weird\\raw\\path", isMainFrame: true })).log.includes(
+      "esquema desconhecido",
+    ) &&
+      !loadFailMessage(sanitizeLoadFailure({ code: -12, description: "E", address: "weird\\raw\\path", isMainFrame: true })).log.includes("weird"),
+  );
+  check("P2-247: loadFailMessage — stable between two calls with the same input", json(msg) === json(loadFailMessage(rec(-6, "ERR_FILE_NOT_FOUND", leaked))));
+
+  // 4. The real main.ts: ONE did-fail-load listener bound only to the main
+  //    window, the reset on success, no periodic timer in the wiring.
+  const failListeners = mainTsSource.split('win.webContents.on("did-fail-load"').length - 1;
+  check("P2-247: main.ts registers exactly one did-fail-load listener", failListeners === 1);
+  check(
+    "P2-247: main.ts binds did-fail-load only to the main window (no other target registers it)",
+    (mainTsSource.match(/on\("did-fail-load"/g) ?? []).length === 1,
+  );
+  const failAt = mainTsSource.indexOf('win.webContents.on("did-fail-load"');
+  const finishAt = mainTsSource.indexOf('win.webContents.on("did-finish-load"');
+  const finishBlock = mainTsSource.slice(finishAt, finishAt + 200);
+  check(
+    "P2-247: main.ts resets the load-fail counter on every successful load",
+    finishAt > failAt && finishBlock.includes("loadFailAttempts = 0"),
+  );
+  const loadFailLines = mainTsSource
+    .split("\n")
+    .filter((l) => l.includes("loadFail") || l.includes("load watch") || l.includes("did-fail-load"));
+  check(
+    "P2-247: the load-fail wiring introduces no periodic timer",
+    loadFailLines.every((l) => !l.includes("setInterval")),
+  );
+  check(
+    "P2-247: main.ts reloads through the same webContents.reload() path as the P3-011 recovery",
+    mainTsSource.slice(failAt, mainTsSource.indexOf("loadUi(win)", failAt)).includes("win.webContents.reload()"),
+  );
+  const loadfailSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "loadfail.ts"), "utf8");
+  check(
+    "P2-247: loadfail.ts is pure — no electron, no node:fs, no fetch",
+    !/from\s+"electron"/.test(loadfailSrc) && !/from\s+"node:fs"/.test(loadfailSrc) && !loadfailSrc.includes("fetch("),
   );
 }
 
@@ -7489,6 +9681,169 @@ check("i18n: no empty strings in either locale", enKeys.every((k) => String((dic
 check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "olderMessages", "changesFor", "connTitle"].every((k) => String((dict.en as Record<string, string>)[k]).includes("{") && String((dict.pt as Record<string, string>)[k]).includes("{")));
 
 
+// --- P2-275: SettingsView literal-copy drift lock -------------------------------
+// Every Settings string must ride the en/pt dictionary — a literal phrase
+// written back into SettingsView.tsx reopens the half-English Settings screen
+// for pt users. The lock reads the REAL component source and fails when any
+// phrase that used to be literal reappears anywhere in the file.
+{
+  const settingsViewSource = readFileSync(new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url), "utf8");
+  const bannedLiteralPhrases = [
+    // section titles + header
+    ">Settings</h1>",
+    ">About</h3>",
+    "app {APP_VERSION}",
+    ">Appearance</h3>",
+    "Push notifications</h3>",
+    "Share to agent</h3>",
+    "Skills (1-tap prompts)",
+    "Scheduled routines</h3>",
+    "Security log</h3>",
+    // machine card
+    'placeholder="machine name"',
+    ">Save</button>",
+    "Notifications\n",
+    // MCP + voice controls
+    ">local</option>",
+    ">remote</option>",
+    'aria-label="Remove"',
+    "Auto-detect",
+    "Language:{",
+    '"Português (Antonio)"',
+    '"English (Andrew)"',
+    '"Español (Alvaro)"',
+    // caption style
+    "Caption style (clips)",
+    "Font (e.g. Helvetica Bold)",
+    '"Size"',
+    "Primary color",
+    "Highlight color",
+    "Outline color",
+    "Bottom margin",
+    "Save style",
+    "caption style saved",
+    // appearance
+    "Theme:{",
+    ">System</option>",
+    ">Dark</option>",
+    ">Light</option>",
+    "Font size:{",
+    ">Small</option>",
+    ">Normal</option>",
+    ">Large</option>",
+    // push
+    "Send test notification",
+    "Sending…",
+    "Re-subscribe",
+    "no device subscribed",
+    "sent OK — check the phone",
+    "device(s) subscribed",
+    "Home Screen",
+    // share to agent
+    "share sheet offers",
+    "long-press the message field",
+    // skills
+    "label (e.g. Daily report)",
+    "prompt sent to the agent on tap",
+    "Add skill",
+    "skill added",
+    "skill rejected — label and prompt required",
+    ">Delete</button>",
+    // routines
+    "Every day</option>",
+    "Specific days</option>",
+    "Loop every N min",
+    "Schedule mode",
+    "Interval in minutes",
+    "runs immediately, then every N minutes",
+    "prompt for the agent (e.g. summarize crypto news and save a report)",
+    "Add routine",
+    "routine added",
+    "routine rejected — check fields",
+    "last error: ",
+    "last run: ok",
+    "never ran",
+    "every ${r.intervalMinutes}m",
+    "daily ${hm}",
+    '"Sun", "Mon", "Tue"',
+    '"S", "M", "T", "W"',
+    // paired devices
+    '?? "device"',
+    ">Revoke</button>",
+  ];
+  const drift = (src: string) => bannedLiteralPhrases.filter((p) => src.includes(p));
+  check(
+    "P2-275: SettingsView carries zero hardcoded settings phrases (all copy rides the dict)",
+    drift(settingsViewSource).length === 0,
+  );
+  // The lock is live, not vacuous: re-injecting ANY banned phrase into a copy
+  // of the real source must trip the detector — proven per phrase.
+  check(
+    "P2-275: the drift lock fails when any banned phrase is reintroduced",
+    bannedLiteralPhrases.every((p) => drift(`${settingsViewSource}\n// reintroduced: ${p}\n`).includes(p)),
+  );
+  // New settings keys resolve in BOTH locales — never the raw key, never "".
+  const settingsOnlyKeys = [
+    "aboutTitle", "aboutVersions", "save", "machineNamePlaceholder", "remove",
+    "mcpTypeLocal", "mcpTypeRemote", "voiceInLang", "voiceLangAuto", "voiceLangEn",
+    "voiceLangPt", "voiceLangEs", "voiceLangFr", "ttsVoicePt", "ttsVoiceEn", "ttsVoiceEs",
+    "captionStyleTitle", "captionFont", "captionFontSize", "captionPrimary",
+    "captionHighlight", "captionOutline", "captionMargin", "captionSave", "captionSaved",
+    "appearanceTitle", "themeLabel", "themeSystem", "themeDark", "themeLight",
+    "fontLabel", "fontSmall", "fontNormal", "fontLarge",
+    "pushTitle", "pushSendTest", "pushSending", "pushResubscribe", "pushSubscribed",
+    "pushNoDevices", "pushSentOk", "pushSubsCount",
+    "shareTitle", "shareAndroidLabel", "shareAndroidBody", "shareIosLabel", "shareIosBody",
+    "skillsTitle", "skillLabelPlaceholder", "skillPromptPlaceholder", "skillAdd",
+    "skillAdded", "skillRejected",
+    "routinesTitle", "routineEveryDay", "routineSpecificDays", "routineLoop",
+    "routineModeLabel", "routineIntervalLabel", "routineNamePlaceholder",
+    "routineIntervalHint", "routinePromptPlaceholder", "routineAdd", "routineAdded",
+    "routineRejected", "routineEvery", "routineDaily", "routineLastError",
+    "routineLastOk", "routineNeverRan",
+    "daySun", "dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat",
+    "dayLetter0", "dayLetter1", "dayLetter2", "dayLetter3", "dayLetter4", "dayLetter5", "dayLetter6",
+    "deviceFallback", "revoke", "securityLog",
+  ];
+  check(
+    "P2-275: every settings key resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      settingsOnlyKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+  // pt is real Portuguese of the same register as the rest of the app —
+  // spot-check the sections the task names, per P2-275's acceptance criteria.
+  check(
+    "P2-275: the named sections render pt-BR copy",
+    translate("pt", "aboutTitle") === "Sobre" &&
+      translate("pt", "captionStyleTitle") === "Estilo de legenda (clips)" &&
+      translate("pt", "captionSave") === "Salvar estilo" &&
+      translate("pt", "appearanceTitle") === "Aparência" &&
+      translate("pt", "pushTitle") === "Notificações push" &&
+      translate("pt", "shareTitle") === "Compartilhar com o agente" &&
+      translate("pt", "routinesTitle") === "Rotinas agendadas" &&
+      translate("pt", "routineAdded") === "rotina adicionada" &&
+      translate("pt", "routineRejected").includes("rotina recusada") &&
+      translate("pt", "securityLog") === "Registro de segurança",
+  );
+  check(
+    "P2-275: product names stay intact in both locales",
+    (["en", "pt"] as const).every((lang) =>
+      translate(lang, "mcp") === "MCP" && translate(lang, "autoMode") === "AutoMode",
+    ),
+  );
+  // The SettingsView really calls t() for the renamed sections (not just
+  // absent literals): the dict keys appear in the component source.
+  check(
+    "P2-275: SettingsView routes the renamed sections through t()",
+    ["aboutTitle", "captionStyleTitle", "appearanceTitle", "pushTitle", "shareTitle", "skillsTitle", "routinesTitle", "securityLog", "routineAdded", "routineRejected", "skillAdded", "skillRejected"].every((k) => settingsViewSource.includes(`t("${k}")`)),
+  );
+}
+
+
 // --- P2-118: connection screens resolve to ONE locale ---------------------------
 // The daemon-down banner, its recovery button and the neighboring pairing /
 // scanner copy must all come from the same dictionary, per app locale — the
@@ -7595,6 +9950,737 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 }
 
 
+// --- P2-232: machine-state readiness rows (pure module) -------------------------
+{
+  // The daemon's own phrases, exactly as /api/health and /__ocr/settings serve
+  // them (no paths, no URL schemes — that contract is asserted below too).
+  const PHRASES = {
+    relayReason: "O endereço do relay não passou na validação desta máquina.",
+    versionTooOld: "O opencode instalado nesta máquina é mais antigo do que este app espera.",
+    diskOk: "Espaço em disco suficiente nesta máquina.",
+    diskLow: "O disco desta máquina está ficando sem espaço.",
+    diskCritical: "O disco desta máquina está quase cheio.",
+    docsComplete: "Esta máquina converte documentos com fidelidade completa.",
+  };
+  const FULL = {
+    relay: { ok: false, reason: PHRASES.relayReason },
+    opencode: {
+      binaryFound: true,
+      binarySource: "path",
+      versionState: "too-old",
+      versionMessage: PHRASES.versionTooOld,
+    },
+    diskState: "ok",
+    diskMessage: PHRASES.diskOk,
+    docConvertState: "complete",
+    docConvertMessage: PHRASES.docsComplete,
+  };
+
+  // Empty / null / non-object payloads → empty list, never a throw.
+  check(
+    "machinestate: empty, null, undefined and non-object payloads yield an empty list",
+    readinessRows({}).length === 0 &&
+      readinessRows(null).length === 0 &&
+      readinessRows(undefined).length === 0 &&
+      readinessRows("junk").length === 0 &&
+      readinessRows([1, 2, 3]).length === 0,
+  );
+  check(
+    "machinestate: a malformed payload yields an empty list without throwing",
+    (() => {
+      try {
+        return (
+          readinessRows({ diskState: 42, relay: "x", opencode: 7, docConvertState: true }).length === 0 &&
+          readinessRows({ relay: { ok: null, reason: 9 } }).length === 0
+        );
+      } catch {
+        return false;
+      }
+    })(),
+  );
+
+  // Partial payload → only the known rows.
+  const partial = readinessRows({ diskState: "low", diskMessage: PHRASES.diskLow });
+  check(
+    "machinestate: a partial payload renders only the known row with the daemon's verbatim phrase",
+    partial.length === 1 &&
+      partial[0].key === "disk" &&
+      partial[0].severity === "attention" &&
+      partial[0].message === PHRASES.diskLow &&
+      partial[0].labelKey === "machineLabelDisk",
+  );
+
+  // The three severities, each with the correct marker class.
+  const all = readinessRows(FULL);
+  const byKey = new Map(all.map((r) => [r.key, r]));
+  check(
+    "machinestate: all three severity levels appear with the correct marker",
+    byKey.get("relay")?.severity === "unavailable" &&
+      MACHINE_SEVERITY_DOT[byKey.get("relay")!.severity] === "err" &&
+      byKey.get("version")?.severity === "attention" &&
+      MACHINE_SEVERITY_DOT[byKey.get("version")!.severity] === "wait" &&
+      byKey.get("disk")?.severity === "ok" &&
+      MACHINE_SEVERITY_DOT[byKey.get("disk")!.severity] === "ok" &&
+      byKey.get("docs")?.severity === "ok" &&
+      byKey.get("agent")?.severity === "ok",
+  );
+  check(
+    "machinestate: the daemon's phrases ride verbatim (never rewritten)",
+    byKey.get("relay")?.message === PHRASES.relayReason &&
+      byKey.get("version")?.message === PHRASES.versionTooOld &&
+      byKey.get("disk")?.message === PHRASES.diskOk,
+  );
+
+  // Ordering: unavailable before attention before ok.
+  const ordered = readinessRows({
+    ...FULL,
+    diskState: "critical",
+    diskMessage: PHRASES.diskCritical,
+    docConvertState: "complete",
+  });
+  check(
+    "machinestate: ordering puts unavailable before attention and attention before ok",
+    ordered.map((r) => r.key).join(",") === "relay,disk,version,agent,docs" &&
+      ordered[0].severity === "unavailable" &&
+      ordered[1].severity === "unavailable" &&
+      ordered[2].key === "version" &&
+      ordered[2].severity === "attention" &&
+      ordered[3].severity === "ok",
+  );
+
+  // Tie-break: same severity keeps the fixed, documented key order — and the
+  // result is stable across two calls with the same input.
+  const tie = readinessRows({
+    opencode: { binaryFound: true, versionState: "ok", versionMessage: PHRASES.diskOk },
+    diskState: "ok",
+    diskMessage: PHRASES.diskOk,
+  });
+  const tieKeys = tie.map((r) => r.key);
+  const fixedOrder = MACHINE_ROW_ORDER.filter((k) => tieKeys.includes(k));
+  check(
+    "machinestate: same-severity ties follow the fixed key order",
+    JSON.stringify(tieKeys) === JSON.stringify(fixedOrder) &&
+      JSON.stringify(tie) === JSON.stringify(readinessRows({
+        opencode: { binaryFound: true, versionState: "ok", versionMessage: PHRASES.diskOk },
+        diskState: "ok",
+        diskMessage: PHRASES.diskOk,
+      })),
+  );
+
+  // Wrong-typed fields are ignored, never turned into invented rows.
+  const wrongTyped = readinessRows({
+    diskState: 123,
+    relay: { ok: "yes", reason: PHRASES.relayReason },
+    opencode: { binaryFound: "yes", versionState: 7 },
+    docConvertState: "complete",
+    docConvertMessage: 5,
+  });
+  check(
+    "machinestate: wrong-typed fields are ignored without becoming rows",
+    wrongTyped.length === 1 &&
+      wrongTyped[0].key === "docs" &&
+      wrongTyped[0].message === "",
+  );
+
+  // Unknown verdicts stay silent (neutral, never accusatory — P2-213/P2-215).
+  check(
+    "machinestate: unknown verdicts yield no row",
+    readinessRows({ diskState: "unknown", diskMessage: PHRASES.diskOk }).length === 0 &&
+      readinessRows({ opencode: { versionState: "unknown", versionMessage: PHRASES.diskOk } }).length === 0,
+  );
+
+  // No absolute path and no URL scheme in any returned phrase.
+  const everyMessage = (rows: MachineReadinessRow[]) => rows.map((r) => r.message);
+  const allMessages = [
+    ...everyMessage(all),
+    ...everyMessage(partial),
+    ...everyMessage(ordered),
+    PHRASES.relayReason,
+    PHRASES.versionTooOld,
+  ];
+  check(
+    "machinestate: no returned phrase contains an absolute path or a URL scheme",
+    allMessages.every((m) => !m.includes("://") && !m.startsWith("/") && !m.startsWith("\\\\") && !/^[A-Za-z]:\\/.test(m)),
+  );
+
+  // summarize: empty → calm documented state; worst severity wins the header.
+  check(
+    "machinestate: summarize over an empty list is the calm state",
+    summarize([]).severity === "ok" &&
+      summarize([]).titleKey === "machineStateEmpty" &&
+      summarize(null).titleKey === "machineStateEmpty",
+  );
+  const okRows = readinessRows({ diskState: "ok", diskMessage: PHRASES.diskOk });
+  const attentionRows = readinessRows({ opencode: { versionState: "too-old", versionMessage: PHRASES.versionTooOld } });
+  const unavailableRows = readinessRows({ diskState: "critical", diskMessage: PHRASES.diskCritical });
+  check(
+    "machinestate: summarize picks the worst severity with one short header key",
+    summarize(okRows).titleKey === "machineStateAllOkTitle" &&
+      summarize(okRows).severity === "ok" &&
+      summarize(attentionRows).titleKey === "machineStateAttentionTitle" &&
+      summarize(attentionRows).severity === "attention" &&
+      summarize(unavailableRows).titleKey === "machineStateUnavailableTitle" &&
+      summarize(unavailableRows).severity === "unavailable",
+  );
+  check(
+    "machinestate: summarize over a mixed list picks unavailable over attention",
+    summarize(all).severity === "unavailable",
+  );
+
+  // Labels resolve in both locales (P2-118: one locale per screen, no raw keys).
+  const machineKeys = [
+    "machineStateTitle",
+    "machineStateEmpty",
+    "machineStateAllOkTitle",
+    "machineStateAttentionTitle",
+    "machineStateUnavailableTitle",
+    "machineLabelRelay",
+    "machineLabelAgent",
+    "machineLabelVersion",
+    "machineLabelDisk",
+    "machineLabelDocs",
+    "machineLabelBrowse",
+    "machineLabelVoice",
+  ];
+  check(
+    "machinestate: labels and empty state resolve per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      machineKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+  check(
+    "machinestate: every row's labelKey resolves in the pt dictionary",
+    all.every((r) => {
+      const s = translate("pt", r.labelKey);
+      return s !== r.labelKey && s.trim() !== "";
+    }),
+  );
+
+  // Real-repo assertion: the Settings section consumes the pure module and the
+  // module stays pure (no React import, no fetch) with no new health fields.
+  const machineStateSrc = readFileSync(new URL("../apps/web/src/lib/machinestate.ts", import.meta.url), "utf8");
+  const settingsViewSrc = readFileSync(new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url), "utf8");
+  const daemonIndexSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+  check(
+    "P2-232: SettingsView renders the machine-state section from readinessRows + summarize",
+    settingsViewSrc.includes("readinessRows(") &&
+      settingsViewSrc.includes("summarize(") &&
+      settingsViewSrc.includes('className="card machine-state"'),
+  );
+  check(
+    "P2-232: machinestate stays pure — no React, no fetch, no I/O imports",
+    !machineStateSrc.includes("from \"react\"") &&
+      !machineStateSrc.includes("fetch(") &&
+      !machineStateSrc.includes("node:"),
+  );
+  check(
+    "P2-232: the daemon payload is untouched (no new health fields, apps/daemon unchanged)",
+    daemonIndexSrc.includes("docConvertState: docConvert.state") &&
+      !daemonIndexSrc.includes("machineLabel") &&
+      (daemonIndexSrc.match(/machinestate/g) || []).length === 0,
+  );
+}
+
+
+// --- P2-287: the browse-readiness row (site opening) ----------------------------
+// The four documented P2-284 verdicts map to severities by the table written
+// in the machinestate.ts header: ready→ok, no-browser→unavailable,
+// disabled→attention (the machine's owner turned it off), unknown→attention
+// (fail-closed, NEVER ok). Absent, non-textual and out-of-table values yield
+// no row — the same tolerance as every other line.
+{
+  // The daemon's own phrases, exactly as /api/health serves them
+  // (browsecap.ts constants, copied as fixtures — the module only
+  // passes them through verbatim, it never authors phrases).
+  const BROWSE_PHRASES = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+    disabled:
+      "A navegação de sites está desligada neste computador — quem gerencia a máquina é quem decide quando ligá-la.",
+    unknown:
+      "Não deu para verificar a navegação de sites agora — o resto do app segue disponível do mesmo jeito.",
+  };
+  const browseRow = (state: unknown, message: unknown = "") =>
+    readinessRows({ browseState: state, browseMessage: message }).find((r) => r.key === "browse");
+
+  // The complete severity table: each documented verdict → exactly its severity.
+  const ready = browseRow("ready", BROWSE_PHRASES.ready);
+  const noBrowser = browseRow("no-browser", BROWSE_PHRASES.noBrowser);
+  const disabled = browseRow("disabled", BROWSE_PHRASES.disabled);
+  const unknown = browseRow("unknown", BROWSE_PHRASES.unknown);
+  check(
+    "P2-287: ready → normal and no-browser → unavailable, each with its marker",
+    ready?.severity === "ok" &&
+      MACHINE_SEVERITY_DOT[ready.severity] === "ok" &&
+      ready.labelKey === "machineLabelBrowse" &&
+      noBrowser?.severity === "unavailable" &&
+      MACHINE_SEVERITY_DOT[noBrowser.severity] === "err",
+  );
+  check(
+    "P2-287: disabled → attention (the owner's choice) and unknown → attention, NEVER ok (fail-closed)",
+    disabled?.severity === "attention" &&
+      MACHINE_SEVERITY_DOT[disabled.severity] === "wait" &&
+      unknown?.severity === "attention" &&
+      unknown!.severity !== "ok" &&
+      MACHINE_SEVERITY_DOT[unknown!.severity] === "wait",
+  );
+
+  // Tolerance: absent, non-textual and out-of-table verdicts never become a
+  // row — and JAMAIS an approved one.
+  check(
+    "P2-287: absent browse verdict yields no row (payloads with and without other rows)",
+    browseRow(undefined) === undefined &&
+      readinessRows({}).some((r) => r.key === "browse") === false &&
+      readinessRows({ diskState: "ok", diskMessage: "x" }).some((r) => r.key === "browse") === false,
+  );
+  check(
+    "P2-287: non-textual browse verdicts yield no row",
+    browseRow(42) === undefined &&
+      browseRow(true) === undefined &&
+      browseRow(null) === undefined &&
+      browseRow({ state: "ready" }) === undefined &&
+      browseRow(["ready"]) === undefined,
+  );
+  check(
+    "P2-287: verdicts outside the documented table yield no row",
+    browseRow("quebrado") === undefined &&
+      browseRow("") === undefined &&
+      browseRow("Ready") === undefined &&
+      browseRow("no_browser") === undefined,
+  );
+
+  // The machine's phrase rides verbatim — rendered literally, never rewritten.
+  check(
+    "P2-287: the daemon's browse phrases ride verbatim (never rewritten, never invented)",
+    ready?.message === BROWSE_PHRASES.ready &&
+      noBrowser?.message === BROWSE_PHRASES.noBrowser &&
+      disabled?.message === BROWSE_PHRASES.disabled &&
+      unknown?.message === BROWSE_PHRASES.unknown,
+  );
+  // A non-textual message degrades to the empty phrase (label carries the row),
+  // exactly like the agent row — never an invented sentence.
+  check(
+    "P2-287: a non-textual message renders as the empty phrase, not an invented one",
+    browseRow("ready", 42)?.message === "" && browseRow("ready", null)?.message === "",
+  );
+
+  // Ordering: worse first, and the same-severity tie-break follows the fixed
+  // MACHINE_ROW_ORDER — proven with two attention rows on both sides of browse.
+  const tie = readinessRows({
+    opencode: { versionState: "too-old", versionMessage: "x" },
+    diskState: "low",
+    diskMessage: "y",
+    browseState: "disabled",
+    browseMessage: BROWSE_PHRASES.disabled,
+  });
+  check(
+    "P2-287/P2-297/P2-305: same-severity ties keep the fixed key order with browse kept in place and voice+spoken appended last (append, never insert)",
+    tie.map((r) => r.key).join(",") === "version,disk,browse" &&
+      tie.every((r) => r.severity === "attention") &&
+      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "spoken" &&
+      MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice,spoken",
+  );
+  const worseFirst = readinessRows({
+    diskState: "ok",
+    diskMessage: "x",
+    browseState: "no-browser",
+    browseMessage: BROWSE_PHRASES.noBrowser,
+  });
+  check(
+    "P2-287: an unavailable browse row sorts before ok rows (worst first)",
+    worseFirst.map((r) => r.key).join(",") === "browse,disk",
+  );
+
+  // Deterministic: the same input twice, the identical result.
+  const once = JSON.stringify(
+    readinessRows({ browseState: "unknown", browseMessage: BROWSE_PHRASES.unknown }),
+  );
+  const twice = JSON.stringify(
+    readinessRows({ browseState: "unknown", browseMessage: BROWSE_PHRASES.unknown }),
+  );
+  check("P2-287: the same input yields the identical result on two calls", once === twice && once.includes("browse"));
+
+  // Hygiene: no path, no port, no address, no secret in any returned browse
+  // phrase, and none in the label itself.
+  const allBrowse = [ready, noBrowser, disabled, unknown].map((r) => r!.message);
+  const labelEn = translate("en", "machineLabelBrowse");
+  const labelPt = translate("pt", "machineLabelBrowse");
+  check(
+    "P2-287: no returned browse phrase or label contains a path, port, address or secret",
+    [...allBrowse, labelEn, labelPt].every(
+      (m) =>
+        !m.includes("://") &&
+        !m.startsWith("/") &&
+        !m.startsWith("\\\\") &&
+        !/^[A-Za-z]:\\/.test(m) &&
+        !m.includes("127.0.0.1") &&
+        !m.includes(":8792") &&
+        !m.includes("localhost") &&
+        !m.includes("Bearer") &&
+        !m.includes("token"),
+    ),
+  );
+
+  // Label parity: the new key exists in BOTH locales with the exact same key
+  // set (P2-118/P2-275 lessons), resolves in each (no raw-key fallback), and
+  // carries no emoji (P2-107).
+  check(
+    "P2-287: machineLabelBrowse has exact en/pt key parity and resolves per locale",
+    "machineLabelBrowse" in dict.en &&
+      "machineLabelBrowse" in dict.pt &&
+      labelEn !== "machineLabelBrowse" &&
+      labelPt !== "machineLabelBrowse" &&
+      labelEn.trim() !== "" &&
+      labelPt.trim() !== "",
+  );
+
+  // Real-repo assertions: the view feeds the row from the SAME settings read
+  // (no new request, no new poll) and the hatch stays fail-closed.
+  const settingsViewSrc = readFileSync(
+    new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url),
+    "utf8",
+  );
+  const machineStateSrc = readFileSync(new URL("../apps/web/src/lib/machinestate.ts", import.meta.url), "utf8");
+  check(
+    "P2-287: SettingsView feeds the browse row from the same settings read — no /api/health fetch, no browse timer",
+    settingsViewSrc.includes("browseState: browse?.state ?? forcedBrowseState()") &&
+      settingsViewSrc.includes('request("GET", "/__ocr/settings"') &&
+      !settingsViewSrc.includes("/api/health") &&
+      (settingsViewSrc.match(/(?:setInterval|setTimeout)\s*\([^)]*browse/gi) || []).length === 0,
+  );
+  check(
+    "P2-287: the evidence hatch is fail-closed — only degraded states, never ready, real payload wins, no phrase forced",
+    settingsViewSrc.includes('BROWSE_STATES.filter((s) => s !== "ready")') &&
+      settingsViewSrc.includes("HATCH_STATES.includes(forced)") &&
+      !settingsViewSrc.includes("browseMessage: forced") &&
+      (settingsViewSrc.match("ocr.browseStateOverride") || []).length >= 1,
+  );
+  check(
+    "P2-287: BROWSE_STATES has one owner — the view imports the sets machinestate exports (no duplicated table)",
+    machineStateSrc.includes(
+      'export const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled", "unknown"];',
+    ) &&
+      settingsViewSrc.includes('import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";') &&
+      !settingsViewSrc.includes('new Set(["ready"'),
+  );
+  check(
+    "P2-287: machinestate keeps the browse row in place (second-to-last after P2-305 appended spoken last) and pure (no React, no fetch, no node:)",
+    machineStateSrc.includes('"docs",\n  "browse",') &&
+      !machineStateSrc.includes("from \"react\"") &&
+      !machineStateSrc.includes("fetch(") &&
+      !machineStateSrc.includes("node:"),
+  );
+  check(
+    "P2-287: apps/daemon keeps the settings body shape — version + disk intact, and since P2-288 the readiness mirror rides the channel",
+    (() => {
+      const src = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+      const settingsGet = src.split('"/__ocr/settings" && req.method === "GET"')[1] ?? "";
+      const body = settingsGet.split("return {")[1]?.split("};")[0] ?? "";
+      const handler = settingsGet.split('/__ocr/settings" && req.method === "PATCH"')[0] ?? "";
+      return (
+        body.includes("opencodeVersion: opencodeVersion") &&
+        body.includes("disk: diskStatus()") &&
+        body.includes("...settingsMirror({") &&
+        handler.includes("maybeReprobeBrowse")
+      );
+    })(),
+  );
+}
+
+
+// --- P2-297: the voice-readiness row + the fully wired panel --------------------
+// The three documented P2-296 verdicts map to severities by the closed table
+// written in the machinestate.ts header: ready→ok, missing-model→attention
+// (the engine is there, the model is not), missing-binary→unavailable (the
+// machine cannot hear at all). Absent, non-textual and out-of-table values
+// yield no row — the general silence rule; navigation stays the ONLY
+// documented "unknown" exception.
+{
+  // The daemon's own phrases, exactly as the settings mirror serves them
+  // (voicecap.ts register, copied as fixtures — the module only passes them
+  // through verbatim, it never authors phrases).
+  const VOICE_PHRASES = {
+    ready: "Esta máquina transcreve voz.",
+    missingModel:
+      "O computador tem o motor de transcrição, mas falta o modelo de voz — quem gerencia a máquina precisa concluir a instalação.",
+    missingBinary: "Esta máquina ainda não tem motor de transcrição de voz.",
+  };
+  const voiceRow = (state: unknown, message: unknown = "") =>
+    readinessRows({ voiceState: state, voiceMessage: message }).find((r) => r.key === "voice");
+
+  // The complete closed table: each documented verdict → exactly its severity
+  // plus the daemon's literal phrase, with the correct marker.
+  const ready = voiceRow("ready", VOICE_PHRASES.ready);
+  const missingModel = voiceRow("missing-model", VOICE_PHRASES.missingModel);
+  const missingBinary = voiceRow("missing-binary", VOICE_PHRASES.missingBinary);
+  check(
+    "P2-297: ready → ok and missing-model → attention (the engine is there, the model is not), each with its marker",
+    ready?.severity === "ok" &&
+      MACHINE_SEVERITY_DOT[ready.severity] === "ok" &&
+      ready.labelKey === "machineLabelVoice" &&
+      missingModel?.severity === "attention" &&
+      MACHINE_SEVERITY_DOT[missingModel.severity] === "wait",
+  );
+  check(
+    "P2-297: missing-binary → unavailable (the machine cannot hear at all), never a softer verdict",
+    missingBinary?.severity === "unavailable" &&
+      missingBinary!.severity !== "attention" &&
+      missingBinary!.severity !== "ok" &&
+      MACHINE_SEVERITY_DOT[missingBinary!.severity] === "err",
+  );
+
+  // The machine's phrase rides verbatim — rendered literally, never rewritten.
+  check(
+    "P2-297: the daemon's voice phrases ride verbatim (never rewritten, never invented)",
+    ready?.message === VOICE_PHRASES.ready &&
+      missingModel?.message === VOICE_PHRASES.missingModel &&
+      missingBinary?.message === VOICE_PHRASES.missingBinary,
+  );
+
+  // Tolerance: out-of-table, absent and non-textual verdicts never become a
+  // row — the general silence rule (navigation stays the only exception).
+  check(
+    "P2-297: verdicts outside the closed table yield no voice row",
+    voiceRow("junk") === undefined &&
+      voiceRow("") === undefined &&
+      voiceRow("Ready") === undefined &&
+      voiceRow("missing_model") === undefined &&
+      voiceRow("unknown") === undefined,
+  );
+  check(
+    "P2-297: an absent voice verdict yields no row (payloads with and without other rows)",
+    voiceRow(undefined) === undefined &&
+      readinessRows({}).some((r) => r.key === "voice") === false &&
+      readinessRows({ diskState: "ok", diskMessage: "x" }).some((r) => r.key === "voice") === false,
+  );
+  check(
+    "P2-297: non-textual voice verdicts yield no row",
+    voiceRow(42) === undefined &&
+      voiceRow(true) === undefined &&
+      voiceRow(null) === undefined &&
+      voiceRow({ state: "ready" }) === undefined &&
+      voiceRow(["ready"]) === undefined,
+  );
+
+  // The full panel: a complete payload produces exactly the seven rows, worst
+  // first, with the fixed MACHINE_ROW_ORDER tie-break inside each severity.
+  const FULL_SEVEN = {
+    relay: { ok: false, reason: "O endereço do relay não passou na validação." },
+    opencode: {
+      binaryFound: false,
+      binarySource: null,
+      versionState: "too-old",
+      versionMessage: "O opencode instalado nesta máquina é mais antigo do que este app espera.",
+    },
+    diskState: "low",
+    diskMessage: "O disco desta máquina está ficando sem espaço.",
+    docConvertState: "partial",
+    docConvertMessage: "Esta máquina converte documentos com fidelidade parcial.",
+    browseState: "no-browser",
+    browseMessage: "Este computador ainda não tem navegador para abrir sites.",
+    voiceState: "missing-model",
+    voiceMessage: VOICE_PHRASES.missingModel,
+  };
+  const seven = readinessRows(FULL_SEVEN);
+  check(
+    "P2-297: a complete payload produces exactly the seven rows, worst first with the fixed tie-break",
+    seven.map((r) => r.key).join(",") === "relay,agent,browse,version,disk,docs,voice" &&
+      seven.length === 7 &&
+      seven.slice(0, 3).every((r) => r.severity === "unavailable") &&
+      seven.slice(3).every((r) => r.severity === "attention") &&
+      seven[6].key === "voice" &&
+      seven[6].message === VOICE_PHRASES.missingModel,
+  );
+
+  // Append discipline: the voice key sits at the END of MACHINE_ROW_ORDER —
+  // no existing row changes position.
+  check(
+    "P2-297: the voice key is appended at the end of MACHINE_ROW_ORDER — no existing row changes position",
+    MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice,spoken" &&
+      MACHINE_ROW_ORDER.slice(0, -2).join(",") === "relay,agent,version,disk,docs,browse",
+  );
+
+  // Deterministic: the same input twice, the identical result.
+  const sevenOnce = JSON.stringify(readinessRows(FULL_SEVEN));
+  check(
+    "P2-297: the same payload yields the identical result on two calls",
+    sevenOnce === JSON.stringify(readinessRows(FULL_SEVEN)) && sevenOnce.includes("voice"),
+  );
+
+  // Label parity: the new key exists in BOTH locales (P2-118/P2-275 lessons),
+  // resolves in each (no raw-key fallback) and carries no emoji (P2-107).
+  const voiceLabelEn = translate("en", "machineLabelVoice");
+  const voiceLabelPt = translate("pt", "machineLabelVoice");
+  check(
+    "P2-297: machineLabelVoice has exact en/pt key parity, resolves per locale and carries no emoji",
+    "machineLabelVoice" in dict.en &&
+      "machineLabelVoice" in dict.pt &&
+      voiceLabelEn !== "machineLabelVoice" &&
+      voiceLabelPt !== "machineLabelVoice" &&
+      voiceLabelEn.trim() !== "" &&
+      voiceLabelPt.trim() !== "" &&
+      !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(voiceLabelEn + voiceLabelPt),
+  );
+
+  // Real-repo assertion: the view reads the four new field groups from the
+  // SAME mount read (exactly one settings GET, every new setter inside that
+  // same effect), introduces no request/route/poll/timer, and keeps the
+  // voice-readiness identifier clear of the voice-preferences state.
+  const settingsViewSrc = readFileSync(
+    new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url),
+    "utf8",
+  );
+  const settingsGetAt = settingsViewSrc.indexOf('request("GET", "/__ocr/settings")');
+  const clipStyleAt = settingsViewSrc.indexOf('request("GET", "/__ocr/clip-style")', settingsGetAt);
+  const mountRead = settingsGetAt >= 0 && clipStyleAt > settingsGetAt
+    ? settingsViewSrc.slice(settingsGetAt, clipStyleAt)
+    : "";
+  check(
+    "P2-297: the four new field groups ride the SAME mount read — one settings GET, all new setters inside it",
+    settingsGetAt >= 0 &&
+      (settingsViewSrc.match(/request\("GET", "\/__ocr\/settings"\)/g) || []).length === 1 &&
+      ["setRelayVerdict", "setAgentVerdict", "setDocsVerdict", "setVoiceVerdict"].every((s) =>
+        mountRead.includes(s),
+      ),
+  );
+  check(
+    "P2-297: no new poll and no new timer for the new capabilities",
+    (settingsViewSrc.match(/setInterval|setTimeout/g) || []).length === 0 &&
+      !settingsViewSrc.includes("/api/health"),
+  );
+  check(
+    "P2-297: the voice-readiness identifier does not collide with the voice-preferences state (collision documented in place)",
+    settingsViewSrc.includes("const [voice, setVoice] = useState(getVoiceSettings())") &&
+      settingsViewSrc.includes("const [voiceVerdict, setVoiceVerdict]") &&
+      settingsViewSrc.includes("voiceState: voiceVerdict?.state ?? forcedVoiceState()") &&
+      settingsViewSrc.includes("CANNOT be called\n  // `voice`"),
+  );
+  check(
+    "P2-297: the evidence hatch now covers every capability, degraded-only, real payload wins",
+    settingsViewSrc.includes('VOICE_STATES.filter((s) => s !== "ready")') &&
+      settingsViewSrc.includes('DOC_STATES.filter((s) => s !== "complete")') &&
+      settingsViewSrc.includes('localStorage.getItem("ocr.relayStateOverride") === "down"') &&
+      settingsViewSrc.includes('localStorage.getItem("ocr.agentStateOverride") === "missing"') &&
+      settingsViewSrc.includes("ok: relayVerdict?.ok ?? forcedRelayOk()") &&
+      settingsViewSrc.includes("binaryFound: agentVerdict?.binaryFound ?? forcedAgentFound()") &&
+      settingsViewSrc.includes("docConvertState: docsVerdict?.state ?? forcedDocsState()"),
+  );
+}
+
+// --- P2-305: the spoken-reply (TTS) row — same discipline as its sisters -------
+{
+  // The closed table: ready → ok, missing-tool → unavailable. Both verdicts
+  // carry the daemon's own phrase (ttsMessage) verbatim.
+  const TTS_PHRASES = {
+    ready: "Esta máquina responde em voz alta.",
+    missingTool: "Esta máquina não tem a ferramenta de fala instalada.",
+  };
+  const spokenReady = readinessRows({ ttsState: "ready", ttsMessage: TTS_PHRASES.ready });
+  check(
+    "P2-305: a ready TTS verdict becomes exactly one ok spoken row with the daemon's phrase verbatim",
+    spokenReady.length === 1 &&
+      spokenReady[0].key === "spoken" &&
+      spokenReady[0].severity === "ok" &&
+      spokenReady[0].labelKey === "machineLabelSpoken" &&
+      spokenReady[0].message === TTS_PHRASES.ready,
+  );
+  const spokenMissingTool = readinessRows({ ttsState: "missing-tool", ttsMessage: TTS_PHRASES.missingTool });
+  check(
+    "P2-305: a missing-tool TTS verdict becomes exactly one unavailable spoken row with the daemon's phrase verbatim",
+    spokenMissingTool.length === 1 &&
+      spokenMissingTool[0].key === "spoken" &&
+      spokenMissingTool[0].severity === "unavailable" &&
+      spokenMissingTool[0].message === TTS_PHRASES.missingTool,
+  );
+
+  // The silence rule: absent, non-textual and out-of-table verdicts never
+  // become a row (same tolerance as every other line).
+  check(
+    "P2-305: absent, non-textual and out-of-table TTS verdicts yield no row",
+    readinessRows({}).length === 0 &&
+      readinessRows({ ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: 7, ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: "unknown", ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: "", ttsMessage: TTS_PHRASES.ready }).length === 0 &&
+      readinessRows({ ttsState: "ready ", ttsMessage: TTS_PHRASES.ready }).length === 0,
+  );
+
+  // A non-string ttsMessage is ignored (empty phrase), but the row itself
+  // still rides the measured verdict — the label alone carries it.
+  const spokenNoPhrase = readinessRows({ ttsState: "missing-tool", ttsMessage: 42 });
+  check(
+    "P2-305: a non-textual ttsMessage never crashes the row — phrase is empty, verdict still measured",
+    spokenNoPhrase.length === 1 && spokenNoPhrase[0].message === "",
+  );
+
+  // Append discipline: the spoken key sits at the END of MACHINE_ROW_ORDER —
+  // no existing row changes position (P2-297 lesson, EXPERIENCE.md).
+  check(
+    "P2-305: the spoken key is appended at the end of MACHINE_ROW_ORDER — no existing row changes position",
+    MACHINE_ROW_ORDER.join(",") === "relay,agent,version,disk,docs,browse,voice,spoken" &&
+      MACHINE_ROW_ORDER[MACHINE_ROW_ORDER.length - 1] === "spoken" &&
+      MACHINE_ROW_ORDER.slice(0, -1).join(",") === "relay,agent,version,disk,docs,browse,voice",
+  );
+
+  // Same input twice, identical result (pure module, stable across calls).
+  const spokenTwice = JSON.stringify(readinessRows({ ttsState: "missing-tool", ttsMessage: TTS_PHRASES.missingTool }));
+  check(
+    "P2-305: the same TTS payload yields the identical result on two calls",
+    spokenTwice === JSON.stringify(readinessRows({ ttsState: "missing-tool", ttsMessage: TTS_PHRASES.missingTool })),
+  );
+
+  // Label parity: the new key exists in BOTH locales (P2-118/P2-275 lessons),
+  // resolves in each (no raw-key fallback) and carries no emoji (P2-107).
+  const spokenLabelEn = translate("en", "machineLabelSpoken");
+  const spokenLabelPt = translate("pt", "machineLabelSpoken");
+  check(
+    "P2-305: machineLabelSpoken has exact en/pt key parity, resolves per locale and carries no emoji",
+    "machineLabelSpoken" in dict.en &&
+      "machineLabelSpoken" in dict.pt &&
+      spokenLabelEn !== "machineLabelSpoken" &&
+      spokenLabelPt !== "machineLabelSpoken" &&
+      spokenLabelEn.trim() !== "" &&
+      spokenLabelPt.trim() !== "" &&
+      !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(spokenLabelEn + spokenLabelPt),
+  );
+
+  // Real-repo assertions: the view's evidence hatch reuses the EXPORTED
+  // TTS_STATES table (one truth, no duplicated list) and the spoken pair is
+  // wired from the same mount read with the tts* identifiers.
+  const settingsViewSpokenSrc = readFileSync(
+    new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url),
+    "utf8",
+  );
+  const settingsSpokenGetAt = settingsViewSpokenSrc.indexOf('request("GET", "/__ocr/settings")');
+  const settingsSpokenClipAt = settingsViewSpokenSrc.indexOf(
+    'request("GET", "/__ocr/clip-style")',
+    settingsSpokenGetAt,
+  );
+  const spokenMountRead =
+    settingsSpokenGetAt >= 0 && settingsSpokenClipAt > settingsSpokenGetAt
+      ? settingsViewSpokenSrc.slice(settingsSpokenGetAt, settingsSpokenClipAt)
+      : "";
+  check(
+    "P2-305: the spoken hatch reuses the exported TTS_STATES table — degraded-only, no duplicated state list",
+    settingsViewSpokenSrc.includes('TTS_STATES.filter((s) => s !== "ready")') &&
+      settingsViewSpokenSrc.includes('localStorage.getItem("ocr.ttsStateOverride")') &&
+      settingsViewSpokenSrc.includes("ttsState: ttsVerdict?.state ?? forcedTtsState()"),
+  );
+  check(
+    "P2-305: the spoken pair rides the SAME mount read — setTtsVerdict inside the one settings GET",
+    spokenMountRead.includes("setTtsVerdict") &&
+      (settingsViewSpokenSrc.match(/request\("GET", "\/__ocr\/settings"\)/g) || []).length === 1 &&
+      settingsViewSpokenSrc.includes("(s.body as { ttsState?: string }).ttsState") &&
+      settingsViewSpokenSrc.includes("(s.body as { ttsMessage?: string }).ttsMessage"),
+  );
+}
+
+
+
 // --- P2-148: first-run welcome flag (pure decision) -----------------------------
 {
   // Corrupted/partial writes must never count as "done" — a wiped-looking
@@ -7630,6 +10716,131 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return s !== k && s.trim() !== "";
     })),
   );
+}
+
+// --- P3-339: one brand-header treatment across the unpaired journey ----------
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const ruleFor = (sel: string): string => {
+    const at = css.indexOf(sel);
+    return at === -1 ? "" : css.slice(at, css.indexOf("}", at));
+  };
+  const welcome = ruleFor(".welcome header");
+  const pairing = ruleFor(".pair-wrap .pair-screen header");
+  check(
+    "P3-339: welcome wizard centers the brand header",
+    welcome.includes("text-align: center"),
+  );
+  // .screen > header is a flex row (space-between), and flex items ignore
+  // text-align — the pairing rule must drop the flex (its only child is the
+  // h1) or the centering silently no-ops.
+  check(
+    "P3-339: pairing screen centers the brand header to match the wizard",
+    pairing.includes("display: block") && pairing.includes("text-align: center"),
+  );
+  // The scanner's toolbar header (back button + title, flex layout) must not
+  // be caught by the centered brand-header rule: the scanner replaces the
+  // pair-screen element in the same wrapper, so its root must not carry the
+  // .pair-screen class the rule is scoped to.
+  const scannerSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "QrScanner.tsx"), "utf8");
+  check(
+    "P3-339: the centered rule stays scoped to .pair-screen (scanner untouched)",
+    pairing.startsWith(".pair-wrap .pair-screen header") &&
+      !/className="screen qr-scanner[^"]*pair-screen/.test(scannerSrc),
+  );
+}
+
+// --- P3-330: the degraded gate centers its brand header like the wizard -------
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const at = css.indexOf(".screen.degraded > header");
+  const rule = at === -1 ? "" : css.slice(at, css.indexOf("}", at));
+  // Same grammar as the wizard/pairing headers: drop the .screen > header
+  // space-between flex (flex items ignore text-align) and center the wordmark.
+  check(
+    "P3-330: the degraded gate centers its brand header on the wizard's axis",
+    rule.includes("display: block") && rule.includes("text-align: center"),
+  );
+  // Scoped to the degraded screen only — DegradedView is the sole .screen.degraded
+  // root, so chat/settings/scanner headers reusing .screen keep their flex row.
+  const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const others = ["ChatView.tsx", "SettingsView.tsx", "QrScanner.tsx", "PairingView.tsx"]
+    .map((f) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", f), "utf8"))
+    .filter((src) => /className="screen[^"]*degraded/.test(src));
+  check(
+    "P3-330: the centered-header override stays scoped to .screen.degraded",
+    rule.startsWith(".screen.degraded > header") &&
+      /className="screen degraded"/.test(degradedSrc) &&
+      others.length === 0,
+  );
+}
+
+// --- P3-338: one labeled exit on the welcome's final step ---------------------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
+  const metaAt = src.indexOf('className="welcome-meta"');
+  const guardAt = src.indexOf("{step < 3 && (", metaAt);
+  const skipAt = src.indexOf('className="welcome-skip"', metaAt);
+  const laterAt = src.indexOf('className="welcome-later"');
+  // The global skip renders only while the step card has no in-context exit;
+  // the pairing step keeps "do this later" as the single way out.
+  check(
+    "P3-338: the global welcome skip is hidden on the final step (welcome-later is the one exit)",
+    metaAt >= 0 && guardAt >= 0 && skipAt > guardAt && laterAt > 0,
+  );
+}
+
+// --- P3-336: brand title on a token-based scale, no inline font sizes ---------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const tokens = read("tokens.css");
+  const wordmark = css.slice(css.indexOf(".brand-wordmark"), css.indexOf("}", css.indexOf(".brand-wordmark")));
+  check(
+    "P3-336: .brand-wordmark renders from the type-scale tokens",
+    wordmark.includes("font-size: var(--font-size-xl)") && wordmark.includes("font-family: var(--font-serif)") &&
+      tokens.includes("--font-size-xl: 1.35rem") && tokens.includes("--font-serif:"),
+  );
+  // Every "OpenCode Remote" h1 on a first-contact screen carries the shared
+  // class and none carries an inline fontSize override again.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+    const src = read(join("components", view));
+    const h1s = src.match(/<h1[^>]*>OpenCode Remote<\/h1>/g) ?? [];
+    check(
+      `P3-336: ${view} brand h1 uses .brand-wordmark (no inline fontSize)`,
+      h1s.length > 0 && h1s.every((h) => h.includes('className="brand-wordmark"') && !h.includes("style=")),
+    );
+  }
+}
+
+// --- P3-334: the desktop pairing screen leads with the host section ----------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const hostAt = src.indexOf('t("pairHostTitle")');
+  const clientAt = src.indexOf('t("pairConnectTitle")');
+  check(
+    "P3-334: PairingView renders the host section before the client ceremony",
+    hostAt !== -1 && clientAt !== -1 && hostAt < clientAt,
+  );
+}
+
+// --- P3-332: the local-mode pairing screen shows the live auto-connect -------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  check(
+    "P3-332: PairingView renders the live auto-connect card (status + phase) in local mode",
+    src.includes('className="pair-auto"') && src.includes('role="status"') &&
+      src.includes("autoConnectLooking") && src.includes("localConnecting"),
+  );
+  check(
+    "P3-332: the auto-connect card replaces the ceremony and wires retry to onRetry",
+    /ceremony = !localMode/.test(src) && src.includes('className="pair-auto-retry" onClick={onRetry}'),
+  );
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    check(`p3-332 i18n ${lang}: autoConnectLooking names the local daemon`, /daemon/i.test(d.autoConnectLooking));
+    check(`p3-332 i18n ${lang}: autoConnect hints explain the unattended attempt`, !!d.autoConnectBusyHint && !!d.autoConnectIdleHint);
+  }
 }
 
 
@@ -8097,6 +11308,200 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("preview: long text clipped with an ellipsis", pv.s2.length === 90 && pv.s2.endsWith("…"));
   check("preview: sessions without text have no entry", !("s-idle" in pv));
   check("preview: clipPreview trims the edges", clipPreview("  a   b  ") === "a b");
+}
+
+// --- P2-318: routine history view rows (routinehistoryview.ts) ----------------
+{
+  const NOW = Date.parse("2026-09-07T12:00:00.000Z");
+  // stub translator: proves every label comes from the dictionary, never JSX
+  const t = (key: string, vars?: Record<string, string | number>) =>
+    key + (vars && vars.n !== undefined ? `#${vars.n}` : "");
+  const rec = (at: string, durationMs = 1_000, outcome = "completed") => ({ at, durationMs, outcome });
+
+  // --- the acceptance table: absent, empty, malformed, over-cap, degenerate --
+  const table: Array<{ name: string; history: unknown; want: number }> = [
+    { name: "absent history → no rows", history: undefined, want: 0 },
+    { name: "null history → no rows", history: null, want: 0 },
+    { name: "non-array history → no rows", history: "nope", want: 0 },
+    { name: "object history → no rows", history: {}, want: 0 },
+    { name: "empty history → no rows", history: [], want: 0 },
+    {
+      name: "malformed record in the middle → discarded alone",
+      history: [rec("2026-09-07T11:00:00.000Z"), { at: "garbage" }, rec("2026-09-07T10:00:00.000Z")],
+      want: 2,
+    },
+    {
+      name: "every malformed shape is dropped, well-formed siblings survive",
+      history: [
+        { nope: true },
+        rec("2026-09-07T09:00:00.000Z"),
+        { at: "2026-09-07T09:30:00.000Z", durationMs: -5, outcome: "completed" },
+        { at: "2026-09-07T09:30:00.000Z", durationMs: 1.5, outcome: "completed" },
+        { at: "2026-09-07T09:30:00.000Z", durationMs: 5, outcome: "exploded" },
+        { at: "2026-09-07T09:30:00.000Z", durationMs: 5, outcome: null },
+        rec("2026-09-07T08:00:00.000Z"),
+      ],
+      want: 2,
+    },
+    { name: "degenerate duration survives with 0s", history: [rec("2026-09-07T11:59:00.000Z", 0)], want: 1 },
+  ];
+  for (const tc of table) {
+    check(`rhv: ${tc.name}`, routineHistoryRows(tc.history, NOW, t).length === tc.want);
+  }
+
+  // --- ordering: newest first regardless of wire order (stable) --------------
+  const unsorted = routineHistoryRows(
+    [rec("2026-09-05T10:00:00.000Z"), rec("2026-09-07T10:00:00.000Z"), rec("2026-09-06T10:00:00.000Z")],
+    NOW,
+    t,
+  );
+  check(
+    "rhv: rows come back newest first",
+    unsorted[0].at === "2026-09-07T10:00:00.000Z" && unsorted[2].at === "2026-09-05T10:00:00.000Z",
+  );
+
+  // --- cap: documented ceiling of visible rows --------------------------------
+  check("rhv: view cap is a small documented positive integer", Number.isInteger(ROUTINE_HISTORY_VIEW_CAP) && ROUTINE_HISTORY_VIEW_CAP >= 3 && ROUTINE_HISTORY_VIEW_CAP <= 30);
+  const many = Array.from({ length: ROUTINE_HISTORY_VIEW_CAP + 12 }, (_, i) =>
+    rec(new Date(NOW - (i + 1) * 60_000).toISOString()),
+  );
+  const capped = routineHistoryRows(many, NOW, t);
+  check("rhv: over-cap history is capped to the newest rows", capped.length === ROUTINE_HISTORY_VIEW_CAP);
+  check("rhv: cap keeps the NEWEST rows, not the first wire rows", capped[0].at === many[0].at && capped.at(-1)!.at === many[ROUTINE_HISTORY_VIEW_CAP - 1].at);
+
+  // --- labels: dictionary keys + timeAgo reuse --------------------------------
+  const fiveMinAgo = NOW - 5 * 60_000;
+  const oneRow = routineHistoryRows([rec("2026-09-07T11:55:00.000Z", 72_000, "failed")], NOW, t)[0];
+  check("rhv: when label comes from timeAgo semantics", oneRow.whenLabel === "5m");
+  check("rhv: outcome label is the dictionary key, never JSX text", oneRow.outcomeLabel === "routineOutcomeFailed");
+  check("rhv: failed outcome maps the failed key", oneRow.outcome === "failed");
+  check("rhv: duration label is readable", oneRow.durationLabel === "1m 12s");
+  const justNow = routineHistoryRows([rec(new Date(NOW).toISOString())], NOW, t)[0];
+  check("rhv: just-now row asks the dictionary for the label", justNow.whenLabel === "routineHistoryJustNow");
+  const skippedRow = routineHistoryRows([rec(new Date(NOW - 120_000).toISOString(), 0, "skipped")], NOW, t)[0];
+  check("rhv: skipped outcome maps the skipped key", skippedRow.outcomeLabel === "routineOutcomeSkipped");
+  check("rhv: degenerate duration renders as 0s", skippedRow.durationLabel === "0s");
+
+  // --- formatDurationMs table -------------------------------------------------
+  const durTable: Array<[number, string]> = [
+    [0, "0s"],
+    [-5, "0s"],
+    [Number.NaN, "0s"],
+    [999, "0s"],
+    [1_000, "1s"],
+    [59_000, "59s"],
+    [60_000, "1m"],
+    [72_000, "1m 12s"],
+    [3_600_000, "1h"],
+    [3_600_000 + 120_000, "1h 02m"],
+  ];
+  for (const [ms, want] of durTable) {
+    check(`rhv: formatDurationMs(${ms}) → ${want}`, formatDurationMs(ms) === want);
+  }
+
+  // --- purity: same input, two calls, identical result ------------------------
+  const source = [rec("2026-09-07T11:00:00.000Z"), { junk: 1 }, rec("2026-09-07T10:00:00.000Z", 0, "skipped")];
+  const a: RoutineHistoryRow[] = routineHistoryRows(source, NOW, t);
+  const b: RoutineHistoryRow[] = routineHistoryRows(source, NOW, t);
+  check("rhv: same input always yields the identical result", JSON.stringify(a) === JSON.stringify(b));
+  const before = JSON.stringify(source);
+  void routineHistoryRows(source, NOW, t);
+  check("rhv: the input array is never mutated", JSON.stringify(source) === before);
+}
+
+// --- P2-220: iOS install hint (pure verdict + tolerant dismissal flag) --------
+{
+  const IOS_IPHONE =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+  const IOS_IPAD =
+    "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+  const IOS_IPAD_MAC_UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+  const ANDROID =
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36";
+  const DESKTOP =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+  // every row that favors the hint: regular iOS tab, pairing saved, not dismissed
+  const show = (over: Partial<Parameters<typeof installHintVerdict>[0]> = {}) =>
+    installHintVerdict({
+      userAgent: IOS_IPHONE,
+      standalone: false,
+      desktopShell: false,
+      hasPairing: true,
+      dismissed: false,
+      ...over,
+    });
+
+  // full verdict table, rules in contract order
+  check("p2-220: desktop shell hides even with every other condition favorable", show({ desktopShell: true }).show === false);
+  check("p2-220: dismissed hides even in a regular iOS tab with a pairing", show({ dismissed: true }).show === false);
+  check("p2-220: standalone (installed) hides", show({ standalone: true }).show === false);
+  check("p2-220: android UA with a saved pairing hides (own install prompt + storage policy)", show({ userAgent: ANDROID }).show === false);
+  check("p2-220: desktop UA hides", show({ userAgent: DESKTOP }).show === false);
+  check("p2-220: iOS with no saved pairing hides (first screen stays quiet)", show({ hasPairing: false }).show === false);
+  check("p2-220: iphone regular tab with pairing and no dismissal shows", show().show === true);
+  check("p2-220: ipad regular tab with pairing and no dismissal shows", show({ userAgent: IOS_IPAD }).show === true);
+  check("p2-220: empty UA hides", show({ userAgent: "" }).show === false);
+  check("p2-220: iPadOS 13+ Mac UA is recognized only with the touch indicator", show({ userAgent: IOS_IPAD_MAC_UA, maxTouchPoints: 5 }).show === true);
+  check("p2-220: Mac UA without the touch indicator stays quiet", show({ userAgent: IOS_IPAD_MAC_UA }).show === false);
+  check("p2-220: Mac UA with a zero touch count stays quiet", show({ userAgent: IOS_IPAD_MAC_UA, maxTouchPoints: 0 }).show === false);
+
+  // every generated message is the constant, clean phrase — no file path, no
+  // URL scheme, no room/key/credential material
+  const pathOrScheme = /[A-Za-z]:\\|\/[A-Za-z0-9_.-]+\/|:\/\//;
+  const rows: Parameters<typeof installHintVerdict>[0][] = [
+    { userAgent: IOS_IPHONE, standalone: false, desktopShell: false, hasPairing: true, dismissed: false },
+    { userAgent: IOS_IPHONE, standalone: false, desktopShell: true, hasPairing: true, dismissed: false },
+    { userAgent: IOS_IPHONE, standalone: true, desktopShell: false, hasPairing: true, dismissed: true },
+    { userAgent: ANDROID, standalone: false, desktopShell: false, hasPairing: true, dismissed: false },
+    { userAgent: DESKTOP, standalone: false, desktopShell: false, hasPairing: false, dismissed: true },
+    { userAgent: "", standalone: false, desktopShell: false, hasPairing: false, dismissed: false },
+  ];
+  check(
+    "p2-220: every verdict carries the same clean message",
+    rows.every((r) => {
+      const v = installHintVerdict(r);
+      return v.message === INSTALL_HINT_MESSAGE && v.message.length > 0 && !pathOrScheme.test(v.message);
+    }),
+  );
+  check("p2-220: dict.pt.installHintBody is exactly the module phrase", dict.pt.installHintBody === INSTALL_HINT_MESSAGE);
+  check("p2-220: dict.en carries the bilingual copy", typeof dict.en.installHintBody === "string" && dict.en.installHintBody.length > 0 && !pathOrScheme.test(dict.en.installHintBody));
+  check("p2-220: dismissal key is a quiet flag name (no room/key/relay)", INSTALL_HINT_DISMISSED_KEY === "ocr.installhint.dismissed");
+
+  // dismissal flag table: absent key, wrong type or corrupted JSON → not
+  // dismissed, NEVER an exception
+  check("p2-220: dismissed parse — absent is false", parseInstallHintDismissed(null) === false && parseInstallHintDismissed(undefined) === false);
+  check("p2-220: dismissed parse — wrong JSON type (array) is false", parseInstallHintDismissed("[]") === false);
+  check("p2-220: dismissed parse — wrong JSON type (object) is false", parseInstallHintDismissed('{"a":1}') === false);
+  check("p2-220: dismissed parse — corrupted JSON is false", parseInstallHintDismissed("{oops") === false);
+  check("p2-220: dismissed parse — numbers/strings-of-wrong-type are false", parseInstallHintDismissed("5") === false && parseInstallHintDismissed('"true"') === false);
+  check("p2-220: dismissed parse — bare true is true", parseInstallHintDismissed("true") === true);
+  check("p2-220: dismissed parse — serialize/parse round-trips", parseInstallHintDismissed(serializeInstallHintDismissed()) === true);
+  const serialized = serializeInstallHintDismissed();
+  check("p2-220: serialized flag carries no room/key/relay/scheme", !/room|k=|relay|:\/\//.test(serialized));
+
+  // App.tsx source pins: the environment is probed exactly once, on mount,
+  // and no new listeners or timers snuck in
+  const appSrc = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const uaCount = (appSrc.match(/navigator\.userAgent/g) ?? []).length;
+  const dmCount = (appSrc.match(/\(display-mode: standalone\)/g) ?? []).length;
+  check("p2-220: App reads the user agent exactly once", uaCount === 1);
+  check("p2-220: App reads the standalone display-mode exactly once", dmCount === 1);
+  const uaAt = appSrc.indexOf("navigator.userAgent");
+  const dmAt = appSrc.indexOf("(display-mode: standalone)");
+  check(
+    "p2-220: both probes live inside useState(() => initializers (mount-only)",
+    uaAt > -1 && dmAt > -1 && appSrc.slice(Math.max(0, uaAt - 400), uaAt).includes("useState(() =>") && appSrc.slice(Math.max(0, dmAt - 400), dmAt).includes("useState(() =>"),
+  );
+  check("p2-220: no new listeners in App.tsx (count stays 3)", (appSrc.match(/addEventListener\(/g) ?? []).length === 3);
+  check("p2-220: no timers in App.tsx", (appSrc.match(/setInterval\(/g) ?? []).length === 0 && (appSrc.match(/setTimeout\(/g) ?? []).length === 0);
+  check("p2-220: no install-prompt event hooks", !appSrc.includes("beforeinstallprompt") && !appSrc.includes("appinstalled"));
+  // round-3 review pins: locale-following copy + iPad touch indicator wired
+  check(
+    "p2-220: App renders the localized dict key, never the raw pt-BR constant",
+    appSrc.includes('t("installHintBody")') && !appSrc.includes("hint.message") && !appSrc.includes("installHint={INSTALL_HINT_MESSAGE}"),
+  );
+  check("p2-220: App wires navigator.maxTouchPoints into the verdict (iPadOS 13+ Mac UA)", /maxTouchPoints:\s*navigator\.maxTouchPoints/.test(appSrc));
 }
 
 
@@ -8693,6 +12098,119 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
     }),
   ));
+}
+
+// --- P2-315: sidecar stop planner (pure, no electron/node:fs) -----------------
+
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const graceful: SidecarStopStep[] = [
+    { kind: "message", payload: { type: "shutdown" } },
+    { kind: "wait", ms: SIDECAR_STOP_GRACE_MS },
+    { kind: "signal", signal: "SIGKILL" },
+  ];
+  const signalWalk: SidecarStopStep[] = [
+    { kind: "signal", signal: "SIGTERM" },
+    { kind: "wait", ms: SIDECAR_STOP_GRACE_MS },
+    { kind: "signal", signal: "SIGKILL" },
+  ];
+  // The full truth table: platform × channel × child alive/dead.
+  for (const platform of ["win32", "darwin", "linux"]) {
+    check(
+      `P2-315: ${platform} + channel + alive → the graceful IPC walk`,
+      json(planSidecarStop({ platform, channelConnected: true, childAlive: true })) === json(graceful),
+    );
+    check(
+      `P2-315: ${platform} + no channel + alive → the fixed signal walk`,
+      json(planSidecarStop({ platform, channelConnected: false, childAlive: true })) === json(signalWalk),
+    );
+    check(
+      `P2-315: ${platform} + dead child → no step at all (either channel state)`,
+      planSidecarStop({ platform, channelConnected: true, childAlive: false }).length === 0 &&
+        planSidecarStop({ platform, channelConnected: false, childAlive: false }).length === 0,
+    );
+  }
+  // The point of P2-315: the graceful path is IDENTICAL on every platform, so
+  // the macOS pipeline exercises the exact code Windows uses.
+  check(
+    "P2-315: the graceful plan is byte-identical across win32/darwin/linux",
+    json(planSidecarStop({ platform: "win32", channelConnected: true, childAlive: true })) ===
+      json(planSidecarStop({ platform: "darwin", channelConnected: true, childAlive: true })) &&
+      json(planSidecarStop({ platform: "darwin", channelConnected: true, childAlive: true })) ===
+        json(planSidecarStop({ platform: "linux", channelConnected: true, childAlive: true })),
+  );
+  check("P2-315: the grace is the untouched 3s backstop", SIDECAR_STOP_GRACE_MS === 3000);
+  // Degenerate and non-textual inputs: never throw, always a closed plan.
+  check("P2-315: unreadable input yields no steps", (() => {
+    for (const bad of [null, undefined, 42, "stop", [], new Date(), () => 1]) {
+      if (planSidecarStop(bad).length !== 0) return false;
+    }
+    return true;
+  })());
+  check(
+    "P2-315: missing/shapeless childAlive yields no steps",
+    planSidecarStop({}).length === 0 &&
+      planSidecarStop({ channelConnected: true }).length === 0 &&
+      planSidecarStop({ childAlive: 1 }).length === 0 &&
+      planSidecarStop({ childAlive: "yes" }).length === 0,
+  );
+  check(
+    "P2-315: garbage channel state degrades to the signal walk, never to a no-op",
+    json(planSidecarStop({ childAlive: true })) === json(signalWalk) &&
+      json(planSidecarStop({ childAlive: true, channelConnected: "yes" })) === json(signalWalk),
+  );
+  check(
+    "P2-315: a non-textual platform still gets the graceful plan (the plan never branches on it)",
+    json(planSidecarStop({ platform: 7, channelConnected: true, childAlive: true })) === json(graceful),
+  );
+  // Determinism: identical result for the same input in two calls, fresh
+  // objects each time so no call can mutate another's plan.
+  const detInput = { platform: "win32", channelConnected: true, childAlive: true };
+  const planA = planSidecarStop(detInput);
+  const planB = planSidecarStop(detInput);
+  check(
+    "P2-315: determinism — the same input yields the exact same plan twice (fresh objects)",
+    json(planA) === json(planB) && planA !== planB && planA[0] !== planB[0],
+  );
+  // Purity: read the REAL source — no electron, no node:fs, no import at all.
+  const stopSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "desktop", "src", "sidecarstop.ts"),
+    "utf8",
+  );
+  check(
+    "P2-315: purity — sidecarstop.ts imports no electron and no node:fs (no imports at all)",
+    !/(^|\n)\s*import[^\n]*(electron|node:fs|node:child_process|node:net|fetch)/.test(stopSrc) &&
+      !/^import\b/m.test(stopSrc),
+  );
+  // Wiring: the shell spawns with the IPC channel and executes the planner's
+  // sequence.
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "daemon.ts"), "utf8");
+  check(
+    "P2-315: wiring — the sidecar spawn opens the IPC message channel (stdio 4th entry)",
+    daemonSrc.includes('stdio: ["ignore", "pipe", "pipe", "ipc"]'),
+  );
+  check(
+    "P2-315: wiring — the stop executes the planner's sequence",
+    daemonSrc.includes("planSidecarStop(") && daemonSrc.includes("child.send(step.payload"),
+  );
+  // Daemon side: exactly the shell's message is accepted, everything else is
+  // ignored silently.
+  check("P2-315: daemon accepts exactly the shell's shutdown message", isSidecarStopMessage({ type: "shutdown" }));
+  check("P2-315: daemon ignores unknown messages", (() => {
+    for (const bad of [null, undefined, 0, "shutdown", ["shutdown"], { type: "stop" }, { type: "SHUTDOWN" }, { type: 1 }, {}, { other: true }]) {
+      if (isSidecarStopMessage(bad)) return false;
+    }
+    return true;
+  })());
+  check(
+    "P2-315: stop-message verdict is deterministic",
+    isSidecarStopMessage({ type: "shutdown" }) === isSidecarStopMessage({ type: "shutdown" }),
+  );
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check(
+    "P2-315: wiring — the daemon routes the IPC message through the SIGTERM drain",
+    daemonIndexSrc.includes('process.on("message"') && daemonIndexSrc.includes("isSidecarStopMessage"),
+  );
 }
 
 
@@ -9713,6 +13231,680 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 }
 
 
+// --- P2-259: relay certificate expiry verdict table ---------------------------
+{
+  const TOL = CERT_CLOCK_TOLERANCE_MS; // documented clock tolerance (24 h)
+  const WIN = CERT_WARN_WINDOW_MS; // documented warning window (14 days)
+  const NOW = 1_800_000_000_000;
+  const DAY = 86_400_000;
+
+  // 1. comfortable certificate → use
+  const comfy = certExpiryVerdict(NOW - 30 * DAY, NOW + 60 * DAY, NOW, TOL, WIN);
+  check("P2-259: comfortable certificate → use", comfy.verdict === "use", comfy.reason);
+
+  // 2. end of validity exactly at the warning-window threshold (explicit
+  // threshold: notAfter - now === WIN) → warn
+  const atThreshold = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN, NOW, TOL, WIN);
+  check(
+    "P2-259: end of validity exactly at the warning-window threshold → warn",
+    atThreshold.verdict === "warn" && NOW + WIN - NOW === WIN,
+    atThreshold.reason,
+  );
+
+  // 3. end of validity inside the window → warn
+  const insideWindow = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN - 1000, NOW, TOL, WIN);
+  check("P2-259: end of validity inside the warning window → warn", insideWindow.verdict === "warn");
+
+  // 4. expired within the clock tolerance → warn, never refuse (exactly at
+  // the tolerance edge and one millisecond inside it)
+  const expiredAtEdge = certExpiryVerdict(NOW - 30 * DAY, NOW - TOL, NOW, TOL, WIN);
+  const expiredInside = certExpiryVerdict(NOW - 30 * DAY, NOW - TOL + 1, NOW, TOL, WIN);
+  check(
+    "P2-259: expired within the clock tolerance (edge included) → warn and never refuse",
+    expiredAtEdge.verdict === "warn" && expiredInside.verdict === "warn",
+    `${expiredAtEdge.reason} | ${expiredInside.reason}`,
+  );
+
+  // 5. expired beyond the tolerance → refuse-expired
+  const expired = certExpiryVerdict(NOW - 30 * DAY, NOW - TOL - 1, NOW, TOL, WIN);
+  check("P2-259: expired beyond the clock tolerance → refuse-expired", expired.verdict === "refuse-expired");
+
+  // 6. validity start in the future within the tolerance → warn (edge included)
+  const futureAtEdge = certExpiryVerdict(NOW + TOL, NOW + 60 * DAY, NOW, TOL, WIN);
+  const futureInside = certExpiryVerdict(NOW + TOL - 1, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: not-yet-valid within the clock tolerance (edge included) → warn and never refuse",
+    futureAtEdge.verdict === "warn" && futureInside.verdict === "warn",
+  );
+
+  // 7. validity start in the future beyond the tolerance → refuse-not-yet-valid
+  const future = certExpiryVerdict(NOW + TOL + 1, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: not yet valid beyond the clock tolerance → refuse-not-yet-valid",
+    future.verdict === "refuse-not-yet-valid",
+  );
+
+  // 8. rule order: a non-finite instant wins over a comfortable end of
+  // validity — the result is a refusal, never a use
+  const orderCase = certExpiryVerdict(Number.NaN, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: rule order — non-finite instant plus comfortable end → refuse",
+    orderCase.verdict === "refuse-not-yet-valid",
+  );
+  const missingStart = certExpiryVerdict(undefined as unknown as number, NOW + 60 * DAY, NOW, TOL, WIN);
+  check(
+    "P2-259: missing validity start refuses fail-closed instead of guessing",
+    missingStart.verdict === "refuse-not-yet-valid",
+  );
+  const unreadableEnd = certExpiryVerdict(NOW - 30 * DAY, Number.NaN, NOW, TOL, WIN);
+  check(
+    "P2-259: non-finite validity end refuses fail-closed as refuse-expired",
+    unreadableEnd.verdict === "refuse-expired",
+  );
+
+  // 9. non-finite current instant → refuse
+  const badNow = certExpiryVerdict(NOW - 30 * DAY, NOW + 60 * DAY, Number.NaN, TOL, WIN);
+  check("P2-259: non-finite current instant → refuse", badNow.verdict === "refuse-not-yet-valid");
+  const infiniteNow = certExpiryVerdict(NOW - 30 * DAY, NOW + 60 * DAY, Number.POSITIVE_INFINITY, TOL, WIN);
+  check("P2-259: infinite current instant → refuse too", infiniteNow.verdict === "refuse-not-yet-valid");
+
+  // 10. determinism: the same input twice produces an identical result
+  const a = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN - 1000, NOW, TOL, WIN);
+  const b = certExpiryVerdict(NOW - 30 * DAY, NOW + WIN - 1000, NOW, TOL, WIN);
+  check(
+    "P2-259: same input twice → identical verdict and reason",
+    a.verdict === b.verdict && a.reason === b.reason,
+  );
+
+  // 11. every phrase is static and blind: no digits (ports), no path
+  // separators, no host, no subject/issuer/serial/fingerprint, no secrets
+  const phrases = [comfy, atThreshold, insideWindow, expiredAtEdge, expiredInside, expired, futureAtEdge, futureInside, future, orderCase, missingStart, unreadableEnd, badNow, infiniteNow, a].map((o) => o.reason);
+  const forbidden = ["localhost", "127.0.0.1", "https", "pem", ".key", "issuer", "serial", "fingerprint", "CN=", "subject"];
+  check(
+    "P2-259: every reason phrase is static and free of path, host, port, subject, issuer or secret material",
+    phrases.every(
+      (r) =>
+        !/[\d]/.test(r) &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes(":\\") &&
+        forbidden.every((f) => !r.includes(f)),
+    ),
+  );
+
+  // 12. the real module stays pure: no node:fs, node:crypto, node:http, no
+  // network call and no import statement at all
+  const root = join(import.meta.dirname, "..");
+  const certSrc = readFileSync(join(root, "apps", "relay", "src", "certexpiry.ts"), "utf8");
+  check(
+    "P2-259: certexpiry.ts imports nothing (no node:fs, node:crypto, node:http, no network)",
+    !certSrc.includes("node:fs") &&
+      !certSrc.includes("node:crypto") &&
+      !certSrc.includes("node:http") &&
+      !certSrc.includes("fetch") &&
+      !/^import /m.test(certSrc) &&
+      !certSrc.includes("require("),
+  );
+
+  // 13. the real index.ts consults the verdict before any listener opens,
+  // adds no periodic timer, and the runtime re-evaluation is log-only
+  const relayIndex = readFileSync(join(root, "apps", "relay", "src", "index.ts"), "utf8");
+  const consultAt = relayIndex.indexOf("certExpiryVerdict(");
+  const listenPositions = [...relayIndex.matchAll(/\.listen\(/g)].map((m) => m.index);
+  check(
+    "P2-259: the verdict is consulted before any listener opens (metrics and relay included)",
+    consultAt > 0 && listenPositions.length >= 2 && listenPositions.every((p) => consultAt < p),
+  );
+  check(
+    "P2-259: no new periodic timer — the sweep is still the only setInterval",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1,
+  );
+  const reevalAt = relayIndex.indexOf("P2-259 runtime re-evaluation");
+  const reevalBlock = relayIndex.slice(reevalAt, reevalAt + 900);
+  check(
+    "P2-259: the runtime re-evaluation is log-only — no exit, no close, no terminate",
+    reevalAt > 0 &&
+        reevalBlock.includes("ev(") &&
+        !reevalBlock.includes("process.exit") &&
+        !reevalBlock.includes(".close(") &&
+        !reevalBlock.includes(".terminate(") &&
+        !reevalBlock.includes(".listen("),
+  );
+
+  // 14. the healthz body keeps its exact P2-145 shape; P2-290 evolves the
+  // no-coupling rule into an additive-only one: an optional certExpiry
+  // getter exists, but a state without it reproduces the body byte for byte
+  // and the verdict is validated fail-closed against the documented table
+  const healthzSrc = readFileSync(join(root, "apps", "relay", "src", "healthz.ts"), "utf8");
+  check(
+    "P2-259: the healthz body keeps its shape (P2-290 cert fields additive-only, fail-closed)",
+    healthzSrc.includes("draining ? 503 : 200") &&
+      healthzSrc.includes("ok: !draining") &&
+      healthzSrc.includes("s.certExpiry?.()") &&
+      healthzSrc.includes("CERT_EXPIRY_VERDICTS.has(cert.verdict)"),
+  );
+}
+
+
+// --- P2-306: relay certificate hot reload verdict table -----------------------
+{
+  const TOL = CERT_CLOCK_TOLERANCE_MS; // documented clock tolerance (24 h)
+  const NOW = 1_800_000_000_000;
+  const DAY = 86_400_000;
+
+  const pair = (over: Partial<CertPairImpression>): CertPairImpression => ({
+    certSize: 1_234,
+    certMtimeMs: NOW - 61 * DAY,
+    keySize: 1_701,
+    keyMtimeMs: NOW - 61 * DAY,
+    notBefore: NOW - 30 * DAY,
+    notAfter: NOW + 60 * DAY,
+    ...over,
+  });
+  const IN_SERVICE = pair({});
+
+  // 1. unchanged pair → keep
+  const unchanged = certReloadVerdict(IN_SERVICE, pair({}), NOW, TOL);
+  check("P2-306: unchanged pair → keep", unchanged.verdict === "keep", unchanged.reason);
+
+  // 2. renewed valid pair (new files, fresh validity window) → adopt
+  const renewed = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW - 1_000,
+      notAfter: NOW + 90 * DAY,
+    }),
+    NOW,
+    TOL,
+  );
+  check("P2-306: renewed valid pair → adopt", renewed.verdict === "adopt", renewed.reason);
+
+  // 3. same policy as boot: a renewal inside the clock tolerance at either
+  // end (edge included — strict comparisons, mirroring certexpiry.ts) is
+  // usable material, not a refusal
+  const skewExpired = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW - 31 * DAY,
+      notAfter: NOW - TOL,
+    }),
+    NOW,
+    TOL,
+  );
+  const skewFuture = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW + TOL,
+      notAfter: NOW + 90 * DAY,
+    }),
+    NOW,
+    TOL,
+  );
+  check(
+    "P2-306: renewal within the clock tolerance (edge included) → adopt, same policy as boot",
+    skewExpired.verdict === "adopt" && skewFuture.verdict === "adopt",
+    `${skewExpired.reason} | ${skewFuture.reason}`,
+  );
+
+  // 4. new illegible pair (no readable validity window) → refuse
+  const illegible = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 7,
+      certMtimeMs: NOW - 1_000,
+      keySize: 9,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: Number.NaN,
+      notAfter: Number.NaN,
+    }),
+    NOW,
+    TOL,
+  );
+  check("P2-306: illegible renewal → refuse", illegible.verdict === "refuse", illegible.reason);
+
+  // 5. new expired pair → refuse — never swap the material in service for a
+  // worse one
+  const expired = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW - 100 * DAY,
+      notAfter: NOW - TOL - 1,
+    }),
+    NOW,
+    TOL,
+  );
+  check("P2-306: expired renewal beyond the tolerance → refuse", expired.verdict === "refuse", expired.reason);
+
+  // 6. new not-yet-valid pair → refuse
+  const notYet = certReloadVerdict(
+    IN_SERVICE,
+    pair({
+      certSize: 1_300,
+      certMtimeMs: NOW - 1_000,
+      keySize: 1_800,
+      keyMtimeMs: NOW - 1_000,
+      notBefore: NOW + TOL + 1,
+      notAfter: NOW + 90 * DAY,
+    }),
+    NOW,
+    TOL,
+  );
+  check(
+    "P2-306: not-yet-valid renewal beyond the tolerance → refuse",
+    notYet.verdict === "refuse",
+    notYet.reason,
+  );
+
+  // 7. non-finite instants refuse whichever field is unusable, and a
+  // non-finite current instant can never be judged against
+  const nanStart = certReloadVerdict(IN_SERVICE, pair({ certSize: 1_300, keySize: 1_800, notBefore: Number.NaN }), NOW, TOL);
+  const nanEnd = certReloadVerdict(IN_SERVICE, pair({ certSize: 1_300, keySize: 1_800, notAfter: Number.NaN }), NOW, TOL);
+  const infNow = certReloadVerdict(IN_SERVICE, pair({ certSize: 1_300, keySize: 1_800 }), Number.POSITIVE_INFINITY, TOL);
+  check(
+    "P2-306: non-finite instants → refuse (start, end and current instant alike)",
+    nanStart.verdict === "refuse" && nanEnd.verdict === "refuse" && infNow.verdict === "refuse",
+    `${nanStart.reason} | ${nanEnd.reason} | ${infNow.reason}`,
+  );
+
+  // 8. determinism: the same input twice produces an identical result
+  const freshPair = pair({
+    certSize: 1_300,
+    certMtimeMs: NOW - 1_000,
+    keySize: 1_800,
+    keyMtimeMs: NOW - 1_000,
+    notBefore: NOW - 1_000,
+    notAfter: NOW + 90 * DAY,
+  });
+  const a = certReloadVerdict(IN_SERVICE, freshPair, NOW, TOL);
+  const b = certReloadVerdict(IN_SERVICE, freshPair, NOW, TOL);
+  check("P2-306: same input twice → identical verdict and reason", a.verdict === b.verdict && a.reason === b.reason);
+
+  // 8b. wiring sequence A→B→C against the dedupe gate: the application must
+  // happen unconditionally and the dedupe must gate the LOG LINE only — two
+  // consecutive valid renewals both swap the material even though the static
+  // outcome text is identical (the same-shape logic the real sweep applies,
+  // pinned to the real source by the structural checks further below)
+  const renewedPair = (n: number): CertPairImpression =>
+    pair({
+      certSize: 2_000 + n,
+      certMtimeMs: NOW - 1_000 - n,
+      keySize: 2_100 + n,
+      keyMtimeMs: NOW - 1_000 - n,
+      notBefore: NOW - 1_000 - n,
+      notAfter: NOW + 90 * DAY,
+    });
+  let inService = IN_SERVICE;
+  let onDisk = IN_SERVICE;
+  let lastLogged: CertReloadOutcome | undefined;
+  let appliedCount = 0;
+  let loggedCount = 0;
+  const tick = (fresh: CertPairImpression, applies: boolean) => {
+    const outcome = certReloadVerdict(inService, fresh, NOW, TOL);
+    onDisk = fresh; // the on-disk impression moves whatever the verdict
+    let logged = outcome;
+    if (outcome.verdict === "adopt") {
+      if (applies) {
+        inService = fresh;
+        appliedCount++;
+      } else {
+        logged = { verdict: "refuse", reason: "relay certificate renewal could not be applied: keeping the material in service instead of risking a broken pair (fail-closed)" };
+      }
+    }
+    if (logged.verdict === "adopt") {
+      lastLogged = logged;
+      loggedCount++; // one line per adoption — each follows a real file change
+    } else if (
+      logged.verdict === "refuse" &&
+      (logged.verdict !== lastLogged?.verdict || logged.reason !== lastLogged?.reason)
+    ) {
+      lastLogged = logged;
+      loggedCount++; // refusals of the same stuck pair deduplicate
+    }
+  };
+  tick(renewedPair(1), true); // A→B: applies and logs
+  tick(renewedPair(2), true); // B→C: applies and logs again (dedupe never gates the swap)
+  check(
+    "P2-306: consecutive renewals A→B→C apply twice and log twice — one static line per adoption",
+    appliedCount === 2 && loggedCount === 2 && inService.notAfter === NOW + 90 * DAY && onDisk.certSize === 2_002,
+  );
+
+  // 8c. a renewal that validates but cannot be applied is refused once, keeps
+  // the material in service and is never re-read until the files move again
+  const stuck = renewedPair(9);
+  tick(stuck, false);
+  tick(renewedPair(11), false); // same refusal stuck another tick → deduplicated
+  check(
+    "P2-306: a failed application refuses once, keeps the old material and advances only the on-disk impression",
+    appliedCount === 2 &&
+      loggedCount === 3 &&
+      inService.notAfter === NOW + 90 * DAY &&
+      onDisk.certSize === 2_011 &&
+      lastLogged?.verdict === "refuse",
+  );
+
+  // 9. every phrase is static and blind: no digits, no path separators, no
+  // host, no subject/issuer/serial/fingerprint, no secret material
+  const phrases = [unchanged, renewed, skewExpired, skewFuture, illegible, expired, notYet, nanStart, nanEnd, infNow, a].map(
+    (o) => o.reason,
+  );
+  const forbidden = ["localhost", "127.0.0.1", "https", "pem", ".key", "issuer", "serial", "fingerprint", "CN=", "subject"];
+  check(
+    "P2-306: every reason phrase is static and free of path, host, port, subject, issuer or secret material",
+    phrases.every(
+      (r) =>
+        !/[\d]/.test(r) &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes(":\\") &&
+        forbidden.every((f) => !r.includes(f)),
+    ),
+  );
+
+  // 10. the real module stays pure: no node:fs, node:tls, node:http, no
+  // network call and no import statement at all
+  const root = join(import.meta.dirname, "..");
+  const reloadSrc = readFileSync(join(root, "apps", "relay", "src", "certreload.ts"), "utf8");
+  check(
+    "P2-306: certreload.ts imports nothing (no node:fs, node:tls, node:http, no network)",
+    !reloadSrc.includes("node:fs") &&
+      !reloadSrc.includes("node:tls") &&
+      !reloadSrc.includes("node:crypto") &&
+      !reloadSrc.includes("node:http") &&
+      !reloadSrc.includes("fetch") &&
+      !/^import /m.test(reloadSrc) &&
+      !reloadSrc.includes("require("),
+  );
+
+  // 11. the real index.ts wires the re-read into the EXISTING sweep
+  const relayIndex = readFileSync(join(root, "apps", "relay", "src", "index.ts"), "utf8");
+  const sweepAt = relayIndex.indexOf("setInterval(");
+  const reloadCallAt = relayIndex.indexOf("certReloadVerdict(");
+  const setSecureAt = relayIndex.indexOf("setSecureContext");
+  check(
+    "P2-306: the re-read rides the existing sweep — still exactly one setInterval, reload logic inside it",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1 &&
+      sweepAt > 0 &&
+      reloadCallAt > sweepAt &&
+      setSecureAt > sweepAt,
+  );
+  const reloadStart = relayIndex.indexOf("P2-306 hot reload");
+  const reloadEnd = relayIndex.indexOf("const nextCert = certExpiryVerdict(");
+  const reloadBlock = reloadStart > 0 && reloadEnd > reloadStart ? relayIndex.slice(reloadStart, reloadEnd) : "";
+  check(
+    "P2-306: the reload block swaps the context and never closes a socket, exits or listens",
+    reloadBlock.length > 0 &&
+      reloadBlock.includes("server.setSecureContext({ cert: freshCert, key: freshKey })") &&
+      reloadBlock.includes("CERT_EXPIRY.notAfter = fresh.notAfter") &&
+      !reloadBlock.includes("process.exit") &&
+      !reloadBlock.includes(".close(") &&
+      !reloadBlock.includes(".terminate(") &&
+      !reloadBlock.includes(".listen("),
+  );
+  const applyAt = reloadBlock.indexOf("server.setSecureContext");
+  const dedupeAt = reloadBlock.indexOf("lastOutcome?.verdict");
+  const applyToLog = applyAt >= 0 ? reloadBlock.slice(applyAt, reloadBlock.indexOf("relay TLS certificate renewed")) : "";
+  check(
+    "P2-306: the application precedes the log dedupe and sits in its own try/catch — a mismatched key refuses instead of crashing the sweep",
+    applyAt > 0 &&
+      dedupeAt > applyAt &&
+      applyToLog.includes("catch") &&
+      reloadBlock.includes("CERT_RELOAD.inService") &&
+      reloadBlock.includes("CERT_RELOAD.onDisk = fresh;") &&
+      reloadBlock.includes("relay certificate renewal could not be applied"),
+  );
+
+  // 12. no new route: the relay still registers exactly the two handlers it
+  // always had (the healthz request handler and the ws upgrade handler)
+  check(
+    "P2-306: no new route — the relay still registers exactly the request and upgrade handlers",
+    (relayIndex.match(/server\.on\(/g) ?? []).length === 2,
+  );
+
+  // 13. plain mode gains nothing: the reload state only exists in tls mode,
+  // so the sweep never probes the disk without a pair in service
+  check(
+    "P2-306: plain mode gains nothing — reload state is tls-only and the sweep is guarded",
+    relayIndex.includes('if (TLS.mode !== "tls" || !CERT_EXPIRY) return undefined;') &&
+      relayIndex.includes("if (CERT_RELOAD) {"),
+  );
+
+  // 14. the fail-closed boot preflight is untouched
+  check(
+    "P2-306: the boot preflight stays fail-closed and untouched",
+    relayIndex.includes("invalid relay TLS pair, refusing to start (fail-closed)") &&
+      relayIndex.includes("invalid relay TLS certificate, refusing to start (fail-closed)"),
+  );
+
+  // 15. no new dependency
+  const relayPkg = JSON.parse(readFileSync(join(root, "apps", "relay", "package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  check(
+    "P2-306: no new dependency — the relay still depends only on @ocr/protocol and ws",
+    JSON.stringify(Object.keys(relayPkg.dependencies).sort()) === JSON.stringify(["@ocr/protocol", "ws"]),
+  );
+}
+
+
+// --- P2-310: relay certificate chain verdict table ----------------------------
+{
+  const link = (subject: string, issuer: string) => ({ subject, issuer });
+  const ROOT = "CN=Test Root";
+  const MID = "CN=Test Intermediate";
+  const LEAF = "CN=Test Leaf";
+  const ALL_CHAIN_VERDICTS: CertChainVerdict[] = [
+    "complete",
+    "self-signed",
+    "leaf-only",
+    "broken-order",
+    "unknown",
+  ];
+
+  // 1. the verdict table, one entry per documented outcome
+  const complete = certChainVerdict([link(LEAF, MID), link(MID, ROOT), link(ROOT, ROOT)]);
+  check("P2-310: full chain in file order → complete", complete.verdict === "complete", complete.reason);
+  const twoLinks = certChainVerdict([link(LEAF, MID), link(MID, ROOT)]);
+  check("P2-310: leaf plus intermediate → complete", twoLinks.verdict === "complete");
+  const selfSigned = certChainVerdict([link(ROOT, ROOT)]);
+  check(
+    "P2-310: single certificate whose subject equals its issuer → self-signed",
+    selfSigned.verdict === "self-signed",
+    selfSigned.reason,
+  );
+  const leafOnly = certChainVerdict([link(LEAF, MID)]);
+  check(
+    "P2-310: single certificate whose subject differs from its issuer → leaf-only",
+    leafOnly.verdict === "leaf-only",
+    leafOnly.reason,
+  );
+  const broken = certChainVerdict([link(LEAF, MID), link(ROOT, ROOT)]);
+  check("P2-310: two certificates that do not chain → broken-order", broken.verdict === "broken-order", broken.reason);
+  const wrongOrder = certChainVerdict([link(MID, ROOT), link(LEAF, MID)]);
+  check("P2-310: chain written in the wrong order → broken-order", wrongOrder.verdict === "broken-order");
+  const gap = certChainVerdict([link(LEAF, MID), link(ROOT, ROOT), link(ROOT, ROOT)]);
+  check("P2-310: three certificates with a broken middle link → broken-order", gap.verdict === "broken-order");
+  check(
+    "P2-310: every documented verdict is reachable from the table",
+    [complete, twoLinks, selfSigned, leafOnly, broken, wrongOrder, gap].every((o) =>
+      ALL_CHAIN_VERDICTS.includes(o.verdict),
+    ),
+  );
+
+  // 2. degenerate inputs → unknown (fail-closed), never a guessed verdict
+  check("P2-310: empty list → unknown", certChainVerdict([]).verdict === "unknown");
+  check("P2-310: undefined input → unknown", certChainVerdict(undefined).verdict === "unknown");
+  check("P2-310: null input → unknown", certChainVerdict(null).verdict === "unknown");
+  check("P2-310: non-array input → unknown", certChainVerdict(`CN=${LEAF}`).verdict === "unknown");
+  check("P2-310: numeric input → unknown", certChainVerdict(42).verdict === "unknown");
+  check("P2-310: entries that are not objects → unknown", certChainVerdict([null, link(LEAF, MID)]).verdict === "unknown");
+  check("P2-310: non-textual subject → unknown", certChainVerdict([{ subject: 1, issuer: MID }]).verdict === "unknown");
+  check("P2-310: missing issuer → unknown", certChainVerdict([{ subject: LEAF }]).verdict === "unknown");
+  check("P2-310: blank subject → unknown", certChainVerdict([link("  ", MID)]).verdict === "unknown");
+  check(
+    "P2-310: a partially parseable list never guesses healthy → unknown",
+    certChainVerdict([link(LEAF, MID), undefined]).verdict === "unknown",
+  );
+
+  // 3. determinism: the same input twice produces an identical result
+  const a = certChainVerdict([link(LEAF, MID), link(MID, ROOT)]);
+  const b = certChainVerdict([link(LEAF, MID), link(MID, ROOT)]);
+  check("P2-310: same input twice → identical verdict and reason", a.verdict === b.verdict && a.reason === b.reason);
+
+  // 4. every phrase is static and blind: no digits, no path separators, no
+  // host, no subject/issuer/serial/fingerprint material
+  const phrases = [complete, twoLinks, selfSigned, leafOnly, broken, wrongOrder, gap, a, certChainVerdict([]), certChainVerdict(undefined)].map(
+    (o) => o.reason,
+  );
+  const forbidden = ["localhost", "127.0.0.1", "https", "pem", ".key", "issuer", "serial", "fingerprint", "CN=", "subject"];
+  check(
+    "P2-310: every reason phrase is static and free of path, host, port, subject, issuer or secret material",
+    phrases.every(
+      (r) =>
+        !/[\d]/.test(r) &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes(":\\") &&
+        forbidden.every((f) => !r.includes(f)),
+    ),
+  );
+
+  // 5. the real module stays pure: no node:fs, node:tls, node:crypto, no
+  // network call and no import statement at all
+  const root = join(import.meta.dirname, "..");
+  const chainSrc = readFileSync(join(root, "apps", "relay", "src", "certchain.ts"), "utf8");
+  check(
+    "P2-310: certchain.ts imports nothing (no node:fs, node:tls, node:crypto, no network)",
+    !chainSrc.includes("node:fs") &&
+      !chainSrc.includes("node:tls") &&
+      !chainSrc.includes("node:crypto") &&
+      !chainSrc.includes("node:http") &&
+      !chainSrc.includes("fetch") &&
+      !/^import /m.test(chainSrc) &&
+      !chainSrc.includes("require("),
+  );
+
+  // 6. the real index.ts classifies at boot AND re-classifies inside the
+  // EXISTING reload sweep — no new timer, no new route, no new dependency
+  const relayIndex = readFileSync(join(root, "apps", "relay", "src", "index.ts"), "utf8");
+  const bootAt = relayIndex.indexOf("certChainVerdict(");
+  const listenPositions = [...relayIndex.matchAll(/\.listen\(/g)].map((m) => m.index);
+  check(
+    "P2-310: the chain is classified at boot, before any listener opens (metrics and relay included)",
+    bootAt > 0 && listenPositions.length >= 2 && listenPositions.every((p) => bootAt < p),
+  );
+  check(
+    "P2-310: no new timer or route — still exactly one setInterval and two server.on handlers",
+    (relayIndex.match(/setInterval\(/g) ?? []).length === 1 && (relayIndex.match(/server\.on\(/g) ?? []).length === 2,
+  );
+  const reloadStart = relayIndex.indexOf("P2-306 hot reload");
+  const reloadEnd = relayIndex.indexOf("const nextCert = certExpiryVerdict(");
+  const reloadBlock = reloadStart > 0 && reloadEnd > reloadStart ? relayIndex.slice(reloadStart, reloadEnd) : "";
+  check(
+    "P2-310: the existing reload sweep re-classifies the chain when it adopts new material",
+    reloadBlock.includes("certChainVerdict(extractCertLinks") &&
+      reloadBlock.includes("lastCertChainState") &&
+      reloadBlock.includes("applied && freshCert"),
+  );
+  check(
+    "P2-310: the boot classification logs exactly one static line per verdict",
+    relayIndex.includes("relay TLS certificate chain classified") &&
+      relayIndex.includes("relay TLS certificate chain state changed"),
+  );
+  check(
+    "P2-310: the healthz getter publishes the sweep-maintained verdict, never the frozen boot const",
+    relayIndex.includes("certChain: () => lastCertChainState") &&
+      !relayIndex.includes("certChain: () => CERT_CHAIN?.verdict"),
+  );
+  const chainStart = relayIndex.indexOf("const CERT_CHAIN");
+  const chainEnd = relayIndex.indexOf("let lastCertChainState");
+  const chainBlock = chainStart > 0 && chainEnd > chainStart ? relayIndex.slice(chainStart, chainEnd) : "";
+  check(
+    "P2-310: the chain verdict only explains — tls-only boot block that never exits, closes, terminates or listens",
+    chainBlock.length > 0 &&
+      chainBlock.includes('if (TLS.mode !== "tls") return undefined;') &&
+      chainBlock.includes("relay TLS certificate chain classified") &&
+      !chainBlock.includes("process.exit") &&
+      !chainBlock.includes(".close(") &&
+      !chainBlock.includes(".terminate(") &&
+      !chainBlock.includes(".listen("),
+  );
+
+  // 7. the healthz body carries the verdict additively and fail-closed
+  const healthzSrc = readFileSync(join(root, "apps", "relay", "src", "healthz.ts"), "utf8");
+  const withChain = healthzPayload(
+    {
+      version: "0.2.0",
+      startedAt: 1_000_000,
+      rooms: () => 0,
+      roomsRejected: () => 0,
+      certChain: () => "leaf-only",
+    },
+    1_090_000,
+  );
+  const withoutChain = healthzPayload(
+    { version: "0.2.0", startedAt: 1_000_000, rooms: () => 0, roomsRejected: () => 0 },
+    1_090_000,
+  );
+  check(
+    "P2-310: a state with the getter publishes certChainState; without it the body keeps the exact shape",
+    withChain.certChainState === "leaf-only" &&
+      !("certChainState" in withoutChain) &&
+      healthzSrc.includes("CERT_CHAIN_STATES.has(chain)"),
+  );
+  check(
+    "P2-310: an out-of-table verdict publishes nothing (fail-closed, never invented)",
+    healthzPayload(
+      {
+        version: "0.2.0",
+        startedAt: 1_000_000,
+        rooms: () => 0,
+        roomsRejected: () => 0,
+        certChain: () => "made-up" as CertChainVerdict,
+      },
+      1_090_000,
+    ).certChainState === undefined,
+  );
+  check(
+    "P2-310: the unknown verdict is part of the documented table and publishes as measured",
+    healthzPayload(
+      {
+        version: "0.2.0",
+        startedAt: 1_000_000,
+        rooms: () => 0,
+        roomsRejected: () => 0,
+        certChain: () => "unknown",
+      },
+      1_090_000,
+    ).certChainState === "unknown",
+  );
+
+  // 8. no new dependency
+  const relayPkg310 = JSON.parse(readFileSync(join(root, "apps", "relay", "package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  check(
+    "P2-310: no new dependency — the relay still depends only on @ocr/protocol and ws",
+    JSON.stringify(Object.keys(relayPkg310.dependencies).sort()) === JSON.stringify(["@ocr/protocol", "ws"]),
+  );
+}
+
+
 // --- desktop update recheck schedule (P2-155) --------------------------------
 {
   const BASE = UPDATE_RECHECK_BASE_MS;
@@ -9884,6 +14076,183 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 }
 
 
+// --- P2-260: relay dial-error triage (pure classifier + floor rule) ---------
+
+{
+  // 1. every known network code with its kind and floor
+  check(
+    "P2-260: ENOTFOUND resolves to unresolved-name with a 60s floor",
+    relayDialVerdict("ENOTFOUND", "getaddrinfo ENOTFOUND relay-host").kind === "unresolved-name" &&
+      relayDialVerdict("ENOTFOUND", "").floorMs === 60_000,
+  );
+  check(
+    "P2-260: ECONNREFUSED resolves to refused with a 60s floor",
+    relayDialVerdict("ECONNREFUSED", "connect ECONNREFUSED").kind === "refused" &&
+      relayDialVerdict("ECONNREFUSED", "").floorMs === 60_000,
+  );
+  check(
+    "P2-260: ETIMEDOUT resolves to timed-out with a 60s floor",
+    relayDialVerdict("ETIMEDOUT", "connect ETIMEDOUT").kind === "timed-out" &&
+      relayDialVerdict("ETIMEDOUT", "").floorMs === 60_000,
+  );
+  // temporary DNS failure keeps the fast P2-129 curve (documented exception)
+  check(
+    "P2-260: EAI_AGAIN is a known code that stays transient with zero floor",
+    relayDialVerdict("EAI_AGAIN", "getaddrinfo EAI_AGAIN relay-host").kind === "transient" &&
+      relayDialVerdict("EAI_AGAIN", "").floorMs === 0,
+  );
+
+  // 2. every known certificate code with its kind and long floor
+  for (const code of ["CERT_HAS_EXPIRED", "ERR_SSL_SSLV3_ALERT_CERTIFICATE_EXPIRED"]) {
+    const v = relayDialVerdict(code, "");
+    check(`P2-260: ${code} resolves to cert-expired with a long floor`, v.kind === "cert-expired" && v.floorMs === 300_000);
+  }
+  check(
+    "P2-260: ERR_TLS_CERT_ALTNAME_INVALID resolves to cert-name-mismatch with a long floor",
+    relayDialVerdict("ERR_TLS_CERT_ALTNAME_INVALID", "").kind === "cert-name-mismatch" &&
+      relayDialVerdict("ERR_TLS_CERT_ALTNAME_INVALID", "").floorMs === 300_000,
+  );
+  for (const code of [
+    "DEPTH_ZERO_SELF_SIGNED_CERT",
+    "SELF_SIGNED_CERT_IN_CHAIN",
+    "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+    "UNABLE_TO_GET_ISSUER_CERT",
+  ]) {
+    const v = relayDialVerdict(code, "");
+    check(`P2-260: ${code} resolves to cert-untrusted with a long floor`, v.kind === "cert-untrusted" && v.floorMs === 300_000);
+  }
+
+  // 3. rule order — a certificate cause beats a network cause in one input
+  check(
+    "P2-260: cert code wins over network text (rule 1 over rule 3)",
+    relayDialVerdict("CERT_HAS_EXPIRED", "getaddrinfo ENOTFOUND relay-host").kind === "cert-expired",
+  );
+  check(
+    "P2-260: cert text wins over network text when no code is known (rule 1 inside the heuristic)",
+    relayDialVerdict(null, "getaddrinfo ENOTFOUND relay-host: certificate has expired").kind === "cert-expired",
+  );
+  // rule order — a known code beats message text suggesting another cause
+  check(
+    "P2-260: known code wins over text suggesting a certificate cause (rule 2)",
+    relayDialVerdict("ECONNREFUSED", "certificate has expired").kind === "refused",
+  );
+  check(
+    "P2-260: known code wins over text suggesting another network cause (rule 2)",
+    relayDialVerdict("ECONNREFUSED", "getaddrinfo ENOTFOUND relay-host").kind === "refused",
+  );
+
+  // 4. text alone (no code) classified by the documented heuristic
+  check("P2-260: bare getaddrinfo text is unresolved-name", relayDialVerdict(null, "getaddrinfo ENOTFOUND relay").kind === "unresolved-name");
+  check("P2-260: bare refused text is refused", relayDialVerdict(null, "connection refused by peer").kind === "refused");
+  check("P2-260: bare timed-out text is timed-out", relayDialVerdict(null, "connection timed out").kind === "timed-out");
+  check("P2-260: bare expired-certificate text is cert-expired", relayDialVerdict(null, "certificate has expired").kind === "cert-expired");
+  check("P2-260: bare altname text is cert-name-mismatch", relayDialVerdict(null, "hostname does not match certificate's altnames").kind === "cert-name-mismatch");
+  check("P2-260: bare self-signed text is cert-untrusted", relayDialVerdict(null, "self signed certificate in certificate chain").kind === "cert-untrusted");
+  check("P2-260: bare certificate text is cert-other", relayDialVerdict(null, "certificate verification failed").kind === "cert-other");
+
+  // 5. fail-closed: unknown / missing / empty input is transient, floor zero
+  check("P2-260: unknown code is transient with zero floor", relayDialVerdict("ESOMETHINGELSE", "something broke").kind === "transient" && relayDialVerdict("ESOMETHINGELSE", "something broke").floorMs === 0);
+  check("P2-260: absent code with uninformative message is transient", relayDialVerdict(null, "something broke").kind === "transient");
+  check("P2-260: empty message is transient", relayDialVerdict(null, "").kind === "transient" && relayDialVerdict(null, "").floorMs === 0);
+  check("P2-260: entirely absent input is transient", relayDialVerdict().kind === "transient" && relayDialVerdict().floorMs === 0);
+  check("P2-260: undefined message with unknown code is transient", relayDialVerdict("ENOIDEA", undefined).kind === "transient");
+
+  // 6. pure and deterministic: the same input twice gives the same verdict
+  const first = relayDialVerdict("ENOTFOUND", "getaddrinfo ENOTFOUND relay");
+  const second = relayDialVerdict("ENOTFOUND", "getaddrinfo ENOTFOUND relay");
+  check(
+    "P2-260: the same input classifies identically in two calls",
+    first.kind === second.kind && first.floorMs === second.floorMs && first.hint === second.hint,
+  );
+
+  // 7. the floor table is exactly the eight documented kinds
+  check(
+    "P2-260: floor table covers the eight kinds with transient at zero",
+    Object.keys(RELAY_DIAL_FLOOR_MS).length === 8 &&
+      RELAY_DIAL_FLOOR_MS.transient === 0 &&
+      RELAY_DIAL_FLOOR_MS["unresolved-name"] === 60_000 &&
+      RELAY_DIAL_FLOOR_MS["cert-expired"] === 300_000,
+  );
+
+  // 8. hints are static pt-BR operator copy: no host, port, URL, path or secret
+  const dialHintByKind = new Map<string, string>([
+    ["unresolved-name", relayDialVerdict("ENOTFOUND", "").hint],
+    ["refused", relayDialVerdict("ECONNREFUSED", "").hint],
+    ["timed-out", relayDialVerdict("ETIMEDOUT", "").hint],
+    ["cert-expired", relayDialVerdict("CERT_HAS_EXPIRED", "").hint],
+    ["cert-untrusted", relayDialVerdict("DEPTH_ZERO_SELF_SIGNED_CERT", "").hint],
+    ["cert-name-mismatch", relayDialVerdict("ERR_TLS_CERT_ALTNAME_INVALID", "").hint],
+    ["cert-other", relayDialVerdict(null, "certificate verification failed").hint],
+    ["transient", relayDialVerdict(null, "").hint],
+  ]);
+  const dialHints = [...dialHintByKind.values()];
+  check("P2-260: every kind ships a non-empty, distinct hint", dialHints.every((h) => h.length > 0) && new Set(dialHints).size === 8);
+  check(
+    "P2-260: hints carry no host, port, URL, path or secret (no digits, no slashes, no scheme)",
+    dialHints.every((h) => !/[0-9]/.test(h) && !h.includes("/") && !h.includes("://") && !h.toLowerCase().includes("url") && !h.toLowerCase().includes("host") && !h.toLowerCase().includes("porta") && !h.toLowerCase().includes("token") && !h.toLowerCase().includes("caminho")),
+  );
+  check(
+    "P2-260: each kind's hint names its cause in plain pt-BR",
+    dialHintByKind.get("unresolved-name")!.includes("não resolve") &&
+      dialHintByKind.get("refused")!.includes("recusou") &&
+      dialHintByKind.get("timed-out")!.includes("esgotou o tempo") &&
+      dialHintByKind.get("cert-expired")!.includes("vencido") &&
+      dialHintByKind.get("cert-untrusted")!.includes("confiável") &&
+      dialHintByKind.get("cert-name-mismatch")!.includes("não confere") &&
+      dialHintByKind.get("cert-other")!.includes("problema de certificado") &&
+      dialHintByKind.get("transient")!.includes("temporária"),
+  );
+
+  // 9. module hygiene: the real relaydialerror.ts imports nothing at all —
+  // no ws, net, tls, node:fs, no fetch — so no test can ever boot a daemon
+  const dialSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "relaydialerror.ts"), "utf8");
+  check(
+    "P2-260: relaydialerror.ts is pure — zero imports (no ws, net, tls, node:fs, fetch)",
+    !/^\s*import\b/m.test(dialSrc) && !dialSrc.includes("require(") && !dialSrc.includes("fetch"),
+  );
+  check(
+    "P2-260: relaydialerror.ts never mentions ws/net/tls as modules",
+    !/\bfrom\s+["'](ws|net|tls|node:fs)["']/.test(dialSrc),
+  );
+
+  // 10. the real index.ts classifies in the existing error handler, never
+  // logs the raw Node message in free text, and adds no new timer
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const relayFnStart = indexSrc.indexOf("function connectRelay(");
+  const relayFnEnd = indexSrc.indexOf("const localWss", relayFnStart);
+  const relayFn = indexSrc.slice(relayFnStart, relayFnEnd);
+  const errorStart = relayFn.indexOf('ws.on("error"');
+  const errorBlock = relayFn.slice(errorStart);
+  check("P2-260: the relay socket error handler classifies via relayDialVerdict", errorBlock.includes("relayDialVerdict("));
+  check(
+    "P2-260: the raw error message is no longer logged in free text",
+    !errorBlock.includes('"relay error"') && !/"error"\s*:\s*err\.message/.test(errorBlock) && !errorBlock.includes("{ error: err.message }"),
+  );
+  check(
+    "P2-260: the error handler surfaces only the kind + static hint",
+    errorBlock.includes("relayLastDial = { kind: verdict.kind, hint: verdict.hint }") &&
+      !/[,{]\s*error:/.test(errorBlock),
+  );
+  check(
+    "P2-260: no new timer — connectRelay keeps exactly one setTimeout and zero setInterval",
+    (relayFn.match(/setTimeout\(/g) ?? []).length === 1 && !relayFn.includes("setInterval("),
+  );
+  check(
+    "P2-260: the close handler consumes the dial floor with the same max rule",
+    relayFn.includes("relayPendingDialFloorMs") && /Math\.max\(\s*effectiveRetryDelayMs\(/.test(relayFn),
+  );
+  check(
+    "P2-260: a successful dial clears the pending floor",
+    relayFn.includes("relayPendingDialFloorMs = 0;"),
+  );
+  check(
+    "P2-260: the dial hint rides the same health surface as lastClose",
+    indexSrc.includes("lastClose: relayLastClose, lastDial: relayLastDial"),
+  );
+}
+
+
 // --- P2-157: feed-consistency — update feeds point at this release's artifacts
 {
   const TAG = "v0.3.0";
@@ -9991,28 +14360,36 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const dir = mkdtempSync(join(tmpdir(), "feed-consistency-"));
   const jsonPath = join(dir, "update-mac.json");
   const ymlPath = join(dir, "latest.yml");
-  writeFileSync(
-    jsonPath,
+  const arm64Path = join(dir, "update-mac-arm64.json");
+  const x64Path = join(dir, "update-mac-x64.json");
+  const squirrelDoc = (zip: string): string =>
     JSON.stringify({
       url: "https://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/" +
-        encodeURIComponent("OpenCode Remote-0.3.0-mac.zip"),
+        encodeURIComponent(zip),
       name: "0.3.0",
       notes: "",
       pub_date: "2026-09-01T12:00:00.000Z",
-    }),
-  );
+    });
+  // P2-191 shape: the alias is a byte-identical copy of the arm64 document.
+  writeFileSync(jsonPath, squirrelDoc("OpenCode Remote-0.3.0-arm64.zip"));
   writeFileSync(ymlPath, "version: 0.3.0\npath: 'OpenCode Remote Setup 0.3.0.exe'\n");
+  writeFileSync(arm64Path, squirrelDoc("OpenCode Remote-0.3.0-arm64.zip"));
+  writeFileSync(x64Path, squirrelDoc("OpenCode Remote-0.3.0-x64.zip"));
   const names = [
     "OpenCode Remote-0.3.0-arm64.dmg",
-    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote-0.3.0-x64.dmg",
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
     "OpenCode Remote Setup 0.3.0.exe",
     "latest-mac.yml",
     "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
     "latest.yml",
   ].join("\n");
   const run = (tag: string, input: string): { code: number; out: string } => {
     try {
-      const out = execFileSync(process.execPath, [tsxEntry, script, tag, jsonPath, ymlPath], {
+      const out = execFileSync(process.execPath, [tsxEntry, script, tag, jsonPath, ymlPath, arm64Path, x64Path], {
         input,
         encoding: "utf8",
       });
@@ -10024,15 +14401,38 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   };
   const ok = run("v0.3.0", `${names}\n`);
   check(
-    "P2-157: cli exits 0 when both feeds point at the release's artifacts",
+    "P2-157: cli exits 0 when all four feeds point at the release's artifacts",
     ok.code === 0 && ok.out.includes("feed-consistency: OK v0.3.0"),
     ok.out,
   );
-  const stale = run("v0.3.0", names.replace("0.3.0-mac.zip", "0.2.9-mac.zip"));
+  const stale = run("v0.3.0", names.replace("0.3.0-arm64.zip", "0.2.9-arm64.zip"));
   check(
     "P2-157: cli exits 1 printing the stale-feed problem (fail-closed)",
     stale.code === 1 && stale.out.includes("feed-consistency: FAIL v0.3.0") && stale.out.includes("not published"),
     stale.out,
+  );
+  // P2-212: an unreadable feed never hides the other feeds' problems — every
+  // problem prints in a single run (no short-circuit between feeds).
+  let mixed: { code: number; out: string };
+  try {
+    const out = execFileSync(
+      process.execPath,
+      [tsxEntry, script, "v0.3.0", jsonPath, ymlPath, arm64Path, join(dir, "missing.json")],
+      { input: names.replace("OpenCode Remote Setup 0.3.0.exe\n", ""), encoding: "utf8" },
+    );
+    mixed = { code: 0, out };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+    mixed = { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+  }
+  check(
+    "P2-212: unreadable feed and the other feeds' problems all print at once",
+    mixed.code === 1 &&
+      mixed.out.includes("cannot read") &&
+      mixed.out.includes("latest.yml") &&
+      mixed.out.includes("not published") &&
+      !mixed.out.includes("feed is empty"),
+    mixed.out,
   );
   rmSync(dir, { recursive: true, force: true });
 }
@@ -10058,6 +14458,175 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P2-157: release-feeds declares shell: bash (P2-126 lesson)",
+    block.includes("shell: bash"),
+  );
+}
+
+// --- P2-212: feed-consistency covers both per-architecture mac feeds ---------
+{
+  const TAG = "v0.3.0";
+  const published = [
+    "OpenCode Remote-0.3.0-arm64.dmg",
+    "OpenCode Remote-0.3.0-x64.dmg",
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
+    "OpenCode Remote-0.3.0-mac.zip",
+    "OpenCode Remote Setup 0.3.0.exe",
+    "latest-mac.yml",
+    "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
+    "latest.yml",
+  ];
+  const doc = (name: string, zip: string): string =>
+    JSON.stringify({
+      url: `https://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${encodeURIComponent(zip)}`,
+      name,
+      notes: "release notes",
+      pub_date: "2026-09-01T12:00:00.000Z",
+    });
+  const ARM64_ZIP = "OpenCode Remote-0.3.0-arm64.zip";
+  const X64_ZIP = "OpenCode Remote-0.3.0-x64.zip";
+  const LEGACY_ZIP = "OpenCode Remote-0.3.0-mac.zip";
+  const goodArm64 = doc("0.3.0", ARM64_ZIP);
+  const goodX64 = doc("0.3.0", X64_ZIP);
+
+  check(
+    "P2-212: consistent per-arch feeds with an identical alias return zero problems",
+    archFeedProblems(TAG, goodArm64, goodArm64, goodX64, published).length === 0,
+  );
+  check(
+    "P2-212: arch token detection follows the P2-191 boundary discipline",
+    archOfFileName(ARM64_ZIP) === "arm64" &&
+      archOfFileName("OpenCode-Remote-0.3.0-x64.zip") === "x64" &&
+      archOfFileName(LEGACY_ZIP) === null &&
+      archOfFileName("OpenCode-Remote-0.3.0-arm64e.zip") === null,
+  );
+
+  const swapped = archFeedProblems(TAG, doc("0.3.0", X64_ZIP), doc("0.3.0", X64_ZIP), goodX64, published);
+  check(
+    "P2-212: arm64 feed pointing at the x64 zip is a problem",
+    swapped.length === 1 && swapped[0]!.includes("update-mac-arm64.json") && swapped[0]!.includes("arm64 architecture"),
+    JSON.stringify(swapped),
+  );
+  const swappedIntel = archFeedProblems(TAG, goodArm64, goodArm64, doc("0.3.0", ARM64_ZIP), published);
+  check(
+    "P2-212: x64 feed pointing at the arm64 zip is a problem",
+    swappedIntel.length === 1 && swappedIntel[0]!.includes("update-mac-x64.json") && swappedIntel[0]!.includes("x64 architecture"),
+    JSON.stringify(swappedIntel),
+  );
+  const legacyZip = archFeedProblems(TAG, doc("0.3.0", LEGACY_ZIP), doc("0.3.0", LEGACY_ZIP), goodX64, published);
+  check(
+    "P2-212: per-arch feed pointing at a legacy arch-less zip is a problem",
+    legacyZip.length === 1 && legacyZip[0]!.includes("does not carry the arm64 architecture"),
+    JSON.stringify(legacyZip),
+  );
+
+  const absentDoc = doc("0.3.0", "OpenCode Remote-0.2.9-arm64.zip");
+  const absent = archFeedProblems(TAG, absentDoc, absentDoc, goodX64, published);
+  check(
+    "P2-212: per-arch feed url absent from the published list is a problem",
+    absent.length === 1 && absent[0]!.includes("not published"),
+    JSON.stringify(absent),
+  );
+  const wrongNameDoc = doc("0.2.9", ARM64_ZIP);
+  const wrongName = archFeedProblems(TAG, wrongNameDoc, wrongNameDoc, goodX64, published);
+  check(
+    "P2-212: per-arch feed name diverging from the tag version is a problem",
+    wrongName.length === 1 && wrongName[0]!.includes("0.2.9"),
+    JSON.stringify(wrongName),
+  );
+  const malformed = archFeedProblems(TAG, "{not json", "{not json", goodX64, published);
+  check(
+    "P2-212: malformed per-arch feed is a problem",
+    malformed.length === 1 && malformed[0]!.includes("update-mac-arm64.json") && malformed[0]!.includes("invalid JSON"),
+    JSON.stringify(malformed),
+  );
+  const missing = archFeedProblems(TAG, goodArm64, "", goodX64, published);
+  check(
+    "P2-212: missing (empty) per-arch feed is an explicit problem, never a silent skip",
+    missing.length === 1 && missing[0]!.includes("update-mac-arm64.json") && missing[0]!.includes("empty"),
+    JSON.stringify(missing),
+  );
+  const emptyYml = feedProblems(TAG, goodArm64, "", published);
+  check(
+    "P2-212: empty latest.yml is an explicit problem, never a silent skip",
+    emptyYml.length === 1 && emptyYml[0]!.includes("latest.yml") && emptyYml[0]!.includes("empty"),
+    JSON.stringify(emptyYml),
+  );
+  const emptyAlias = archFeedProblems(TAG, "", goodArm64, goodX64, published);
+  check(
+    "P2-212: empty alias feed is an explicit problem, never a silent skip",
+    emptyAlias.length === 1 && emptyAlias[0]!.includes("update-mac.json") && emptyAlias[0]!.includes("empty"),
+    JSON.stringify(emptyAlias),
+  );
+  const aliasDrift = archFeedProblems(TAG, goodX64, goodArm64, goodX64, published);
+  check(
+    "P2-212: alias differing from the arm64 document is a problem",
+    aliasDrift.length === 1 && aliasDrift[0]!.includes("update-mac.json") && aliasDrift[0]!.includes("update-mac-arm64.json"),
+    JSON.stringify(aliasDrift),
+  );
+
+  // P2-146 lesson: fail closed — ALL problems reported at once, never just
+  // the first feed's.
+  const bothSwapped = archFeedProblems(
+    TAG,
+    doc("0.3.0", LEGACY_ZIP),
+    doc("0.3.0", X64_ZIP),
+    doc("0.3.0", ARM64_ZIP),
+    published,
+  );
+  check(
+    "P2-212: cross-wired arch feeds and a drifted alias are all reported at once",
+    bothSwapped.length === 3 &&
+      bothSwapped.some((p) => p.includes("update-mac-arm64.json")) &&
+      bothSwapped.some((p) => p.includes("update-mac-x64.json")) &&
+      bothSwapped.some((p) => p.includes("alias content differs")),
+    JSON.stringify(bothSwapped),
+  );
+
+  const emptyPublished = archFeedProblems(TAG, goodArm64, goodArm64, goodX64, []);
+  check(
+    "P2-212: empty published list makes every per-arch feed a problem",
+    emptyPublished.length === 2 && emptyPublished.every((p) => p.includes("not published")),
+    JSON.stringify(emptyPublished),
+  );
+
+  const badTag = archFeedProblems("banana", goodArm64, goodArm64, goodX64, published);
+  check(
+    "P2-212: non-semver tag still short-circuits to a single tag problem",
+    badTag.length === 1 && badTag[0]!.includes("semver"),
+    JSON.stringify(badTag),
+  );
+  const emptyTag = archFeedProblems("", goodArm64, goodArm64, goodX64, published);
+  check(
+    "P2-212: empty tag still short-circuits to a single tag problem",
+    emptyTag.length === 1 && emptyTag[0]!.includes("empty"),
+    JSON.stringify(emptyTag),
+  );
+}
+
+// --- P2-212: real-repo assertion — release-feeds downloads and checks all four
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const start = release.indexOf("\n  release-feeds:");
+  const next = release.indexOf("\n  release-publish:", start);
+  const block = start === -1 || next === -1 ? "" : release.slice(start, next);
+  check(
+    "P2-212: release-feeds downloads the two per-architecture feed patterns",
+    block.includes("--pattern update-mac-arm64.json") && block.includes("--pattern update-mac-x64.json"),
+  );
+  check(
+    "P2-212: release-feeds passes all four feeds to scripts/feed-consistency.ts",
+    block.includes("feeds/update-mac.json") &&
+      block.includes("feeds/latest.yml") &&
+      block.includes("feeds/update-mac-arm64.json") &&
+      block.includes("feeds/update-mac-x64.json") &&
+      block.includes("scripts/feed-consistency.ts"),
+  );
+  check(
+    "P2-212: release-feeds declares shell: bash explicitly (P2-126/P2-164 lessons)",
     block.includes("shell: bash"),
   );
 }
@@ -10404,7 +14973,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // -- the real index.ts: both chunk routes bounded, completion cap untouched ----
   const daemonSrc181 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
   const stagerStart = daemonSrc181.indexOf("function stageChunk");
-  const firstHandler = daemonSrc181.indexOf('"/__ocr/transcribe/chunk" && req.method === "POST"', stagerStart);
+  // P2-314: the slice ends where stageChunk ends (the tunnel banner right
+  // below it) — later routes with their own warn logs must not leak in.
+  const firstHandler = daemonSrc181.indexOf("tunnel to the local opencode server", stagerStart);
   const stager = stagerStart >= 0 && firstHandler > stagerStart ? daemonSrc181.slice(stagerStart, firstHandler) : "";
   const warnLogs = stager.match(/log\("warn", [^\n]+/g) ?? [];
   check(
@@ -10441,6 +15012,281 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-181: boot is fail-closed for the chunk limits — logs each problem and exits 1",
     /for \(const problem of chunkLimits\.problems\) log\("error", problem\)/.test(daemonSrc181) &&
       /chunkLimits\.problems\.length > 0[\s\S]{0,400}process\.exit\(1\)/.test(daemonSrc181),
+  );
+}
+
+// --- P2-314: download-start ceilings (downloadcap.ts) ----------------------------
+{
+  // -- constants pinned to the upload pattern -----------------------------------
+  check(
+    "P2-314: download defaults mirror the upload pattern (200MB default, 2000 ceiling, 8 concurrent)",
+    DEFAULT_DOWNLOAD_MAX_MB === DEFAULT_UPLOAD_MAX_MB &&
+      DEFAULT_DOWNLOAD_MAX_MB === 200 &&
+      DOWNLOAD_MAX_MB_CEILING === UPLOAD_MAX_MB_CEILING &&
+      DOWNLOAD_MAX_MB_CEILING === 2000 &&
+      DEFAULT_MAX_OPEN_DOWNLOADS === DEFAULT_MAX_STAGED_IDS &&
+      DEFAULT_MAX_OPEN_DOWNLOADS === 8,
+  );
+
+  // -- downloadCapLimits: env matrix ---------------------------------------------
+  const dlDefaults = downloadCapLimits({});
+  check(
+    "P2-314: missing env keeps today's defaults (200MB, 8 open) with no problem",
+    dlDefaults.problems.length === 0 &&
+      dlDefaults.maxBytes === DEFAULT_DOWNLOAD_MAX_MB * 1_000_000 &&
+      dlDefaults.maxOpenDownloads === DEFAULT_MAX_OPEN_DOWNLOADS,
+  );
+  const dlBlank = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "   " });
+  check(
+    "P2-314: blank env keeps the defaults with no problem",
+    dlBlank.problems.length === 0 && dlBlank.maxBytes === DEFAULT_DOWNLOAD_MAX_MB * 1_000_000,
+  );
+  const dlValid = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "500" });
+  check(
+    "P2-314: valid value resolves the byte ceiling and keeps the open-download ceiling",
+    dlValid.problems.length === 0 && dlValid.maxBytes === 500_000_000 && dlValid.maxOpenDownloads === 8,
+  );
+  check(
+    "P2-314: at the documented ceiling is accepted",
+    downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: String(DOWNLOAD_MAX_MB_CEILING) }).problems.length === 0,
+  );
+  const degenerateEnv: Array<[string, string]> = [
+    ["not a number", "abc"],
+    ["negative", "-1"],
+    ["zero", "0"],
+    ["fractional", "1.5"],
+    ["above the ceiling", String(DOWNLOAD_MAX_MB_CEILING + 1)],
+  ];
+  for (const [label, value] of degenerateEnv) {
+    const res = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: value });
+    check(`P2-314: ${label} env value is a problem`, res.problems.length === 1 && res.problems[0]!.includes("OCR_DOWNLOAD_MAX_MB"));
+  }
+
+  // -- refusal grammar byte-for-byte identical to OCR_UPLOAD_MAX_MB's ------------
+  for (const value of ["abc", "-1", "0", "1.5", String(DOWNLOAD_MAX_MB_CEILING + 1)]) {
+    const dl = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: value });
+    const up = chunkStoreLimits({ OCR_UPLOAD_MAX_MB: value });
+    check(
+      `P2-314: refusal grammar for ${JSON.stringify(value)} matches OCR_UPLOAD_MAX_MB word for word`,
+      dl.problems.length === 1 &&
+        up.problems.length === 1 &&
+        dl.problems[0] === up.problems[0]!.replaceAll("OCR_UPLOAD_MAX_MB", "OCR_DOWNLOAD_MAX_MB"),
+    );
+  }
+
+  // -- determinism: same input twice → identical result ---------------------------
+  const dlA = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "abc" });
+  const dlB = downloadCapLimits({ OCR_DOWNLOAD_MAX_MB: "abc" });
+  check(
+    "P2-314: the same env resolves identically on two calls",
+    JSON.stringify(dlA) === JSON.stringify(dlB) && dlA.problems.length === 1,
+  );
+  const vA = downloadStartVerdict(300_000_000, 3, 200_000_000, 8);
+  const vB = downloadStartVerdict(300_000_000, 3, 200_000_000, 8);
+  check(
+    "P2-314: the same verdict input resolves identically on two calls",
+    JSON.stringify(vA) === JSON.stringify(vB) && !vA.allow && vA.reason === "file-above-cap",
+  );
+
+  // -- downloadVerdict: rule table (each rule + degenerate inputs) -----------------
+  const MAXB = 200_000_000;
+  const MAXOPEN = DEFAULT_MAX_OPEN_DOWNLOADS;
+  const rows: Array<[string, unknown, unknown, unknown, unknown, "allow" | "file-above-cap" | "too-many-open"]> = [
+    ["a small file with room allows", 100, 0, MAXB, MAXOPEN, "allow"],
+    ["a zero-byte file with room allows", 0, 0, MAXB, MAXOPEN, "allow"],
+    ["exactly at the cap still allows", MAXB, 0, MAXB, MAXOPEN, "allow"],
+    ["one byte above the cap refuses", MAXB + 1, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["live count at the ceiling refuses", 100, MAXOPEN, MAXB, MAXOPEN, "too-many-open"],
+    ["live count above the ceiling refuses", 100, MAXOPEN + 5, MAXB, MAXOPEN, "too-many-open"],
+    ["the size rule comes before the open-count rule", MAXB + 1, MAXOPEN, MAXB, MAXOPEN, "file-above-cap"],
+    ["NaN size refuses fail-closed", Number.NaN, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["negative size refuses fail-closed", -1, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["infinite size refuses fail-closed", Number.POSITIVE_INFINITY, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["fractional size refuses fail-closed", 1.5, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["non-numeric size refuses fail-closed", "100", 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["undefined size refuses fail-closed", undefined, 0, MAXB, MAXOPEN, "file-above-cap"],
+    ["a zero maxBytes ceiling refuses fail-closed", 100, 0, 0, MAXOPEN, "file-above-cap"],
+    ["a NaN maxBytes ceiling refuses fail-closed", 100, 0, Number.NaN, MAXOPEN, "file-above-cap"],
+    ["a negative live count refuses fail-closed", 100, -1, MAXB, MAXOPEN, "too-many-open"],
+    ["a fractional live count refuses fail-closed", 100, 0.5, MAXB, MAXOPEN, "too-many-open"],
+    ["a non-numeric live count refuses fail-closed", 100, "0", MAXB, MAXOPEN, "too-many-open"],
+    ["a zero open ceiling refuses fail-closed", 100, 0, MAXB, 0, "too-many-open"],
+    ["a fractional open ceiling refuses fail-closed", 100, 0, MAXB, 1.5, "too-many-open"],
+    ["a NaN open ceiling refuses fail-closed", 100, 0, MAXB, Number.NaN, "too-many-open"],
+  ];
+  for (const [label, size, live, maxBytes, maxOpen, expected] of rows) {
+    const v = downloadStartVerdict(size, live, maxBytes, maxOpen);
+    check(
+      `P2-314: downloadVerdict — ${label} → ${expected}`,
+      expected === "allow" ? v.allow === true : v.allow === false && v.reason === expected,
+    );
+  }
+
+  // -- message boundary: static pt-BR phrases, no path, no name, no size ----------
+  const refusedBig = downloadStartVerdict(300_000_000, 0, MAXB, MAXOPEN);
+  const refusedBigger = downloadStartVerdict(900_000_000, 0, MAXB, MAXOPEN);
+  check(
+    "P2-314: the 413 phrase is static and never carries a path, name, digit or separator",
+    refusedBig.message === DOWNLOAD_FILE_ABOVE_CAP_MESSAGE &&
+      refusedBigger.message === refusedBig.message &&
+      !/[0-9/\\]/.test(refusedBig.message),
+  );
+  const refusedMany = downloadStartVerdict(100, MAXOPEN, MAXB, MAXOPEN);
+  const refusedManyMore = downloadStartVerdict(999_999, MAXOPEN + 1, MAXB, MAXOPEN);
+  check(
+    "P2-314: the 429 phrase is static and never carries a path, name, digit or separator",
+    refusedMany.message === DOWNLOAD_TOO_MANY_OPEN_MESSAGE &&
+      refusedManyMore.message === refusedMany.message &&
+      !/[0-9/\\]/.test(refusedMany.message),
+  );
+
+  // -- evictOldestKeys: entries-ceiling backstop -----------------------------------
+  check(
+    "P2-314: evictOldestKeys evicts nothing on an empty, below-ceiling or exactly-at-ceiling list",
+    evictOldestKeys([], 8).length === 0 &&
+      evictOldestKeys([{ key: "a", at: 1 }], 8).length === 0 &&
+      evictOldestKeys(
+        [
+          { key: "a", at: 1 },
+          { key: "b", at: 2 },
+        ],
+        2,
+      ).length === 0,
+  );
+  const two = evictOldestKeys(
+    [
+      { key: "old", at: 1 },
+      { key: "mid", at: 2 },
+      { key: "new", at: 3 },
+    ],
+    2,
+  );
+  check("P2-314: one entry above the ceiling evicts exactly the oldest", two.length === 1 && two[0] === "old");
+  const entries414 = [
+    { key: "a", at: 5 },
+    { key: "b", at: 1 },
+    { key: "c", at: 1 },
+    { key: "d", at: 3 },
+  ];
+  const evicted = evictOldestKeys(entries414, 2);
+  check(
+    "P2-314: eviction lands on the ceiling, oldest first, ties by insertion order",
+    evicted.length === 2 && evicted[0] === "b" && evicted[1] === "c",
+  );
+  check("P2-314: eviction never mutates its input", entries414.length === 4 && entries414[0]!.key === "a");
+  const evA = evictOldestKeys(entries414, 2);
+  const evB = evictOldestKeys(entries414, 2);
+  check("P2-314: eviction is identical for the same input on two calls", JSON.stringify(evA) === JSON.stringify(evB));
+
+  // -- route simulation: admission, refusals and the entries ceiling ---------------
+  {
+    const caps = downloadCapLimits({});
+    const downloads = new Map<string, { size: number; at: number }>();
+    const refusals: Array<number | "413" | "429"> = [];
+    let now = Date.now();
+    const refusalsSoFar = () => refusals.length;
+    // mirror of the fixed route (review round 3): the 30-minute sweep runs
+    // BEFORE admission — prune → verdict → insert, like the upload route
+    const start = (size: number): { id: string; chunks: number } | null => {
+      for (const [k, v] of downloads) {
+        if (now - v.at > 30 * 60_000) downloads.delete(k);
+      }
+      const verdict = downloadStartVerdict(size, downloads.size, caps.maxBytes, caps.maxOpenDownloads);
+      if (!verdict.allow) {
+        refusals.push(verdict.reason === "file-above-cap" ? "413" : "429");
+        return null;
+      }
+      const id = `id-${downloads.size}`;
+      downloads.set(id, { size, at: now });
+      for (const k of evictOldestKeys(
+        Array.from(downloads, ([key, v]) => ({ key, at: v.at })),
+        caps.maxOpenDownloads,
+      )) {
+        downloads.delete(k);
+      }
+      return { id, chunks: Math.max(1, Math.ceil(size / 500_000)) };
+    };
+    const first = start(1_200_000);
+    check(
+      "P2-314: a file within the default starts exactly like today — same id registration and 3-chunk count for 1.2MB",
+      first !== null && first.chunks === 3 && first.chunks === Math.max(1, Math.ceil(1_200_000 / 500_000)),
+    );
+    for (let i = 0; i < DEFAULT_MAX_OPEN_DOWNLOADS + 3; i++) start(1_000);
+    check(
+      "P2-314: starts beyond the ceiling answer 429 and no identifier is created",
+      refusals.every((r) => r === "429") && downloads.size === DEFAULT_MAX_OPEN_DOWNLOADS,
+    );
+    const survivor = downloads.keys().next().value;
+    check(
+      "P2-314: a download already in progress survives every refused arrival",
+      survivor === "id-0" && downloads.has("id-0"),
+    );
+    const beforeBigRefusal = downloads.size;
+    const bigRefusal = start(300_000_000);
+    check(
+      "P2-314: a file above the ceiling answers 413 with no registration",
+      bigRefusal === null && refusals.includes("413") && downloads.size === beforeBigRefusal,
+    );
+    // round 3 review: stale registrations must never brick the endpoint —
+    // after 30 idle minutes the sweep frees the map and starts flow again
+    now += 31 * 60_000;
+    const refusalsBeforeSweep = refusalsSoFar();
+    const afterAge = start(1_000);
+    check(
+      "P2-314: aged-out registrations are swept before admission — after 30 idle minutes the next start succeeds and the ceiling still holds",
+      afterAge !== null && downloads.size === 1 && refusals.length === refusalsBeforeSweep,
+    );
+  }
+
+  // -- the real index.ts: verdict before the id, 413/429 mapping, untouched chunk route
+  const daemonSrc314 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const startAt = daemonSrc314.indexOf('"/__ocr/download/start" && req.method === "POST"');
+  const chunkRouteAt = daemonSrc314.indexOf('"/__ocr/download/chunk" && req.method === "GET"', startAt);
+  const startSlice = startAt >= 0 && chunkRouteAt > startAt ? daemonSrc314.slice(startAt, chunkRouteAt) : "";
+  check(
+    "P2-314: the start route consults the boot-resolved caps BEFORE creating any identifier",
+    startSlice.includes("downloadVerdict(") &&
+      startSlice.indexOf("downloadVerdict(") < startSlice.indexOf("randomUUID()") &&
+      startSlice.includes("downloadCaps.maxBytes") &&
+      startSlice.includes("downloadCaps.maxOpenDownloads"),
+  );
+  check(
+    "P2-314: the start route answers 413 for file-above-cap and 429 for too-many-open",
+    startSlice.includes('verdict.reason === "file-above-cap" ? 413 : 429'),
+  );
+  check(
+    "P2-314: the 30-minute sweep runs BEFORE admission — a refused start can never strand stale entries (round-3 review)",
+    startSlice.indexOf("30 * 60_000") >= 0 &&
+      startSlice.indexOf("30 * 60_000") < startSlice.indexOf("downloadVerdict("),
+  );
+  check(
+    "P2-314: the refusal log carries only the static reason — never a path, name or size",
+    startSlice.includes('log("warn", "download start refused", { reason: verdict.reason })'),
+  );
+  check(
+    "P2-314: the entries-ceiling eviction runs after the insertion, and a refused start never counts as delivered",
+    startSlice.indexOf("downloads.set(") >= 0 &&
+      startSlice.indexOf("evictOldestKeys(") > startSlice.indexOf("downloads.set(") &&
+      startSlice.indexOf("metrics.inc(") > startSlice.indexOf("downloadVerdict("),
+  );
+  check(
+    "P2-314: the chunk-count formula stays byte-identical to today's",
+    startSlice.includes("chunks: Math.max(1, Math.ceil(size / 500_000))"),
+  );
+  const devicesAt = daemonSrc314.indexOf('"/__ocr/devices" && req.method === "GET"', chunkRouteAt);
+  const chunkSlice =
+    chunkRouteAt >= 0 && devicesAt > chunkRouteAt ? daemonSrc314.slice(chunkRouteAt, devicesAt) : "";
+  check(
+    "P2-314: the chunk route stays untouched — no verdict, no insertion, no eviction",
+    chunkSlice.length > 0 &&
+      !chunkSlice.includes("downloadVerdict(") &&
+      !chunkSlice.includes("downloads.set(") &&
+      !chunkSlice.includes("evictOldestKeys("),
+  );
+  check(
+    "P2-314: boot is fail-closed for the download caps — logs each problem and exits 1",
+    /for \(const problem of downloadCaps\.problems\) log\("error", problem\)/.test(daemonSrc314) &&
+      /downloadCaps\.problems\.length > 0[\s\S]{0,400}process\.exit\(1\)/.test(daemonSrc314),
   );
 }
 
@@ -11024,6 +15870,587 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // it without any node/http/ws surface (same discipline as knobs.ts)
   const loglevelSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "loglevel.ts"), "utf8");
   check("P2-177: loglevel.ts stays pure — zero imports", !/^import /m.test(loglevelSrc));
+}
+
+// --- P2-217: relay backpressure — send verdict + per-socket buffer cap --------
+{
+  const cap = BUFFER_CAP_DEFAULT;
+
+  // -- sendVerdict: the full table -------------------------------------------
+
+  // accumulated far below the cap → send, whatever the frame size
+  const wellBelow: string[] = [];
+  for (const [pending, frame] of [
+    [0, 1],
+    [0, cap],
+    [1, 1],
+    [Math.floor(cap / 2), Math.floor(cap / 2) - 1024],
+    [cap - cap / 4, cap / 4 - 2048],
+  ] as const) {
+    wellBelow.push(sendVerdict(pending, frame, cap).action);
+  }
+  check(
+    "P2-217: accumulated bytes well below the cap always send",
+    wellBelow.every((a) => a === "send"),
+    JSON.stringify(wellBelow),
+  );
+
+  // accumulated + frame landing EXACTLY on the cap is still a send — the
+  // documented limit itself stays serviceable, only strictly above closes
+  const atCap = sendVerdict(cap - 100, 100, cap);
+  const atCapZeroFrame = sendVerdict(cap, 0, cap);
+  check(
+    "P2-217: accumulated + frame exactly at the cap sends (limit documented: pending+frame == cap is a send)",
+    atCap.action === "send" && atCapZeroFrame.action === "send" && cap === BUFFER_CAP_DEFAULT,
+  );
+
+  // one byte over the cap → close-slow, with the documented reason
+  const over = sendVerdict(cap - 99, 100, cap);
+  check(
+    "P2-217: accumulated + frame above the cap → close-slow with the fixed reason",
+    over.action === "close-slow" && over.reason === SLOW_CONSUMER_CLOSE_REASON,
+    JSON.stringify(over),
+  );
+
+  // already over the cap, tiny frame → still close-slow
+  const alreadyOver = sendVerdict(cap + 1, 1, cap);
+  const wayOver = sendVerdict(cap * 10, 0, cap);
+  check(
+    "P2-217: accumulated already above the cap closes even for a tiny frame",
+    alreadyOver.action === "close-slow" && wayOver.action === "close-slow",
+  );
+
+  // fail-open by design: missing, negative and non-finite accumulated bytes
+  // never close a (possibly healthy) connection
+  const absent = sendVerdict(undefined, 100, cap);
+  const negative = sendVerdict(-1, 100, cap);
+  const notANumber = sendVerdict(NaN, 100, cap);
+  const infinite = sendVerdict(Infinity, 100, cap);
+  const nullPending = sendVerdict(null, 100, cap);
+  check(
+    "P2-217: missing, negative or non-finite accumulated bytes fail OPEN (send)",
+    absent.action === "send" &&
+      negative.action === "send" &&
+      notANumber.action === "send" &&
+      infinite.action === "send" &&
+      nullPending.action === "send",
+    JSON.stringify([absent, negative, notANumber, infinite, nullPending]),
+  );
+
+  // the verdict has exactly two outcomes — a blind relay never drops a frame
+  const actions = new Set(
+    [
+      sendVerdict(0, 1, cap),
+      sendVerdict(cap, 0, cap),
+      sendVerdict(cap + 1, 0, cap),
+      sendVerdict(NaN, cap, cap),
+      sendVerdict(-5, 1, cap),
+      sendVerdict(undefined, 1, cap),
+    ].map((v) => v.action),
+  );
+  check(
+    "P2-217: sendVerdict never drops — the only actions are send and close-slow",
+    actions.size === 2 && actions.has("send") && actions.has("close-slow"),
+  );
+
+  // privacy: the generated reason carries no file path, URL scheme, room id
+  // shape or secret material — a short fixed Portuguese sentence
+  check(
+    "P2-217: the close-slow reason has no path, no URL scheme and no room-id shape",
+    !SLOW_CONSUMER_CLOSE_REASON.includes("/") &&
+      !SLOW_CONSUMER_CLOSE_REASON.includes("://") &&
+      !/[0-9a-f]{8}-[0-9a-f]{4}/i.test(SLOW_CONSUMER_CLOSE_REASON) &&
+      SLOW_CONSUMER_CLOSE_REASON.length < 100,
+    SLOW_CONSUMER_CLOSE_REASON,
+  );
+
+  // -- parseBufferCap: the fail-closed table ---------------------------------
+
+  const empty = parseBufferCap({});
+  check(
+    `P2-217: empty env → the documented default ${BUFFER_CAP_DEFAULT} with zero problems`,
+    empty.cap === BUFFER_CAP_DEFAULT && empty.problems.length === 0,
+    JSON.stringify(empty.problems),
+  );
+
+  const blank = parseBufferCap({ [BUFFER_CAP_ENV]: "   " });
+  check(
+    "P2-217: blank value keeps the documented default without a problem (same as knobs.ts)",
+    blank.cap === BUFFER_CAP_DEFAULT && blank.problems.length === 0,
+  );
+
+  const valid = parseBufferCap({ [BUFFER_CAP_ENV]: String(BUFFER_CAP_CEILING) });
+  const valid2 = parseBufferCap({ [BUFFER_CAP_ENV]: "12345678" });
+  check(
+    "P2-217: a valid whole byte count at or below the ceiling is accepted verbatim",
+    valid.cap === BUFFER_CAP_CEILING &&
+      valid.problems.length === 0 &&
+      valid2.cap === 12345678 &&
+      valid2.problems.length === 0,
+  );
+
+  const nonNumeric = parseBufferCap({ [BUFFER_CAP_ENV]: "abc" });
+  check(
+    "P2-217: non-numeric value is a problem citing the variable (fail-closed, no silent default)",
+    nonNumeric.problems.length === 1 &&
+      nonNumeric.problems[0]!.includes(BUFFER_CAP_ENV) &&
+      nonNumeric.cap === BUFFER_CAP_DEFAULT,
+    JSON.stringify(nonNumeric.problems),
+  );
+
+  const zero = parseBufferCap({ [BUFFER_CAP_ENV]: "0" });
+  check(
+    "P2-217: zero is a problem — it would disable the cap outright",
+    zero.problems.length === 1 && zero.problems[0]!.includes(BUFFER_CAP_ENV),
+  );
+
+  const negCap = parseBufferCap({ [BUFFER_CAP_ENV]: "-5" });
+  check(
+    "P2-217: negative value is a problem citing the variable",
+    negCap.problems.length === 1 && negCap.problems[0]!.includes(BUFFER_CAP_ENV),
+  );
+
+  const fractional = parseBufferCap({ [BUFFER_CAP_ENV]: "1.5" });
+  check(
+    "P2-217: fractional value is a problem citing the variable",
+    fractional.problems.length === 1 && fractional.problems[0]!.includes(BUFFER_CAP_ENV),
+  );
+
+  const aboveCeiling = parseBufferCap({ [BUFFER_CAP_ENV]: String(BUFFER_CAP_CEILING + 1) });
+  check(
+    "P2-217: above-ceiling value is a problem citing the variable and the ceiling",
+    aboveCeiling.problems.length === 1 &&
+      aboveCeiling.problems[0]!.includes(BUFFER_CAP_ENV) &&
+      aboveCeiling.problems[0]!.includes(String(BUFFER_CAP_CEILING)),
+  );
+
+  // every rule is checked independently: a value violating several rules
+  // reports ALL its reasons at once, no short-circuit
+  const many = parseBufferCap({ [BUFFER_CAP_ENV]: "-1.5" });
+  check(
+    "P2-217: several problems are returned at once without short-circuit",
+    many.problems.length === 2 &&
+      many.problems.every((p) => p.includes(BUFFER_CAP_ENV)) &&
+      many.cap === BUFFER_CAP_DEFAULT,
+    JSON.stringify(many.problems),
+  );
+
+  // -- purity + real-wiring pins ----------------------------------------------
+
+  const backpressureSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "relay", "src", "backpressure.ts"),
+    "utf8",
+  );
+  check(
+    "P2-217: backpressure.ts stays pure — zero imports (no ws, node:net, node:http, node:fs)",
+    !/^import /m.test(backpressureSrc),
+  );
+
+  const relayIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"), "utf8");
+  const verdictAt = relayIndexSrc.indexOf("const verdict = sendVerdict(t.bufferedAmount");
+  const sendAt = relayIndexSrc.indexOf("t.send(out)");
+  const loopBody = verdictAt > -1 && sendAt > verdictAt ? relayIndexSrc.slice(verdictAt, sendAt) : "";
+  check(
+    "P2-217: index.ts consults sendVerdict (target's own bufferedAmount) before every send",
+    verdictAt > -1 && sendAt > -1 && verdictAt < sendAt,
+  );
+  check(
+    "P2-217: the only non-send path in the forwarding loop closes the slow socket — no silent frame drop",
+    loopBody.includes('verdict.action === "close-slow"') &&
+      (loopBody.match(/t\.close\(/g) ?? []).length === 1 &&
+      loopBody.includes(`t.close(SLOW_CONSUMER_CLOSE_CODE, SLOW_CONSUMER_CLOSE_REASON)`) &&
+      (relayIndexSrc.match(/t\.send\(/g) ?? []).length === 1,
+    loopBody,
+  );
+
+  // the close is scoped to the slow target only; the counter is additive and
+  // the warn line carries just the counter and the reason
+  check(
+    "P2-217: each slow-consumer close increments one new additive counter and logs one warn line with counter + reason only",
+    (relayIndexSrc.match(/m\.slowConsumers\+\+/g) ?? []).length === 1 &&
+      relayIndexSrc.includes('ev("warn", "slow consumer closed", { count: m.slowConsumers, reason: verdict.reason })'),
+  );
+
+  // both metric formats expose the new counter without renaming anything
+  check(
+    "P2-217: metrics route serves slow_consumers_total in JSON and relay_slow_consumers_total in Prometheus text",
+    relayIndexSrc.includes("slow_consumers_total: m.slowConsumers,") &&
+      relayIndexSrc.includes("# TYPE relay_slow_consumers_total counter") &&
+      relayIndexSrc.includes("`relay_slow_consumers_total ${m.slowConsumers}`") &&
+      relayIndexSrc.includes("relay_rate_limited_total") &&
+      relayIndexSrc.includes("rate_limited_total: m.rateLimited"),
+  );
+
+  // boot resolves the knob fail-closed before anything listens, like every knob
+  check(
+    "P2-217: index.ts resolves the buffer cap fail-closed and advertises it on `relay listening`",
+    relayIndexSrc.includes("const BUFFER_CAP = parseBufferCap(process.env);") &&
+      relayIndexSrc.includes('ev("warn", "invalid relay buffer cap, refusing to start (fail-closed)"') &&
+      relayIndexSrc.includes("bufferCapBytes,"),
+  );
+}
+
+// --- P2-227: relay process-wide socket capacity — admission verdict + knob ------
+{
+  const cap = MAX_SOCKETS_GLOBAL_DEFAULT;
+
+  // -- acceptVerdict: the full table -----------------------------------------
+
+  // live counts well below the ceiling accept
+  const wellBelow: string[] = [];
+  for (const live of [0, 1, Math.floor(cap / 2), cap - 2]) {
+    wellBelow.push(acceptVerdict(live, cap).action);
+  }
+  check(
+    "P2-227: live counts well below the ceiling always accept",
+    wellBelow.every((a) => a === "accept"),
+    JSON.stringify(wellBelow),
+  );
+
+  // exactly one below the ceiling still accepts — the documented limit: a
+  // live count AT the ceiling is the first refusal, cap-1 is the last admit
+  const justUnder = acceptVerdict(cap - 1, cap);
+  check(
+    "P2-227: live count exactly one below the ceiling accepts (documented limit: cap-1 admits, cap refuses)",
+    justUnder.action === "accept" && cap === MAX_SOCKETS_GLOBAL_DEFAULT,
+  );
+
+  // at and above the ceiling refuse, with the fixed reason
+  const at = acceptVerdict(cap, cap);
+  const above = acceptVerdict(cap + 1, cap);
+  const wayAbove = acceptVerdict(cap * 10, cap);
+  check(
+    "P2-227: live count at or above the ceiling refuses with the fixed reason",
+    at.action === "refuse" &&
+      at.reason === CAPACITY_REFUSE_REASON &&
+      above.action === "refuse" &&
+      above.reason === CAPACITY_REFUSE_REASON &&
+      wayAbove.action === "refuse",
+    JSON.stringify([at, above, wayAbove]),
+  );
+
+  // ceiling of one with an empty process accepts (the first socket gets in)
+  check(
+    "P2-227: ceiling of one with an empty process accepts",
+    acceptVerdict(0, 1).action === "accept",
+  );
+
+  // fail-open by design: a broken count never refuses a good connection
+  const absent = acceptVerdict(undefined, cap);
+  const negative = acceptVerdict(-1, cap);
+  const notANumber = acceptVerdict(NaN, cap);
+  const infinite = acceptVerdict(Infinity, cap);
+  const nullCount = acceptVerdict(null, cap);
+  check(
+    "P2-227: missing, negative or non-finite live counts fail OPEN (accept)",
+    absent.action === "accept" &&
+      negative.action === "accept" &&
+      notANumber.action === "accept" &&
+      infinite.action === "accept" &&
+      nullCount.action === "accept",
+    JSON.stringify([absent, negative, notANumber, infinite, nullCount]),
+  );
+
+  // exactly two outcomes — a refusal never touches anything but this socket
+  const actions = new Set(
+    [acceptVerdict(0, cap), acceptVerdict(cap, cap), acceptVerdict(undefined, cap)].map((v) => v.action),
+  );
+  check(
+    "P2-227: acceptVerdict has exactly two outcomes — accept and refuse",
+    actions.size === 2 && actions.has("accept") && actions.has("refuse"),
+  );
+
+  // privacy: the reason is a fixed short Portuguese sentence with no path,
+  // URL scheme or room-id shape
+  check(
+    "P2-227: the refusal reason has no path, no URL scheme and no room-id shape",
+    !CAPACITY_REFUSE_REASON.includes("/") &&
+      !CAPACITY_REFUSE_REASON.includes("://") &&
+      !/[0-9a-f]{8}-[0-9a-f]{4}/i.test(CAPACITY_REFUSE_REASON) &&
+      CAPACITY_REFUSE_REASON.length < 100,
+    CAPACITY_REFUSE_REASON,
+  );
+
+  // -- parseMaxSockets: the fail-closed table ---------------------------------
+
+  const empty = parseMaxSockets({});
+  check(
+    `P2-227: empty env → the documented default ${MAX_SOCKETS_GLOBAL_DEFAULT} with zero problems`,
+    empty.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT && empty.problems.length === 0,
+    JSON.stringify(empty.problems),
+  );
+
+  const blank = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "   " });
+  check(
+    "P2-227: blank value keeps the documented default without a problem (same as knobs.ts)",
+    blank.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT && blank.problems.length === 0,
+  );
+
+  const valid = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: String(MAX_SOCKETS_GLOBAL_CEILING) });
+  const valid2 = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "500" });
+  check(
+    "P2-227: a valid whole count at or below the ceiling is accepted verbatim",
+    valid.maxSockets === MAX_SOCKETS_GLOBAL_CEILING &&
+      valid.problems.length === 0 &&
+      valid2.maxSockets === 500 &&
+      valid2.problems.length === 0,
+  );
+
+  const nonNumeric = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "abc" });
+  check(
+    "P2-227: non-numeric value is a problem citing the variable (fail-closed, no silent default)",
+    nonNumeric.problems.length === 1 &&
+      nonNumeric.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV) &&
+      nonNumeric.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT,
+    JSON.stringify(nonNumeric.problems),
+  );
+
+  const zero = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "0" });
+  check(
+    "P2-227: zero is a problem — it would disable the capacity gate outright",
+    zero.problems.length === 1 && zero.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV),
+  );
+
+  const negativeKnob = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "-5" });
+  check(
+    "P2-227: negative value is a problem citing the variable",
+    negativeKnob.problems.length === 1 && negativeKnob.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV),
+  );
+
+  const fractional = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "1.5" });
+  check(
+    "P2-227: fractional value is a problem citing the variable",
+    fractional.problems.length === 1 && fractional.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV),
+  );
+
+  const aboveCeiling = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: String(MAX_SOCKETS_GLOBAL_CEILING + 1) });
+  check(
+    "P2-227: above-ceiling value is a problem citing the variable and the ceiling",
+    aboveCeiling.problems.length === 1 &&
+      aboveCeiling.problems[0]!.includes(MAX_SOCKETS_GLOBAL_ENV) &&
+      aboveCeiling.problems[0]!.includes(String(MAX_SOCKETS_GLOBAL_CEILING)),
+  );
+
+  // every rule is checked independently: a value violating several rules
+  // reports ALL its reasons at once, no short-circuit
+  const many = parseMaxSockets({ [MAX_SOCKETS_GLOBAL_ENV]: "-1.5" });
+  check(
+    "P2-227: several problems are returned at once without short-circuit",
+    many.problems.length === 2 &&
+      many.problems.every((p) => p.includes(MAX_SOCKETS_GLOBAL_ENV)) &&
+      many.maxSockets === MAX_SOCKETS_GLOBAL_DEFAULT,
+    JSON.stringify(many.problems),
+  );
+
+  // -- purity + real-wiring pins ----------------------------------------------
+
+  const capacitySrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "capacity.ts"), "utf8");
+  check(
+    "P2-227: capacity.ts stays pure — zero imports (no ws, node:net, node:http, node:fs)",
+    !/^import /m.test(capacitySrc),
+  );
+
+  const capacityIndexSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"),
+    "utf8",
+  );
+  // order pin: per-IP cap → capacity verdict → accepted connection
+  const ipCapAt = capacityIndexSrc.indexOf("if (!ipCap.admit(ip))");
+  const verdictAt = capacityIndexSrc.indexOf("const capacity = acceptVerdict(wss.clients.size");
+  const acceptedAt = capacityIndexSrc.indexOf("socket.ip = ip;");
+  check(
+    "P2-227: index.ts consults acceptVerdict after the per-IP cap and before the connection is accepted",
+    ipCapAt > -1 && verdictAt > ipCapAt && acceptedAt > verdictAt,
+  );
+  const branch = verdictAt > -1 && acceptedAt > verdictAt ? capacityIndexSrc.slice(verdictAt, acceptedAt) : "";
+  check(
+    "P2-227: the only effect of a capacity refusal is closing that one socket — no room touch, exactly one 1013 close",
+    branch.includes("ipCap.release(ip)") &&
+      (branch.match(/socket\.close\(/g) ?? []).length === 1 &&
+      branch.includes('socket.close(1013, "server busy")') &&
+      !branch.includes("leaveAll") &&
+      !branch.includes("rooms"),
+    branch,
+  );
+
+  // additive counter + one warn line carrying only the counter and the reason
+  check(
+    "P2-227: each refusal increments one new additive counter and logs one warn line with counter + reason only",
+    (capacityIndexSrc.match(/m\.capacityRefused\+\+/g) ?? []).length === 1 &&
+      capacityIndexSrc.includes(
+        'ev("warn", "connection refused: process at socket capacity", { count: m.capacityRefused, reason: capacity.reason })',
+      ),
+  );
+
+  // both metric formats expose the new counter without renaming anything
+  check(
+    "P2-227: metrics route serves capacity_refused_total in JSON and relay_capacity_refused_total in Prometheus text",
+    capacityIndexSrc.includes("capacity_refused_total: m.capacityRefused,") &&
+      capacityIndexSrc.includes("# TYPE relay_capacity_refused_total counter") &&
+      capacityIndexSrc.includes("`relay_capacity_refused_total ${m.capacityRefused}`") &&
+      capacityIndexSrc.includes("slow_consumers_total: m.slowConsumers"),
+  );
+
+  // boot resolves the knob fail-closed before anything listens, like every knob
+  check(
+    "P2-227: index.ts resolves the socket capacity fail-closed and advertises it on `relay listening`",
+    capacityIndexSrc.includes("const CAPACITY = parseMaxSockets(process.env);") &&
+      capacityIndexSrc.includes('ev("warn", "invalid relay socket capacity, refusing to start (fail-closed)"') &&
+      capacityIndexSrc.includes("maxSocketsGlobal,"),
+  );
+}
+
+// --- P2-230: join-deadline reaper — idleUnjoined + parseJoinDeadline -------------
+{
+  const now = 10_000_000;
+  const peer = (openedAgoMs: number, joined = false): JoinDeadlinePeer => ({
+    openedAt: now - openedAgoMs,
+    joinedRoom: joined,
+  });
+
+  // -- idleUnjoined: the full verdict table -----------------------------------
+
+  check(
+    "P2-230: empty collection → empty list",
+    idleUnjoined(now, [] as JoinDeadlinePeer[], JOIN_DEADLINE_MS_DEFAULT).length === 0,
+  );
+
+  // the threshold, explicit: a peer open exactly the documented default
+  // deadline survives; one millisecond more is closed
+  const atThreshold = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_DEFAULT)], JOIN_DEADLINE_MS_DEFAULT);
+  const pastThreshold = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_DEFAULT + 1)], JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: peer open exactly the deadline survives; one ms past it is closed (strict bound)",
+    atThreshold.length === 0 && pastThreshold.length === 1,
+  );
+
+  const young = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_DEFAULT - 1)], JOIN_DEADLINE_MS_DEFAULT);
+  check("P2-230: peer open less than the deadline survives", young.length === 0);
+
+  const ancient = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_CEILING * 10, true)], JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: peer that joined a room survives no matter how long ago it opened",
+    ancient.length === 0,
+  );
+
+  const unstamped = idleUnjoined(now, [{}], JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: peer without an open stamp survives (mid-admission prudence, same as liveness lastSeen)",
+    unstamped.length === 0,
+  );
+
+  const disabled = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_CEILING * 10)], JOIN_DEADLINE_MS_DISABLED);
+  const disabledZero = idleUnjoined(now, [peer(JOIN_DEADLINE_MS_CEILING * 10)], 0);
+  check(
+    "P2-230: disabled deadline returns an empty list even with an old roomless peer",
+    disabled.length === 0 && disabledZero.length === 0,
+  );
+
+  // order + identity: only expected items, in input order, all from the input
+  const p1 = peer(1);
+  const p2 = peer(JOIN_DEADLINE_MS_DEFAULT + 5_000);
+  const p3 = peer(JOIN_DEADLINE_MS_DEFAULT + 6_000, true);
+  const p4 = peer(JOIN_DEADLINE_MS_DEFAULT + 7_000);
+  const p5: JoinDeadlinePeer = {};
+  const input = [p1, p2, p3, p4, p5];
+  const verdict = idleUnjoined(now, input, JOIN_DEADLINE_MS_DEFAULT);
+  check(
+    "P2-230: iteration order is preserved and every returned item is from the received collection",
+    verdict.length === 2 && verdict[0] === p2 && verdict[1] === p4,
+    JSON.stringify(verdict.map((p) => p.openedAt)),
+  );
+
+  // -- parseJoinDeadline: the fail-closed table --------------------------------
+
+  const absent = parseJoinDeadline({});
+  const blank = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "   " });
+  check(
+    `P2-230: empty env → the documented default ${JOIN_DEADLINE_MS_DEFAULT} with zero problems (blank too)`,
+    absent.deadlineMs === JOIN_DEADLINE_MS_DEFAULT &&
+      absent.problems.length === 0 &&
+      blank.deadlineMs === JOIN_DEADLINE_MS_DEFAULT &&
+      blank.problems.length === 0,
+    JSON.stringify([...absent.problems, ...blank.problems]),
+  );
+
+  const valid = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "30000" });
+  const atCeiling = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: String(JOIN_DEADLINE_MS_CEILING) });
+  check(
+    "P2-230: a valid whole deadline at or below the ceiling is accepted verbatim",
+    valid.deadlineMs === 30_000 &&
+      valid.problems.length === 0 &&
+      atCeiling.deadlineMs === JOIN_DEADLINE_MS_CEILING &&
+      atCeiling.problems.length === 0,
+  );
+
+  const off = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: String(JOIN_DEADLINE_MS_DISABLED) });
+  check(
+    "P2-230: the documented disable value is accepted verbatim (reaper off)",
+    off.deadlineMs === JOIN_DEADLINE_MS_DISABLED && off.problems.length === 0,
+  );
+
+  const nonNumeric = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "abc" });
+  check(
+    "P2-230: non-numeric value is a problem citing the variable (fail-closed, no silent default)",
+    nonNumeric.problems.length === 1 &&
+      nonNumeric.problems[0]!.includes(JOIN_DEADLINE_MS_ENV) &&
+      nonNumeric.deadlineMs === JOIN_DEADLINE_MS_DEFAULT,
+    JSON.stringify(nonNumeric.problems),
+  );
+
+  const zero = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "0" });
+  check(
+    "P2-230: zero is a problem — it would close mid-admission sockets",
+    zero.problems.length === 1 && zero.problems[0]!.includes(JOIN_DEADLINE_MS_ENV),
+  );
+
+  const negative = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "-5" });
+  check(
+    "P2-230: a negative value other than the disable sentinel is a problem citing the variable",
+    negative.problems.length === 1 && negative.problems[0]!.includes(JOIN_DEADLINE_MS_ENV),
+  );
+
+  const fractional = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "1.5" });
+  check(
+    "P2-230: fractional value is a problem citing the variable",
+    fractional.problems.length === 1 && fractional.problems[0]!.includes(JOIN_DEADLINE_MS_ENV),
+  );
+
+  const aboveCeiling = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: String(JOIN_DEADLINE_MS_CEILING + 1) });
+  check(
+    "P2-230: above-ceiling value is a problem citing the variable and the ceiling",
+    aboveCeiling.problems.length === 1 &&
+      aboveCeiling.problems[0]!.includes(JOIN_DEADLINE_MS_ENV) &&
+      aboveCeiling.problems[0]!.includes(String(JOIN_DEADLINE_MS_CEILING)),
+  );
+
+  // every rule is checked independently: a value violating several rules
+  // reports ALL its reasons at once, no short-circuit
+  const many = parseJoinDeadline({ [JOIN_DEADLINE_MS_ENV]: "-1.5" });
+  check(
+    "P2-230: several problems are returned at once without short-circuit",
+    many.problems.length === 2 &&
+      many.problems.every((p) => p.includes(JOIN_DEADLINE_MS_ENV)) &&
+      many.deadlineMs === JOIN_DEADLINE_MS_DEFAULT,
+    JSON.stringify(many.problems),
+  );
+
+  // -- purity + policy constants ------------------------------------------------
+
+  const deadlineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "joindeadline.ts"), "utf8");
+  check(
+    "P2-230: joindeadline.ts stays pure — zero imports (no ws, node:net, node:http, node:fs)",
+    !/^import /m.test(deadlineSrc),
+  );
+  check(
+    "P2-230: the policy close code/reason are fixed constants free of room/address/payload shapes",
+    JOIN_UNJOINED_CLOSE_CODE >= 4000 &&
+      JOIN_UNJOINED_CLOSE_CODE <= 4999 &&
+      !JOIN_UNJOINED_CLOSE_REASON.includes("/") &&
+      !/[0-9a-f]{8}-[0-9a-f]{4}/i.test(JOIN_UNJOINED_CLOSE_REASON) &&
+      JOIN_UNJOINED_CLOSE_REASON.length < 100,
+    JOIN_UNJOINED_CLOSE_REASON,
+  );
 }
 
 // --- P2-169: mac privacy preflight — mic/camera strings + device entitlements --
@@ -11703,6 +17130,269 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P2-295: gatekeeper-verify — the distributed DMG container gets the same Gatekeeper gate
+{
+  // Review round 2 pinned the REAL packaging shape: electron-builder leaves
+  // dmg.sign off and never staples the image, so every shipped container is
+  // UNSIGNED and UNSTAPLED in every mode — the signature and the ticket live
+  // on the .app inside. These are the real tool outputs of that baseline.
+  const realDmg = {
+    mode: "developer-id",
+    notarizeRequested: true,
+    codesign: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: code object is not signed at all\n",
+    spctl: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
+    stapler: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  };
+
+  check(
+    "P2-295: the real unsigned/unstapled container (developer-id + notarization requested) → no problems",
+    dmgProblems(realDmg).length === 0,
+    JSON.stringify(dmgProblems(realDmg)),
+  );
+  const realDmgAdhoc = dmgProblems({ ...realDmg, mode: "adhoc", notarizeRequested: false });
+  check(
+    "P2-295: the real unsigned container on the ad-hoc no-secrets path → no problem at all",
+    realDmgAdhoc.length === 0,
+    JSON.stringify(realDmgAdhoc),
+  );
+
+  // A container that DOES verify as signed (dmg.sign=true someday) is held to
+  // the full bar: accepted by spctl and stapled when notarization was asked.
+  const signedDmg = {
+    mode: "developer-id",
+    notarizeRequested: true,
+    codesign: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: valid on disk\n",
+    spctl: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: accepted\nsource=Notarized Developer ID\norigin=Notarized Developer ID: Example (TEAM1234)\n",
+    stapler: "The validate action worked for apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg\n",
+  };
+  check(
+    "P2-295: signed container + developer-id + notarization + success outputs of all three tools → no problems",
+    dmgProblems(signedDmg).length === 0,
+    JSON.stringify(dmgProblems(signedDmg)),
+  );
+
+  // Rule 1: a mode outside the documented pair is a problem
+  const drifted = dmgProblems({ ...realDmg, mode: "self-signed" });
+  check(
+    "P2-295: unknown signing-profile mode → problem",
+    drifted.some((p) => p.includes("mode") && p.includes("self-signed")),
+    JSON.stringify(drifted),
+  );
+
+  // Rule 2: empty output of each of the three tools is fail-closed
+  for (const tool of ["codesign", "spctl", "stapler"] as const) {
+    const problems = dmgProblems({ ...realDmg, [tool]: "" });
+    check(
+      `P2-295: empty ${tool} output on the container → problem (fail-closed)`,
+      problems.some((p) => p.startsWith(`${tool}:`) && p.includes("no output")),
+      JSON.stringify(problems),
+    );
+  }
+
+  // Rule 2: unrecognizable output is fail-closed too (Apple rewording must fail loudly)
+  const gibberish = dmgProblems({ ...realDmg, stapler: "the image seems fine, trust me\n" });
+  check(
+    "P2-295: unrecognizable stapler output on the container → problem",
+    gibberish.some((p) => p.startsWith("stapler:") && p.includes("unrecognizable")),
+    JSON.stringify(gibberish),
+  );
+
+  // Rule 3: a FAILED signature verification — a verdict that is neither
+  // "valid on disk" nor the documented unsigned baseline — is a problem
+  const invalid = dmgProblems({
+    ...realDmg,
+    codesign: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: invalid signature (code Invalid)\n",
+  });
+  check(
+    "P2-295: failed codesign verification on the container → problem",
+    invalid.some((p) => p.startsWith("codesign:") && p.includes("failed")),
+    JSON.stringify(invalid),
+  );
+
+  // Rule 4: an spctl rejection is a problem only for a SIGNED container in
+  // developer-id mode…
+  const rejectedSignedDevId = dmgProblems({
+    ...signedDmg,
+    spctl: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg: rejected (the code is valid but does not seem to be an applet)\n",
+  });
+  check(
+    "P2-295: spctl rejected on a signed container in developer-id mode → problem",
+    rejectedSignedDevId.some((p) => p.startsWith("spctl:") && p.includes("rejected")),
+    JSON.stringify(rejectedSignedDevId),
+  );
+  // …NOT a problem for the real unsigned container, even in developer-id mode
+  // (the reviewer's exact scenario: electron-builder never signs the image)
+  const rejectedUnsignedDevId = dmgProblems(realDmg);
+  check(
+    "P2-295: spctl rejected on the unsigned container in developer-id mode → NOT a problem (app inside carries the signature)",
+    rejectedUnsignedDevId.length === 0,
+    JSON.stringify(rejectedUnsignedDevId),
+  );
+  const rejectedUnsignedAdhoc = dmgProblems({
+    ...realDmg,
+    mode: "adhoc",
+    notarizeRequested: false,
+  });
+  check(
+    "P2-295: spctl rejected on the unsigned container in ad-hoc mode → NOT a problem (right-click → Open is the documented flow)",
+    rejectedUnsignedAdhoc.length === 0,
+    JSON.stringify(rejectedUnsignedAdhoc),
+  );
+
+  // Rule 5: a missing ticket is a problem only when notarization was requested
+  // AND the container itself verifies as signed
+  const unstapledSigned = dmgProblems({
+    ...signedDmg,
+    stapler: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  });
+  check(
+    "P2-295: missing staple ticket on a signed container with notarization requested → problem",
+    unstapledSigned.some((p) => p.startsWith("stapler:") && p.includes("ticket")),
+    JSON.stringify(unstapledSigned),
+  );
+  const unstapledUnsigned = dmgProblems({
+    ...realDmg,
+    stapler: "apps/desktop/dist/OpenCode-Remote-1.2.3-arm64.dmg does not have a ticket stapled to it.\n",
+  });
+  check(
+    "P2-295: missing staple ticket on the unsigned container with notarization requested → NOT a problem (unsigned container has nothing to staple)",
+    unstapledUnsigned.length === 0,
+    JSON.stringify(unstapledUnsigned),
+  );
+
+  // Rule order proven: an invalid mode AND an empty tool output hold at the
+  // same time — the mode problem is reported FIRST and both are cumulative.
+  const order = dmgProblems({ ...realDmg, mode: "self-signed", codesign: "" });
+  check(
+    "P2-295: rule order — mode problem comes first, empty-output problem is cumulative",
+    order.length === 2 && order[0]!.includes("mode") && order[1]!.startsWith("codesign:") && order[1]!.includes("no output"),
+    JSON.stringify(order),
+  );
+
+  // Pure: the same input yields the same problem list on every call
+  const twice = [dmgProblems(realDmg), dmgProblems(realDmg)];
+  check(
+    "P2-295: same input in two calls → identical result",
+    JSON.stringify(twice[0]) === JSON.stringify(twice[1]),
+    JSON.stringify(twice),
+  );
+
+  // --- CLI: the additive `dmg` invocation mode, old form untouched -----------
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "gatekeeper-verify.ts");
+  const tmp = mkdtempSync(join("/tmp", "gatekeeper-dmg-"));
+  for (const [name, content] of [
+    ["codesign.txt", realDmg.codesign],
+    ["spctl.txt", realDmg.spctl],
+    ["stapler.txt", realDmg.stapler],
+    ["bad-stapler.txt", "the image seems fine, trust me\n"],
+  ] as const) {
+    writeFileSync(join(tmp, name), content);
+  }
+  const runDmgCli = (args: string[]): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, ...args], { cwd: repoRoot, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  const dmgOk = runDmgCli(["dmg", "developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "stapler.txt")]);
+  check(
+    "P2-295: cli dmg mode exits 0 on the real unsigned container even with developer-id + notarization",
+    dmgOk.code === 0 && dmgOk.out.includes("gatekeeper-verify: OK") && dmgOk.out.includes("dmg container"),
+    dmgOk.out,
+  );
+  const dmgFail = runDmgCli(["dmg", "developer-id", "true", join(tmp, "codesign.txt"), join(tmp, "spctl.txt"), join(tmp, "bad-stapler.txt")]);
+  check(
+    "P2-295: cli dmg mode exits 1 listing every problem at once",
+    dmgFail.code === 1 && dmgFail.out.includes("gatekeeper-verify: FAIL") && dmgFail.out.includes("1 problem(s) found") && dmgFail.out.includes("stapler"),
+    dmgFail.out,
+  );
+  // The original bundle form keeps its own healthy fixture: the unsigned
+  // container outputs are dmg-mode baseline, NOT bundle-mode baseline.
+  for (const [name, content] of [
+    ["app-codesign.txt", "apps/desktop/dist/mac-arm64/OpenCode Remote.app: valid on disk\n"],
+    ["app-spctl.txt", "apps/desktop/dist/mac-arm64/OpenCode Remote.app: accepted\nsource=Developer ID: Application: Example (TEAM1234)\n"],
+    ["app-stapler.txt", "The validate action worked for apps/desktop/dist/mac-arm64/OpenCode Remote.app\n"],
+  ] as const) {
+    writeFileSync(join(tmp, name), content);
+  }
+  const oldForm = runDmgCli(["developer-id", "true", join(tmp, "app-codesign.txt"), join(tmp, "app-spctl.txt"), join(tmp, "app-stapler.txt")]);
+  check(
+    "P2-295: the original (bundle) cli invocation still works unchanged",
+    oldForm.code === 0 && oldForm.out.includes("gatekeeper-verify: OK") && oldForm.out.includes("bundle"),
+    oldForm.out,
+  );
+
+  // --- real-repo assertion: the desktop-dmg job gates the UPLOAD on the container too
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const dmgJobStart = release.indexOf("\n  desktop-dmg:");
+  const dmgJobEnd = release.indexOf("\n  desktop-win:");
+  const dmgJob = dmgJobStart > -1 && dmgJobEnd > dmgJobStart ? release.slice(dmgJobStart, dmgJobEnd) : "";
+  check("P2-295: release.yml still has the desktop-dmg job", dmgJob.length > 0);
+
+  const stepName = "- name: Gatekeeper verification of the distributed DMG";
+  const newStepCount = dmgJob.split(stepName).length - 1;
+  check("P2-295: the DMG verification step exists exactly once", newStepCount === 1, String(newStepCount));
+
+  const pkgStep = dmgJob.indexOf("- name: Gatekeeper verification of the packaged app");
+  const newStep = dmgJob.indexOf(stepName);
+  const attachStep = dmgJob.indexOf("- name: Attach DMG + update metadata to the GitHub release");
+  check(
+    "P2-295: the DMG verification sits after the packaged-app verification and before the release upload",
+    pkgStep > -1 && newStep > pkgStep && attachStep > newStep,
+    `pkg=${pkgStep} dmg=${newStep} attach=${attachStep}`,
+  );
+
+  const newBlock = newStep > -1 && attachStep > newStep ? dmgJob.slice(newStep, attachStep) : "";
+  check(
+    "P2-295: DMG verification step declares shell: bash and its own timeout-minutes (P2-245/P2-255 lessons)",
+    /^\s*shell:\s*bash\s*$/m.test(newBlock) && /^\s*timeout-minutes:\s*\d+\s*$/m.test(newBlock),
+    JSON.stringify(newBlock),
+  );
+  check(
+    "P2-295: DMG verification finds every container, fails on zero, and loops over each one (P2-191 ships one DMG per arch)",
+    newBlock.includes("find apps/desktop/dist -maxdepth 1 -type f -name '*.dmg'") &&
+      newBlock.includes('[ -n "$DMGS" ]') &&
+      newBlock.includes("while IFS= read -r DMG") &&
+      newBlock.includes('done <<< "$DMGS"') &&
+      newBlock.includes("exit 1"),
+    JSON.stringify(newBlock),
+  );
+  check(
+    "P2-295: DMG verification captures the three verdicts (stderr→stdout, -t open) and calls the container CLI",
+    newBlock.includes("codesign --verify --deep --strict") &&
+      newBlock.includes("spctl -a -vv -t open") &&
+      newBlock.includes("xcrun stapler validate") &&
+      (newBlock.match(/2>&1/g) ?? []).length === 3 &&
+      newBlock.includes("scripts/gatekeeper-verify.ts dmg") &&
+      newBlock.includes("steps.signing.outputs.mode") &&
+      newBlock.includes("steps.signing.outputs.notarize"),
+    JSON.stringify(newBlock),
+  );
+
+  // The P2-170 step must remain untouched: same three invocations, exec type,
+  // bundle CLI form, no container artifacts leaking in. The job-wide counts
+  // pin the exec/open split regardless of comment boundaries.
+  const nextStepAt = dmgJob.indexOf("- name:", pkgStep + 1);
+  const pkgBlock = pkgStep > -1 && nextStepAt > pkgStep ? dmgJob.slice(pkgStep, nextStepAt) : "";
+  check(
+    "P2-295: the packaged-app verification step is unchanged (exec type, bundle CLI form, no container capture)",
+    pkgBlock.includes("spctl -a -vv -t exec") &&
+      pkgBlock.includes("xcrun stapler validate") &&
+      pkgBlock.includes("codesign --verify --deep --strict") &&
+      pkgBlock.includes("codesign.txt spctl.txt stapler.txt") &&
+      !pkgBlock.includes("gatekeeper-verify.ts dmg") &&
+      !pkgBlock.includes(".dmg") &&
+      (dmgJob.match(/spctl -a -vv -t exec/g) ?? []).length === 1 &&
+      (dmgJob.match(/spctl -a -vv -t open/g) ?? []).length === 1,
+    JSON.stringify(pkgBlock),
+  );
+}
+
 // --- P2-174 relay ip tag: per-process derived identifier, never the raw address ---
 {
   const saltA = new Uint8Array(32).map((_, i) => i);
@@ -11913,7 +17603,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       publishJob.includes("scripts/release-publish.ts"),
   );
   const cliAt = publishJob.indexOf("scripts/release-publish.ts");
-  const editAt = publishJob.indexOf("gh release edit");
+  // P2-216: the guide step also runs `gh release edit` (its --notes-file
+  // write), so the publish edit is anchored on --draft=false — the assertion's
+  // intent is that the draft only flips public after the CLI verdict.
+  const editAt = publishJob.indexOf("--draft=false");
   const pinAt = publishJob.indexOf("Formula/opencode-remote.rb");
   check(
     "P2-179: the unpublish edit runs after the CLI verdict, and the Formula pin (sha256 from the downloaded tarball) after publication",
@@ -12645,11 +18338,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     rmSync(webAppDir, { recursive: true, force: true });
   }
 
-  // real-source assertion: the shell wires step one end to end
+  // real-source assertion: the shell wires step one end to end.
+  // P2-197: webApp is no longer the LAST field — the additive `reach` rides
+  // after it — so the regex now only pins `webApp,` inside the payload.
   const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
   check(
     "P2-189: webApp travels in the ocr:pairing-state payload",
-    /setPairingState\(\{[\s\S]*?webApp,\s*\}\);/.test(mainSrc),
+    /setPairingState\(\{[\s\S]*?webApp,[\s\S]*?\}\);/.test(mainSrc),
   );
   check(
     "P2-189: the web-app QR is minted by QRCode.toDataURL ONLY when the resolution is problem-free",
@@ -13231,6 +18926,12880 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P2-268: stale-device classifier (devicestale.ts) ------------------------
+
+{
+  const base = 1_700_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const iso = (t: number) => new Date(t).toISOString();
+  const v = (lastSeenAt: unknown, now: number, addedAt: unknown = iso(base - 60_000)) =>
+    deviceStaleVerdict(lastSeenAt, addedAt, now, DEVICE_STALE_SHORT_WINDOW_MS, DEVICE_STALE_LONG_WINDOW_MS);
+
+  // full verdict table
+  check(
+    "P2-268: missing stamp (undefined/null/empty/blank) → nunca visto (fail-closed, never active)",
+    v(undefined, base).verdict === "nunca visto" &&
+      v(null, base).verdict === "nunca visto" &&
+      v("", base).verdict === "nunca visto" &&
+      v("   ", base).verdict === "nunca visto",
+  );
+  check(
+    "P2-268: numeric stamp and invalid text stamp → nunca visto",
+    v(123, base).verdict === "nunca visto" &&
+      v({ t: base }, base).verdict === "nunca visto" &&
+      v("not-a-date", base).verdict === "nunca visto",
+  );
+  check(
+    "P2-268: fresh stamp (1 minute old) → ativo",
+    v(iso(base - 60_000), base).verdict === "ativo",
+  );
+  check(
+    "P2-268: age exactly at the short window → still ativo (flip is strictly above)",
+    v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS), base).verdict === "ativo",
+  );
+  check(
+    "P2-268: one millisecond above the short window → ocioso",
+    v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base).verdict === "ocioso",
+  );
+  check(
+    "P2-268: age exactly at the long window → still ocioso (flip is strictly above)",
+    v(iso(base - DEVICE_STALE_LONG_WINDOW_MS), base).verdict === "ocioso",
+  );
+  check(
+    "P2-268: one millisecond above the long window → dormente",
+    v(iso(base - DEVICE_STALE_LONG_WINDOW_MS - 1), base).verdict === "dormente",
+  );
+  check(
+    "P2-268: future stamp (clock ahead of the host) → treated as now → ativo, never dormente",
+    v(iso(base + 60_000), base).verdict === "ativo" &&
+      v(iso(base + DEVICE_STALE_LONG_WINDOW_MS * 10), base).verdict === "ativo",
+  );
+  check(
+    "P2-268: non-finite 'now' is refused, never guessed",
+    (() => {
+      let threw = false;
+      try {
+        deviceStaleVerdict(iso(base - 60_000), iso(base - 60_000), Number.NaN, DEVICE_STALE_SHORT_WINDOW_MS, DEVICE_STALE_LONG_WINDOW_MS);
+      } catch {
+        threw = true;
+      }
+      let threwInf = false;
+      try {
+        deviceStaleVerdict(iso(base - 60_000), iso(base - 60_000), Number.POSITIVE_INFINITY, DEVICE_STALE_SHORT_WINDOW_MS, DEVICE_STALE_LONG_WINDOW_MS);
+      } catch {
+        threwInf = true;
+      }
+      return threw && threwInf;
+    })(),
+  );
+  check(
+    "P2-268: rule order — invalid stamp wins over a recent pairing instant → nunca visto",
+    v("garbage", base, iso(base - 1)).verdict === "nunca visto",
+  );
+  check(
+    "P2-268: deterministic — identical inputs give an identical verdict + phrase on every call",
+    (() => {
+      const a = v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base);
+      const b = v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base);
+      return a.verdict === b.verdict && a.phrase === b.phrase && JSON.stringify(a) === JSON.stringify(b);
+    })(),
+  );
+
+  // phrases are static and leak nothing: no digits (ports), no "/", ":" or "@"
+  // (addresses, URLs, paths), no key/label material, no base64-ish runs
+  const verdicts = [
+    v(undefined, base),
+    v(iso(base - 60_000), base),
+    v(iso(base - DEVICE_STALE_SHORT_WINDOW_MS - 1), base),
+    v(iso(base - DEVICE_STALE_LONG_WINDOW_MS - 1), base),
+  ];
+  check(
+    "P2-268: every phrase is a static sentence with no key/label/address/port/secret material",
+    verdicts.every((r) => /^[\p{L}\s.—-]+$/u.test(r.phrase) && r.phrase.length > 0),
+  );
+
+  // real-source assertion 1: the module stays pure — zero import statements
+  // (so no node:fs/node:http/node:crypto/ws/fetch) and no state-writing calls.
+  const staleSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "devicestale.ts"), "utf8");
+  check(
+    "P2-268: real devicestale.ts has no imports and no state-writing calls",
+    !/^import\s/m.test(staleSrc) &&
+      !/require\(/.test(staleSrc) &&
+      !/writeFileSync|appendFile|mkdir|rename\(|rm\(|unlink/.test(staleSrc),
+  );
+
+  // real-source assertion 2: the wiring in index.ts is additive and read-only
+  // — every deviceStaleVerdict site spreads the original client (all previous
+  // fields kept) and no site writes the allowlist or starts a timer.
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  let sites = 0;
+  let at = -1;
+  let wiringOk = true;
+  while ((at = daemonIndexSrc.indexOf("deviceStaleVerdict(", at + 1)) > -1) {
+    sites++;
+    const slice = daemonIndexSrc.slice(Math.max(0, at - 300), at + 400);
+    if (!slice.includes("...client") || slice.includes("saveAllowlist") || slice.includes("setInterval")) wiringOk = false;
+  }
+  check(
+    "P2-268: real index.ts wires the verdict in both devices routes additively — all previous fields kept, no allowlist write, no new timer",
+    sites === 2 && wiringOk && daemonIndexSrc.includes("type StaleVerdictReport"),
+  );
+}
+
+// --- P2-197: reach probe of the app address (webreach.ts) --------------------
+
+{
+  const base = { elapsedMs: 1, errorName: "", appMarker: false } as const;
+
+  // probeVerdict matrix — one check per state
+  const ok = probeVerdict({ ...base, status: 200, appMarker: true });
+  check("P2-197: status 200 AND the app marker → ok", ok.state === "ok" && ok.message.length > 0);
+  const notOurs = probeVerdict({ ...base, status: 200, appMarker: false });
+  check("P2-197: status 200 without the app marker → not-our-app", notOurs.state === "not-our-app");
+  const tls = probeVerdict({ status: null, elapsedMs: 1, errorName: "CERT_HAS_EXPIRED", appMarker: false });
+  check("P2-197: certificate error name → tls-error", tls.state === "tls-error");
+  const tlsLower = probeVerdict({ status: null, elapsedMs: 1, errorName: "unable_to_verify_leaf_signature", appMarker: false });
+  check("P2-197: error names match case-insensitively (tls)", tlsLower.state === "tls-error");
+  const dns = probeVerdict({ status: null, elapsedMs: 1, errorName: "ENOTFOUND", appMarker: false });
+  check("P2-197: name-resolution error name → dns-error", dns.state === "dns-error");
+  const abort = probeVerdict({ status: null, elapsedMs: 1, errorName: "AbortError", appMarker: false });
+  check("P2-197: abort → timeout", abort.state === "timeout");
+  const abortAlt = probeVerdict({ status: null, elapsedMs: 1, errorName: "TimeoutError", appMarker: false });
+  check("P2-197: TimeoutError → timeout too", abortAlt.state === "timeout");
+  const httpError = probeVerdict({ ...base, status: 503 });
+  check("P2-197: 503 → http-error (never unreachable)", httpError.state === "http-error");
+  const refused = probeVerdict({ status: null, elapsedMs: 1, errorName: "ECONNREFUSED", appMarker: false });
+  check("P2-197: connection refused → unreachable", refused.state === "unreachable");
+  check(
+    "P2-197: a marker-less 2xx/3xx final answer (204) → not-our-app",
+    probeVerdict({ ...base, status: 204 }).state === "not-our-app",
+  );
+
+  // every generated message: non-empty, no path separators, no URL scheme
+  const verdicts = [ok, notOurs, tls, tlsLower, dns, abort, abortAlt, httpError, refused];
+  check(
+    "P2-197: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("\\") &&
+        !v.message.includes("http:") &&
+        !v.message.includes("https:"),
+    ),
+  );
+
+  // hasAppMarker against the REAL index.html markers and a stranger's page
+  const realIndex = readFileSync(join(import.meta.dirname, "..", "apps", "web", "index.html"), "utf8");
+  check(
+    "P2-197: hasAppMarker is true for the real app shell and false for a stranger page",
+    hasAppMarker(realIndex) === true && hasAppMarker("<h1>nginx</h1>") === false,
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const helperAt = mainSrc.indexOf("async function probeWebAppReach(");
+  const helperBody = helperAt > -1 ? mainSrc.slice(helperAt, helperAt + 1600) : "";
+  check(
+    "P2-197: the real main.ts probes the ORIGIN of webApp, never the credential-bearing pairLink",
+    mainSrc.includes("probeWebAppReach(webAppRes.url)") &&
+      mainSrc.includes("new URL(url).origin") &&
+      !mainSrc.includes("probeWebAppReach(pairLink") &&
+      !mainSrc.includes("probeWebAppReach(pairLinkRes"),
+  );
+  check(
+    "P2-197: the probe request never carries a credential header",
+    helperAt > -1 && !helperBody.includes("headers") && !helperBody.includes("authorization"),
+  );
+  check(
+    "P2-197: the probe timeout reuses PROBE_TIMEOUT_MS (2s) and equals WEB_REACH_TIMEOUT_MS",
+    /const PROBE_TIMEOUT_MS = 2_000;/.test(mainSrc) && WEB_REACH_TIMEOUT_MS === 2_000,
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-197: the additive reach field rides AFTER webApp in the pairing payload",
+    payload.indexOf("webApp,") > -1 && payload.indexOf("reach,") > payload.indexOf("webApp,"),
+  );
+  check(
+    "P2-197: the probe runs only under the QR guard and a problem-free address",
+    /!quietLocal && \(!paired \|\| remotePairingRequested\) && webAppRes\.problems\.length === 0 && webAppRes\.url !== ""/.test(mainSrc),
+  );
+  check(
+    "P2-197: the renderer treats an absent reach as unknown (optional chaining, no crash)",
+    readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"), "utf8").includes("{reach && ("),
+  );
+  check(
+    "P2-197: pairReachOk/pairReachRetry/pairReachTesting exist in en and pt",
+    ["pairReachOk", "pairReachRetry", "pairReachTesting"].every(
+      (k) =>
+        typeof (dict.en as Record<string, string>)[k] === "string" &&
+        typeof (dict.pt as Record<string, string>)[k] === "string",
+    ),
+  );
+}
+
+// --- P2-199: daemon↔relay link verdict (relaylink.ts) -------------------------
+
+{
+  const facts = (over: Partial<RelayLinkFacts> = {}): RelayLinkFacts => ({
+    relayConnected: true,
+    relayOk: true,
+    relayReason: null,
+    attempt: 0,
+    nextDelayMs: 0,
+    lastCloseKind: null,
+    localMode: false,
+    ...over,
+  });
+
+  // one check per state
+  const connected = linkVerdict(facts());
+  check("P2-199: healthy relay link → connected", connected.state === "connected" && connected.message.length > 0);
+  check(
+    "P2-199: connected even with relayRetry null (the real connected shape)",
+    linkVerdict(facts({ attempt: null, nextDelayMs: null, lastCloseKind: null })).state === "connected",
+  );
+  const local = linkVerdict(
+    facts({ relayConnected: false, relayOk: false, relayReason: "recusado", attempt: 3, lastCloseKind: "capacity", localMode: true }),
+  );
+  check("P2-199: local mode wins over every other signal", local.state === "local");
+  const dialing = linkVerdict(facts({ relayConnected: false, attempt: 2, nextDelayMs: 4_000, lastCloseKind: "transient" }));
+  check("P2-199: backoff in progress (attempt >= 1) → dialing", dialing.state === "dialing" && dialing.message.length > 0);
+  const firstDial = linkVerdict(facts({ relayConnected: false }));
+  const refusedCapacity = linkVerdict(facts({ relayConnected: false, lastCloseKind: "capacity" }));
+  const refusedRateLimited = linkVerdict(facts({ relayConnected: false, lastCloseKind: "rate-limited" }));
+  check(
+    "P2-199: first dial (no attempt yet) → dialing too",
+    firstDial.state === "dialing",
+  );
+  check(
+    "P2-199: refusal close capacity → refused",
+    refusedCapacity.state === "refused",
+  );
+  check(
+    "P2-199: refusal close rate-limited → refused",
+    refusedRateLimited.state === "refused",
+  );
+  check(
+    "P2-199: unknown/new close kind → dialing (never explodes, never accuses)",
+    linkVerdict(facts({ relayConnected: false, lastCloseKind: "something-new" })).state === "dialing",
+  );
+  const misWithReason = linkVerdict(facts({ relayOk: false, relayReason: "prefiro não ecoar" }));
+  const misNoReason = linkVerdict(facts({ relayOk: false, relayReason: null }));
+  check(
+    "P2-199: relayOk false → misconfigured, with or without a reason",
+    misWithReason.state === "misconfigured" && misNoReason.state === "misconfigured",
+  );
+  check(
+    "P2-199: relayOk false beats a refusal close (root cause first)",
+    linkVerdict(facts({ relayOk: false, relayConnected: false, lastCloseKind: "capacity" })).state === "misconfigured",
+  );
+  const legacy = linkVerdict(
+    facts({ relayConnected: null, relayOk: null, relayReason: null, attempt: null, nextDelayMs: null, lastCloseKind: null }),
+  );
+  check("P2-199: legacy payload (all null) → unknown", legacy.state === "unknown");
+  check(
+    "P2-199: the unknown wording is neutral — it never accuses failure",
+    !/falha|erro|recus|inválid|quebrad/i.test(legacy.message),
+  );
+
+  // every generated message: non-empty, no path separators, no URL scheme
+  const verdicts = [connected, local, dialing, firstDial, refusedCapacity, refusedRateLimited, misWithReason, misNoReason, legacy];
+  check(
+    "P2-199: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("\\") &&
+        !v.message.includes("http:") &&
+        !v.message.includes("https:"),
+    ),
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-199: exactly ONE health call per tick in the real main.ts",
+    (mainSrc.match(/fetchDaemonHealth\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-199: relayLink is computed under the same overlay guard as the reach probe",
+    /if \(!quietLocal && \(!paired \|\| remotePairingRequested\) && relay\) \{/.test(mainSrc) &&
+      /relayLink = linkVerdict\(\{ \.\.\.relay, localMode: quietLocal \}\)/.test(mainSrc),
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-199: the additive relayLink field rides AFTER reach, which rides AFTER webApp",
+    payload.indexOf("relayLink,") > payload.indexOf("reach,") && payload.indexOf("reach,") > payload.indexOf("webApp,"),
+  );
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-199: the overlay renders the relay-link line and its comment states the QR is NEVER hidden",
+    overlaySrc.includes("{relayLink && (") && overlaySrc.includes("NEVER hidden"),
+  );
+  check(
+    "P2-199: the neutral unknown state renders discreet (same class as connected/local)",
+    /relayLink\.state === "connected" \|\| relayLink\.state === "local" \|\| relayLink\.state === "unknown"/.test(overlaySrc),
+  );
+  check(
+    "P2-199: pairRelayLinkOk/pairRelayLinkLocal exist in en and pt",
+    ["pairRelayLinkOk", "pairRelayLinkLocal"].every(
+      (k) =>
+        typeof (dict.en as Record<string, string>)[k] === "string" &&
+        typeof (dict.pt as Record<string, string>)[k] === "string",
+    ),
+  );
+}
+
+// --- P2-201: speech-to-text capability verdict (voicecap.ts) + wiring ----------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const whisperSrc = src(["apps", "daemon", "src", "whisper.ts"]);
+  const voicecapSrc = src(["apps", "daemon", "src", "voicecap.ts"]);
+  const chatViewSrc = src(["apps", "web", "src", "components", "ChatView.tsx"]);
+  const homeViewSrc = src(["apps", "web", "src", "components", "HomeView.tsx"]);
+
+  // sttVerdict matrix
+  check("P2-201: whisper-cpp with a model present is ready", sttVerdict("whisper-cpp", true).state === "ready");
+  check(
+    "P2-201: whisper-cpp without a model is missing-model (the case that used to collapse to null)",
+    sttVerdict("whisper-cpp", false).state === "missing-model",
+  );
+  check(
+    "P2-201: no tool at all is missing-binary (model presence is irrelevant)",
+    sttVerdict(null, false).state === "missing-binary" && sttVerdict(null, true).state === "missing-binary",
+  );
+  check(
+    "P2-201: mlx and openai are ready without requiring a model",
+    sttVerdict("mlx", false).state === "ready" && sttVerdict("openai", false).state === "ready",
+  );
+  check(
+    "P2-201: unknown tool type is missing-binary",
+    sttVerdict("pocketsphinx", true).state === "missing-binary" &&
+      sttVerdict("pocketsphinx", false).state === "missing-binary",
+  );
+
+  // message hygiene: short, actionable, no paths / script names / URL schemes
+  const verdicts = [
+    sttVerdict("whisper-cpp", true),
+    sttVerdict("whisper-cpp", false),
+    sttVerdict(null, false),
+    sttVerdict("mlx", false),
+    sttVerdict("openai", false),
+  ];
+  check(
+    "P2-201: every verdict message is non-empty and free of paths, scripts and URL schemes",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !/script|setup|terminal|bash|\.bin\b|\.sh\b/i.test(v.message),
+    ),
+  );
+  check(
+    "P2-201: missing-model says the engine exists; missing-binary says nothing is installed",
+    sttVerdict("whisper-cpp", false).message !== sttVerdict(null, false).message &&
+      /modelo/i.test(sttVerdict("whisper-cpp", false).message) &&
+      /instal/i.test(sttVerdict(null, false).message),
+  );
+
+  // voicecap stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const voicecapCode = voicecapSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-201: voicecap.ts is pure (no node:fs/child_process/http/ws imports)",
+    !/node:(fs|child_process|http|os|path)/.test(voicecapCode) && !/"ws"/.test(voicecapCode),
+  );
+
+  // real-repo assertion: the 501 body carries the verdict phrase, the English
+  // script-path hint is gone, and a lost staged upload gets its own accurate
+  // message instead of a capability claim
+  check(
+    "P2-201: the transcribe 501 body uses the verdict message and drops the English script hint",
+    /status: 501, body: \{ error: sttStatus\(\)\.message \}/.test(indexSrc) &&
+      !indexSrc.includes("setup-whisper.sh on the host"),
+  );
+  check(
+    "P2-201: a missing staged upload no longer masquerades as a capability problem",
+    /body: \{ error: "transcription upload not found" \}/.test(indexSrc),
+  );
+  check(
+    "P2-201: GET /__ocr/voice/stt-status mirrors the tts-status route shape via sttStatus()",
+    indexSrc.includes('/__ocr/voice/stt-status" && req.method === "GET"') &&
+      /body: sttStatus\(\) \}/.test(indexSrc) &&
+      /available: verdict\.state === "ready", state: verdict\.state, message: verdict\.message/.test(indexSrc),
+  );
+  check(
+    "P2-201: OCR_STT_BLOCK=1 is the documented test hatch forcing missing-binary",
+    indexSrc.includes('process.env.OCR_STT_BLOCK === "1"') &&
+      /OCR_STT_BLOCK/.test(src(["README.md"])) &&
+      /OCR_STT_BLOCK/.test(src(["README.pt-BR.md"])) &&
+      /OCR_STT_BLOCK/.test(src(["docs", "troubleshooting.md"])),
+  );
+
+  // whisper.ts: raw detection exposed additively, detectWhisper signature intact
+  check(
+    "P2-201: whisper.ts exposes the raw detection (toolType + modelPresent) next to the usable tool",
+    whisperSrc.includes("export interface WhisperDetection") &&
+      whisperSrc.includes("toolType: WhisperKind | null") &&
+      whisperSrc.includes("export async function detectWhisper(): Promise<WhisperTool | null>") &&
+      whisperSrc.includes("export async function detectWhisperDetail(): Promise<WhisperDetection>"),
+  );
+
+  // both mics consult the verdict, fail open while unknown, and surface the phrase
+  check(
+    "P2-201: ChatView and HomeView probe stt-status and disable the mic only on a known non-ready verdict",
+    chatViewSrc.includes("const stt = useSttStatus(request)") &&
+      homeViewSrc.includes("const stt = useSttStatus(request)") &&
+      (chatViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
+      (homeViewSrc.match(/sttBlocked/g) ?? []).length >= 3 &&
+      src(["apps", "web", "src", "lib", "transcribe.ts"]).includes('request("GET", "/__ocr/voice/stt-status")'),
+  );
+}
+
+// --- P2-210: model-readiness verdict (modelready.ts) + wiring ------------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const modelreadySrc = src(["apps", "daemon", "src", "modelready.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  // verdict matrix
+  check(
+    "P2-210: one provider with at least one model is ready (zero-model peers do not block it)",
+    modelReadyVerdict([{ id: "prov-a", models: 1 }]).state === "ready" &&
+      modelReadyVerdict([
+        { id: "prov-a", models: 0 },
+        { id: "prov-b", models: 7 },
+      ]).state === "ready",
+  );
+  check("P2-210: an empty provider list is no-provider", modelReadyVerdict([]).state === "no-provider");
+  check(
+    "P2-210: providers present with zero models is no-model",
+    modelReadyVerdict([
+      { id: "prov-a", models: 0 },
+      { id: "prov-b", models: 0 },
+    ]).state === "no-model",
+  );
+  check(
+    "P2-210: a fetch-error indicator lands in unknown even with a good summary",
+    modelReadyVerdict([{ id: "prov-a", models: 3 }], true).state === "unknown",
+  );
+  check(
+    "P2-210: a missing summary lands in unknown",
+    modelReadyVerdict(null).state === "unknown" && modelReadyVerdict(undefined).state === "unknown",
+  );
+
+  // message hygiene: no paths, no URL schemes, no provider identifiers, no secrets
+  const ids = ["anthropic", "openai", "sk-secret-token-123", "my-machine"];
+  const verdicts = [
+    modelReadyVerdict([{ id: "anthropic", models: 5 }]),
+    modelReadyVerdict([]),
+    modelReadyVerdict([{ id: "anthropic", models: 0 }]),
+    modelReadyVerdict([{ id: "anthropic", models: 0 }], true),
+    modelReadyVerdict(null),
+    modelReadyVerdict(undefined, true),
+  ];
+  check(
+    "P2-210: every verdict message is non-empty, free of paths/URLs and never names a provider or secret",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        ids.every((id) => !v.message.includes(id)),
+    ),
+  );
+  check(
+    "P2-210: the unknown phrase is neutral — it never accuses a failure",
+    modelReadyVerdict(null).message !== modelReadyVerdict([]).message &&
+      !/falh|erro|inválid/i.test(modelReadyVerdict(null).message),
+  );
+
+  // providerSummary derives from the SAME catalog shape the ruler caches
+  const catalog = {
+    all: [
+      { id: "openai", models: { "gpt-1": {}, "gpt-2": {} } },
+      { id: "offline", models: {} },
+    ],
+    connected: ["openai", "ghost", "offline"],
+  };
+  check(
+    "P2-210: providerSummary counts models per connected provider from the cached catalog",
+    JSON.stringify(providerSummary(catalog)) ===
+      JSON.stringify([
+        { id: "openai", models: 2 },
+        { id: "ghost", models: 0 },
+        { id: "offline", models: 0 },
+      ]),
+  );
+  check(
+    "P2-210: a catalog without the connected list cannot answer — null, never a guess",
+    providerSummary({ all: [{ id: "openai", models: {} }] }) === null && providerSummary(null) === null,
+  );
+  check(
+    "P2-210: a connected provider missing from all counts zero models (no-model)",
+    modelReadyVerdict(providerSummary({ all: [], connected: ["openai"] })).state === "no-model",
+  );
+
+  // modelready.ts stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const code = modelreadySrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-210: modelready.ts is pure (no node:fs/child_process/http/ws imports)",
+    !/node:(fs|child_process|http|os|path)/.test(code) && !/"ws"/.test(code),
+  );
+
+  // real-repo assertion: the route mirrors stt-status and consumes the cached
+  // catalog — the route body never fires a fetch of its own
+  const routeAt = indexSrc.indexOf('/__ocr/model/status" && req.method === "GET"');
+  const routeBody = routeAt >= 0 ? indexSrc.slice(routeAt, indexSrc.indexOf("if (req.path", routeAt + 20)) : "";
+  check(
+    "P2-210: GET /__ocr/model/status mirrors the stt-status route shape",
+    routeAt >= 0 && /body: modelStatus\(\) \}/.test(routeBody) && !routeBody.includes("fetch("),
+  );
+  check(
+    "P2-210: the readiness summary comes only from fetches that already happen — the ruler refresh and the /provider passthrough",
+    /providerWindows\.refresh\(catalog\);\s*\n\s*\/\/ P2-210/.test(indexSrc) &&
+      indexSrc.includes("noteProviderCatalog(catalog, true)") &&
+      indexSrc.includes("noteProviderCatalog(j, true)") &&
+      /modelReadyVerdict\(modelCatalogSummary, modelCatalogFailed\)/.test(indexSrc),
+  );
+
+  // documented test hatch forcing no-provider for deterministic evidence
+  check(
+    "P2-210: OCR_MODEL_BLOCK=1 is the documented test hatch forcing no-provider",
+    indexSrc.includes('process.env.OCR_MODEL_BLOCK === "1"') &&
+      /OCR_MODEL_BLOCK/.test(src(["README.md"])) &&
+      /OCR_MODEL_BLOCK/.test(src(["README.pt-BR.md"])) &&
+      /OCR_MODEL_BLOCK/.test(src(["docs", "troubleshooting.md"])),
+  );
+
+  // both composers consult the verdict, show the calm hint and NEVER block
+  // sending (fail open on purpose — no disabled= may depend on the hint)
+  const chatViewSrc = src(["apps", "web", "src", "components", "ChatView.tsx"]);
+  const homeViewSrc = src(["apps", "web", "src", "components", "HomeView.tsx"]);
+  check(
+    "P2-210: ChatView and HomeView probe model status, show the calm hint and never disable sending",
+    chatViewSrc.includes("const modelStatus = useModelStatus(request)") &&
+      homeViewSrc.includes("const modelStatus = useModelStatus(request)") &&
+      (chatViewSrc.match(/modelHint/g) ?? []).length >= 2 &&
+      (homeViewSrc.match(/modelHint/g) ?? []).length >= 2 &&
+      src(["apps", "web", "src", "lib", "modelstatus.ts"]).includes('request("GET", "/__ocr/model/status")') &&
+      !/disabled=\{[^}]*modelHint/.test(chatViewSrc) &&
+      !/disabled=\{[^}]*modelHint/.test(homeViewSrc),
+  );
+  check(
+    "P2-210: the fail-open reason is written in the code comment",
+    /DELIBERATELY fail-open/.test(chatViewSrc) && /DELIBERATELY fail-open/.test(homeViewSrc),
+  );
+}
+
+// --- P2-213: opencode version-readiness verdict (opencodever.ts) + wiring ------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const opencodeverSrc = src(["apps", "daemon", "src", "opencodever.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const settingsSrc = src(["apps", "web", "src", "components", "SettingsView.tsx"]);
+
+  // verdict matrix: equal → ok, greater → ok
+  check(
+    "P2-213: version equal to the minimum is ok and a greater version is ok",
+    versionVerdict(MIN_OPENCODE_VERSION, MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("1.18.25", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("2.0.0", MIN_OPENCODE_VERSION).state === "ok",
+  );
+  // each smaller significant segment is too-old
+  check(
+    "P2-213: a smaller patch, minor or major is too-old",
+    versionVerdict("1.18.4", "1.18.5").state === "too-old" &&
+      versionVerdict("1.17.9", MIN_OPENCODE_VERSION).state === "too-old" &&
+      versionVerdict("0.99.99", MIN_OPENCODE_VERSION).state === "too-old",
+  );
+  // tolerance: letter-v prefix, pre-release suffix, extra segment, noise
+  check(
+    "P2-213: v prefix, pre-release suffix and extra segments are tolerated",
+    versionVerdict(`v${MIN_OPENCODE_VERSION}`, MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("1.18.0-beta.1", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("1.18.0.7", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("v1.17.0-rc.2+build", MIN_OPENCODE_VERSION).state === "too-old",
+  );
+  check(
+    "P2-213: noisy text around the version is still recognized",
+    versionVerdict("opencode version v1.19.2 (build 8837)", MIN_OPENCODE_VERSION).state === "ok" &&
+      versionVerdict("built on 2024 1.18.0 sha abc", MIN_OPENCODE_VERSION).state === "ok",
+  );
+  // missing / empty / unrecognizable → neutral unknown
+  check(
+    "P2-213: null, empty and number-free text all land in unknown",
+    versionVerdict(null, MIN_OPENCODE_VERSION).state === "unknown" &&
+      versionVerdict("", MIN_OPENCODE_VERSION).state === "unknown" &&
+      versionVerdict("sem numeros aqui", MIN_OPENCODE_VERSION).state === "unknown" &&
+      versionVerdict("42", MIN_OPENCODE_VERSION).state === "unknown",
+  );
+  check(
+    "P2-213: parseVersion needs two or more dot-separated segments",
+    JSON.stringify(parseVersion("v1.18.0-beta.2")) === JSON.stringify([1, 18, 0]) &&
+      parseVersion("1") === null &&
+      parseVersion(null) === null,
+  );
+
+  // message hygiene: no paths, no URL schemes, no command names, no secrets
+  const verdicts = [
+    versionVerdict(MIN_OPENCODE_VERSION, MIN_OPENCODE_VERSION),
+    versionVerdict("0.0.1", MIN_OPENCODE_VERSION),
+    versionVerdict(null, MIN_OPENCODE_VERSION),
+  ];
+  check(
+    "P2-213: every verdict message is non-empty, free of paths/URLs/command names and distinct",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !/\b(npm|npx|brew|curl|wget|git|serve|install|upgrade|update|opencode)\b/i.test(v.message),
+    ) && new Set(verdicts.map((v) => v.message)).size === verdicts.length,
+  );
+  check(
+    "P2-213: the unknown phrase is neutral — it never accuses a failure",
+    !/falh|erro|inválid|antigo/i.test(versionVerdict(null, MIN_OPENCODE_VERSION).message),
+  );
+
+  // opencodever.ts stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const code = opencodeverSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-213: opencodever.ts is pure (no node:fs/child_process/http/os/path imports)",
+    !/node:(fs|child_process|http|os|path)/.test(code) && !/"ws"/.test(code),
+  );
+
+  // real-repo assertion: the probe runs EXACTLY ONCE at boot, under the
+  // binary-found guard, and no per-request call was introduced anywhere.
+  // P2-250: a third call site exists — the documented lazy reuse right before
+  // the version verdict is answered (health + settings), still never
+  // per-request and never periodic; the boot region anchors the search.
+  const probeCalls = indexSrc.match(/\bprobeOpencodeVersion\(/g) ?? [];
+  const mainAt = indexSrc.indexOf("async function main()");
+  const bootAt = indexSrc.indexOf("refreshOpencodeBinary(true)", mainAt);
+  const hatchAt = indexSrc.indexOf('process.env.OCR_OPENCODE_OLD === "1"', mainAt);
+  check(
+    "P2-213: the version probe is fired once at boot, guarded by a resolved binary",
+    probeCalls.length === 3 &&
+      bootAt >= 0 &&
+      hatchAt > bootAt &&
+      /else if \(binaryPick\.path !== null\) \{\s*\n\s*probeOpencodeVersion\(binaryPick\.path\);/.test(indexSrc),
+  );
+  check(
+    "P2-213: the probe has a documented timeout, truncates output before the verdict and fails into unknown",
+    /execFile\(binPath, \["--version"\], \{ timeout: VERSION_PROBE_TIMEOUT_MS \}/.test(indexSrc) &&
+      /stdout\.slice\(0, VERSION_PROBE_MAX_BYTES\)/.test(indexSrc) &&
+      /!err && !stderr && raw \? versionVerdict\(raw, MIN_OPENCODE_VERSION\) : versionVerdict\(null, MIN_OPENCODE_VERSION\)/.test(
+        indexSrc,
+      ),
+  );
+
+  // additive surfaces: the health opencode object and the existing settings read
+  check(
+    "P2-213: the health opencode object gains additive versionState/versionMessage",
+    indexSrc.includes("versionState: opencodeVersion.state") &&
+      indexSrc.includes("versionMessage: opencodeVersion.message"),
+  );
+  check(
+    "P2-213: the existing /__ocr/settings read mirrors the verdict — no new route",
+    // P2-215 grew the same object additively (`disk: diskStatus()`) and P2-288
+    // reformatted it multi-line appending the readiness mirror, so the
+    // assertion matches the mirror prefix and field order, not the brace.
+    /body: \{\s*\.\.\.readSettings\(\),\s*version: VERSION,\s*opencodeVersion: opencodeVersion,/.test(indexSrc),
+  );
+
+  // the Settings machine section shows the phrase only for too-old and NEVER
+  // gates any control on it (fail open on purpose)
+  check(
+    "P2-213: SettingsView renders the phrase only for too-old and never disables a control with it",
+    settingsSrc.includes('opencodeVersion?.state === "too-old"') &&
+      settingsSrc.includes("opencode-version-hint") &&
+      !/disabled=\{[^}]*opencodeVersion/.test(settingsSrc) &&
+      /deliberately fails open/i.test(settingsSrc),
+  );
+
+  // documented test hatch forcing too-old for deterministic visual evidence
+  check(
+    "P2-213: OCR_OPENCODE_OLD=1 is the documented test hatch forcing too-old",
+    hatchAt >= 0 &&
+      /OCR_OPENCODE_OLD/.test(src(["README.md"])) &&
+      /OCR_OPENCODE_OLD/.test(src(["README.pt-BR.md"])) &&
+      /OCR_OPENCODE_OLD/.test(src(["docs", "troubleshooting.md"])),
+  );
+}
+
+// --- P2-215: disk-space readiness verdict (diskguard.ts) + wiring ---------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const diskguardSrc = src(["apps", "daemon", "src", "diskguard.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const settingsSrc = src(["apps", "web", "src", "components", "SettingsView.tsx"]);
+
+  // exported thresholds are documented and ordered alert < warn
+  check(
+    "P2-215: thresholds are exported and ordered (alert stricter than warn, both rules)",
+    DISK_ALERT_FREE_BYTES < DISK_WARN_FREE_BYTES && DISK_ALERT_FREE_FRACTION < DISK_WARN_FREE_FRACTION,
+  );
+
+  // verdict matrix
+  check(
+    "P2-215: a roomy volume is ok",
+    diskVerdict(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES).state === "ok",
+  );
+  check(
+    "P2-215: fraction below the warning is low even with roomy bytes",
+    diskVerdict(8 * DISK_WARN_FREE_BYTES, 100 * DISK_WARN_FREE_BYTES).state === "low",
+  );
+  check(
+    "P2-215: bytes below the warning is low even with a roomy fraction",
+    diskVerdict(0.5 * DISK_WARN_FREE_BYTES, 4 * DISK_WARN_FREE_BYTES).state === "low",
+  );
+  check(
+    "P2-215: fraction below the alert is critical",
+    diskVerdict(3 * DISK_WARN_FREE_BYTES, 100 * DISK_WARN_FREE_BYTES).state === "critical",
+  );
+  check(
+    "P2-215: bytes below the alert is critical",
+    diskVerdict(0.1 * DISK_WARN_FREE_BYTES, DISK_WARN_FREE_BYTES).state === "critical",
+  );
+  check(
+    "P2-215: when the bytes and fraction rules disagree the more severe state wins",
+    diskVerdict(3 * DISK_WARN_FREE_BYTES, 100 * DISK_WARN_FREE_BYTES).state === "critical" && // bytes ok, fraction 3% critical
+      diskVerdict(0.1 * DISK_WARN_FREE_BYTES, DISK_WARN_FREE_BYTES).state === "critical", // bytes critical, fraction 10% ok
+  );
+
+  // every degenerate reading lands in the neutral unknown
+  check(
+    "P2-215: a null reading is unknown",
+    diskVerdict(null, null).state === "unknown" &&
+      diskVerdict(null, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(5 * DISK_WARN_FREE_BYTES, null).state === "unknown",
+  );
+  check(
+    "P2-215: a zero total is unknown",
+    diskVerdict(5 * DISK_WARN_FREE_BYTES, 0).state === "unknown",
+  );
+  check(
+    "P2-215: negative values are unknown",
+    diskVerdict(-1, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(5 * DISK_WARN_FREE_BYTES, -100).state === "unknown",
+  );
+  check(
+    "P2-215: non-finite values are unknown",
+    diskVerdict(NaN, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(Infinity, 100 * DISK_WARN_FREE_BYTES).state === "unknown" &&
+      diskVerdict(5 * DISK_WARN_FREE_BYTES, NaN).state === "unknown",
+  );
+
+  // message hygiene: no paths, no URL schemes, no command names, no secrets
+  const verdicts = [
+    diskVerdict(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES),
+    diskVerdict(0.5 * DISK_WARN_FREE_BYTES, 4 * DISK_WARN_FREE_BYTES),
+    diskVerdict(0.1 * DISK_WARN_FREE_BYTES, DISK_WARN_FREE_BYTES),
+    diskVerdict(null, null),
+  ];
+  check(
+    "P2-215: every verdict message is non-empty, free of paths/URLs/command names and distinct",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !/\b(npm|npx|brew|curl|wget|git|rm|df|du|sudo)\b/i.test(v.message),
+    ) && new Set(verdicts.map((v) => v.message)).size === verdicts.length,
+  );
+  check(
+    "P2-215: the unknown phrase is neutral — it never accuses a failure",
+    !/falh|erro|inválid|cheio/i.test(diskVerdict(null, null).message),
+  );
+
+  // diskguard.ts stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const code = diskguardSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-215: diskguard.ts is pure (no node:fs/child_process/http/os/path imports)",
+    !/node:(fs|child_process|http|os|path)/.test(code) && !/"ws"/.test(code),
+  );
+
+  // real-repo assertion: the reading fires once at boot, before the janitor
+  // block, and then rides the SAME interval the P2-207 sweep already uses —
+  // no new periodic timer was introduced anywhere in index.ts (baseline: the
+  // five pre-existing setInterval( call sites). P2-228 taught that shared
+  // interval to sweep uploads too — still exactly one timer, two janitors.
+  const bootAt = indexSrc.indexOf("refreshDiskState();");
+  const janitorAt = indexSrc.indexOf("if (artifactsSweepOn || uploadsSweepOn || clipsSweepOn) {");
+  check(
+    "P2-215: the disk reading fires once at boot, before the janitor block",
+    bootAt >= 0 && janitorAt > bootAt,
+  );
+  check(
+    "P2-215: the reading rides the existing janitor interval and no new periodic timer exists",
+    /const retentionTimer = setInterval\(\(\) => \{\s*\n\s*refreshDiskState\(\);\s*\n\s*if \(artifactsSweepOn\) sweepArtifactRetention\(\);\s*\n\s*if \(uploadsSweepOn\) sweepUploadRetention\(\);\s*\n\s*if \(clipsSweepOn\) sweepClipRetention\(\);\s*\n\s*\}, RETENTION_INTERVAL_MS\)/.test(
+      indexSrc,
+    ) &&
+      (indexSrc.match(/setInterval\(/g) ?? []).length === 5,
+  );
+
+  // additive surfaces: health fields and the settings mirror, no new route
+  check(
+    "P2-215: GET /api/health gains additive diskState/diskMessage",
+    indexSrc.includes("diskState: disk.state") && indexSrc.includes("diskMessage: disk.message"),
+  );
+  check(
+    "P2-215: the existing /__ocr/settings read mirrors the disk verdict — no new route",
+    /disk: diskStatus\(\)/.test(indexSrc),
+  );
+  check(
+    "P2-215: the health payload never carries a path or a raw byte count",
+    !indexSrc.includes("diskBytes") && !/disk[A-Za-z]*:.*STATE_DIR/.test(indexSrc),
+  );
+
+  // documented test hatch forcing critical for deterministic visual evidence
+  const hatchAt = indexSrc.indexOf('process.env.OCR_DISK_FULL === "1"');
+  check(
+    "P2-215: OCR_DISK_FULL=1 is the documented test hatch forcing critical",
+    hatchAt >= 0 &&
+      /OCR_DISK_FULL/.test(src(["README.md"])) &&
+      /OCR_DISK_FULL/.test(src(["README.pt-BR.md"])) &&
+      /OCR_DISK_FULL/.test(src(["docs", "troubleshooting.md"])),
+  );
+
+  // the Settings machine section shows the phrase only for low/critical and
+  // NEVER gates any control on it (fail open on purpose)
+  check(
+    "P2-215: SettingsView renders the phrase only for low/critical and never disables a control with it",
+    settingsSrc.includes('disk?.state === "low"') &&
+      settingsSrc.includes('disk?.state === "critical"') &&
+      settingsSrc.includes("disk-hint") &&
+      !/disabled=\{[^}]*disk/.test(settingsSrc) &&
+      /deliberately fails open/i.test(settingsSrc),
+  );
+}
+
+// --- P2-204: packaged boot smoke — bootVerdict table + release.yml wiring ----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "packaged-boot-verdict.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  const OK = { executableFound: true, loadFinished: true, rootEmpty: false, canarySeen: true, consoleErrors: [] as string[] };
+  const v = (over: Partial<typeof OK>) => bootVerdict({ ...OK, ...over });
+
+  // full verdict table
+  check("P2-204: all facts good → ok with no reason", bootVerdict(OK).ok === true && bootVerdict(OK).reason === null);
+  check(
+    "P2-204: executable not found → binary-missing",
+    v({ executableFound: false }).ok === false && v({ executableFound: false }).reason === "binary-missing",
+  );
+  check("P2-204: load not finished → load-failed", v({ loadFinished: false }).reason === "load-failed");
+  check("P2-204: empty root → blank-window", v({ rootEmpty: true }).reason === "blank-window");
+  check(
+    "P2-204: canary not observed with an empty error list → console-capture-broken (never a vacuous pass)",
+    v({ canarySeen: false }).reason === "console-capture-broken",
+  );
+  check("P2-204: captured console errors → console-error", v({ consoleErrors: ["boom"] }).reason === "console-error");
+  check(
+    "P2-204: binary-missing outranks everything else",
+    v({ executableFound: false, loadFinished: false, rootEmpty: true, canarySeen: false, consoleErrors: ["boom"] }).reason ===
+      "binary-missing",
+  );
+  check(
+    "P2-204: blank-window outranks console-capture-broken (the blank window is the stronger, direct observation)",
+    v({ rootEmpty: true, canarySeen: false }).reason === "blank-window",
+  );
+  check(
+    "P2-204: console-capture-broken outranks console-error (an untrusted collector voids the error signal)",
+    v({ canarySeen: false, consoleErrors: ["boom"] }).reason === "console-capture-broken",
+  );
+
+  // message hygiene: short pt-BR, no paths, URL schemes or secrets (P2-201 bar)
+  const all = [bootVerdict(OK), v({ executableFound: false }), v({ loadFinished: false }), v({ rootEmpty: true }), v({ canarySeen: false }), v({ consoleErrors: ["boom"] })];
+  check(
+    "P2-204: every verdict message is non-empty and free of paths, URLs and secrets",
+    all.every((x) => typeof x.message === "string" && x.message.trim().length > 0 && !/[\\/]/.test(x.message) && !/https?:/i.test(x.message)),
+  );
+  check(
+    "P2-204: each failing reason carries a distinct message",
+    new Set(all.map((x) => x.message)).size === all.length,
+  );
+
+  // the verdict module stays pure (P2-194 lesson): importing it must not boot I/O
+  check(
+    "P2-204: packaged-boot-verdict.mjs is pure (no node: fs/os/path/net/http imports)",
+    !/node:(fs|os|path|net|http)/.test(verdictSrc.replace(/\/\/.*$/gm, "")),
+  );
+
+  // the driver script carries the hermetic contract of the P1-051 harness
+  check(
+    "P2-204: packaged-boot.mjs launches hermetically (temp userData, no sidecar, force-down, keeper leash, own session)",
+    bootSrc.includes("OCR_USER_DATA_DIR") &&
+      bootSrc.includes("OCR_DAEMON_ENTRY") &&
+      bootSrc.includes("OCR_DAEMON_FORCE_DOWN") &&
+      bootSrc.includes("OCR_KEEPER_PID") &&
+      /OCR_DESKTOP_SESSION: `packaged-boot-/.test(bootSrc),
+  );
+  check(
+    "P2-204: the driver injects the shared canary as a console.error after load",
+    bootSrc.includes("CANARY") && /console\.error\('\$\{CANARY\}'\)/.test(bootSrc),
+  );
+  check(
+    "P2-204: console collectors attach at window creation, not only after firstWindow resolves",
+    bootSrc.includes('electronApp.on("window", collect)') && bootSrc.includes("const collected = new Set()"),
+  );
+  check(
+    "P2-204: the driver fails closed when playwright-core is unavailable (exit 1, never a silent pass)",
+    bootSrc.includes("playwright-core is not available") &&
+      bootSrc.includes("refusing to pass vacuously") &&
+      bootSrc.includes("process.exitCode = 1"),
+  );
+  check(
+    "P2-204: the driver launches the PACKAGED binary via executablePath, not the electron npm package",
+    bootSrc.includes("executablePath: executable") && bootSrc.includes('join(appPath, "Contents", "MacOS")'),
+  );
+
+  // real-repo assertion: release.yml boots the bundle in desktop-dmg, after
+  // packaging and before the artifact upload, with shell: bash + own timeout
+  const release = src([".github", "workflows", "release.yml"]);
+  const dmgStart = release.indexOf("\n  desktop-dmg:");
+  const dmgEnd = release.indexOf("\n  desktop-win:");
+  const dmg = dmgStart > -1 && dmgEnd > dmgStart ? release.slice(dmgStart, dmgEnd) : "";
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  const pkgAt = dmg.indexOf("Build + package DMG");
+  const bootAt = dmg.indexOf("Smoke-boot the packaged app");
+  const uploadAt = dmg.indexOf("Attach DMG + update metadata");
+  const stepSlice = bootAt > -1 ? dmg.slice(bootAt, dmg.indexOf("\n      - name:", bootAt)) : "";
+  check(
+    "P2-204: release.yml desktop-dmg runs the boot smoke between packaging and upload",
+    pkgAt > -1 && bootAt > pkgAt && uploadAt > bootAt,
+  );
+  check(
+    "P2-204: the boot smoke step declares shell: bash and its own timeout",
+    stepSlice.includes("shell: bash") && /timeout-minutes:/.test(stepSlice),
+  );
+  check(
+    "P2-204: the step resolves the .app under apps/desktop/dist and runs packaged-boot.mjs",
+    stepSlice.includes("find apps/desktop/dist") && stepSlice.includes("node apps/desktop/scripts/packaged-boot.mjs"),
+  );
+  check(
+    "P2-208: desktop-win gets the boot smoke too (explicit out of scope only until P2-204)",
+    win.includes("Smoke-boot the packaged app"),
+  );
+}
+
+// --- P2-208: packaged boot layout — candidatePaths + desktop-win wiring -------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const layoutSrc = src(["apps", "desktop", "scripts", "packaged-boot-layout.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  // full candidatePaths table
+  check(
+    "P2-208: classic macOS .app bundle → Contents/MacOS/<bundle name without .app>",
+    JSON.stringify(candidatePaths("/tmp/dist/mac-arm64/OpenCode Remote.app", "darwin")) ===
+      JSON.stringify(["/tmp/dist/mac-arm64/OpenCode Remote.app/Contents/MacOS/OpenCode Remote"]),
+  );
+  check(
+    "P2-208: macOS bundle name keeps spaces and strips the .app suffix case-insensitively",
+    JSON.stringify(candidatePaths("/dist/My App.APP", "darwin")) ===
+      JSON.stringify(["/dist/My App.APP/Contents/MacOS/My App"]),
+  );
+  check(
+    "P2-208: Windows path that already points at the executable passes through unchanged",
+    JSON.stringify(candidatePaths("C:\\dist\\win-unpacked\\OpenCode Remote.exe", "win32")) ===
+      JSON.stringify(["C:\\dist\\win-unpacked\\OpenCode Remote.exe"]),
+  );
+  check(
+    "P2-208: Windows packaging output dir → same-name executable inside it",
+    JSON.stringify(candidatePaths("C:\\dist\\win-unpacked", "win32")) ===
+      JSON.stringify(["C:\\dist\\win-unpacked\\win-unpacked.exe"]),
+  );
+  check(
+    "P2-208: Windows dir input keeps the caller's separator style (forward-slash paths stay forward-slash)",
+    JSON.stringify(candidatePaths("/tmp/dist/win-unpacked", "win32")) ===
+      JSON.stringify(["/tmp/dist/win-unpacked/win-unpacked.exe"]),
+  );
+  check(
+    "P2-208: unknown platform → empty candidate list",
+    candidatePaths("/dist/OpenCode Remote.app", "linux").length === 0 &&
+      candidatePaths("/dist/OpenCode Remote.app", "").length === 0 &&
+      candidatePaths("/dist/OpenCode Remote.app", undefined as unknown as string).length === 0,
+  );
+  check(
+    "P2-208: traversal stems are refused — no candidate ever climbs out of the received root",
+    candidatePaths("/dist/..", "win32").length === 0 &&
+      candidatePaths("/dist/.", "win32").length === 0 &&
+      candidatePaths("/dist/.app", "darwin").length === 0 &&
+      candidatePaths("/dist/..app", "darwin").length === 0 &&
+      candidatePaths("  ", "win32").length === 0,
+  );
+  {
+    const table: Array<[string, string]> = [
+      ["/tmp/dist/mac-arm64/OpenCode Remote.app", "darwin"],
+      ["C:\\dist\\win-unpacked\\OpenCode Remote.exe", "win32"],
+      ["C:\\dist\\win-unpacked", "win32"],
+      ["win-unpacked", "win32"],
+    ];
+    check(
+      "P2-208: every candidate descends from the received path — never a parent traversal",
+      table.every(([p, plat]) =>
+        candidatePaths(p, plat).every(
+          (c) => c === p || (c.startsWith(p) && !/(^|[/\\])\.\.([/\\]|$)/.test(c.slice(p.length)))),
+      ),
+    );
+  }
+
+  // the layout module stays pure (P2-194/P2-204 lesson): importing it must
+  // never boot I/O, and the driver consumes it with the disk fallback intact
+  check(
+    "P2-208: packaged-boot-layout.mjs is pure (no node: fs/os/path/net/http imports)",
+    !/node:(fs|os|path|net|http)/.test(layoutSrc.replace(/\/\/.*$/gm, "")),
+  );
+  check(
+    "P2-208: resolveExecutable consumes candidatePaths and keeps the executable-file fallback as the only disk point",
+    bootSrc.includes("candidatePaths(appPath, process.platform)") &&
+      bootSrc.includes('join(appPath, "Contents", "MacOS")') &&
+      bootSrc.includes("readdirSync(scanDir)"),
+  );
+
+  // real-repo assertion: release.yml boots the bundle in desktop-win, after
+  // packaging + signature verification and before the artifact upload
+  const release = src([".github", "workflows", "release.yml"]);
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  const pkgAt = win.indexOf("Build + package NSIS installer");
+  const signAt = win.indexOf("Authenticode verification of the packaged installer");
+  const bootAt = win.indexOf("Smoke-boot the packaged app");
+  const uploadAt = win.indexOf("Attach setup exe + update metadata");
+  const stepSlice = bootAt > -1 ? win.slice(bootAt, win.indexOf("\n      - name:", bootAt)) : "";
+  check(
+    "P2-208: release.yml desktop-win runs the boot smoke after packaging + signature verification, before upload",
+    pkgAt > -1 && signAt > pkgAt && bootAt > signAt && uploadAt > bootAt,
+  );
+  check(
+    "P2-208: the desktop-win boot smoke declares shell: bash and its own timeout (P2-126/P2-164 lessons)",
+    stepSlice.includes("shell: bash") && /timeout-minutes:/.test(stepSlice),
+  );
+  check(
+    "P2-208: the desktop-win boot smoke resolves the win-unpacked dir and runs packaged-boot.mjs",
+    stepSlice.includes("win-unpacked") && stepSlice.includes("node apps/desktop/scripts/packaged-boot.mjs"),
+  );
+}
+
+// --- P2-207: artifact retention janitor (artifactretention.ts) ----------------
+
+{
+  const ROOT = join(tmpdir(), "p2-207-artifacts-root");
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+
+  const sessEntry = (session: string, bytes: number, ageMs: number, name = "report.pdf"): RetentionEntry => ({
+    path: join(ROOT, session, name),
+    bytes,
+    mtime: NOW - ageMs,
+  });
+  const pathsOf = (plan: { paths: string[] }) => plan.paths.map((p) => p.split("/").slice(-2).join("/"));
+
+  // empty input → empty plan
+  check(
+    "P2-207: empty entry list yields an empty plan",
+    retentionPlan(ROOT, [], NOW).paths.length === 0 && retentionPlan(ROOT, [], NOW).bytes === 0,
+  );
+
+  // everything below every ceiling → nothing to do
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("s1", 10, 1 * DAY),
+      sessEntry("s2", 20, 5 * DAY),
+      sessEntry("s3", 30, 10 * DAY),
+      sessEntry("s4", 40, 20 * DAY),
+    ], NOW);
+    check(
+      "P2-207: everything under the ceilings → empty plan",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // grace period: a freshly written entry never enters the plan, even huge
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("fresh", RETENTION_MAX_TOTAL_BYTES + 1, 1 * HOUR),
+      sessEntry("fresh2", RETENTION_MAX_TOTAL_BYTES + 1, 2 * HOUR),
+      sessEntry("fresh3", RETENTION_MAX_TOTAL_BYTES + 1, 3 * HOUR),
+      sessEntry("old", 100, 40 * DAY),
+    ], NOW);
+    check(
+      "P2-207: entry inside the grace period never enters the plan even with the total blown",
+      !plan.paths.includes(join(ROOT, "fresh", "report.pdf")) &&
+        !plan.paths.includes(join(ROOT, "fresh2", "report.pdf")) &&
+        !plan.paths.includes(join(ROOT, "fresh3", "report.pdf")) &&
+        plan.paths.length === 1,
+    );
+  }
+
+  // the RETENTION_MIN_SESSIONS most recent session dirs survive, always
+  {
+    const allOld = [
+      sessEntry("a", RETENTION_MAX_TOTAL_BYTES, 100 * DAY),
+      sessEntry("b", RETENTION_MAX_TOTAL_BYTES, 101 * DAY),
+      sessEntry("c", RETENTION_MAX_TOTAL_BYTES, 102 * DAY),
+    ];
+    const plan = retentionPlan(ROOT, allOld, NOW);
+    check(
+      "P2-207: the minimum count of most recent sessions survives even when all are old and over every ceiling",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+    const plan4 = retentionPlan(ROOT, [sessEntry("d", 5, 103 * DAY), ...allOld], NOW);
+    check(
+      "P2-207: with four sessions only the oldest one is planned (the newest three are preserved)",
+      pathsOf(plan4).join(",") === ["d", "report.pdf"].join("/"),
+    );
+  }
+
+  // byte ceiling: oldest deleted first until the total fits
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("a", 600_000_000, 6 * DAY),
+      sessEntry("b", 600_000_000, 5 * DAY),
+      sessEntry("c", 600_000_000, 4 * DAY),
+      sessEntry("e", 600_000_000, 2 * DAY + 1),
+      sessEntry("f", 600_000_000, 2 * DAY + 1),
+      sessEntry("g", 600_000_000, 2 * DAY + 1),
+    ], NOW);
+    // 3 newest (e,f,g) are preserved; the candidates a..c total 1.8GB: a and b
+    // go from the oldest until the surviving total (0.6GB) fits under 1GB
+    check(
+      "P2-207: byte ceiling deletes from the oldest until the total fits",
+      pathsOf(plan).join(",") === ["a", "report.pdf"].join("/") + "," + ["b", "report.pdf"].join("/") &&
+        plan.bytes === 1_200_000_000,
+    );
+  }
+
+  // age ceiling: only what is past the age limit goes
+  {
+    const plan = retentionPlan(ROOT, [
+      sessEntry("young1", 10, 1 * DAY),
+      sessEntry("young2", 10, 2 * DAY),
+      sessEntry("young3", 10, 2 * DAY),
+      sessEntry("m1", 100, 10 * DAY),
+      sessEntry("m2", 200, 40 * DAY),
+      sessEntry("m3", 400, 60 * DAY),
+    ], NOW);
+    // plan order is oldest → newest (spec): m3 (60d) before m2 (40d)
+    check(
+      "P2-207: age ceiling deletes only what passed the max age in days",
+      pathsOf(plan).join(",") === ["m3", "report.pdf"].join("/") + "," + ["m2", "report.pdf"].join("/") &&
+        plan.bytes === 600,
+    );
+  }
+
+  // refusals: paths outside the root (including .. traversal) are never planned
+  {
+    const plan = retentionPlan(ROOT, [
+      { path: join(tmpdir(), "elsewhere", "sess", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "..", "uploads", "sess", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: ROOT, bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: "", bytes: 1, mtime: NOW - 100 * DAY },
+    ], NOW);
+    check(
+      "P2-207: paths outside the root (other dirs, .. traversal, the root itself, empty) are refused",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // refusals: invalid segment names (the validSegment rule) are never planned
+  {
+    const plan = retentionPlan(ROOT, [
+      { path: join(ROOT, ".hidden", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "a..b", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "ok sess", "f.pdf"), bytes: RETENTION_MAX_TOTAL_BYTES * 10, mtime: NOW - 100 * DAY },
+      { path: join(ROOT, "sess", "sub", "f.pdf").replace("sub", "e..vil"), bytes: 1, mtime: NOW - 100 * DAY },
+    ], NOW);
+    check(
+      "P2-207: invalid segment names (dot-leading, .. inside, spaces) are refused",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // the documented kill switch: default on, off/0/false disables
+  check(
+    "P2-207: retention is enabled by default and only off/0/false disables it",
+    retentionDisabled({}) === false &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "on" }) === false &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "off" }) === true &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "0" }) === true &&
+      retentionDisabled({ [RETENTION_DISABLE_ENV]: "FALSE" }) === true,
+  );
+
+  // documented ceilings stay conservative (a drift here is a doc change)
+  check(
+    "P2-207: documented ceilings are the conservative defaults",
+    RETENTION_MAX_AGE_DAYS === 30 &&
+      RETENTION_MAX_TOTAL_BYTES === 1_000_000_000 &&
+      RETENTION_MIN_SESSIONS === 3 &&
+      RETENTION_GRACE_MS === 48 * 3_600_000 &&
+      RETENTION_INTERVAL_MS === 6 * 60 * 60_000,
+  );
+
+  // real-source assertion: the daemon sweep is called with ONLY the artifacts
+  // root — uploads (user-requested downloads), clips and any other state dir
+  // must never appear in the call arguments.
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const sweepAt = daemonIndexSrc.indexOf("retentionPlan(");
+  const sweepCall = sweepAt > -1 ? daemonIndexSrc.slice(sweepAt, sweepAt + 200) : "";
+  check(
+    "P2-207: the real sweep calls retentionPlan with the artifacts root and nothing else",
+    sweepAt > -1 &&
+      sweepCall.includes("ARTIFACTS_ROOT") &&
+      !sweepCall.includes("uploads") &&
+      !sweepCall.includes("UPLOADS") &&
+      !sweepCall.includes("clips") &&
+      !sweepCall.includes("CLIPS"),
+  );
+  const scanAt = daemonIndexSrc.indexOf("function scanRetentionEntries");
+  const scanBody = scanAt > -1 ? daemonIndexSrc.slice(scanAt, scanAt + 600) : "";
+  check(
+    "P2-207: the scanner reads only the artifacts root (never uploads/ or clips/)",
+    scanBody.includes("readdirSync(ARTIFACTS_ROOT") &&
+      !scanBody.includes("uploads") &&
+      !scanBody.includes("clips"),
+  );
+}
+
+// --- P2-228: uploads retention (uploadretention.ts) ---------------------------
+
+{
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const MB = 1_000_000;
+
+  const file = (name: string, bytes: number, ageMs: number): UploadEntry => ({
+    path: join(tmpdir(), "p2-228-uploads", name),
+    bytes,
+    mtime: NOW - ageMs,
+  });
+  const namesOf = (plan: { paths: string[] }) => plan.paths.map((p) => p.split("/").pop());
+
+  // empty folder → empty plan
+  check(
+    "P2-228: empty entry list yields an empty plan",
+    uploadRetentionPlan([], NOW).paths.length === 0 && uploadRetentionPlan([], NOW).bytes === 0,
+  );
+
+  // roomy recent folder: the 6-day-old candidate is neither past the age
+  // ceiling nor part of a byte excess, so nothing is planned
+  {
+    const plan = uploadRetentionPlan([
+      file("d1.pdf", 10, 1 * DAY),
+      file("d2.pdf", 10, 2 * DAY),
+      file("d3.pdf", 10, 3 * DAY),
+      file("d4.pdf", 10, 4 * DAY),
+      file("d5.pdf", 10, 5 * DAY),
+      file("d6.pdf", 10, 6 * DAY),
+    ], NOW);
+    check(
+      "P2-228: roomy, recent folder yields an empty plan",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // rule order: grace outranks age — with grace 48 h and max age 24 h, files
+  // 30 h and 47 h old are past the age ceiling but still inside the grace
+  // period, so only the 100 h-old file is planned
+  {
+    const plan = uploadRetentionPlan([
+      file("fresh3.mp4", 100, 10 * HOUR),
+      file("fresh.mp4", 100, 30 * HOUR),
+      file("fresh2.mp4", 100, 47 * HOUR),
+      file("old.mp4", 100, 100 * HOUR),
+    ], NOW, { graceMs: 48 * HOUR, maxAgeMs: 24 * HOUR, maxTotalBytes: 2_000_000_000, minFiles: 1 });
+    check(
+      "P2-228: file inside the grace period survives even past the max age",
+      namesOf(plan).join(",") === "old.mp4" && plan.bytes === 100,
+    );
+  }
+
+  // age ceiling with the documented defaults: past-age files go oldest-first;
+  // a 29-day file is not yet deletable and survives next to the fresh ones
+  {
+    const plan = uploadRetentionPlan([
+      file("p1.pdf", 10, 1 * DAY),
+      file("p2.pdf", 10, 2 * DAY),
+      file("p3.pdf", 10, 3 * DAY),
+      file("p4.pdf", 10, 4 * DAY),
+      file("p5.pdf", 10, 5 * DAY),
+      file("young.mp4", 10, 29 * DAY),
+      file("m1.mp4", 100, 31 * DAY),
+      file("m2.mp4", 200, 40 * DAY),
+    ], NOW);
+    check(
+      "P2-228: age ceiling deletes only what passed the max age in days, oldest first",
+      namesOf(plan).join(",") === "m2.mp4,m1.mp4" && plan.bytes === 300,
+    );
+  }
+
+  // byte ceiling with the documented defaults: the five most recent files
+  // survive even with the folder above 2 GB; from the deletable pool the
+  // oldest goes first, only until the pool fits, and no more than that
+  {
+    const plan = uploadRetentionPlan([
+      file("c3.mp4", 900 * MB, 8 * DAY),
+      file("c2.mp4", 900 * MB, 7 * DAY),
+      file("c1.mp4", 900 * MB, 6 * DAY),
+      file("p5.pdf", 10, 5 * DAY),
+      file("p4.pdf", 10, 4 * DAY),
+      file("p3.pdf", 10, 3 * DAY),
+      file("p2.pdf", 10, 2 * DAY),
+      file("p1.pdf", 10, 20 * HOUR),
+    ], NOW);
+    check(
+      "P2-228: byte excess deletes the oldest candidates until the pool fits and the newest N always survive",
+      namesOf(plan).join(",") === "c3.mp4" && plan.bytes === 900 * MB,
+    );
+  }
+
+  // one single giant file is one of the N most recent: it survives even though
+  // it alone blows the byte ceiling and the age ceiling
+  {
+    const plan = uploadRetentionPlan([file("huge.mp4", 3_000_000_000, 40 * DAY)], NOW);
+    check(
+      "P2-228: a single giant file survives for being one of the N most recent",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // determinism: two candidates with the exact same mtime are ordered (and
+  // deleted) by lexicographic path ascending, regardless of the input order
+  {
+    const thresholds = { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 2_000_000_000, minFiles: 1 };
+    const base = (): UploadEntry[] => [
+      file("newest.bin", 1, 1 * HOUR),
+      file("b.bin", 1_500 * MB, 2 * DAY),
+      file("a.bin", 1_500 * MB, 2 * DAY),
+    ];
+    const plan1 = uploadRetentionPlan(base(), NOW, thresholds);
+    const plan2 = uploadRetentionPlan([...base()].reverse(), NOW, thresholds);
+    check(
+      "P2-228: mtime ties are broken deterministically by path, whichever the input order",
+      namesOf(plan1).join(",") === "a.bin" &&
+        namesOf(plan2).join(",") === "a.bin" &&
+        plan1.bytes === 1_500 * MB,
+    );
+  }
+
+  // the plan never contains a path that was not received
+  {
+    const inputs = [
+      file("keep.bin", 10, 1 * HOUR),
+      file("gone.bin", 2_000_000_000 + 1, 40 * DAY),
+      file("gone2.bin", 100, 40 * DAY),
+      { path: join(tmpdir(), "elsewhere", "x.mp4"), bytes: 10, mtime: NOW - 40 * DAY },
+    ];
+    const plan = uploadRetentionPlan(inputs, NOW, { ...UPLOAD_RETENTION_DEFAULTS, minFiles: 1 });
+    check(
+      "P2-228: no planned path is outside the received list",
+      plan.paths.every((p) => inputs.some((e) => e.path === p)) && plan.paths.length === 3,
+    );
+  }
+
+  // fail-safe: entries the module cannot reason about are never planned
+  {
+    const plan = uploadRetentionPlan([
+      file("r1.bin", 10, 1 * DAY),
+      file("r2.bin", 10, 2 * DAY),
+      file("r3.bin", 10, 3 * DAY),
+      file("r4.bin", 10, 4 * DAY),
+      file("r5.bin", 10, 5 * DAY),
+      file("ok.bin", 10, 40 * DAY),
+      { path: join(tmpdir(), "p2-228-uploads", "nan.bin"), bytes: Number.NaN, mtime: NOW - 40 * DAY },
+      { path: join(tmpdir(), "p2-228-uploads", "inf.bin"), bytes: 10, mtime: Number.POSITIVE_INFINITY },
+    ], NOW);
+    check(
+      "P2-228: entries with non-finite bytes or mtime are never planned",
+      namesOf(plan).join(",") === "ok.bin",
+    );
+  }
+
+  // documented thresholds stay conservative (a drift here is a doc change)
+  check(
+    "P2-228: documented thresholds are the conservative defaults",
+    UPLOAD_RETENTION_GRACE_HOURS === 24 &&
+      UPLOAD_RETENTION_MAX_AGE_DAYS === 30 &&
+      UPLOAD_RETENTION_MAX_TOTAL_BYTES === 2_000_000_000 &&
+      UPLOAD_RETENTION_MIN_FILES === 5,
+  );
+
+  // parseUploadRetention: empty environment reproduces the documented defaults
+  {
+    const cfg = parseUploadRetention({});
+    check(
+      "P2-228: empty environment reproduces the documented defaults",
+      !cfg.disabled &&
+        cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === UPLOAD_RETENTION_DEFAULTS.graceMs &&
+        cfg.thresholds.maxAgeMs === UPLOAD_RETENTION_DEFAULTS.maxAgeMs &&
+        cfg.thresholds.maxTotalBytes === UPLOAD_RETENTION_DEFAULTS.maxTotalBytes &&
+        cfg.thresholds.minFiles === UPLOAD_RETENTION_DEFAULTS.minFiles,
+    );
+  }
+
+  // the documented kill switch: default on, off/0/false disables
+  check(
+    "P2-228: retention is enabled by default and only off/0/false disables it",
+    uploadRetentionDisabled({}) === false &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "on" }) === false &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "off" }) === true &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "0" }) === true &&
+      uploadRetentionDisabled({ [UPLOAD_RETENTION_DISABLE_ENV]: "FALSE" }) === true,
+  );
+
+  // blank values are the only other no-problem case (missing keeps defaults)
+  check(
+    "P2-228: blank values keep the documented defaults with no problem",
+    parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "   " }).problems.length === 0 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "   " }).thresholds.graceMs ===
+        UPLOAD_RETENTION_DEFAULTS.graceMs,
+  );
+
+  // fail-closed table: each bad shape is a problem, thresholds fall back
+  check(
+    "P2-228: non-numeric value is a fail-closed problem",
+    parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "abc" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_GRACE_HOURS: "abc" }).thresholds.graceMs ===
+        UPLOAD_RETENTION_DEFAULTS.graceMs,
+  );
+  check(
+    "P2-228: zero, negative, fractional and above-ceiling values are problems",
+    parseUploadRetention({ OCR_UPLOAD_RETENTION_MAX_AGE_DAYS: "0" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_MAX_BYTES: "-5" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_MIN_FILES: "1.5" }).problems.length === 1 &&
+      parseUploadRetention({ OCR_UPLOAD_RETENTION_MAX_BYTES: String(UPLOAD_RETENTION_MAX_BYTES_CEILING + 1) })
+        .problems.length === 1,
+  );
+  check(
+    "P2-228: several bad variables return ALL problems at once (no short-circuit)",
+    parseUploadRetention({
+      OCR_UPLOAD_RETENTION_GRACE_HOURS: "abc",
+      OCR_UPLOAD_RETENTION_MAX_BYTES: "-1",
+      OCR_UPLOAD_RETENTION_MIN_FILES: "2.5",
+    }).problems.length === 3,
+  );
+  {
+    const cfg = parseUploadRetention({
+      OCR_UPLOAD_RETENTION_GRACE_HOURS: "48",
+      OCR_UPLOAD_RETENTION_MAX_AGE_DAYS: "60",
+      OCR_UPLOAD_RETENTION_MAX_BYTES: "5000000000",
+      OCR_UPLOAD_RETENTION_MIN_FILES: "10",
+    });
+    check(
+      "P2-228: valid overrides are honored with no problem",
+      cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === 48 * HOUR &&
+        cfg.thresholds.maxAgeMs === 60 * DAY &&
+        cfg.thresholds.maxTotalBytes === 5_000_000_000 &&
+        cfg.thresholds.minFiles === 10,
+    );
+  }
+
+  // real-source assertions: the sweep rides the EXISTING janitor hook and no
+  // new periodic timer exists anywhere in index.ts
+  const daemonSrc228 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const hookAt = daemonSrc228.indexOf("if (artifactsSweepOn || uploadsSweepOn || clipsSweepOn) {");
+  const hookEnd = hookAt > -1 ? daemonSrc228.indexOf("}, RETENTION_INTERVAL_MS)", hookAt) : -1;
+  const hookBody = hookAt > -1 && hookEnd > -1 ? daemonSrc228.slice(hookAt, hookEnd) : "";
+  check(
+    "P2-228: the uploads sweep runs on the existing janitor hook with no new periodic timer",
+    hookAt > -1 &&
+      hookBody.includes("sweepUploadRetention()") &&
+      hookBody.includes("setTimeout(sweepUploadRetention, 0)") &&
+      (daemonSrc228.match(/setInterval\(/g) ?? []).length === 5,
+  );
+  const scanUpAt = daemonSrc228.indexOf("function scanUploadEntries");
+  const scanUpBody = scanUpAt > -1 ? daemonSrc228.slice(scanUpAt, scanUpAt + 700) : "";
+  check(
+    "P2-228: the scanner reads only the uploads root (never artifacts, clips, staging, state or audit)",
+    scanUpBody.includes("readdirSync(UPLOADS_ROOT") &&
+      scanUpBody.includes("isFile") &&
+      scanUpBody.includes('startsWith(".")') &&
+      !scanUpBody.includes("ARTIFACTS_ROOT") &&
+      !scanUpBody.includes("clips") &&
+      !scanUpBody.includes("STATE_FILE") &&
+      !scanUpBody.includes("audit"),
+  );
+  const sweepUpAt = daemonSrc228.indexOf("function sweepUploadRetention");
+  const sweepUpBody = sweepUpAt > -1 ? daemonSrc228.slice(sweepUpAt, sweepUpAt + 800) : "";
+  check(
+    "P2-228: the sweep deletes exactly the planned flat files and logs one name-free line",
+    sweepUpBody.includes("uploadRetentionPlan(scanUploadEntries()") &&
+      sweepUpBody.includes("rmSync(path, { force: true })") &&
+      !sweepUpBody.includes("recursive: true") &&
+      sweepUpBody.includes("deleted: plan.paths.length, bytes: plan.bytes"),
+  );
+  check(
+    "P2-228: a new additive counter joins the metrics block (existing ones untouched)",
+    daemonSrc228.includes('metrics.inc("ocr_upload_retention_deleted_total", plan.paths.length)') &&
+      daemonSrc228.includes('metrics.inc("ocr_artifact_retention_deleted_total", plan.paths.length)'),
+  );
+
+  // uploadretention.ts stays pure: unit tests must never boot a daemon on
+  // import (strip line comments first — the header prose names banned modules)
+  const uploadRetentionSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "daemon", "src", "uploadretention.ts"),
+    "utf8",
+  );
+  const pureCode = uploadRetentionSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-228: uploadretention.ts is pure (no node:fs/path/child_process/http/os or fetch imports)",
+    !/node:(fs|path|child_process|http|os)/.test(pureCode) && !/\bfetch\b/.test(pureCode),
+  );
+}
+
+// --- P2-248: clips retention (clipretention.ts) --------------------------------
+
+{
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const MB = 1_000_000;
+
+  const group = (name: string, bytes: number, ageMs: number): ClipGroup => ({
+    path: join("/state", "clips", name),
+    bytes,
+    mtime: NOW - ageMs,
+  });
+  const namesOf = (plan: { paths: string[] }) => plan.paths.map((p) => p.split("/").pop());
+
+  // empty clips root → empty plan
+  check(
+    "P2-248: empty group list yields an empty plan",
+    clipRetentionPlan([], NOW).paths.length === 0 && clipRetentionPlan([], NOW).bytes === 0,
+  );
+
+  // grace outranks every blown ceiling: 1 h-old groups survive maxAge 1 ms,
+  // a 1-byte ceiling and minGroups 1
+  {
+    const plan = clipRetentionPlan(
+      [group("one-video", 3_500 * MB, 1 * HOUR), group("two-video", 3_500 * MB, 2 * HOUR)],
+      NOW,
+      { graceMs: 24 * HOUR, maxAgeMs: 1, maxTotalBytes: 1, minGroups: 1 },
+    );
+    check(
+      "P2-248: a group inside the grace period is never planned even with every ceiling blown",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // the most recent groups up to minGroups survive even past every ceiling:
+  // all three groups are past the age ceiling and over the byte ceiling, yet
+  // only the oldest is planned
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("old-a", 2_000 * MB, 40 * DAY),
+        group("old-b", 2_000 * MB, 30 * DAY),
+        group("old-c", 2_000 * MB, 20 * DAY),
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 1 * DAY, maxTotalBytes: 1, minGroups: 2 },
+    );
+    check(
+      "P2-248: the most recent groups up to minGroups are never planned even with every ceiling blown",
+      namesOf(plan).join(",") === "old-a" && plan.bytes === 2_000 * MB,
+    );
+  }
+
+  // age ceiling boundary with the explicit threshold: exactly 30 days old is
+  // NOT deletable (strictly greater required), one ms past is
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("fresh", 1, 1 * HOUR),
+        group("edge-exact", 10, 30 * DAY),
+        group("edge-past", 10, 30 * DAY + 1),
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 30 * DAY, maxTotalBytes: 1_000_000_000_000, minGroups: 1 },
+    );
+    check(
+      "P2-248: a group exactly at the age ceiling survives; one ms past it is planned",
+      namesOf(plan).join(",") === "edge-past" && plan.bytes === 10,
+    );
+  }
+
+  // byte ceiling boundary with the explicit threshold: a deletable pool
+  // totaling exactly 1000 bytes plans nothing, one byte over deletes the
+  // oldest group only
+  {
+    const t = { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 1000, minGroups: 1 };
+    const exact = clipRetentionPlan(
+      [group("workfile", 10, 1 * HOUR), group("video-b", 400, 4 * HOUR), group("video-a", 600, 5 * HOUR)],
+      NOW,
+      t,
+    );
+    check(
+      "P2-248: a deletable pool totaling exactly the byte ceiling plans nothing",
+      exact.paths.length === 0 && exact.bytes === 0,
+    );
+    const over = clipRetentionPlan(
+      [group("workfile", 10, 1 * HOUR), group("video-b", 400, 4 * HOUR), group("video-a", 601, 5 * HOUR)],
+      NOW,
+      t,
+    );
+    check(
+      "P2-248: one byte above the byte ceiling deletes the oldest group until the pool fits",
+      namesOf(over).join(",") === "video-a" && over.bytes === 601,
+    );
+  }
+
+  // byte excess oldest-first: 1500 bytes against a 900-byte ceiling removes
+  // the two oldest candidates and stops there
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("newest", 10, 1 * HOUR),
+        group("c-video", 500, 3 * HOUR),
+        group("b-video", 500, 4 * HOUR),
+        group("a-video", 500, 5 * HOUR),
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 900, minGroups: 1 },
+    );
+    check(
+      "P2-248: byte excess removes candidates oldest-first until the pool fits",
+      namesOf(plan).join(",") === "a-video,b-video" && plan.bytes === 1000,
+    );
+  }
+
+  // fail-safe: groups the module cannot reason about are refused, never planned
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("fresh", 1, 1 * HOUR),
+        group("ok", 10, 40 * DAY),
+        { path: join("/state", "clips", "nan"), bytes: Number.NaN, mtime: NOW - 40 * DAY },
+        { path: join("/state", "clips", "inf"), bytes: 10, mtime: Number.POSITIVE_INFINITY },
+      ],
+      NOW,
+      { graceMs: 1, maxAgeMs: 1 * DAY, maxTotalBytes: 1_000_000_000_000, minGroups: 1 },
+    );
+    check(
+      "P2-248: groups with non-finite bytes or non-finite instant are refused, never planned",
+      namesOf(plan).join(",") === "ok" && plan.bytes === 10,
+    );
+  }
+
+  // an instant in the future is inside the grace period by definition — it is
+  // never planned (documented defaults)
+  {
+    const plan = clipRetentionPlan(
+      [
+        group("fresh-1", 10, 1 * HOUR),
+        group("fresh-2", 10, 2 * HOUR),
+        { path: join("/state", "clips", "timelord"), bytes: 3_999 * MB, mtime: NOW + 1 * HOUR },
+      ],
+      NOW,
+    );
+    check(
+      "P2-248: a group with an instant in the future is never planned",
+      plan.paths.length === 0 && plan.bytes === 0,
+    );
+  }
+
+  // determinism: the same input in two different orders yields the same plan
+  {
+    const t = { graceMs: 1, maxAgeMs: 100 * DAY, maxTotalBytes: 1000, minGroups: 1 };
+    const base = (): ClipGroup[] => [
+      group("newest", 1, 1 * HOUR),
+      group("b-bin", 800, 2 * DAY),
+      group("a-bin", 800, 2 * DAY),
+    ];
+    const p1 = clipRetentionPlan(base(), NOW, t);
+    const p2 = clipRetentionPlan([...base()].reverse(), NOW, t);
+    check(
+      "P2-248: the plan is identical for the same input in two different orders (mtime ties by path)",
+      JSON.stringify(p1) === JSON.stringify(p2) &&
+        namesOf(p1).join(",") === "a-bin" &&
+        p1.bytes === 800,
+    );
+  }
+
+  // the plan never contains a path that was not received
+  {
+    const inputs = [
+      group("keep", 10, 1 * HOUR),
+      group("gone-huge", 4_000 * MB + 1, 40 * DAY),
+      group("gone-old", 10, 40 * DAY),
+    ];
+    const plan = clipRetentionPlan(inputs, NOW, { ...CLIP_RETENTION_DEFAULTS, minGroups: 1 });
+    check(
+      "P2-248: no planned path is outside the received list",
+      plan.paths.every((p) => inputs.some((g) => g.path === p)) && plan.paths.length === 2,
+    );
+  }
+
+  // documented thresholds stay conservative (a drift here is a doc change)
+  check(
+    "P2-248: documented thresholds are the conservative defaults",
+    CLIP_RETENTION_GRACE_HOURS === 24 &&
+      CLIP_RETENTION_MAX_AGE_DAYS === 30 &&
+      CLIP_RETENTION_MAX_TOTAL_BYTES === 4_000_000_000 &&
+      CLIP_RETENTION_MIN_GROUPS === 3,
+  );
+  check(
+    "P2-248: documented override ceilings stay conservative",
+    CLIP_RETENTION_GRACE_HOURS_CEILING === 720 &&
+      CLIP_RETENTION_MAX_AGE_DAYS_CEILING === 3650 &&
+      CLIP_RETENTION_MIN_GROUPS_CEILING === 1000,
+  );
+
+  // parseClipRetention: empty environment reproduces the documented defaults
+  {
+    const cfg = parseClipRetention({});
+    check(
+      "P2-248: empty environment reproduces the documented defaults",
+      !cfg.disabled &&
+        cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === CLIP_RETENTION_DEFAULTS.graceMs &&
+        cfg.thresholds.maxAgeMs === CLIP_RETENTION_DEFAULTS.maxAgeMs &&
+        cfg.thresholds.maxTotalBytes === CLIP_RETENTION_DEFAULTS.maxTotalBytes &&
+        cfg.thresholds.minGroups === CLIP_RETENTION_DEFAULTS.minGroups,
+    );
+  }
+
+  // the documented kill switch: default on, off/0/false disables — the
+  // shutdown value is accepted with no problem
+  {
+    const cfg = parseClipRetention({ [CLIP_RETENTION_DISABLE_ENV]: "off" });
+    check(
+      "P2-248: the documented shutdown value is accepted with no problem",
+      cfg.disabled && cfg.problems.length === 0,
+    );
+  }
+  check(
+    "P2-248: retention is enabled by default and only off/0/false disables it",
+    clipRetentionDisabled({}) === false &&
+      clipRetentionDisabled({ [CLIP_RETENTION_DISABLE_ENV]: "on" }) === false &&
+      clipRetentionDisabled({ [CLIP_RETENTION_DISABLE_ENV]: "0" }) === true &&
+      clipRetentionDisabled({ [CLIP_RETENTION_DISABLE_ENV]: "FALSE" }) === true,
+  );
+
+  // blank values are the only other no-problem case (missing keeps defaults)
+  check(
+    "P2-248: blank values keep the documented defaults with no problem",
+    parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "   " }).problems.length === 0 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "   " }).thresholds.graceMs ===
+        CLIP_RETENTION_DEFAULTS.graceMs,
+  );
+
+  // fail-closed table: each bad shape is a problem, thresholds fall back
+  check(
+    "P2-248: non-numeric value is a fail-closed problem",
+    parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "abc" }).problems.length === 1 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_GRACE_HOURS: "abc" }).thresholds.graceMs ===
+        CLIP_RETENTION_DEFAULTS.graceMs,
+  );
+  check(
+    "P2-248: zero, negative and fractional values are problems",
+    parseClipRetention({ OCR_CLIP_RETENTION_MAX_AGE_DAYS: "0" }).problems.length === 1 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_MAX_BYTES: "-5" }).problems.length === 1 &&
+      parseClipRetention({ OCR_CLIP_RETENTION_MIN_GROUPS: "1.5" }).problems.length === 1,
+  );
+  check(
+    "P2-248: a value above the documented maximum ceiling is a problem",
+    parseClipRetention({ OCR_CLIP_RETENTION_MAX_BYTES: String(CLIP_RETENTION_MAX_BYTES_CEILING + 1) })
+      .problems.length === 1,
+  );
+  check(
+    "P2-248: several bad variables return ALL problems at once (no short-circuit)",
+    parseClipRetention({
+      OCR_CLIP_RETENTION_GRACE_HOURS: "abc",
+      OCR_CLIP_RETENTION_MAX_BYTES: "-1",
+      OCR_CLIP_RETENTION_MIN_GROUPS: "2.5",
+    }).problems.length === 3,
+  );
+  {
+    const cfg = parseClipRetention({
+      OCR_CLIP_RETENTION_GRACE_HOURS: "48",
+      OCR_CLIP_RETENTION_MAX_AGE_DAYS: "60",
+      OCR_CLIP_RETENTION_MAX_BYTES: "5000000000",
+      OCR_CLIP_RETENTION_MIN_GROUPS: "10",
+    });
+    check(
+      "P2-248: valid overrides are honored with no problem",
+      cfg.problems.length === 0 &&
+        cfg.thresholds.graceMs === 48 * HOUR &&
+        cfg.thresholds.maxAgeMs === 60 * DAY &&
+        cfg.thresholds.maxTotalBytes === 5_000_000_000 &&
+        cfg.thresholds.minGroups === 10,
+    );
+  }
+
+  // clipretention.ts stays pure: unit tests must never boot a daemon on
+  // import (strip line comments first — the header prose names banned modules)
+  const clipRetentionSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "daemon", "src", "clipretention.ts"),
+    "utf8",
+  );
+  const clipPureCode = clipRetentionSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-248: clipretention.ts is pure (no node:fs/path/child_process or fetch imports)",
+    !/node:(fs|path|child_process)/.test(clipPureCode) && !/\bfetch\b/.test(clipPureCode),
+  );
+
+  // real-source assertions on index.ts: the clips scan exists exactly once,
+  // reads ONLY the clips root, and the uploads/artifacts scans are untouched
+  const daemonSrc248 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const clipFactsAt = daemonSrc248.indexOf("function clipGroupFacts");
+  const clipScanAt = daemonSrc248.indexOf("function scanClipGroups");
+  const clipSweepAt = daemonSrc248.indexOf("function sweepClipRetention");
+  const clipWalkBody = clipFactsAt > -1 && clipSweepAt > clipFactsAt
+    ? daemonSrc248.slice(clipFactsAt, clipSweepAt)
+    : "";
+  const clipScanBody = clipScanAt > -1 && clipSweepAt > clipScanAt
+    ? daemonSrc248.slice(clipScanAt, clipSweepAt)
+    : "";
+  const clipSweepBody = clipSweepAt > -1 ? daemonSrc248.slice(clipSweepAt, clipSweepAt + 800) : "";
+  check(
+    "P2-248: the clips scan exists exactly once and reads only the clips root",
+    clipFactsAt > -1 && clipScanAt > clipFactsAt && clipSweepAt > clipScanAt &&
+      (daemonSrc248.match(/function scanClipGroups/g) ?? []).length === 1 &&
+      (daemonSrc248.match(/function sweepClipRetention/g) ?? []).length === 1 &&
+      (daemonSrc248.match(/function clipGroupFacts/g) ?? []).length === 1 &&
+      clipScanBody.includes("readdirSync(CLIPS_ROOT") &&
+      clipScanBody.includes('startsWith(".")') &&
+      clipScanBody.includes("clipGroupFacts(path)") &&
+      !clipScanBody.includes("UPLOADS_ROOT") &&
+      !clipScanBody.includes("ARTIFACTS_ROOT") &&
+      !clipScanBody.includes("STATE_FILE") &&
+      !clipScanBody.includes("audit"),
+  );
+  check(
+    "P2-248: the clips walk never follows a symbolic link (lstat + skip only, no statSync)",
+    clipWalkBody.split("isSymbolicLink").length === 3 &&
+      (clipWalkBody.match(/lstatSync\(/g) ?? []).length === 2 &&
+      !/[^l]statSync\(/.test(clipWalkBody),
+  );
+  check(
+    "P2-248: the sweep deletes whole planned groups and logs one name-free line",
+    clipSweepBody.includes("clipRetentionPlan(scanClipGroups()") &&
+      clipSweepBody.includes("rmSync(path, { recursive: true, force: true })") &&
+      clipSweepBody.includes("deleted: plan.paths.length, bytes: plan.bytes"),
+  );
+  check(
+    "P2-248: the clips sweep rides the existing janitor hook with no new periodic timer",
+    daemonSrc248.includes("setTimeout(sweepClipRetention, 0)") &&
+      /if \(clipsSweepOn\) sweepClipRetention\(\);/.test(daemonSrc248) &&
+      (daemonSrc248.match(/setInterval\(/g) ?? []).length === 5,
+  );
+  const upScanAt248 = daemonSrc248.indexOf("function scanUploadEntries");
+  const upScanBody248 = upScanAt248 > -1 ? daemonSrc248.slice(upScanAt248, upScanAt248 + 700) : "";
+  const artScanAt248 = daemonSrc248.indexOf("function scanRetentionEntries");
+  const artScanBody248 = artScanAt248 > -1 ? daemonSrc248.slice(artScanAt248, artScanAt248 + 500) : "";
+  check(
+    "P2-248: the uploads and artifacts scans remain untouched by the clips janitor",
+    upScanBody248.includes("readdirSync(UPLOADS_ROOT") &&
+      !upScanBody248.includes("CLIPS_ROOT") &&
+      artScanBody248.includes("readdirSync(ARTIFACTS_ROOT") &&
+      !artScanBody248.includes("CLIPS_ROOT"),
+  );
+  // the fail-closed contract: an invalid OCR_CLIP_RETENTION_* exits before
+  // any listener opens, same as the uploads retention problems
+  check(
+    "P2-248: an invalid OCR_CLIP_RETENTION_* fails the boot closed in main()",
+    /if \(clipRetention\.problems\.length > 0\) \{\s*\n\s*for \(const problem of clipRetention\.problems\) log\("error", problem\);\s*\n\s*process\.exit\(1\);/.test(
+      daemonSrc248,
+    ),
+  );
+}
+
+// --- P2-209: wake-from-sleep reaction plan (wakeplan.ts) ------------------------
+
+{
+  const plan = (over: Partial<WakePlanInput> = {}): WakePlanVerdict =>
+    wakePlan({
+      eventType: "resume",
+      gaveUp: false,
+      failures: 0,
+      msUntilNextRespawn: null,
+      daemonHealthy: false,
+      msSinceLastHandled: null,
+      ...over,
+    });
+
+  // rule 1 — a repeat inside the debounce window is ignored even when the
+  // respawn budget is exhausted (the first event already acted)
+  check(
+    "P2-209: repeat inside the debounce window → ignore even with exhausted budget",
+    plan({ msSinceLastHandled: WAKE_DEBOUNCE_MS - 1, gaveUp: true, failures: 5 }).action === "ignore",
+  );
+  check(
+    "P2-209: exactly one ms past the debounce window is a new event again",
+    plan({ msSinceLastHandled: WAKE_DEBOUNCE_MS, gaveUp: true }).action === "reset-and-respawn",
+  );
+  // rule 2 — event types outside the documented vocabulary
+  check(
+    "P2-209: unknown event type → ignore (suspend/lock-screen/empty)",
+    plan({ eventType: "lock-screen" }).action === "ignore" &&
+      plan({ eventType: "suspend" }).action === "ignore" &&
+      plan({ eventType: "" }).action === "ignore",
+  );
+  check(
+    "P2-209: unknown event type loses even against an exhausted budget",
+    plan({ eventType: "on-battery", gaveUp: true }).action === "ignore",
+  );
+  // rule 3 — a daemon healthy at the last tick only needs confirmation
+  check(
+    "P2-209: daemon healthy at last tick → probe-now (confirmation only)",
+    plan({ daemonHealthy: true }).action === "probe-now",
+  );
+  check(
+    "P2-209: healthy beats an exhausted budget (rule order)",
+    plan({ daemonHealthy: true, gaveUp: true, failures: 4, msUntilNextRespawn: 120_000 }).action === "probe-now",
+  );
+  // rule 4 — exhausted respawn budget
+  check(
+    "P2-209: exhausted budget → reset-and-respawn",
+    plan({ gaveUp: true, failures: 4 }).action === "reset-and-respawn",
+  );
+  // rule 5 — respawn scheduled farther away than the documented ceiling
+  check(
+    "P2-209: long wait until the next respawn → reset-and-respawn (anticipate)",
+    plan({ failures: 1, msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS + 1 }).action === "reset-and-respawn",
+  );
+  check(
+    "P2-209: a retry minutes away is anticipated too",
+    plan({ failures: 2, msUntilNextRespawn: 20 * 60_000 }).action === "reset-and-respawn",
+  );
+  // rule 6 — everything else probes now
+  check(
+    "P2-209: short wait until the next respawn → probe-now (backoff covers it)",
+    plan({ failures: 1, msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS - 1 }).action === "probe-now",
+  );
+  check(
+    "P2-209: exactly at the ceiling is still a probe-now (only beyond is anticipated)",
+    plan({ failures: 1, msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS }).action === "probe-now",
+  );
+  check(
+    "P2-209: default case (unhealthy daemon, nothing pending) → probe-now",
+    plan({}).action === "probe-now",
+  );
+  check(
+    "P2-209: unlock-screen is part of the vocabulary and reaches the plan",
+    plan({ eventType: "unlock-screen", daemonHealthy: true }).action === "probe-now",
+  );
+  check(
+    "P2-209: isWakeEventType narrows exactly the documented vocabulary",
+    WAKE_EVENT_TYPES.length === 2 &&
+      isWakeEventType("resume") &&
+      isWakeEventType("unlock-screen") &&
+      !isWakeEventType("lock-screen") &&
+      !isWakeEventType(""),
+  );
+
+  // every generated reason: non-empty, no file path, no URL scheme, no secrets
+  const verdicts = [
+    plan({ msSinceLastHandled: WAKE_DEBOUNCE_MS - 1, gaveUp: true }),
+    plan({ eventType: "lock-screen" }),
+    plan({ daemonHealthy: true }),
+    plan({ gaveUp: true }),
+    plan({ msUntilNextRespawn: RESPAWN_WAIT_CEILING_MS + 1, failures: 1 }),
+    plan({ msUntilNextRespawn: 1_000, failures: 1 }),
+    plan({}),
+  ];
+  check(
+    "P2-209: every reason is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.reason.length > 0 &&
+        !v.reason.includes("/") &&
+        !v.reason.includes("\\") &&
+        !v.reason.includes("http:") &&
+        !v.reason.includes("https:") &&
+        !v.reason.includes("file:") &&
+        !v.reason.includes(":~"),
+    ),
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-209: the real main.ts registers the OS wake events through wakePlan",
+    mainSrc.includes("powerMonitor.on(") &&
+      mainSrc.includes("WAKE_EVENT_TYPES") &&
+      /wakePlan\(\{[\s\S]*?gaveUp: isDaemonDown\(\)/.test(mainSrc),
+  );
+  check(
+    "P2-209: the registration is availability-guarded so signal-less platforms keep today's behavior",
+    /typeof powerMonitor\?\.on !== "function"/.test(mainSrc),
+  );
+  const wakeAt = mainSrc.indexOf("// --- wake-from-sleep reaction");
+  const wakeBlock = wakeAt >= 0 ? mainSrc.slice(wakeAt, mainSrc.indexOf("function appIcon", wakeAt)) : "";
+  check(
+    "P2-209: the wake block found in the real main.ts",
+    wakeBlock.includes("function handleWakeEvent") && wakeBlock.includes("function registerWakeReaction"),
+  );
+  check(
+    "P2-209: the wake reaction introduces no new periodic interval and no timer",
+    !wakeBlock.includes("setInterval") && !wakeBlock.includes("setTimeout"),
+  );
+  check(
+    "P2-209: the wake reaction only reuses existing paths (pairing probe + restart)",
+    wakeBlock.includes("void refreshPairingState()") &&
+      wakeBlock.includes("restartDaemon()") &&
+      !wakeBlock.includes("fetch(") &&
+      !wakeBlock.includes("healthOnce"),
+  );
+  const ignoreAt = mainSrc.indexOf('plan.action === "ignore"');
+  const ignoreEnd = ignoreAt >= 0 ? mainSrc.indexOf("return;", ignoreAt) + "return;".length : -1;
+  const ignoreBranch = ignoreAt >= 0 && ignoreEnd > ignoreAt ? mainSrc.slice(ignoreAt, ignoreEnd) : "";
+  check(
+    "P2-209: events dropped by the debounce write no log line",
+    ignoreBranch.length > 0 && !ignoreBranch.includes("log(") && !ignoreBranch.includes("logError("),
+  );
+
+  // additive diagnostic in the REAL daemon.ts (backoff untouched)
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "daemon.ts"), "utf8");
+  check(
+    "P2-209: daemon.ts exports the additive ms-until-next-respawn diagnostic",
+    daemonSrc.includes("export function nextRespawnInMs"),
+  );
+  check(
+    "P2-209: the respawn schedule and attempt ceiling are untouched",
+    daemonSrc.includes('?? "5000,15000,45000"') && daemonSrc.includes("RESPAWN_MAX_ATTEMPTS = 3"),
+  );
+}
+
+// --- P2-211: install-location verdict (installloc.ts) + wiring -----------------
+
+{
+  // full truth table, rules applied in the documented order
+  const v = (platform: string, path: string, inApps: boolean | null, packaged: boolean) =>
+    installVerdict(platform, path, inApps, packaged);
+
+  // 1. dev build always ok — even under a mounted volume
+  check(
+    "P2-211: dev build → ok even under a mounted volume",
+    v("darwin", "/Volumes/Setup/App.app/Contents/MacOS/App", false, false).state === "ok",
+  );
+  // 2. platforms outside the documented pair always ok (P2-299 below adds
+  // Windows on top; every other platform keeps today's ok)
+  check("P2-211: a platform outside the documented pair → ok", v("linux", "/opt/App/App", null, true).state === "ok");
+  // 3. path under the volume mount point → dmg-volume
+  check(
+    "P2-211: path under the volume mount point → dmg-volume",
+    v("darwin", "/Volumes/MeuDisco/App.app/Contents/MacOS/App", false, true).state === "dmg-volume",
+  );
+  // 4. quarantine translocation segment → translocated, beating the signal
+  check(
+    "P2-211: AppTranslocation segment → translocated (beats the apps-folder signal)",
+    v("darwin", "/private/var/folders/x/T/AppTranslocation/abc/d/App.app/Contents/MacOS/App", false, true).state ===
+      "translocated",
+  );
+  // 5. downloads ancestor with a false signal → downloads
+  check(
+    "P2-211: downloads ancestor + false apps-folder signal → downloads",
+    v("darwin", "/Users/u/Downloads/App.app/Contents/MacOS/App", false, true).state === "downloads",
+  );
+  // 6. null signal → unknown; false signal with no other evidence → unknown too
+  const unk = v("darwin", "/Applications/App.app/Contents/MacOS/App", null, true);
+  check("P2-211: null apps-folder signal → unknown", unk.state === "unknown");
+  check(
+    "P2-211: false signal with no other evidence → unknown too",
+    v("darwin", "/Applications/App.app/Contents/MacOS/App", false, true).state === "unknown",
+  );
+  // 7. true signal → ok
+  check(
+    "P2-211: true apps-folder signal → ok",
+    v("darwin", "/Applications/App.app/Contents/MacOS/App", true, true).state === "ok",
+  );
+  check(
+    "P2-211: the neutral unknown wording never accuses failure",
+    !/falha|erro|quebrad|inválid/i.test(unk.message),
+  );
+
+  // every generated message: non-empty, no file path, no URL scheme
+  const verdicts = [
+    installVerdict("darwin", "/Volumes/D/App.app/x", false, true),
+    installVerdict("darwin", "/private/var/folders/T/AppTranslocation/g/d/App.app/x", false, true),
+    installVerdict("darwin", "/Users/u/Downloads/App.app/x", false, true),
+    unk,
+    installVerdict("darwin", "/Applications/App.app/x", true, true),
+    installVerdict("darwin", "/Applications/App.app/x", false, false),
+    installVerdict("win32", "C:\\x\\App.exe", false, true),
+  ];
+  check(
+    "P2-211: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (x) =>
+        x.message.length > 0 &&
+        !x.message.includes("/") &&
+        !x.message.includes("\\") &&
+        !x.message.includes("http:") &&
+        !x.message.includes("https:") &&
+        !x.message.includes("file:"),
+    ),
+  );
+  check(
+    "P2-211: installMessage replays the same copy installVerdict ships",
+    installMessage("dmg-volume") === installVerdict("darwin", "/Volumes/D/App.app/x", false, true).message,
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-211: the verdict is computed exactly once (single installVerdict call site) in the real main.ts",
+    (mainSrc.match(/installVerdict\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-211: the verdict is computed at boot, before the first update check",
+    mainSrc.indexOf("bootInstallLocation = ") < mainSrc.indexOf('runUpdateCheck("boot")'),
+  );
+  const bootAt = mainSrc.indexOf("bootInstallLocation = ");
+  const bootBlock = bootAt >= 0 ? mainSrc.slice(bootAt, mainSrc.indexOf("log(`[desktop] install location:", bootAt)) : "";
+  check(
+    "P2-211: the boot computation introduces no timer and no request",
+    bootBlock.length > 0 &&
+      !bootBlock.includes("setInterval") &&
+      !bootBlock.includes("setTimeout") &&
+      !bootBlock.includes("fetch("),
+  );
+  check(
+    "P2-211: the applications-folder signal is availability-guarded so signal-less platforms keep today's behavior",
+    /typeof app\.isInApplicationsFolder === "function"/.test(mainSrc),
+  );
+  check(
+    "P2-211: the documented test hatch forces dmg-volume",
+    mainSrc.includes('process.env.OCR_DESKTOP_FORCE_DMG_VOLUME === "1"'),
+  );
+  check(
+    "P2-211: the additive installLocation field rides AFTER relayLink in the pairing payload",
+    (() => {
+      const at = mainSrc.indexOf("setPairingState({");
+      const pay = mainSrc.slice(at, mainSrc.indexOf("});", at));
+      return pay.indexOf("installLocation: bootInstallLocation") > pay.indexOf("relayLink,");
+    })(),
+  );
+
+  // real-source assertions over the REAL update.ts: the consent dialog is only
+  // reachable after the verdict consultation
+  const updateSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "update.ts"), "utf8");
+  const offerAt = updateSrc.indexOf("async function offerInstall");
+  const offerBlock = offerAt >= 0 ? updateSrc.slice(offerAt, updateSrc.indexOf("async", offerAt + 10)) : "";
+  check(
+    "P2-211: offerInstall consults the verdict before the consent dialog is reachable",
+    offerBlock.includes("installBlocksUpdate(hooks.installLocation)") &&
+      offerBlock.indexOf("installBlocksUpdate(hooks.installLocation)") < offerBlock.indexOf("askInstall"),
+  );
+  check(
+    "P2-211: the skipped offer logs ONE line carrying the state and the verdict phrase",
+    offerBlock.includes("hooks.log(`update install not offered (${verdict.state}): ${verdict.message}`)"),
+  );
+  check(
+    "P2-211: the block is fail-open — ok/unknown/absent never block",
+    !installBlocksUpdate(null) &&
+      !installBlocksUpdate(undefined) &&
+      !installBlocksUpdate({ state: "unknown", message: "x" }) &&
+      !installBlocksUpdate({ state: "ok", message: "x" }) &&
+      !installBlocksUpdate({ state: "downloads", message: "x" }) &&
+      installBlocksUpdate({ state: "dmg-volume", message: "x" }) &&
+      installBlocksUpdate({ state: "translocated", message: "x" }),
+  );
+
+  // overlay renders the calm line below the relay-link line, never hides the QR
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-211: the overlay renders the install line below the relay-link line",
+    overlaySrc.indexOf("{installLocation &&") > overlaySrc.indexOf("{relayLink && ("),
+  );
+  check(
+    "P2-211: ok and unknown render nothing; the comment states the QR is NEVER hidden",
+    overlaySrc.includes('installLocation.state !== "ok"') &&
+      overlaySrc.includes('installLocation.state !== "unknown"') &&
+      overlaySrc.includes("NEVER hidden"),
+  );
+
+  // diagnostics: one additive line, state only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-211: the diagnostics bundle gains exactly one install-location line carrying the state only",
+    (diagSrc.match(/install location:/g) ?? []).length === 1 && diagSrc.includes('d.installLocation ?? "unknown"'),
+  );
+}
+
+// --- P2-299: Windows install-location table (installloc.ts) --------------------
+
+{
+  // full Windows truth table, rules applied in the documented order
+  const v = (path: string | null) => installVerdict("win32", path as string, null, true);
+
+  // ok: the recognized install destinations stay quiet
+  check(
+    "P2-299: path under the system program folder → ok",
+    v("C:\\Program Files\\OpenCode Remote\\OpenCode Remote.exe").state === "ok",
+  );
+  check(
+    "P2-299: path under the x86 system program folder → ok",
+    v("C:\\Program Files (x86)\\OpenCode Remote\\OpenCode Remote.exe").state === "ok",
+  );
+  check(
+    "P2-299: path under the per-user program area → ok",
+    v("C:\\Users\\u\\AppData\\Local\\Programs\\opencode-remote\\OpenCode Remote.exe").state === "ok",
+  );
+  // unc-share: two leading backslashes win over everything else
+  check(
+    "P2-299: path starting with two backslashes → unc-share",
+    v("\\\\servidor\\compartilhamento\\OpenCode Remote.exe").state === "unc-share",
+  );
+  // zip-temp: the user temp directory (where Explorer unpacks a zip's exe)
+  check(
+    "P2-299: path under the user temp directory → zip-temp",
+    v("C:\\Users\\u\\AppData\\Local\\Temp\\Portable\\OpenCode Remote.exe").state === "zip-temp",
+  );
+  // downloads: the reused existing state
+  check(
+    "P2-299: path under the Downloads folder → downloads",
+    v("C:\\Users\\u\\Downloads\\OpenCode Remote.exe").state === "downloads",
+  );
+  // Windows paths are case-insensitive; the table follows
+  check(
+    "P2-299: the Windows table is case-insensitive",
+    v("C:\\USERS\\U\\APPDATA\\LOCAL\\TEMP\\x\\App.exe").state === "zip-temp" &&
+      v("c:\\users\\u\\downloads\\app.exe").state === "downloads",
+  );
+  // missing or non-textual entry → unknown
+  check("P2-299: absent path entry → unknown", v(null).state === "unknown");
+  check("P2-299: non-textual path entry → unknown", v(42 as unknown as string).state === "unknown");
+  check("P2-299: empty path entry → unknown", v("").state === "unknown");
+  // rule order: the network share beats Downloads (gravest case first) and
+  // the temp folder beats Downloads
+  check(
+    "P2-299: a UNC share inside a Downloads folder stays unc-share",
+    v("\\\\servidor\\compartilhamento\\Downloads\\App.exe").state === "unc-share",
+  );
+  check(
+    "P2-299: a temp extraction of a Downloads-like path stays zip-temp",
+    v("C:\\Users\\u\\AppData\\Local\\Temp\\Downloads\\App.exe").state === "zip-temp",
+  );
+  // each new state ships exactly its documented static phrase
+  check(
+    "P2-299: zip-temp ships exactly the documented phrase",
+    installMessage("zip-temp") ===
+      "o app está rodando de uma cópia temporária extraída de um arquivo compactado — feche-o, instale-o em uma pasta definitiva do computador e reabra pela cópia instalada",
+  );
+  check(
+    "P2-299: unc-share ships exactly the documented phrase",
+    installMessage("unc-share") ===
+      "o app está rodando de um compartilhamento de rede — feche-o, instale-o no disco do computador e reabra pela cópia instalada",
+  );
+  check(
+    "P2-299: the reused downloads state ships the same copy on Windows",
+    v("C:\\Users\\u\\Downloads\\App.exe").message === installMessage("downloads"),
+  );
+
+  // every Windows message: static, path-free, scheme-free, port-free, secret-free
+  const winVerdicts = [
+    v("C:\\Program Files\\App\\App.exe"),
+    v("C:\\Users\\u\\AppData\\Local\\Programs\\App\\App.exe"),
+    v("\\\\servidor\\compartilhamento\\App.exe"),
+    v("C:\\Users\\u\\AppData\\Local\\Temp\\App\\App.exe"),
+    v("C:\\Users\\u\\Downloads\\App.exe"),
+    v(null),
+  ];
+  check(
+    "P2-299: every Windows message is non-empty, path-free, scheme-free, port-free and secret-free",
+    winVerdicts.every(
+      (x) =>
+        x.message.length > 0 &&
+        !x.message.includes("/") &&
+        !x.message.includes("\\") &&
+        !x.message.includes("http") &&
+        !x.message.includes("://") &&
+        !x.message.includes("localhost") &&
+        !/\d{2,}/.test(x.message) &&
+        !x.message.includes("token") &&
+        !x.message.includes("senha"),
+    ),
+  );
+
+  // purity: the same input yields the identical verdict on every call
+  check(
+    "P2-299: the same Windows input yields the identical verdict twice",
+    (() => {
+      const a = installVerdict("win32", "C:\\Users\\u\\AppData\\Local\\Temp\\App.exe", null, true);
+      const b = installVerdict("win32", "C:\\Users\\u\\AppData\\Local\\Temp\\App.exe", null, true);
+      return a.state === b.state && a.message === b.message;
+    })(),
+  );
+
+  // the macOS table reproduces today's verdicts, verdict-by-verdict
+  check(
+    "P2-299: the macOS table is untouched (verdict-by-verdict)",
+    installVerdict("darwin", "/Volumes/Setup/App.app/x", false, true).state === "dmg-volume" &&
+      installVerdict("darwin", "/private/var/folders/T/AppTranslocation/g/d/App.app/x", false, true).state ===
+        "translocated" &&
+      installVerdict("darwin", "/Users/u/Downloads/App.app/x", false, true).state === "downloads" &&
+      installVerdict("darwin", "/Applications/App.app/x", true, true).state === "ok" &&
+      installVerdict("darwin", "/Applications/App.app/x", null, true).state === "unknown" &&
+      installVerdict("darwin", "/Applications/App.app/x", false, true).state === "unknown" &&
+      installVerdict("darwin", "/Volumes/Setup/App.app/x", false, false).state === "ok",
+  );
+  check(
+    "P2-299: platforms outside the documented pair stay ok exactly as before",
+    installVerdict("linux", "/opt/App/App", null, true).state === "ok" &&
+      installVerdict("freebsd", "\\\\share\\App.exe", null, true).state === "ok",
+  );
+
+  // module hygiene: installloc.ts stays pure (read from the REAL file)
+  const locSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "installloc.ts"), "utf8");
+  check(
+    "P2-299: installloc.ts stays pure — it never imports electron, node:fs or node:path",
+    !/from\s+["'](electron|node:fs|node:path|node:os)["']/.test(locSrc) &&
+      !/^\s*import\s+["'](electron|node:fs|node:path|node:os)/m.test(locSrc) &&
+      !locSrc.includes("require("),
+  );
+
+  // wiring: the shell feeds the verdict from the path it already holds at
+  // boot (process.execPath), computed exactly once — no new disk access, no
+  // new periodic timer anywhere in the boot block
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-299: the Windows verdict rides the same single boot call, fed by the shell's own process.execPath",
+    (mainSrc.match(/installVerdict\(/g) ?? []).length === 1 &&
+      mainSrc.includes("installVerdict(process.platform, process.execPath, inApplicationsFolder, app.isPackaged)"),
+  );
+  check(
+    "P2-299: the boot verdict block gains no new disk access and no new timer",
+    (() => {
+      const bootAt = mainSrc.indexOf("bootInstallLocation = ");
+      const bootEnd = mainSrc.indexOf("log(`[desktop] install location:", bootAt);
+      const bootBlock = bootAt >= 0 && bootEnd > bootAt ? mainSrc.slice(bootAt, bootEnd) : "";
+      return (
+        bootBlock.length > 0 &&
+        bootBlock.includes("process.execPath") &&
+        !bootBlock.includes("readFile") &&
+        !bootBlock.includes("existsSync") &&
+        !bootBlock.includes("statSync") &&
+        !bootBlock.includes("tmpdir") &&
+        !bootBlock.includes("setInterval") &&
+        !bootBlock.includes("setTimeout")
+      );
+    })(),
+  );
+  check(
+    "P2-299: the three existing surfaces carry the Windows verdict unfiltered (no new surface, no state allowlist)",
+    mainSrc.includes("log(`[desktop] install location: ${bootInstallLocation.state}`)") &&
+      mainSrc.includes("installLocation: bootInstallLocation"),
+  );
+}
+
+// --- P2-301: the update gate knows the Windows states too -----------------------
+
+{
+  // Full truth table of installBlocksUpdate over the seven installloc.ts
+  // states plus an absent and a non-object verdict. dmg-volume and
+  // translocated keep blocking exactly as today; zip-temp and unc-share now
+  // block; ok, downloads, unknown, absent and non-object stay fail-open.
+  check(
+    "P2-301: installBlocksUpdate — dmg-volume and translocated keep blocking exactly as today",
+    installBlocksUpdate({ state: "dmg-volume", message: "x" }) &&
+      installBlocksUpdate({ state: "translocated", message: "x" }),
+  );
+  check(
+    "P2-301: installBlocksUpdate — the Windows states zip-temp and unc-share now block too",
+    installBlocksUpdate({ state: "zip-temp", message: "x" }) &&
+      installBlocksUpdate({ state: "unc-share", message: "x" }),
+  );
+  check(
+    "P2-301: installBlocksUpdate — ok, downloads, unknown, absent and non-object stay fail-open",
+    !installBlocksUpdate({ state: "ok", message: "x" }) &&
+      !installBlocksUpdate({ state: "downloads", message: "x" }) &&
+      !installBlocksUpdate({ state: "unknown", message: "x" }) &&
+      !installBlocksUpdate(null) &&
+      !installBlocksUpdate(undefined) &&
+      !installBlocksUpdate("dmg-volume" as unknown as { state: string; message: string }) &&
+      !installBlocksUpdate(42 as unknown as { state: string; message: string }),
+  );
+
+  // Full truth table of winDownloadDecision. Base input: the happy path
+  // (packaged Windows build on an explicit user action, no verdict).
+  const dec = (overrides: Partial<Parameters<typeof winDownloadDecision>[0]> = {}) =>
+    winDownloadDecision({
+      harnessSession: false,
+      packaged: true,
+      platform: "win32",
+      explicitAction: true,
+      installLocation: null,
+      ...overrides,
+    });
+  const BLOCKING = ["dmg-volume", "translocated", "zip-temp", "unc-share"];
+
+  // Rule 1: the harness session wins over EVERYTHING (P2-221 lesson),
+  // including a blocking location — proven again in the order cases below.
+  check(
+    "P2-301: winDownloadDecision — the harness session still wins over everything",
+    dec({ harnessSession: true }).action === "skip" && dec({ harnessSession: true }).reason === "harness-session",
+  );
+  // Rules 2 and 3: unchanged skip reasons.
+  check(
+    "P2-301: winDownloadDecision — not-packaged and platform-not-windows keep today's skip reasons",
+    dec({ packaged: false }).reason === "not-packaged" &&
+      dec({ platform: "darwin" }).reason === "platform-not-windows",
+  );
+  // Rule 4 (new, additive): an explicit action with a blocking location skips
+  // with the new static reason, for every blocking state.
+  check(
+    "P2-301: winDownloadDecision — explicit action with a blocking location skips with the new reason",
+    BLOCKING.every(
+      (state) =>
+        dec({ installLocation: { state, message: "x" } }).action === "skip" &&
+        dec({ installLocation: { state, message: "x" } }).reason === "install-location-blocks",
+    ),
+  );
+  check(
+    "P2-301: winDownloadDecision — explicit action with ok/downloads/unknown/absent keeps downloading",
+    dec({ installLocation: { state: "ok", message: "x" } }).action === "download" &&
+      dec({ installLocation: { state: "downloads", message: "x" } }).action === "download" &&
+      dec({ installLocation: { state: "unknown", message: "x" } }).action === "download" &&
+      dec({ installLocation: null }).action === "download" &&
+      dec({ installLocation: undefined }).action === "download" &&
+      dec({}).action === "download",
+  );
+  check(
+    "P2-301: winDownloadDecision — a non-object verdict is fail-open (download)",
+    dec({ installLocation: "dmg-volume" as unknown as null }).action === "download" &&
+      dec({ installLocation: 7 as unknown as null }).action === "download",
+  );
+  // Rule order proven by collisions: harness-session beats the blocking
+  // location, and platform-not-windows beats it too — the location rule is
+  // the FIFTH consulted, never the first.
+  check(
+    "P2-301: winDownloadDecision — harness session + blocking location resolves harness-session",
+    dec({ harnessSession: true, installLocation: { state: "zip-temp", message: "x" } }).reason === "harness-session",
+  );
+  check(
+    "P2-301: winDownloadDecision — platform-not-windows + blocking location resolves platform-not-windows",
+    dec({ platform: "darwin", installLocation: { state: "unc-share", message: "x" } }).reason ===
+      "platform-not-windows",
+  );
+  // Purity: the same input yields the identical decision on every call.
+  check(
+    "P2-301: winDownloadDecision — the same input yields the identical decision twice",
+    (() => {
+      const a = dec({ installLocation: { state: "zip-temp", message: "x" } });
+      const b = dec({ installLocation: { state: "zip-temp", message: "x" } });
+      return a.action === b.action && a.reason === b.reason;
+    })(),
+  );
+
+  // real-source assertion over the REAL main.ts: the decision consumes the
+  // verdict the shell already resolved at boot, adds no disk access and no
+  // periodic timer, and the refusal logs ONE line in the install route's
+  // exact format.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const callAt = mainSrc.indexOf("const decision = winDownloadDecision({");
+  const callBlock = callAt >= 0 ? mainSrc.slice(callAt, mainSrc.indexOf("});", callAt)) : "";
+  check(
+    "P2-301: main.ts hands the decision the boot-resolved verdict (single installVerdict call site, never recomputed by the handler)",
+    callBlock.includes("installLocation: bootInstallLocation") &&
+      (mainSrc.match(/installVerdict\(/g) ?? []).length === 1 &&
+      mainSrc.includes("bootInstallLocation = installVerdict(process.platform, process.execPath, inApplicationsFolder, app.isPackaged)") &&
+      !callBlock.includes("installVerdict("),
+  );
+  check(
+    "P2-301: the decision call gains no new disk access, no new system call and no new timer",
+    callBlock.length > 0 &&
+      !callBlock.includes("readFile") &&
+      !callBlock.includes("existsSync") &&
+      !callBlock.includes("statSync") &&
+      !callBlock.includes("exec") &&
+      !callBlock.includes("fetch(") &&
+      !callBlock.includes("setTimeout") &&
+      !callBlock.includes("setInterval"),
+  );
+  check(
+    "P2-301: the location refusal logs ONE line in the install route's exact format (state + static phrase)",
+    mainSrc.includes(
+      "log(`[desktop] update install not offered (${bootInstallLocation.state}): ${bootInstallLocation.message}`)",
+    ) &&
+      mainSrc.indexOf("update install not offered (${bootInstallLocation.state})", callAt) >
+        mainSrc.indexOf("install-location-blocks", callAt),
+  );
+
+  // real-source assertion over the REAL winupdate.ts: the decision layer keeps
+  // its import hygiene (no electron, no node built-ins, no fetch import).
+  const winSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "winupdate.ts"), "utf8");
+  check(
+    "P2-301: winupdate.ts stays pure — it never imports electron, node:fs, node:path, node:os or fetch",
+    !/from\s+["'](electron|node:fs|node:path|node:os|node:child_process|fetch)["']/.test(winSrc) &&
+      !/^\s*import\s+["'](electron|node:fs|node:path|node:os|node:child_process|fetch)/m.test(winSrc) &&
+      !winSrc.includes("require("),
+  );
+}
+
+// --- P2-214: clock-skew verdict (clockskew.ts) + wiring ------------------------
+
+{
+  // Known HTTP-date reference: 2026-01-01T12:00:00Z
+  const header = "Thu, 01 Jan 2026 12:00:00 GMT";
+  const headerMs = 1_767_268_800_000;
+
+  // 1. clock equal to the server's → ok (offset 0)
+  const equal = skewVerdict(headerMs, header, 0);
+  check("P2-214: clock equal to the server's → ok", equal.state === "ok" && equal.skewMs === 0);
+  // 2. skew below the threshold → ok
+  check(
+    "P2-214: skew below the threshold → ok",
+    skewVerdict(headerMs + 60_000, header, 0).state === "ok",
+  );
+  // 3. positive skew above the threshold → ahead
+  const ahead = skewVerdict(headerMs + 600_000, header, 0);
+  check("P2-214: positive skew above the threshold → ahead", ahead.state === "ahead" && ahead.skewMs === 600_000);
+  // 4. negative skew above the threshold → behind
+  const behind = skewVerdict(headerMs - 600_000, header, 0);
+  check("P2-214: negative skew above the threshold → behind", behind.state === "behind" && behind.skewMs === -600_000);
+  // 5. skew slightly above the threshold with a slow probe → still ok (the
+  //    latency tolerance is the base plus half the elapsed ms)
+  check(
+    "P2-214: a slow probe widens the tolerance — slightly-above-threshold skew stays ok",
+    skewVerdict(headerMs + 120_500, header, 2_000).state === "ok" && 2_000 / 2 + CLOCK_SKEW_TOLERANCE_MS === 121_000,
+  );
+  // 6/7/8. missing, empty and non-date headers → unknown
+  const unk = skewVerdict(headerMs, null, 0);
+  check("P2-214: missing header → unknown", unk.state === "unknown" && unk.skewMs === null);
+  check("P2-214: empty header → unknown", skewVerdict(headerMs, "   ", 0).state === "unknown");
+  const junk = skewVerdict(headerMs, "not-a-date", 0);
+  check("P2-214: unparseable header text → unknown", junk.state === "unknown");
+  // 9. a valid HTTP-date header is interpreted at its exact instant
+  //    (2025-01-15T09:30:00Z = 1736933400000; local 500ms behind → skew -500)
+  const validDate = skewVerdict(1_736_933_399_500, "Wed, 15 Jan 2025 09:30:00 GMT", 0);
+  check(
+    "P2-214: a valid HTTP-date header is interpreted correctly",
+    validDate.state === "ok" && validDate.skewMs === -500,
+  );
+  // the neutral unknown wording never accuses failure
+  check(
+    "P2-214: the neutral unknown wording never accuses failure",
+    !/falha|erro|quebrad|inválid/i.test(unk.message),
+  );
+
+  // every generated message: non-empty, no file path, no URL scheme
+  const verdicts = [equal, ahead, behind, unk, junk, skewVerdict(headerMs + 60_000, header, 0)];
+  check(
+    "P2-214: every message is non-empty, path-free and scheme-free",
+    verdicts.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("\\") &&
+        !v.message.includes("http:") &&
+        !v.message.includes("https:") &&
+        !v.message.includes("file:"),
+    ),
+  );
+  check(
+    "P2-214: clockSkewMessage replays the same copy skewVerdict ships",
+    clockSkewMessage("ahead") === ahead.message && clockSkewMessage("behind") === behind.message,
+  );
+
+  // real-source assertions over the REAL main.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-214: exactly ONE reach probe per tick in the real main.ts",
+    (mainSrc.match(/await probeWebAppReach\(/g) ?? []).length === 1,
+  );
+  const guardAt = mainSrc.search(/if \(!quietLocal && \(!paired \|\| remotePairingRequested\) && webAppRes\.problems\.length === 0 && webAppRes\.url !== ""\) \{/);
+  const guardBlock = guardAt > -1 ? mainSrc.slice(guardAt, guardAt + 900) : "";
+  check(
+    "P2-214: the clock verdict is computed under the same overlay guard as the reach probe",
+    guardBlock.includes("await probeWebAppReach(webAppRes.url)") && guardBlock.includes("skewVerdict("),
+  );
+  check(
+    "P2-214: the clock verdict introduces no new request — it reuses the probe's own answer",
+    guardBlock.length > 0 && !guardBlock.includes("fetch(") && !guardBlock.includes("new URL("),
+  );
+  const probeBodyAt = mainSrc.indexOf("async function probeWebAppReach(");
+  const probeBody =
+    probeBodyAt > -1
+      ? mainSrc.slice(probeBodyAt, mainSrc.indexOf("async function refreshPairingState", probeBodyAt))
+      : "";
+  check(
+    "P2-214: the probe still makes exactly one request (no second fetch for the clock)",
+    (probeBody.match(/fetch\(/g) ?? []).length === 1,
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-214: the additive clock field rides AFTER installLocation in the pairing payload",
+    payload.indexOf("installLocation: bootInstallLocation") > -1 && payload.indexOf("clock: clock") > payload.indexOf("installLocation: bootInstallLocation"),
+  );
+  check(
+    "P2-214: the documented test hatch forces behind",
+    mainSrc.includes('process.env.OCR_DESKTOP_FORCE_CLOCK_BEHIND === "1"') && mainSrc.includes('clockSkewMessage("behind")'),
+  );
+  check(
+    "P2-214: the diagnostics bundle is fed from the last clock verdict",
+    mainSrc.includes("clockSkew: lastClockSkew"),
+  );
+
+  // overlay renders the calm line below the install-location line, never hides the QR
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-214: the overlay renders the clock line below the install-location line",
+    overlaySrc.indexOf("{clock &&") > overlaySrc.indexOf("{installLocation &&"),
+  );
+  check(
+    "P2-214: ok and unknown render nothing; the comment states the QR is NEVER hidden",
+    overlaySrc.includes('clock.state !== "ok"') &&
+      overlaySrc.includes('clock.state !== "unknown"') &&
+      overlaySrc.includes("NEVER hidden"),
+  );
+
+  // diagnostics: one additive line, state + rounded seconds, never the machine time
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-214: the diagnostics bundle gains exactly one clock-skew line (state + seconds only)",
+    (diagSrc.match(/clock skew:/g) ?? []).length === 1 &&
+      diagSrc.includes("d.clockSkew?.state") &&
+      diagSrc.includes("d.clockSkew?.skewSeconds") &&
+      !diagSrc.includes("toLocaleTimeString") &&
+      !diagSrc.includes("new Date("),
+  );
+}
+
+// --- P2-218: login-item auto-enable (loginitem.ts + startupstore.ts) + wiring --
+
+{
+  // full truth table, rules applied in the documented order
+  const plan = (packaged: boolean, platform: string, alreadyEnabled: boolean, ownerDecided: boolean) =>
+    loginItemPlan({ packaged, platform, alreadyEnabled, ownerDecided });
+
+  // 1. dev build always leaves the OS setting alone — even with no decision
+  check(
+    "P2-218: dev build → leave even with no recorded decision",
+    plan(false, "darwin", false, false).action === "leave",
+  );
+  // 2. platform outside macOS/Windows → leave (the API is a no-op there)
+  check("P2-218: platform outside macOS/Windows → leave", plan(true, "linux", false, false).action === "leave");
+  // 3. recorded decision wins in BOTH directions — off stays off forever
+  check(
+    "P2-218: recorded decision with the toggle OFF → leave (the owner's choice is never reverted)",
+    plan(true, "darwin", false, true).action === "leave",
+  );
+  check(
+    "P2-218: recorded decision with the toggle ON → leave",
+    plan(true, "darwin", true, true).action === "leave",
+  );
+  // 4. already enabled without a decision → nothing to do
+  check("P2-218: already enabled with no decision → leave", plan(true, "darwin", true, false).action === "leave");
+  // 5. first packaged boot without a decision → enable (the whole point)
+  check(
+    "P2-218: first packaged macOS boot without a decision → enable",
+    plan(true, "darwin", false, false).action === "enable",
+  );
+  check(
+    "P2-218: first packaged Windows boot without a decision → enable",
+    plan(true, "win32", false, false).action === "enable",
+  );
+
+  // every generated reason: non-empty, no file path, no URL scheme, no secret
+  const verdicts = [
+    plan(false, "darwin", false, false),
+    plan(true, "linux", false, false),
+    plan(true, "darwin", false, true),
+    plan(true, "darwin", true, true),
+    plan(true, "darwin", true, false),
+    plan(true, "darwin", false, false),
+    plan(true, "win32", false, false),
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("http:") &&
+    !s.includes("https:") &&
+    !s.includes("file:") &&
+    !s.includes("Users") &&
+    !s.includes("~");
+  check(
+    "P2-218: every reason is non-empty, path-free and scheme-free",
+    verdicts.every((v) => clean(v.reason)),
+  );
+  check(
+    "P2-218: the overlay copy is non-empty, path-free and scheme-free for both actions",
+    clean(loginItemMessage("enable")) && clean(loginItemMessage("leave")),
+  );
+
+  // --- store table (startupstore.ts): tolerant read, atomic private write ----
+  const dir = mkdtempSync(join(tmpdir(), "startupstore-"));
+  const file = join(dir, "startup.json");
+  check("P2-218: missing file → not decided", readStartupDecided(file) === false);
+  writeFileSync(file, "{not json at all", { mode: 0o600 });
+  check("P2-218: corrupted JSON → not decided (never an exception)", readStartupDecided(file) === false);
+  writeFileSync(file, '{"decided":"sim"}', { mode: 0o600 });
+  check("P2-218: wrong field type → not decided", readStartupDecided(file) === false);
+  check(
+    "P2-218: write → read round-trip records the owner decision",
+    writeStartupDecided(file, true) === true && readStartupDecided(file) === true,
+  );
+  check("P2-218: the decision file is private (0600)", (statSync(file).mode & 0o777) === 0o600);
+  check("P2-218: the store names the file startup.json under userData", startupSettingFile("/d").endsWith("startup.json"));
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-source assertions over the REAL main.ts --------------------------
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-218: the plan is consulted exactly once in the real main.ts",
+    (mainSrc.match(/loginItemPlan\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-218: the plan is consulted at boot, before the first update check",
+    mainSrc.indexOf("bootStartup = ") < mainSrc.indexOf('runUpdateCheck("boot")'),
+  );
+  const bootAt = mainSrc.indexOf("bootStartup = ");
+  const bootBlock = bootAt >= 0 ? mainSrc.slice(bootAt, mainSrc.indexOf('runUpdateCheck("boot")')) : "";
+  check(
+    "P2-218: the boot consultation introduces no new timer and no new request",
+    bootBlock.length > 0 && !bootBlock.includes("setInterval(") && !bootBlock.includes("fetch("),
+  );
+  check(
+    "P2-218: app.setLoginItemSettings has exactly ONE caller — the shared helper",
+    (mainSrc.match(/app\.setLoginItemSettings\(/g) ?? []).length === 1,
+  );
+  const helperAt = mainSrc.indexOf("function setLoginItemEnabled");
+  const helperBlock = helperAt >= 0 ? mainSrc.slice(helperAt, helperAt + 500) : "";
+  check(
+    "P2-218: the shared helper records the owner decision",
+    helperBlock.includes("writeStartupDecided("),
+  );
+  const trayAt = mainSrc.indexOf("function trayMenuItems");
+  const trayBlock = trayAt >= 0 ? mainSrc.slice(trayAt, mainSrc.indexOf("return items;", trayAt)) : "";
+  check(
+    "P2-218: the tray click goes through the helper — turning it off is definitive",
+    trayBlock.includes("click: (item) => setLoginItemEnabled(item.checked)") && !trayBlock.includes("setLoginItemSettings"),
+  );
+  check(
+    "P2-218: no new periodic timer was introduced",
+    (mainSrc.match(/setInterval\(/g) ?? []).length === 2,
+  );
+  const setPairingAt = mainSrc.indexOf("setPairingState({");
+  const payload = mainSrc.slice(setPairingAt, mainSrc.indexOf("});", setPairingAt));
+  check(
+    "P2-218: the additive startup field rides AFTER clock in the pairing payload",
+    payload.indexOf("clock: clock") > -1 && payload.indexOf("startup:") > payload.indexOf("clock: clock"),
+  );
+  const hatchAt = mainSrc.indexOf('process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM === "1"');
+  const guardedAt = mainSrc.indexOf('bootStartup.action === "enable" && process.env.OCR_DESKTOP_FORCE_LOGIN_ITEM !== "1"');
+  check(
+    "P2-218: the documented test hatch exists and the enable call is guarded against it (the dev machine is never touched)",
+    hatchAt > -1 && guardedAt > hatchAt,
+  );
+
+  // overlay renders the calm announce below the clock line, never hides the QR
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-218: the overlay renders the startup line below the clock line",
+    overlaySrc.indexOf("{startup &&") > overlaySrc.indexOf("{clock &&"),
+  );
+  check(
+    "P2-218: only the enable state renders; the comment states the QR is NEVER hidden",
+    overlaySrc.includes('startup.state === "enable"') && overlaySrc.includes("NEVER hidden"),
+  );
+
+  // diagnostics: one additive line, state + reason only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-218: the diagnostics bundle gains exactly one login-item line (state + reason only)",
+    (diagSrc.match(/login item:/g) ?? []).length === 1 && diagSrc.includes("d.startup?.state") && diagSrc.includes("d.startup?.reason"),
+  );
+}
+
+// --- P2-216: release-notes — the download guide a stage-5 user can follow ----
+{
+  const TAG = "v0.3.0";
+  const DMG_ARM = "OpenCode Remote-0.3.0-arm64.dmg";
+  const DMG_X64 = "OpenCode Remote-0.3.0-x64.dmg";
+  const EXE = "OpenCode Remote Setup 0.3.0.exe";
+  const complete = [
+    DMG_ARM,
+    DMG_X64,
+    "OpenCode Remote-0.3.0-arm64.zip",
+    "OpenCode Remote-0.3.0-x64.zip",
+    EXE,
+    "latest-mac.yml",
+    "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
+    "latest.yml",
+    "checksums.txt",
+  ];
+
+  const ok = downloadGuide(TAG, complete);
+  check(
+    "P2-216: complete release → zero problems",
+    ok.problems.length === 0,
+    JSON.stringify(ok.problems),
+  );
+  check(
+    "P2-216: guide carries one line per audience with the exact file name from the list",
+    ok.guide.includes("**Mac com Apple Silicon:**") &&
+      ok.guide.includes(`\`${DMG_ARM}\``) &&
+      ok.guide.includes("**Mac com Intel:**") &&
+      ok.guide.includes(`\`${DMG_X64}\``) &&
+      ok.guide.includes("**Windows:**") &&
+      ok.guide.includes(`\`${EXE}\``),
+    ok.guide,
+  );
+  check(
+    "P2-216: guide explains the first-open warning and the checksums.txt check",
+    ok.guide.includes("Primeira abertura no macOS") && ok.guide.includes("checksums.txt"),
+    ok.guide,
+  );
+
+  // Never an invented name: every backticked installer token in the guide must
+  // be a name the caller handed in.
+  const downloadNames = [...ok.guide.matchAll(/`([^`]+\.(?:dmg|zip|exe))`/g)].map((m) => m[1]!);
+  check(
+    "P2-216: no file name appears in the guide without being in the received list",
+    downloadNames.length === 3 && downloadNames.every((name) => complete.includes(name)),
+    JSON.stringify(downloadNames),
+  );
+
+  const noIntel = downloadGuide(TAG, complete.filter((n) => n !== DMG_X64));
+  check(
+    "P2-216: missing Intel DMG → problem naming the Intel audience, no invented name in the guide",
+    noIntel.problems.length === 1 &&
+      noIntel.problems[0]!.includes("Mac com Intel") &&
+      !noIntel.guide.includes(DMG_X64) &&
+      noIntel.guide.includes(DMG_ARM),
+    JSON.stringify(noIntel.problems),
+  );
+
+  const noArm = downloadGuide(TAG, complete.filter((n) => n !== DMG_ARM));
+  check(
+    "P2-216: missing Apple Silicon DMG → problem",
+    noArm.problems.length === 1 && noArm.problems[0]!.includes("Mac com Apple Silicon"),
+    JSON.stringify(noArm.problems),
+  );
+
+  const noExe = downloadGuide(TAG, complete.filter((n) => n !== EXE));
+  check(
+    "P2-216: missing Windows installer → problem",
+    noExe.problems.length === 1 && noExe.problems[0]!.includes("Windows"),
+    JSON.stringify(noExe.problems),
+  );
+
+  const noChecksums = downloadGuide(TAG, complete.filter((n) => n !== "checksums.txt"));
+  check(
+    "P2-216: missing checksums.txt → problem and the guide stops announcing it",
+    noChecksums.problems.length === 1 &&
+      noChecksums.problems[0]!.includes("checksums.txt") &&
+      !noChecksums.guide.includes("Conferindo o download"),
+    JSON.stringify(noChecksums.problems),
+  );
+
+  const several = downloadGuide(TAG, complete.filter((n) => n !== DMG_X64 && n !== EXE && n !== "checksums.txt"));
+  check(
+    "P2-216: several problems returned at once (no short-circuit)",
+    several.problems.length === 3 &&
+      several.problems.some((p) => p.includes("Mac com Intel")) &&
+      several.problems.some((p) => p.includes("Windows")) &&
+      several.problems.some((p) => p.includes("checksums.txt")),
+    JSON.stringify(several.problems),
+  );
+
+  const empty = downloadGuide(TAG, []);
+  check(
+    "P2-216: empty asset list → empty-list problem plus one per audience and checksums, all at once",
+    empty.problems.length === 5 && empty.problems[0]!.includes("asset list is empty"),
+    JSON.stringify(empty.problems),
+  );
+
+  const badTag = downloadGuide("0.3", complete);
+  check(
+    "P2-216: invalid tag → problem in the release-assets format (audience slots match nothing)",
+    badTag.problems.length === 4 &&
+      badTag.problems[0]!.includes("is not a semver version"),
+    JSON.stringify(badTag.problems),
+  );
+
+  // --- applyGuide: insert above / replace in place, byte-preserving -----------
+  const body = "## What's Changed\n\n* pilot(P2-215): clock skew (#488)\n";
+  const once = applyGuide(body, ok.guide);
+  check(
+    "P2-216: body without the block → guide above the original text, preserved byte-by-byte",
+    once.startsWith(`${GUIDE_START}\n${ok.guide}\n${GUIDE_END}\n\n`) &&
+      once.endsWith(body) &&
+      once.indexOf(GUIDE_END) < once.indexOf("## What's Changed"),
+    once,
+  );
+
+  const oldBlock = `${GUIDE_START}\nguia antigo\n${GUIDE_END}\n\n${body}`;
+  const replaced = applyGuide(oldBlock, ok.guide);
+  check(
+    "P2-216: body with an old block → only the block is replaced, surroundings intact",
+    replaced === `${GUIDE_START}\n${ok.guide}\n${GUIDE_END}\n\n${body}` && replaced.includes("What's Changed"),
+    replaced,
+  );
+
+  check(
+    "P2-216: applying twice in a row yields identical text (idempotent)",
+    applyGuide(once, ok.guide) === once && applyGuide(replaced, ok.guide) === replaced,
+  );
+
+  // --- CLI: reads tag/assets/body from files, rewrites the body on success ----
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const script = join(repoRoot, "scripts", "release-notes.ts");
+  const dir = mkdtempSync(join(tmpdir(), "release-notes-"));
+  const assetsPath = join(dir, "assets.txt");
+  const bodyPath = join(dir, "body.md");
+  const runCli = (): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, script, TAG, assetsPath, bodyPath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  writeFileSync(assetsPath, `${complete.join("\n")}\n`);
+  writeFileSync(bodyPath, body);
+  const cliOk = runCli();
+  const rewritten = readFileSync(bodyPath, "utf8");
+  check(
+    "P2-216: cli exits 0 on a complete release and rewrites the body file with the guide applied",
+    cliOk.code === 0 &&
+      cliOk.out.includes(`release-notes: OK ${TAG}`) &&
+      rewritten === once,
+    cliOk.out,
+  );
+  writeFileSync(assetsPath, `${DMG_ARM}\n`);
+  const cliFail = runCli();
+  check(
+    "P2-216: cli exits 1 printing every problem at once and leaves the body untouched",
+    cliFail.code === 1 &&
+      cliFail.out.includes(`release-notes: FAIL ${TAG}`) &&
+      (cliFail.out.match(/  - missing: /g) ?? []).length === 3 &&
+      cliFail.out.includes("3 problem(s) found") &&
+      readFileSync(bodyPath, "utf8") === rewritten,
+    cliFail.out,
+  );
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-repo assertion: the guide step exists in release-publish, after
+  // the checksum upload and before the publish step, with shell: bash ---------
+  const release = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const pubAt = release.indexOf("\n  release-publish:");
+  const publishJob = pubAt === -1 ? "" : release.slice(pubAt);
+  const stepName = "- name: Write the download guide into the release body";
+  const stepAt = publishJob.indexOf(stepName);
+  const stepBlock = stepAt === -1 ? "" : publishJob.slice(stepAt, publishJob.indexOf("\n      - name:", stepAt));
+  const checksumUploadAt = publishJob.indexOf('checksums.txt --clobber');
+  const publishStepAt = publishJob.indexOf("scripts/release-publish.ts");
+  check(
+    "P2-216: release.yml runs the guide step in release-publish, after the checksum upload and before the publish step",
+    stepAt > -1 &&
+      checksumUploadAt > -1 &&
+      publishStepAt > -1 &&
+      checksumUploadAt < stepAt &&
+      stepAt < publishStepAt,
+    `checksum=${checksumUploadAt} guide=${stepAt} publish=${publishStepAt}`,
+  );
+  check(
+    "P2-216: the guide step declares shell: bash and drives scripts/release-notes.ts with gh-provided assets + body",
+    stepBlock.includes("shell: bash") &&
+      stepBlock.includes("scripts/release-notes.ts") &&
+      stepBlock.includes("gh release view") &&
+      stepBlock.includes("--json assets") &&
+      stepBlock.includes("--json body") &&
+      stepBlock.includes("--notes-file"),
+    stepBlock,
+  );
+}
+
+// --- P2-219: real-repo assertion — ci.yml exercises the Windows dir pack ------
+
+{
+  const ci = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+  const winStart = ci.indexOf("\n  desktop-package-win:");
+  const win = winStart > -1 ? ci.slice(winStart) : "";
+  const macStart = ci.indexOf("\n  desktop-package:");
+  const macEnd = winStart > macStart ? winStart : ci.length;
+  const mac = macStart > -1 ? ci.slice(macStart, macEnd) : "";
+  // Steps are indented with 6 spaces; slice per step for per-step invariants.
+  const winSteps = win.split("\n      - name:");
+
+  check("P2-219: ci.yml has the desktop-package-win job on windows-latest", winStart > -1 && win.includes("runs-on: windows-latest"));
+  check(
+    "P2-219: desktop-package-win needs scope and uses the same desktop indicator as the mac job",
+    win.includes("needs: scope") &&
+      win.includes("if: needs.scope.outputs.desktop == 'true'") &&
+      mac.includes("if: needs.scope.outputs.desktop == 'true'"),
+  );
+  check(
+    "P2-219: checkout, node 22 and npm ci mirror the mac desktop-package job",
+    // P2-278: the checkout needle follows the action-pinning gate — both jobs
+    // must carry the identical SHA-pinned reference.
+    ["actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4", "node-version: 22", "cache: npm", "run: npm ci"].every(
+      (needle) => win.includes(needle) && mac.includes(needle),
+    ),
+  );
+  const pkgAt = win.indexOf("Package Windows bundle");
+  const pkgStep = pkgAt > -1 ? win.slice(pkgAt, win.indexOf("\n      - name:", pkgAt)) : "";
+  check(
+    "P2-219: the packaging step requests the Windows dir target, never the NSIS installer",
+    pkgAt > -1 &&
+      pkgStep.includes("npm run dist --workspace @ocr/desktop -- --win --dir") &&
+      !pkgStep.toLowerCase().includes("nsis") &&
+      pkgStep.includes("CSC_IDENTITY_AUTO_DISCOVERY: false"),
+    pkgStep,
+  );
+  const smokeAt = win.indexOf("dist:smoke --workspace @ocr/desktop -- --no-installer");
+  check(
+    "P2-219: the deterministic bundle smoke runs after packaging with installer checks skipped",
+    pkgAt > -1 && smokeAt > pkgAt,
+  );
+  check(
+    "P2-219: no step of the new job uploads artifacts or publishes anything",
+    !win.includes("actions/upload-artifact") &&
+      !win.includes("gh release") &&
+      !win.includes("upload-artifact:") &&
+      !win.includes("ghr"),
+  );
+  check(
+    "P2-219: every run step of the new job declares shell: bash (P2-126 lesson)",
+    winSteps.length > 1 && winSteps.every((step) => !step.includes("run:") || step.includes("shell: bash")),
+  );
+  check(
+    "P2-219: every run step of the new job carries its own timeout",
+    winSteps.every((step) => !step.includes("run:") || step.includes("timeout-minutes:")),
+  );
+  check(
+    "P2-219: the mac desktop-package job is still present and unchanged in its steps",
+    mac.includes("runs-on: macos-14") &&
+      mac.includes("npx tsx scripts/bundle-budget.ts") &&
+      mac.includes("npm run dist --workspace @ocr/desktop -- --mac --dir") &&
+      mac.includes("CSC_IDENTITY_AUTO_DISCOVERY: false") &&
+      mac.includes("dist:smoke --workspace @ocr/desktop -- --no-installer"),
+  );
+}
+
+// --- P2-221: quit confirmation (quithint.ts + quitstore.ts) + wiring ------------
+
+{
+  // full truth table, rules applied in the documented order
+  const verdict = (packaged: boolean, harnessSession: boolean, daemonHealthy: boolean, phonePaired: boolean, dontAskAgain: boolean) =>
+    quitVerdict({ packaged, harnessSession, daemonHealthy, phonePaired, dontAskAgain });
+
+  // 1. harness test session always quits silently — even with every other
+  //    condition begging for a confirmation (the gate must never see a modal).
+  check(
+    "P2-221: harness session → quit even when all other conditions ask for confirmation",
+    verdict(true, true, true, true, false).action === "quit",
+  );
+  check(
+    "P2-221: harness session beats every other rule (reason names the session)",
+    verdict(true, true, true, true, true).reason.includes("harness"),
+  );
+  // 2. dev build always quits silently
+  check("P2-221: unpackaged build → quit", verdict(false, false, true, true, false).action === "quit");
+  // 3. recorded "don't ask again" always quits silently
+  check("P2-221: recorded dont-ask request → quit", verdict(true, false, true, true, true).action === "quit");
+  // 4. unhealthy daemon → quit (no remote access left to lose)
+  check("P2-221: unhealthy daemon → quit", verdict(true, false, false, true, false).action === "quit");
+  // 5. no paired phone → quit (same reason)
+  check("P2-221: no paired phone → quit", verdict(true, false, true, false, false).action === "quit");
+  // 6. the whole point: packaged + healthy daemon + paired phone + no request
+  check(
+    "P2-221: packaged + healthy daemon + paired phone + no request → confirm",
+    verdict(true, false, true, true, false).action === "confirm",
+  );
+
+  // every generated reason: non-empty, no file path, no URL scheme, no secret
+  const verdicts = [
+    verdict(true, true, true, true, false),
+    verdict(false, false, true, true, false),
+    verdict(true, false, true, true, true),
+    verdict(true, false, false, true, false),
+    verdict(true, false, true, false, false),
+    verdict(true, false, true, true, false),
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("http:") &&
+    !s.includes("https:") &&
+    !s.includes("file:") &&
+    !s.includes("Users") &&
+    !s.includes("~");
+  check(
+    "P2-221: every reason is non-empty, path-free and scheme-free",
+    verdicts.every((v) => clean(v.reason)),
+  );
+  const dialogCopy = [QUIT_DIALOG_TITLE, QUIT_DIALOG_MESSAGE, QUIT_DIALOG_DETAIL, QUIT_BUTTON_QUIT, QUIT_BUTTON_STAY, QUIT_BUTTON_NEVER];
+  check("P2-221: dialog copy is non-empty, path-free and scheme-free", dialogCopy.every(clean));
+  check(
+    "P2-221: the dialog offers exactly the three documented buttons in the fixed order",
+    QUIT_BUTTON_INDEX.quit === 0 && QUIT_BUTTON_INDEX.stay === 1 && QUIT_BUTTON_INDEX.never === 2,
+  );
+
+  // --- store table (quitstore.ts): tolerant read, atomic private write -------
+  const dir = mkdtempSync(join(tmpdir(), "quitstore-"));
+  const file = join(dir, "quit-ask.json");
+  check("P2-221: missing file → no request recorded", readQuitDontAsk(file) === false);
+  writeFileSync(file, "{not json at all", { mode: 0o600 });
+  check("P2-221: corrupted JSON → no request recorded (never an exception)", readQuitDontAsk(file) === false);
+  writeFileSync(file, '{"dontAsk":"sim"}', { mode: 0o600 });
+  check("P2-221: wrong field type → no request recorded", readQuitDontAsk(file) === false);
+  check(
+    "P2-221: write → read round-trip records the dont-ask request",
+    writeQuitDontAsk(file, true) === true && readQuitDontAsk(file) === true,
+  );
+  check("P2-221: the decision file is private (0600)", (statSync(file).mode & 0o777) === 0o600);
+  check("P2-221: the store names the file quit-ask.json under userData", quitAskFile("/d").endsWith("quit-ask.json"));
+  rmSync(dir, { recursive: true, force: true });
+
+  // --- real-source assertions over the REAL main.ts --------------------------
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const quithintSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "quithint.ts"), "utf8");
+  const menuSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "menu.ts"), "utf8");
+  check(
+    "P2-221: the verdict is consulted exactly once in the real main.ts",
+    (mainSrc.match(/quitVerdict\(/g) ?? []).length === 1,
+  );
+  const quitAt = mainSrc.indexOf("async function explicitQuit");
+  const trayFnAt = mainSrc.indexOf("function trayMenuItems");
+  const explicitBlock = quitAt >= 0 && trayFnAt > quitAt ? mainSrc.slice(quitAt, trayFnAt) : "";
+  check(
+    "P2-221: the verdict (with the first-rule harness session) precedes any dialog opening",
+    explicitBlock.includes("quitVerdict(") &&
+      explicitBlock.indexOf("quitVerdict(") < explicitBlock.indexOf("askQuitDialog()"),
+  );
+  check(
+    "P2-221: the explicit path quits only through realQuit — no direct app.quit()",
+    explicitBlock.length > 0 && !explicitBlock.includes("app.quit()"),
+  );
+  check(
+    "P2-221: the verdict receives the harness-session indicator (HERMETIC_E2E)",
+    explicitBlock.includes("harnessSession: HERMETIC_E2E"),
+  );
+  check(
+    "P2-221: quithint.ts is pure — no electron, no node:fs, no fetch",
+    !/from\s+"electron"/.test(quithintSrc) &&
+      !/from\s+"node:fs"/.test(quithintSrc) &&
+      !quithintSrc.includes("fetch("),
+  );
+  check(
+    "P2-221: the harness rule is the FIRST one in quithint.ts (documented contract)",
+    quithintSrc.indexOf("input.harnessSession") > -1 &&
+      quithintSrc.indexOf("input.harnessSession") < quithintSrc.indexOf("input.packaged") &&
+      quithintSrc.indexOf("input.packaged") < quithintSrc.indexOf("input.dontAskAgain"),
+  );
+  // The will-quit hook stays byte-for-byte in charge of the sidecar cleanup.
+  const willQuitAt = mainSrc.indexOf('app.on("will-quit"');
+  const willQuitBlock = willQuitAt >= 0 ? mainSrc.slice(willQuitAt, mainSrc.indexOf("});", willQuitAt)) : "";
+  check(
+    "P2-221: the will-quit hook is unchanged — recheck cleanup + sidecar stop, no verdict, no dialog",
+    willQuitBlock.includes("clearTimeout(updateRecheckTimer)") &&
+      willQuitBlock.includes("stopDaemonSidecar()") &&
+      !willQuitBlock.includes("quitVerdict") &&
+      !willQuitBlock.includes("showMessageBox"),
+  );
+  check(
+    "P2-221: explicitQuit never touches the sidecar cleanup or the signal ladder",
+    explicitBlock.length > 0 && !explicitBlock.includes("stopDaemonSidecar") && !explicitBlock.includes("will-quit"),
+  );
+  check(
+    "P2-221: no new periodic timer was introduced",
+    (mainSrc.match(/setInterval\(/g) ?? []).length === 2,
+  );
+  const trayAt = mainSrc.indexOf("function trayMenuItems");
+  const trayBlock = trayAt >= 0 ? mainSrc.slice(trayAt, mainSrc.indexOf("return items;", trayAt)) : "";
+  check(
+    "P2-221: the tray Quit item goes through the explicit-quit path",
+    trayBlock.includes("void explicitQuit()"),
+  );
+  check(
+    "P2-221: the menu quit item is id-wired (no bare quit role) with the Cmd+Q accelerator kept",
+    menuSrc.includes('{ id: "app-quit", label: labels.menu.quit, accelerator: "CmdOrCtrl+Q" }') &&
+      !menuSrc.includes('role: "quit"'),
+  );
+  check(
+    "P2-221: the menu quit handler wires app-quit to the explicit-quit path",
+    mainSrc.includes('"app-quit": () => void explicitQuit()'),
+  );
+  check(
+    "P2-221: both documented test hatches exist in main.ts",
+    mainSrc.includes("OCR_DESKTOP_FORCE_QUIT_CONFIRM") && mainSrc.includes("OCR_DESKTOP_QUIT_DIALOG_ANSWER"),
+  );
+  check(
+    "P2-221: the never-ask request is written through the store on the never choice",
+    explicitBlock.includes("writeQuitDontAsk(quitAskFile(app.getPath(\"userData\")), true)"),
+  );
+  // diagnostics: one additive line, action + reason only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-221: the diagnostics bundle gains exactly one quit-confirm line (action + reason only)",
+    (diagSrc.match(/quit confirm:/g) ?? []).length === 1 &&
+      diagSrc.includes("d.quitConfirm?.state") &&
+      diagSrc.includes("d.quitConfirm?.reason"),
+  );
+}
+
+// --- P2-223: hang watch (hangwatch.ts) + wiring ---------------------------------
+
+{
+  const verdict = (
+    harnessSession: boolean,
+    unresponsiveMs: number,
+    reloadBudgetExhausted: boolean,
+    alreadyWarned: boolean,
+  ) => hangVerdict({ harnessSession, unresponsiveMs, reloadBudgetExhausted, alreadyWarned });
+
+  // 1. harness session — FIRST rule: even a long freeze with an exhausted
+  //    budget only logs, because a modal box would hang the gate (P2-221).
+  check(
+    "P2-223: harness session + long hang + exhausted budget → log only",
+    verdict(true, 60_000, true, false).action === "log",
+  );
+  // 2. below the exported warn threshold a normal GC spike only logs.
+  check(
+    "P2-223: hang below the warn threshold → log only",
+    verdict(false, HANG_WARN_THRESHOLD_MS - 1, false, false).action === "log",
+  );
+  // 3. a freeze still going past the dialog threshold outside the harness
+  //    offers the native box.
+  check(
+    "P2-223: long hang above the threshold outside harness → dialog",
+    verdict(false, HANG_DIALOG_THRESHOLD_MS + 1, false, false).action === "dialog",
+  );
+  // 4. one user-facing warning per episode: after the tip, stay quiet.
+  check(
+    "P2-223: warning already shown in this episode → log only",
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, true).action === "log",
+  );
+  // 5. exhausted budget in a harness session still only logs (harness first).
+  check(
+    "P2-223: exhausted budget in a harness session → log only",
+    verdict(true, 0, true, false).action === "log",
+  );
+  // 6. exhausted budget outside the harness offers the box — the definitive
+  //    white screen gets the escape hatch.
+  check(
+    "P2-223: exhausted budget outside harness → dialog",
+    verdict(false, 0, true, false).action === "dialog",
+  );
+  // the warn action is real: a fresh freeze past the tip threshold, still
+  // under the dialog beat, warns without a modal.
+  check(
+    "P2-223: fresh freeze past the tip threshold → warn without a box",
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, false).action === "warn",
+  );
+
+  // every generated phrase: non-empty, no file path, no URL scheme, no secret
+  const all = [
+    verdict(true, 60_000, true, false),
+    verdict(false, HANG_WARN_THRESHOLD_MS - 1, false, false),
+    verdict(false, HANG_DIALOG_THRESHOLD_MS + 1, false, false),
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, true),
+    verdict(false, HANG_WARN_THRESHOLD_MS + 1, false, false),
+    verdict(true, 0, true, false),
+    verdict(false, 0, true, false),
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("http:") &&
+    !s.includes("https:") &&
+    !s.includes("file:") &&
+    !s.includes("Users") &&
+    !s.includes("~");
+  check(
+    "P2-223: every verdict phrase is non-empty, path-free and scheme-free",
+    all.every((v) => clean(v.log) && clean(v.tray) && clean(v.dialog)),
+  );
+  check(
+    "P2-223: notification + dialog copy is non-empty, path-free and scheme-free",
+    [HANG_NOTIFY_TITLE, HANG_DIALOG_TITLE, HANG_BUTTON_RELOAD, HANG_BUTTON_WAIT].every(clean),
+  );
+  check(
+    "P2-223: the dialog offers exactly Recarregar/Aguardar in the fixed order",
+    HANG_BUTTON_INDEX.reload === 0 && HANG_BUTTON_INDEX.wait === 1,
+  );
+
+  // real-source assertions over the REAL main.ts / hangwatch.ts
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const hangwatchSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "hangwatch.ts"), "utf8");
+  check(
+    "P2-223: main.ts registers both the unresponsive and the responsive listeners",
+    mainSrc.includes('win.webContents.on("unresponsive"') && mainSrc.includes('win.webContents.on("responsive"'),
+  );
+  check(
+    "P2-223: each hang listener is registered exactly once (no double-fire merge artifact)",
+    (mainSrc.match(/win\.webContents\.on\("unresponsive"/g) ?? []).length === 1 &&
+      (mainSrc.match(/win\.webContents\.on\("responsive"/g) ?? []).length === 1,
+  );
+  check(
+    "P2-223: the harness-session rule is the FIRST one in hangVerdict (documented contract)",
+    hangwatchSrc.indexOf("input.harnessSession") > -1 &&
+      hangwatchSrc.indexOf("input.harnessSession") < hangwatchSrc.indexOf("input.unresponsiveMs") &&
+      hangwatchSrc.indexOf("input.unresponsiveMs") < hangwatchSrc.indexOf("input.alreadyWarned"),
+  );
+  check(
+    "P2-223: hangwatch.ts is pure — no electron, no node:fs, no fetch",
+    !/from\s+"electron"/.test(hangwatchSrc) &&
+      !/from\s+"node:fs"/.test(hangwatchSrc) &&
+      !hangwatchSrc.includes("fetch("),
+  );
+  check(
+    "P2-223: the white-screen path feeds the same verdict (budget-exhausted hook in main.ts)",
+    mainSrc.includes("onReloadBudgetExhausted(hangEpisode, hangContext)"),
+  );
+
+  // diagnostics: one additive line, duration + outcome only, never the path
+  const diagSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "diagnostics.ts"), "utf8");
+  check(
+    "P2-223: the diagnostics bundle gains exactly one last-hang line (duration + outcome only)",
+    (diagSrc.match(/last hang:/g) ?? []).length === 1 && diagSrc.includes("d.lastHang"),
+  );
+}
+
+// --- P2-222: ci-scope — touchesRelayImage, PR relay-image scope classifier ----
+{
+  check("P2-222: touchesRelayImage — path under apps/relay", touchesRelayImage(["apps/relay/src/index.ts"]));
+  check("P2-222: touchesRelayImage — the relay Dockerfile itself", touchesRelayImage(["deploy/relay/Dockerfile"]));
+  check("P2-222: touchesRelayImage — root .dockerignore (docker context exclusion)", touchesRelayImage([".dockerignore"]));
+  check("P2-222: touchesRelayImage — root package-lock.json", touchesRelayImage(["package-lock.json"]));
+  check("P2-222: touchesRelayImage — bare relay dir entry counts", touchesRelayImage(["apps/relay"]));
+  check("P2-222: touchesRelayImage — apps/desktop path is not the relay surface", !touchesRelayImage(["apps/desktop/src/main.ts"]));
+  check("P2-222: touchesRelayImage — docs path is not the relay surface", !touchesRelayImage(["docs/PILOT.md"]));
+  check("P2-222: touchesRelayImage — empty diff", !touchesRelayImage([]));
+  check(
+    "P2-222: touchesRelayImage — windows-style separators normalize like forward ones",
+    touchesRelayImage(["apps\\relay\\src\\index.ts"]) &&
+      touchesRelayImage(["deploy\\relay\\Dockerfile"]) &&
+      touchesRelayImage(["apps\\relay\\src\\index.ts"]) === touchesRelayImage(["apps/relay/src/index.ts"]),
+  );
+  check(
+    "P2-222: touchesRelayImage — ./ prefix and whitespace normalize",
+    touchesRelayImage([" ./apps/relay/src/index.ts"]) && touchesRelayImage(["./package-lock.json"]),
+  );
+  check(
+    "P2-222: touchesRelayImage — app-sounding paths outside the surface don't count",
+    !touchesRelayImage(["apps/relay-tests/x.ts", "src/apps/relay-mock.ts"]),
+  );
+  check(
+    "P2-222: touchesDesktop keeps today's table intact (relay surface never trips it)",
+    touchesDesktop(["apps/desktop/src/main.ts"]) &&
+      touchesDesktop(["apps/web/src/lib/viewState.ts"]) &&
+      touchesDesktop(["package-lock.json"]) &&
+      touchesDesktop(["apps\\desktop\\src\\main.ts"]) &&
+      !touchesDesktop(["apps/relay/src/index.ts", "deploy/relay/Dockerfile", ".dockerignore", "docs/PILOT.md"]),
+  );
+}
+
+// --- P2-222: real-repo assertion — ci.yml wires relay-image to the new scope --
+{
+  const root = join(import.meta.dirname, "..");
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const relayJobStart = ci.indexOf("\n  relay-image:");
+  check("P2-222: ci.yml declares the relay-image job", relayJobStart !== -1);
+  const rest = ci.slice(relayJobStart + 1);
+  const nextJob = rest.match(/\n  [a-zA-Z0-9_-]+:/);
+  const relayJob = nextJob && nextJob.index !== undefined ? rest.slice(0, nextJob.index) : rest;
+  check(
+    "P2-222: relay-image runs on ubuntu-latest, needs scope, gated ONLY on the relay-image output",
+    relayJob.includes("runs-on: ubuntu-latest") &&
+      relayJob.includes("needs: scope") &&
+      relayJob.includes("if: needs.scope.outputs.relay-image == 'true'") &&
+      !relayJob.includes("outputs.desktop"),
+  );
+  check(
+    "P2-222: scope job exposes both indicators (desktop unchanged + relay-image)",
+    ci.includes("desktop: ${{ steps.scope.outputs.desktop }}") &&
+      ci.includes("relay-image: ${{ steps.scope.outputs.relay-image }}"),
+  );
+  check(
+    "P2-222: relay-image builds from deploy/relay/Dockerfile with an ephemeral local tag",
+    relayJob.includes("docker build -f deploy/relay/Dockerfile") && relayJob.includes("relay-smoke:pr"),
+  );
+  const buildIdx = relayJob.indexOf("docker build");
+  const runIdx = relayJob.indexOf("docker run -d");
+  const smokeIdx = relayJob.indexOf("scripts/relay-image-smoke.ts");
+  check(
+    "P2-222: boot + smoke run AFTER the build, with the release wait ceiling (30 attempts) and cleanup",
+    buildIdx !== -1 && runIdx !== -1 && smokeIdx !== -1 &&
+      buildIdx < runIdx && runIdx < smokeIdx &&
+      relayJob.includes("seq 1 30") &&
+      relayJob.includes("docker rm -f relay-smoke"),
+  );
+  check(
+    "P2-222: no step in the whole ci.yml logs in to a registry, pushes an image or reads secrets",
+    !ci.includes("docker/login-action") &&
+      !ci.includes("docker login") &&
+      !ci.includes("docker push") &&
+      !ci.includes("ghcr.io") &&
+      !ci.includes("secrets."),
+  );
+  const steps = relayJob.split(/\n      - /).slice(1);
+  const runSteps = steps.filter((step) => step.includes("run:"));
+  check(
+    "P2-222: every run step of relay-image declares shell: bash (P2-126/P2-164 lessons)",
+    runSteps.length >= 2 && runSteps.every((step) => step.includes("shell: bash")),
+  );
+  check(
+    "P2-222: heavy relay-image steps carry their own timeout",
+    runSteps.length >= 2 && runSteps.every((step) => step.includes("timeout-minutes:")),
+  );
+  check(
+    "P2-222: the two desktop packaging jobs remain present, still gated on the desktop output",
+    ci.includes("desktop-package:") &&
+      ci.includes("desktop-package-win:") &&
+      ci.includes("if: needs.scope.outputs.desktop == 'true'") &&
+      ci.includes("-- --mac --dir") &&
+      ci.includes("-- --win --dir") &&
+      (ci.match(/dist:smoke --workspace @ocr\/desktop -- --no-installer/g) ?? []).length === 2,
+  );
+}
+
+// --- P2-317: ci-scope — touchesPortableSuite, portable-battery scope classifier
+{
+  check(
+    "P2-317: touchesPortableSuite — a path under each app code directory counts",
+    touchesPortableSuite(["apps/desktop/src/main.ts"]) &&
+      touchesPortableSuite(["apps/web/src/lib/viewState.ts"]) &&
+      touchesPortableSuite(["apps/daemon/src/agentbin.ts"]) &&
+      touchesPortableSuite(["apps/relay/src/webroot.ts"]) &&
+      touchesPortableSuite(["apps/pilot/src/index.ts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — shared package and scripts paths count",
+    touchesPortableSuite(["packages/protocol/src/framing.ts"]) &&
+      touchesPortableSuite(["packages/sdk/src/client.ts"]) &&
+      touchesPortableSuite(["scripts/installloc.ts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — root package-lock.json and bare dir entries count",
+    touchesPortableSuite(["package-lock.json"]) &&
+      touchesPortableSuite(["apps"]) &&
+      touchesPortableSuite(["packages"]) &&
+      touchesPortableSuite(["scripts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — docs-only changeset is inert",
+    !touchesPortableSuite(["docs/PILOT.md", "README.md", "apps/web/ios/App/CapApp-SPM/README.md"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — media-only changeset is inert, even inside an app dir",
+    !touchesPortableSuite(["assets/demo.mp4", "apps/web/public/icon-192.png", "apps\\desktop\\build\\icon.png"]),
+  );
+  check("P2-317: touchesPortableSuite — empty diff", !touchesPortableSuite([]));
+  check("P2-317: touchesPortableSuite — blank entries are ignored", !touchesPortableSuite(["", "   "]));
+  check(
+    "P2-317: touchesPortableSuite — windows-style separators normalize like forward ones",
+    touchesPortableSuite(["apps\\daemon\\src\\agentbin.ts"]) &&
+      touchesPortableSuite(["packages\\sdk\\src\\client.ts"]) &&
+      touchesPortableSuite(["apps\\daemon\\src\\agentbin.ts"]) === touchesPortableSuite(["apps/daemon/src/agentbin.ts"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — ./ prefix and whitespace normalize",
+    touchesPortableSuite([" ./apps/relay/src/webroot.ts"]) && touchesPortableSuite(["./package-lock.json"]),
+  );
+  check(
+    "P2-317: touchesPortableSuite — lookalike prefixes outside the surface don't count",
+    !touchesPortableSuite(["scripts-helper/x.ts", "src/apps-mock/x.ts", "packages-x/y.ts"]),
+  );
+
+  // Determinism: the same input must classify identically on every call —
+  // the CLI writes GITHUB_OUTPUT from this verdict alone.
+  const sample = ["docs/PILOT.md", "", "apps/daemon/src/agentbin.ts", "apps\\relay\\src\\webroot.ts", "package-lock.json"];
+  check(
+    "P2-317: touchesPortableSuite — same input, two calls, identical verdict",
+    touchesPortableSuite(sample) === touchesPortableSuite(sample) && touchesPortableSuite(sample) === true,
+  );
+
+  // Real-repo assertion: the scope job declares the new output beside the two
+  // existing ones and verify-win cites both outputs in its condition.
+  const root = join(import.meta.dirname, "..");
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const scopeSrc = readFileSync(join(root, "scripts", "ci-scope.ts"), "utf8");
+  check(
+    "P2-317: scope job declares the portable-suite output beside the untouched desktop and relay-image ones",
+    ci.includes("desktop: ${{ steps.scope.outputs.desktop }}") &&
+      ci.includes("relay-image: ${{ steps.scope.outputs.relay-image }}") &&
+      ci.includes("portable-suite: ${{ steps.scope.outputs.portable-suite }}"),
+  );
+  const winStart = ci.indexOf("\n  verify-win:\n");
+  const winEnd = ci.indexOf("\n  relay-image:");
+  const winJob = winStart > -1 && winEnd > winStart ? ci.slice(winStart, winEnd) : "";
+  check(
+    "P2-317: verify-win runs when the desktop OR the portable-suite output is true",
+    winJob.includes("if: needs.scope.outputs.desktop == 'true' || needs.scope.outputs.portable-suite == 'true'"),
+  );
+  check(
+    "P2-317: verify-win keeps its least-privilege block, pinned actions, shell: bash steps and timeouts intact",
+    winJob.includes("permissions:\n      contents: read") &&
+      winJob.includes("actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4") &&
+      winJob.includes("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4") &&
+      (winJob.match(/^ {8}shell: bash$/gm) ?? []).length === 3 &&
+      // P2-322: the three step timeouts stay intact, plus the new job-level
+      // declaration (40 at four-space indent — step timeouts sit deeper).
+      (winJob.match(/^ {4}timeout-minutes: 40$/gm) ?? []).length === 1 &&
+      (winJob.match(/timeout-minutes:/g) ?? []).length === 4,
+  );
+
+  // The other scope-gated jobs keep today's conditions, unchanged.
+  const pkgStart = ci.indexOf("\n  desktop-package:");
+  const pkgEnd = ci.indexOf("\n  desktop-package-win:");
+  const macPkg = pkgStart > -1 && pkgEnd > pkgStart ? ci.slice(pkgStart, pkgEnd) : "";
+  check(
+    "P2-317: desktop-package and desktop-package-win stay gated ONLY on the desktop output",
+    macPkg.includes("if: needs.scope.outputs.desktop == 'true'") &&
+      !macPkg.includes("portable-suite") &&
+      !macPkg.includes("relay-image"),
+  );
+  const relayStart = ci.indexOf("\n  relay-image:");
+  const relayJob = relayStart > -1 ? ci.slice(relayStart) : "";
+  check(
+    "P2-317: relay-image stays gated ONLY on the relay-image output",
+    relayJob.includes("if: needs.scope.outputs.relay-image == 'true'") && !relayJob.includes("portable-suite"),
+  );
+
+  // CLI contract: the third line is written beside the two existing ones and
+  // the meaning of the existing lines is unchanged (same template, same order).
+  const desktopAt = scopeSrc.indexOf("`desktop=${desktop ? \"true\" : \"false\"}`");
+  const relayAt = scopeSrc.indexOf("`relay-image=${relayImage ? \"true\" : \"false\"}`");
+  const portableAt = scopeSrc.indexOf("`portable-suite=${portableSuite ? \"true\" : \"false\"}`");
+  check(
+    "P2-317: CLI mode writes portable-suite beside the two existing output lines, in order",
+    desktopAt > -1 && relayAt > desktopAt && portableAt > relayAt,
+  );
+
+  // The condition is registered where the gates look for it.
+  const scopesDoc = JSON.parse(readFileSync(join(root, "scripts", "workflow-scopes.json"), "utf8")) as {
+    conditions?: Record<string, string>;
+  };
+  check(
+    "P2-317: workflow-scopes.json registers the new verify-win condition",
+    typeof scopesDoc.conditions?.["ci.yml/verify-win"] === "string" &&
+      scopesDoc.conditions["ci.yml/verify-win"].includes("portable-suite") &&
+      scopesDoc.conditions["ci.yml/verify-win"].includes("desktop"),
+  );
+}
+
+// --- P2-224: portable (Windows-safe) unit suite --------------------------------
+
+{
+  check("P2-224: the real PORTABLE_TESTS list validates clean", portableSuitePlan(PORTABLE_TESTS).length === 0);
+
+  check(
+    "P2-224: every file in PORTABLE_TESTS exists on disk under scripts/",
+    PORTABLE_TESTS.length > 0 && PORTABLE_TESTS.every((f) => existsSync(join(import.meta.dirname, f))),
+  );
+
+  check(
+    "P2-224: package.json exposes test:unit-win pointing at the portable CLI",
+    (JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts[
+      "test:unit-win"
+    ] === "tsx scripts/portable-suite.ts",
+  );
+
+  const good = portableSuitePlan(["bubble-merge.test.ts", "desktop-log.test.ts", "sidecar-log.test.ts"]);
+  check("P2-224: portableSuitePlan accepts a well-formed list with no problem", good.length === 0, JSON.stringify(good));
+
+  const badExt = portableSuitePlan(["portable-suite.ts"]);
+  check(
+    "P2-224: a non-.test.ts item is one problem naming the extension rule",
+    badExt.length === 1 && badExt[0].includes(".test.ts"),
+    JSON.stringify(badExt),
+  );
+
+  const dup = portableSuitePlan(["a.test.ts", "b.test.ts", "a.test.ts"]);
+  check(
+    "P2-224: a duplicate item is one problem naming the file twice-listed",
+    dup.length === 1 && dup[0].includes("a.test.ts") && dup[0].includes("twice"),
+    JSON.stringify(dup),
+  );
+
+  const outside = portableSuitePlan(["../apps/evil.test.ts"]);
+  check(
+    "P2-224: an item outside scripts/ is one problem naming the directory rule",
+    outside.length === 1 && outside[0].includes("outside scripts"),
+    JSON.stringify(outside),
+  );
+
+  const empty = portableSuitePlan([]);
+  check(
+    "P2-224: an empty list is one problem (the battery would run nothing)",
+    empty.length === 1 && empty[0].includes("empty"),
+    JSON.stringify(empty),
+  );
+
+  const both = portableSuitePlan(["..\\evil.ts"]);
+  check(
+    "P2-224: two simultaneous causes yield two problems in the established order (extension, then directory)",
+    both.length === 2 && both[0].includes(".test.ts") && both[1].includes("outside scripts"),
+    JSON.stringify(both),
+  );
+
+  // Real-repo assertion over the workflow: the verify-win job must exist,
+  // mirror the scope gating and never become a publishing path.
+  const ciWin = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+  const winStart = ciWin.indexOf("\n  verify-win:\n");
+  const winEnd = ciWin.indexOf("\n  relay-image:");
+  const winJob = winStart > -1 && winEnd > winStart ? ciWin.slice(winStart, winEnd) : "";
+
+  check("P2-224: ci.yml has the verify-win job on windows-latest", winStart > -1 && winJob.includes("runs-on: windows-latest"));
+
+  check(
+    "P2-224: verify-win depends on scope and is conditioned on the scope outputs (P2-317 widened it to desktop OR portable-suite)",
+    winJob.includes("needs: scope") &&
+      winJob.includes("if: needs.scope.outputs.desktop == 'true' || needs.scope.outputs.portable-suite == 'true'"),
+  );
+
+  const typecheckAt = winJob.indexOf("run: npm run typecheck");
+  const portableAt = winJob.indexOf("run: npm run test:unit-win");
+  check(
+    "P2-224: verify-win runs typecheck and then test:unit-win, in that order",
+    typecheckAt > -1 && portableAt > typecheckAt,
+  );
+
+  // Steps are indented with 6 spaces; slice per step for per-step invariants.
+  const winSteps = winJob.split(/\n      - /).slice(1);
+  const winRunSteps = winSteps.filter((step) => step.includes("run:"));
+  check(
+    "P2-224: every run step of verify-win declares shell: bash (P2-126/P2-164 lessons)",
+    winRunSteps.length >= 3 && winRunSteps.every((step) => step.includes("shell: bash")),
+  );
+  check(
+    "P2-224: every heavy verify-win step carries its own timeout",
+    winRunSteps.length >= 3 && winRunSteps.every((step) => step.includes("timeout-minutes:")),
+  );
+  check(
+    "P2-224: verify-win uploads nothing, reads no secrets and logs in to no registry",
+    !winJob.includes("actions/upload-artifact") &&
+      !winJob.includes("secrets.") &&
+      !winJob.includes("docker/login-action") &&
+      !winJob.includes("ghcr.io"),
+  );
+
+  check(
+    "P2-224: no step of the whole ci.yml logs in to a registry or pushes an image",
+    !ciWin.includes("docker login") &&
+      !ciWin.includes("docker push") &&
+      !ciWin.includes("docker/login-action") &&
+      !ciWin.includes("ghcr.io") &&
+      !ciWin.includes("secrets."),
+  );
+
+  const verifyStart = ciWin.indexOf("\n  verify:\n");
+  const verifyEnd = ciWin.indexOf("\n  scope:");
+  const verifyJob = verifyStart > -1 && verifyEnd > verifyStart ? ciWin.slice(verifyStart, verifyEnd) : "";
+  check(
+    "P2-224: the ubuntu verify job keeps its original steps on ubuntu-latest, untouched",
+    verifyJob.includes("runs-on: ubuntu-latest") &&
+      verifyJob.includes("npx eslint apps packages scripts --quiet") &&
+      verifyJob.includes("run: npm run typecheck") &&
+      verifyJob.includes("run: npm run test:unit") &&
+      verifyJob.includes("run: npm run build") &&
+      verifyJob.includes("scripts/smoke.ts") &&
+      verifyJob.includes("scripts/integration.ts") &&
+      !verifyJob.includes("test:unit-win"),
+  );
+}
+
+// --- P2-237: portable-suite coverage guard --------------------------------------
+
+{
+  check("P2-237: empty lists and no existing files yield zero problems", portableCoverage([], [], []).length === 0);
+
+  const r1 = portableCoverage(["brand-new.test.ts"], [], []);
+  check(
+    "P2-237: an existing test file in neither list is one fail-closed problem naming the file",
+    r1.length === 1 && r1[0].includes("brand-new.test.ts") && r1[0].includes("neither"),
+    JSON.stringify(r1),
+  );
+
+  const r2 = portableCoverage(["both.test.ts"], ["both.test.ts"], [{ file: "both.test.ts", cause: "electron" }]);
+  check(
+    "P2-237: a file declared in both lists at the same time is one problem naming the file",
+    r2.length === 1 && r2[0].includes("both.test.ts"),
+    JSON.stringify(r2),
+  );
+
+  const r3p = portableCoverage([], ["ghost.test.ts"], []);
+  check(
+    "P2-237: a portable entry missing from disk is one problem naming the file",
+    r3p.length === 1 && r3p[0].includes("ghost.test.ts"),
+    JSON.stringify(r3p),
+  );
+
+  const r3e = portableCoverage([], [], [{ file: "ghost.test.ts", cause: "electron" }]);
+  check(
+    "P2-237: an exclusion entry missing from disk is one problem naming the file",
+    r3e.length === 1 && r3e[0].includes("ghost.test.ts"),
+    JSON.stringify(r3e),
+  );
+
+  const r4 = portableCoverage(["odd.test.ts"], [], [{ file: "odd.test.ts", cause: "vibes" }]);
+  check(
+    "P2-237: an exclusion cause outside the documented set is one problem naming the file and the cause",
+    r4.length === 1 && r4[0].includes("odd.test.ts") && r4[0].includes("vibes"),
+    JSON.stringify(r4),
+  );
+
+  const r5 = portableCoverage(["dup.test.ts"], [], [
+    { file: "dup.test.ts", cause: "electron" },
+    { file: "dup.test.ts", cause: "chmod" },
+  ]);
+  check(
+    "P2-237: a repeated exclusion is one problem naming the file",
+    r5.length === 1 && r5[0].includes("dup.test.ts"),
+    JSON.stringify(r5),
+  );
+
+  const two = portableCoverage([], [], [{ file: "ghost.test.ts", cause: "vibes" }]);
+  check(
+    "P2-237: two simultaneous causes yield two problems, never one merged verdict",
+    two.length === 2 && two[0].includes("ghost.test.ts") && two[1].includes("vibes"),
+    JSON.stringify(two),
+  );
+
+  const stableA = portableCoverage(
+    ["a.test.ts", "b.test.ts"],
+    ["c.test.ts"],
+    [{ file: "d.test.ts", cause: "electron" }, { file: "d.test.ts", cause: "electron" }],
+  );
+  const stableB = portableCoverage(
+    ["a.test.ts", "b.test.ts"],
+    ["c.test.ts"],
+    [{ file: "d.test.ts", cause: "electron" }, { file: "d.test.ts", cause: "electron" }],
+  );
+  check("P2-237: problem order is stable across calls with the same input", JSON.stringify(stableA) === JSON.stringify(stableB));
+
+  check(
+    "P2-237: no problem text contains an absolute file path",
+    [...r1, ...r2, ...r3p, ...r3e, ...r4, ...r5, ...two, ...stableA].every(
+      (p) => !p.startsWith("/") && !/^[A-Za-z]:[\\]/.test(p) && !p.includes(import.meta.dirname),
+    ),
+  );
+
+  check(
+    "P2-237: every PORTABLE_EXCLUSIONS entry uses a documented cause",
+    PORTABLE_EXCLUSIONS.every((e) => Object.prototype.hasOwnProperty.call(PORTABLE_EXCLUSION_CAUSES, e.cause)),
+  );
+
+  check(
+    "P2-237: no PORTABLE_EXCLUSIONS entry has an empty file name",
+    PORTABLE_EXCLUSIONS.every((e) => typeof e.file === "string" && e.file.trim().length > 0),
+  );
+
+  // Real-repo assertion: the scripts directory itself is fully classified —
+  // creating a new test file without classifying it fails the gate right here,
+  // not months later on a user's Windows machine.
+  const onDiskTests = readdirSync(import.meta.dirname).filter((f) => f.endsWith(".test.ts")).sort();
+  const realCoverage = portableCoverage(onDiskTests, PORTABLE_TESTS, PORTABLE_EXCLUSIONS);
+  check("P2-237: the real scripts/ directory is fully classified (zero coverage problems)", realCoverage.length === 0, JSON.stringify(realCoverage));
+
+  // The portable CLI must run this guard before executing any test and must
+  // derive the real file list from a directory read, not a second hand-written list.
+  const portableSuiteSrc = readFileSync(join(import.meta.dirname, "portable-suite.ts"), "utf8");
+  const guardAt = portableSuiteSrc.indexOf("portableCoverage(");
+  const execAt = portableSuiteSrc.indexOf("spawnSync(");
+  check(
+    "P2-237: portable-suite.ts runs the coverage guard before executing any test",
+    guardAt > -1 && execAt > -1 && guardAt < execAt,
+  );
+  const dirListVar = portableSuiteSrc.match(/const (\w+) = readdirSync\(/)?.[1];
+  check(
+    "P2-237: portable-suite.ts builds the test-file list from a directory read, not a second hand-written list",
+    typeof dirListVar === "string" && portableSuiteSrc.includes(`portableCoverage(${dirListVar},`),
+  );
+}
+
+// --- P2-225: boot-time asset integrity for the relay's static entry document ---
+// indexAssetPlan: full truth table of the text scan.
+check(
+  "P2-225: indexAssetPlan — script with a src yields one item",
+  JSON.stringify(indexAssetPlan('<html><body><script src="/assets/app.js"></script></body></html>')) ===
+    JSON.stringify(["/assets/app.js"]),
+);
+check(
+  "P2-225: indexAssetPlan — stylesheet link yields one item",
+  JSON.stringify(indexAssetPlan('<link rel="stylesheet" href="/assets/app.css">')) ===
+    JSON.stringify(["/assets/app.css"]),
+);
+check(
+  "P2-225: indexAssetPlan — modulepreload link yields one item",
+  JSON.stringify(indexAssetPlan('<link rel="modulepreload" href="/assets/chunk.js" crossorigin>')) ===
+    JSON.stringify(["/assets/chunk.js"]),
+);
+check(
+  "P2-225: indexAssetPlan — icon (and other non-asset) links are ignored",
+  JSON.stringify(
+    indexAssetPlan(
+      '<link rel="icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="preconnect" href="/x">',
+    ),
+  ) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — repeated reference appears once, order of appearance preserved",
+  JSON.stringify(
+    indexAssetPlan(
+      '<script src="/b.js"></script><script src="/a.js"></script><script src="/b.js"></script>' +
+        '<link rel="stylesheet" href="/a.css"><link rel="modulepreload" href="/a.js">',
+    ),
+  ) === JSON.stringify(["/b.js", "/a.js", "/a.css"]),
+);
+check(
+  "P2-225: indexAssetPlan — explicit scheme ignored",
+  JSON.stringify(
+    indexAssetPlan('<script src="https://cdn.example/x.js"></script><script src="data:text/javascript,1"></script>'),
+  ) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — protocol-relative reference ignored",
+  JSON.stringify(indexAssetPlan('<script src="//cdn.example/x.js"></script>')) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — pure anchor ignored",
+  JSON.stringify(indexAssetPlan('<script src="#local"></script>')) === JSON.stringify([]),
+);
+check(
+  "P2-225: indexAssetPlan — single and double quotes give the same result",
+  JSON.stringify(indexAssetPlan("<script src='/a.js'></script><link rel='stylesheet' href='/b.css'>")) ===
+    JSON.stringify(indexAssetPlan('<script src="/a.js"></script><link rel="stylesheet" href="/b.css">')) &&
+    JSON.stringify(indexAssetPlan("<script src='/a.js'>")) === JSON.stringify(["/a.js"]),
+);
+check(
+  "P2-225: indexAssetPlan — attribute order inside the tag does not matter",
+  JSON.stringify(indexAssetPlan('<link href="/a.css" rel="stylesheet">')) === JSON.stringify(["/a.css"]),
+);
+check("P2-225: indexAssetPlan — empty text yields an empty list", indexAssetPlan("").length === 0);
+check(
+  "P2-225: indexAssetPlan — text without any tag yields an empty list",
+  indexAssetPlan("hello world, no tags here").length === 0,
+);
+
+// assetIntegrityPlan: full truth table of the boot probe.
+const probeOk: (p: string) => AssetProbe = () => "ok";
+check(
+  "P2-225: assetIntegrityPlan — every asset readable yields no problems",
+  assetIntegrityPlan(["/assets/app.js", "/assets/app.css"], "/srv/web", probeOk).length === 0,
+);
+const missingProblems = assetIntegrityPlan(["/assets/app.js"], "/srv/web", () => "missing");
+check(
+  "P2-225: assetIntegrityPlan — one missing asset yields exactly one problem",
+  missingProblems.length === 1 && missingProblems[0]?.includes("/assets/app.js"),
+);
+check(
+  "P2-225: assetIntegrityPlan — two missing assets yield two problems in index order",
+  JSON.stringify(
+    assetIntegrityPlan(["/assets/one.js", "/assets/two.js"], "/srv/web", () => "missing").map((p) =>
+      ["/assets/one.js", "/assets/two.js"].findIndex((ref) => p.includes(ref)),
+    ),
+  ) === JSON.stringify([0, 1]),
+);
+check(
+  "P2-225: assetIntegrityPlan — unreadable asset yields a problem",
+  assetIntegrityPlan(["/assets/app.js"], "/srv/web", () => "unreadable").length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — document-relative references (the real vite shape) resolve against the root",
+  assetIntegrityPlan(["./assets/index-AbCdE123.js", "assets/x.css"], "/srv/web", (p) =>
+    p.endsWith(".js") || p.endsWith(".css") ? "ok" : "missing",
+  ).length === 0 &&
+    assetIntegrityPlan(["./assets/index-AbCdE123.js"], "/srv/web", () => "missing").length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — path escaping the root is refused even though the probe would pass",
+  assetIntegrityPlan(["/assets/../../etc/passwd"], "/srv/web", probeOk).length === 1 &&
+    assetIntegrityPlan(["../secret.js"], "/srv/web", probeOk).length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — a throwing probe becomes a problem instead of killing the boot",
+  assetIntegrityPlan(["/assets/app.js"], "/srv/web", () => {
+    throw new Error("boom");
+  }).length === 1,
+);
+check(
+  "P2-225: assetIntegrityPlan — problems appear in index order across causes",
+  JSON.stringify(
+    assetIntegrityPlan(
+      ["/gone.js", "../bad.js", "/secret.js"],
+      "/srv/web",
+      (p) => (p.endsWith("gone.js") ? "missing" : p.endsWith("secret.js") ? "unreadable" : "ok"),
+    ).map((p) => (p.includes("/gone.js") ? "missing" : p.includes("../bad.js") ? "rigid" : "unreadable")),
+  ) === JSON.stringify(["missing", "rigid", "unreadable"]),
+);
+check("P2-225: the boot ceiling for the entry document is 512 KiB", WEB_INDEX_MAX_BYTES === 512 * 1024);
+
+// Real-source assertions: the relay boot applies both plans inside the same
+// fail-closed web-root block, before any listener can open.
+const relayIndexSrc = readFileSync(new URL("../apps/relay/src/index.ts", import.meta.url), "utf8");
+const webRootAt = relayIndexSrc.indexOf("webRootPlan(");
+const idxPlanAt = relayIndexSrc.indexOf("indexAssetPlan(");
+const assetPlanAt = relayIndexSrc.indexOf("assetIntegrityPlan(");
+const webRefusalAt = relayIndexSrc.indexOf("invalid relay web root, refusing to start");
+const listenAt = relayIndexSrc.indexOf("server.listen(");
+check(
+  "P2-225: relay boot applies indexAssetPlan + assetIntegrityPlan to the entry document",
+  webRootAt > -1 && idxPlanAt > webRootAt && assetPlanAt > webRootAt,
+);
+check(
+  "P2-225: asset problems join the same fail-closed web-root block (exit 1, one line per cause)",
+  relayIndexSrc.includes("WEB.problems.push") && webRefusalAt > assetPlanAt,
+);
+check(
+  "P2-225: the asset check completes before the listener opens",
+  listenAt > webRefusalAt && listenAt > assetPlanAt,
+);
+check(
+  "P2-225: the boot-time index.html read is capped and overflow is a problem",
+  relayIndexSrc.includes("WEB_INDEX_MAX_BYTES") &&
+    relayIndexSrc.includes("stat.size > WEB_INDEX_MAX_BYTES") &&
+    relayIndexSrc.includes("Buffer.byteLength(text) > WEB_INDEX_MAX_BYTES"),
+);
+const webrootSrc = readFileSync(new URL("../apps/relay/src/webroot.ts", import.meta.url), "utf8");
+const webrootImports = webrootSrc
+  .split("\n")
+  .filter((l) => l.trim().startsWith("import "))
+  .join("\n");
+check(
+  "P2-225: webroot.ts stays pure (no node:fs/node:http/node:ws imports) and the new functions stay blind",
+  !/node:(fs|http|ws)/.test(webrootImports) &&
+    webrootImports.includes("node:path") &&
+    webrootSrc.includes("no plaintext, no key material, no room ids"),
+);
+
+// --- P2-229: global reopen hotkey (hotkey.ts) ------------------------------------
+
+{
+  const plan = (over: Partial<Parameters<typeof hotkeyPlan>[0]> = {}) =>
+    hotkeyPlan({
+      harnessSession: false,
+      env: {},
+      userAccelerator: undefined,
+      platform: "darwin",
+      ...over,
+    });
+
+  // rule 1 — the harness-session rule is FIRST: a valid accelerator and a
+  // favorable environment still register nothing in a test session
+  const harness = plan({ harnessSession: true, userAccelerator: "Alt+Shift+R" });
+  check(
+    "P2-229: harness session with a valid accelerator and favorable env → not registered",
+    !harness.register && harness.accelerator === null && harness.reason.length > 0,
+  );
+  check(
+    "P2-229: harness session also refuses with a kill-switch-free, accelerator-free env",
+    !plan({ harnessSession: true, platform: "win32" }).register,
+  );
+
+  // rule 2 — the documented kill switch, outside harness
+  check(
+    "P2-229: the documented kill switch outside harness → not registered",
+    !plan({ env: { [HOTKEY_DISABLE_ENV]: "1" }, userAccelerator: "Alt+Shift+R" }).register,
+  );
+  check(
+    "P2-229: only the exact value 1 disables — anything else keeps the hotkey alive",
+    plan({ env: { [HOTKEY_DISABLE_ENV]: "0" } }).register && plan({ env: { [HOTKEY_DISABLE_ENV]: "yes" } }).register,
+  );
+
+  // rule 3 — an invalid owner accelerator refuses WITHOUT falling back to the
+  // default (fail-closed: the reason travels, silence would lie)
+  const invalid = plan({ userAccelerator: "Ctrl++" });
+  check(
+    "P2-229: invalid owner accelerator → not registered with a reason, never a silent default",
+    !invalid.register && invalid.accelerator === null && invalid.reason.length > 0,
+  );
+
+  // rule 4 — empty environment → the documented platform default
+  check(
+    "P2-229: empty environment → the documented platform default, registered",
+    plan({}).register && plan({}).accelerator === defaultHotkeyFor("darwin"),
+  );
+
+  // rule 5 — Windows and macOS each return their own documented default
+  check(
+    "P2-229: Windows and macOS defaults are distinct and honored per platform",
+    defaultHotkeyFor("win32") !== defaultHotkeyFor("darwin") &&
+      plan({ platform: "win32" }).accelerator === defaultHotkeyFor("win32") &&
+      plan({ platform: "darwin" }).accelerator === defaultHotkeyFor("darwin") &&
+      plan({ platform: "win32" }).accelerator !== plan({ platform: "darwin" }).accelerator,
+  );
+
+  // rule 6 — a valid owner accelerator beats the platform default
+  const owner = plan({ userAccelerator: "Alt+Shift+R" });
+  check(
+    "P2-229: a valid owner accelerator wins over the platform default",
+    owner.register && owner.accelerator === "Alt+Shift+R" && owner.accelerator !== defaultHotkeyFor("darwin"),
+  );
+
+  // every generated phrase: static, non-empty, no file path, no URL scheme
+  const reasons = [
+    plan({ harnessSession: true }).reason,
+    plan({ env: { [HOTKEY_DISABLE_ENV]: "1" } }).reason,
+    plan({ userAccelerator: "Ctrl++" }).reason,
+    plan({ userAccelerator: "Alt+Shift+R" }).reason,
+    plan({}).reason,
+    plan({ platform: "win32" }).reason,
+  ];
+  check(
+    "P2-229: every hotkey phrase is non-empty, path-free and scheme-free",
+    reasons.every(
+      (r) =>
+        r.length > 0 &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes("://") &&
+        !r.includes("http:") &&
+        !r.includes("file:") &&
+        !r.includes(":~"),
+    ),
+  );
+
+  // -- acceleratorProblem: the full fail-closed table -------------------------
+
+  check(
+    "P2-229: acceleratorProblem — empty text is a problem",
+    typeof acceleratorProblem("") === "string" && typeof acceleratorProblem("   ") === "string",
+  );
+  check(
+    "P2-229: acceleratorProblem — a wrong-type value is a problem",
+    [undefined, null, 42, ["Ctrl+A"], {}].every((v) => typeof acceleratorProblem(v) === "string"),
+  );
+  check(
+    "P2-229: acceleratorProblem — a bare key without modifier is a problem (keyjacking is hostile)",
+    typeof acceleratorProblem("A") === "string" &&
+      typeof acceleratorProblem("Space") === "string" &&
+      typeof acceleratorProblem("F5") === "string",
+  );
+  check(
+    "P2-229: acceleratorProblem — a token outside the allowlist is a problem",
+    typeof acceleratorProblem("Ctrl+Emoji") === "string" &&
+      typeof acceleratorProblem("Cat+A") === "string" &&
+      typeof acceleratorProblem("Ctrl++") === "string",
+  );
+  check(
+    "P2-229: acceleratorProblem — above the documented ceiling is a problem",
+    acceleratorProblem(`Ctrl+${"A".repeat(HOTKEY_MAX_LEN)}`) !== null &&
+      acceleratorProblem(`Ctrl+Shift+${"A".repeat(HOTKEY_MAX_LEN)}`) !== null,
+  );
+  check(
+    "P2-229: acceleratorProblem — valid combinations across modifier/key shapes pass with no problem",
+    ["Ctrl+Shift+O", "Command+Shift+O", "CommandOrControl+Shift+O", "Alt+F9", "Ctrl+Space", "ctrl+shift+o"].every(
+      (a) => acceleratorProblem(a) === null,
+    ),
+  );
+
+  // -- the menu surfaces the plan's truth (P2-229 × P2-176 contract) ----------
+
+  const helpItemsOf = (p: Parameters<typeof menuSpec>[3]) => {
+    const spec = menuSpec("darwin", null, false, p);
+    return spec.find((i) => i.label === "Ajuda")?.submenu ?? [];
+  };
+  const hotkeyItem = (p: ReturnType<typeof hotkeyPlan>) => helpItemsOf(p).find((i) => i.id === "help-hotkey");
+  const activeItem = hotkeyItem(plan({}));
+  const refusedItem = hotkeyItem(plan({ harnessSession: true }));
+  check(
+    "P2-229: Help menu shows the active accelerator as a disabled informational item",
+    activeItem?.label === shellLabels("pt").menu.hotkeyLine &&
+      activeItem?.accelerator === defaultHotkeyFor("darwin") &&
+      activeItem?.enabled === false,
+  );
+  check(
+    "P2-229: Help menu shows the plan's reason instead of a lying combination when refused",
+    refusedItem?.label === plan({ harnessSession: true }).reason &&
+      refusedItem?.accelerator === undefined &&
+      refusedItem?.enabled === false,
+  );
+  check(
+    "P2-229: three-arg menuSpec calls (the P2-176 contract) still produce no hotkey item",
+    !helpItemsOf(undefined).some((i) => i.id === "help-hotkey"),
+  );
+
+  // -- real-source assertions over the REAL main.ts ---------------------------
+
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  // registration goes through the plan, once, after the app is ready
+  check(
+    "P2-229: the real main.ts resolves hotkeyPlan and registers through the plan verdict",
+    mainSrc.includes("hotkeyPlan({") &&
+      mainSrc.includes("globalShortcut.register(hotkey.accelerator, showMainWindow)") &&
+      /if \(!hotkey\?\.register \|\| !hotkey\.accelerator\) return;/.test(mainSrc),
+  );
+  // the harness-session rule is the first input consulted: HERMETIC_E2E leads
+  // the plan call, and the pure plan checks it before env/accelerator shapes
+  check(
+    "P2-229: the real main.ts feeds the harness flag first into the plan call",
+    /hotkeyPlan\(\{\s*\n\s*harnessSession: HERMETIC_E2E,/.test(mainSrc),
+  );
+  const hotkeySrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "hotkey.ts"), "utf8");
+  const planBody = hotkeySrc.slice(hotkeySrc.indexOf("export function hotkeyPlan"));
+  check(
+    "P2-229: in the pure plan the harness rule is the first consulted, before env and accelerator shape",
+    planBody.includes("input.harnessSession") &&
+      planBody.indexOf("input.harnessSession") < planBody.indexOf("HOTKEY_DISABLE_ENV") &&
+      planBody.indexOf("HOTKEY_DISABLE_ENV") < planBody.indexOf("acceleratorProblem("),
+  );
+  // everything is unregistered in will-quit
+  const willQuitAt = mainSrc.indexOf('app.on("will-quit"');
+  const willQuitBlock = willQuitAt >= 0 ? mainSrc.slice(willQuitAt, willQuitAt + 700) : "";
+  check(
+    "P2-229: the real main.ts unregisters every shortcut in will-quit",
+    willQuitBlock.includes("globalShortcut.unregisterAll()"),
+  );
+  // no new timer anywhere in the hotkey block
+  const hotkeyBlockAt = mainSrc.indexOf("// --- global reopen hotkey");
+  const hotkeyBlock =
+    hotkeyBlockAt >= 0
+      ? mainSrc.slice(hotkeyBlockAt, mainSrc.indexOf("function buildTray", hotkeyBlockAt))
+      : "";
+  check(
+    "P2-229: the hotkey block introduces no timer (no setInterval, no setTimeout)",
+    hotkeyBlock.length > 0 && !hotkeyBlock.includes("setInterval") && !hotkeyBlock.includes("setTimeout"),
+  );
+
+  // hotkey.ts stays pure: unit tests must never boot electron on import
+  // (strip line comments first — the header prose names the banned modules)
+  const hotkeyCode = hotkeySrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-229: hotkey.ts is pure — zero imports (no electron, no node:fs, no fetch, no I/O)",
+    !/^import /m.test(hotkeyCode) && !hotkeyCode.includes("node:") && !/\bfetch\b/.test(hotkeyCode),
+  );
+}
+
+// --- P2-231: document→PDF conversion capability (doccap.ts) + wiring ----------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const doccapSrc = src(["apps", "daemon", "src", "doccap.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const doc2pdfSrc = src(["tools", "doc2pdf.mjs"]);
+
+  const FULL = { soffice: true, textutil: true, cupsfilter: true };
+  const NATIVE_ONLY = { soffice: false, textutil: true, cupsfilter: true };
+  const NOTHING = { soffice: false, textutil: false, cupsfilter: false };
+
+  // verdict matrix — full fidelity wins, everywhere
+  const fullMac = docConvertVerdict("darwin", FULL);
+  const fullWin = docConvertVerdict("win32", FULL);
+  check(
+    "P2-231: full-fidelity converter on macOS is complete with every documented extension",
+    fullMac.state === "complete" &&
+      JSON.stringify(fullMac.exts) === JSON.stringify(SOFFICE_EXTS) &&
+      SOFFICE_EXTS.join(" ") === "docx doc rtf html csv xlsx pptx",
+  );
+  check(
+    "P2-231: full-fidelity converter on Windows is complete too",
+    fullWin.state === "complete" && fullWin.exts.length === SOFFICE_EXTS.length,
+  );
+  check(
+    "P2-231: both candidates present picks full fidelity by the documented order",
+    docConvertVerdict("darwin", FULL).state === "complete" && CONVERTER_PREFERENCE[0] === "soffice",
+  );
+
+  // native-only: partial with the exact covered list, nothing more
+  const nativeMac = docConvertVerdict("darwin", NATIVE_ONLY);
+  check(
+    "P2-231: native-only on macOS is partial with exactly the native extensions",
+    nativeMac.state === "partial" &&
+      JSON.stringify(nativeMac.exts) === JSON.stringify(NATIVE_EXTS) &&
+      !nativeMac.exts.includes("xlsx") &&
+      !nativeMac.exts.includes("pptx"),
+  );
+
+  // native declared off macOS is ignored (that pipeline does not exist there)
+  check(
+    "P2-231: native declared on Windows is ignored and the verdict is unavailable",
+    docConvertVerdict("win32", NATIVE_ONLY).state === "unavailable" &&
+      docConvertVerdict("win32", NATIVE_ONLY).exts.length === 0,
+  );
+  check(
+    "P2-231: half a native pipeline is not a usable converter",
+    docConvertVerdict("darwin", { soffice: false, textutil: true, cupsfilter: false }).state === "unavailable" &&
+      docConvertVerdict("darwin", { soffice: false, textutil: false, cupsfilter: true }).state === "unavailable",
+  );
+
+  // nothing: unavailable with the install phrase
+  const none = docConvertVerdict("linux", NOTHING);
+  check(
+    "P2-231: no candidate is unavailable with an install phrase",
+    none.state === "unavailable" && /instal/i.test(none.message) && none.exts.length === 0,
+  );
+
+  // extension lists: documented order, no repetitions
+  check(
+    "P2-231: every verdict extension list is ordered and repetition-free",
+    [fullMac.exts, fullWin.exts, nativeMac.exts, none.exts].every(
+      (exts) => new Set(exts).size === exts.length,
+    ),
+  );
+
+  // message hygiene: short, actionable, no absolute path, no URL scheme
+  const verdicts = [
+    docConvertVerdict("darwin", FULL),
+    docConvertVerdict("win32", FULL),
+    nativeMac,
+    docConvertVerdict("win32", NATIVE_ONLY),
+    none,
+  ];
+  check(
+    "P2-231: every verdict message is non-empty and free of paths and URL schemes",
+    verdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/[A-Za-z]:/.test(v.message) &&
+        !/https?:/i.test(v.message),
+    ),
+  );
+
+  // probe helper injects the existence check (pure module, I/O stays outside)
+  check(
+    "P2-231: probe reads the platform's own list and takes an injected exists()",
+    docConvertProbe("darwin", (p) => p === "/usr/bin/textutil").textutil === true &&
+      docConvertProbe("win32", () => true).textutil === false &&
+      docConvertProbe("win32", () => true).soffice === true,
+  );
+
+  // known-location lists: Windows default + macOS paths present, no empty entries
+  const allPaths = Object.values(SOFFICE_PATHS)
+    .concat(Object.values(TEXTUTIL_PATHS))
+    .concat(Object.values(CUPSFILTER_PATHS))
+    .flat();
+  check(
+    "P2-231: path lists carry the macOS app-bundle path and the Windows default install path",
+    SOFFICE_PATHS.darwin.includes("/Applications/LibreOffice.app/Contents/MacOS/soffice") &&
+      SOFFICE_PATHS.win32.includes("C:\\Program Files\\LibreOffice\\program\\soffice.exe") &&
+      allPaths.every((p) => typeof p === "string" && p.trim().length > 0),
+  );
+  check(
+    "P2-231: the native pipeline is declared macOS-only in the path lists",
+    TEXTUTIL_PATHS.darwin.length > 0 &&
+      TEXTUTIL_PATHS.win32.length === 0 &&
+      CUPSFILTER_PATHS.win32.length === 0,
+  );
+
+  // doccap stays pure: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const doccapCode = doccapSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-231: doccap.ts is pure (no node:fs/child_process/path/os/fetch imports)",
+    !/node:(fs|child_process|path|os|http)/.test(doccapCode) && !/\bfetch\(/.test(doccapCode),
+  );
+
+  // real-repo assertion: the daemon probes ONCE, on the existing boot readiness
+  // hook (next to whisper/edge-tts), with no periodic timer and no per-request
+  // probing — failures degrade to unavailable instead of throwing.
+  // P2-250: the probe function gained exactly one documented lazy reuse call
+  // site (health route) — the boot call inside main() remains the last one.
+  check(
+    "P2-231: the daemon probes doc conversion exactly once, inside main()'s readiness hook",
+    (indexSrc.match(/\bdocConvertProbe\(/g) || []).length === 1 &&
+      (indexSrc.match(/\bprobeDocConvert\(\);/g) || []).length === 2 &&
+      indexSrc.lastIndexOf("probeDocConvert();") > indexSrc.indexOf("async function main"),
+  );
+  check(
+    "P2-231: no periodic doc-conversion timer was introduced",
+    indexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/docconvert/i.test(l)),
+  );
+  check(
+    "P2-231: /api/health carries the additive docConvert readiness block",
+    indexSrc.includes("docConvertState: docConvert.state") &&
+      indexSrc.includes("docConvertMessage: docConvert.message") &&
+      indexSrc.includes("docConvertExts: docConvert.exts"),
+  );
+
+  // real-repo assertion: the tool consumes doccap's lists (no local copy) and
+  // fails with the pt-BR verdict phrase instead of the old English dead end.
+  check(
+    "P2-231: doc2pdf.mjs consumes the doccap lists and keeps no own path list",
+    /apps\/daemon\/src\/doccap\.ts/.test(doc2pdfSrc) &&
+      !doc2pdfSrc.includes("/Applications/LibreOffice.app") &&
+      !doc2pdfSrc.includes("/usr/bin/textutil") &&
+      !/const (SOFFICE|TEXTUTIL|CUPSFILTER)_PATHS\s*=/.test(doc2pdfSrc),
+  );
+  check(
+    "P2-231: doc2pdf.mjs failure is the pt-BR verdict phrase, not the English terminal error",
+    !doc2pdfSrc.includes("no converter available") &&
+      /docConvertVerdict\(process\.platform/.test(doc2pdfSrc),
+  );
+}
+
+// --- P2-234: identity-file boot verdict (identityfile.ts) + wiring ----------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const identitySrc = src(["apps", "daemon", "src", "identityfile.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  const VALID =
+    '{"room":"abc","ecdhPub":"pub","ecdhPriv":"priv","vapid":{"publicKey":"a","privateKey":"b"},"clients":[]}';
+
+  // full verdict table — [exists, content, readFailure, expected plan]
+  const table: Array<[boolean, string | null, string | null, IdentityVerdict["plan"]]> = [
+    [false, null, null, "first-run"], // missing file → first run (unchanged path)
+    [true, "", null, "first-run"], // existing but empty → first run
+    [true, "  \n\t ", null, "first-run"], // whitespace-only → first run
+    [true, "isto não é json {", null, "refuse"], // unparseable text
+    [true, "[]", null, "refuse"], // JSON list
+    [true, "42", null, "refuse"], // JSON number
+    [true, '"texto"', null, "refuse"], // JSON string
+    [true, '{"foo":1}', null, "refuse"], // object with no documented identity field
+    [true, VALID, null, "use"], // valid identity object
+    [true, null, "EACCES", "refuse"], // read failure with the file present
+    [false, null, "EBUSY", "refuse"], // read failure with the file absent — NEVER first-run
+  ];
+
+  const verdicts = table.map(([ex, c, fail]) => identityVerdict(ex, c, fail));
+  check(
+    "P2-234: verdict table — every row lands on the documented plan",
+    verdicts.every((v, i) => v.plan === table[i][3]),
+  );
+  check(
+    "P2-234: a read failure is evaluated first — never first-run, never quarantine",
+    identityVerdict(true, null, "EACCES").plan === "refuse" &&
+      identityVerdict(true, null, "EACCES").quarantine === false &&
+      identityVerdict(false, null, "EBUSY").plan === "refuse" &&
+      identityVerdict(false, null, "EBUSY").quarantine === false,
+  );
+  check(
+    "P2-234: only unreadable content asks for the quarantine move",
+    identityVerdict(true, "{", null).quarantine === true &&
+      identityVerdict(true, "[]", null).quarantine === true &&
+      identityVerdict(true, '{"foo":1}', null).quarantine === true &&
+      identityVerdict(false, null, null).quarantine === false &&
+      identityVerdict(true, VALID, null).quarantine === false,
+  );
+
+  // message hygiene: static, short, no path, no URL scheme, never content
+  const hostile = '{"ecdhPub":"MUITO-SECRETO-1234567890","vapid":{"privateKey":"CHAVE-PRIVADA-ABCD"}}';
+  const allVerdicts = [
+    ...verdicts,
+    identityVerdict(true, hostile, null),
+    identityVerdict(true, hostile.slice(0, 7), null),
+    identityVerdict(true, null, "EACCES"),
+  ];
+  check(
+    "P2-234: every message is non-empty and free of paths and URL schemes",
+    allVerdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/[A-Za-z]:/.test(v.message) &&
+        !v.message.includes("://"),
+    ),
+  );
+  check(
+    "P2-234: no message ever echoes a fragment of the file content (private key)",
+    allVerdicts.every(
+      (v) =>
+        !v.message.includes("MUITO-SECRETO") &&
+        !v.message.includes("CHAVE-PRIVADA") &&
+        !v.message.includes("ecdhPub") &&
+        !v.message.includes("ecdhPriv") &&
+        !v.message.includes("vapid"),
+    ),
+  );
+  check(
+    "P2-234: messages are the static exported phrases",
+    verdicts.every((v, i) => {
+      const expected =
+        v.plan === "refuse"
+          ? table[i][2] !== null
+            ? IDENTITY_REFUSE_READ_MESSAGE
+            : IDENTITY_REFUSE_CONTENT_MESSAGE
+          : v.plan === "first-run"
+            ? IDENTITY_FIRST_RUN_MESSAGE
+            : IDENTITY_USE_MESSAGE;
+      return v.message === expected;
+    }),
+  );
+
+  // quarantineName: derivation, uniqueness, chronological order, never original
+  const t1 = new Date("2026-09-06T03:04:05.123Z");
+  const t2 = new Date("2026-09-06T03:04:05.124Z");
+  const t3 = new Date("2026-12-31T23:59:59.999Z");
+  const q1 = quarantineName("daemon.json", t1);
+  const q2 = quarantineName("daemon.json", t2);
+  const q3 = quarantineName("daemon.json", t3);
+  check(
+    "P2-234: quarantine name derives from the original plus a sortable stamp",
+    q1.startsWith("daemon.json.") &&
+      q1.endsWith(".quarantine") &&
+      q1.includes("20260906T030405123Z"),
+  );
+  check("P2-234: two different stamps never collide", q1 !== q2 && q2 !== q3 && q1 !== q3);
+  check(
+    "P2-234: quarantine names sort chronologically as plain strings",
+    [q1, q2, q3].every((q, i, arr) => i === 0 || arr[i - 1] < q) &&
+      JSON.stringify([q3, q1, q2].sort()) === JSON.stringify([q1, q2, q3]),
+  );
+  check(
+    "P2-234: quarantine name never equals the original and is never empty",
+    ["daemon.json", "x", "", "   "].every(
+      (n) => quarantineName(n, t1) !== n.trim() && quarantineName(n, t1).trim().length > 0,
+    ),
+  );
+
+  // purity: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const identityCode = identitySrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-234: identityfile.ts is pure (no node:fs/crypto/child_process/path/os/fetch imports)",
+    !/node:(fs|crypto|child_process|path|os|http)/.test(identityCode) && !/\bfetch\(/.test(identityCode),
+  );
+
+  // real-repo wiring: the identity read goes through the verdict, exactly once
+  // at boot; the refuse path moves and never deletes, never recreates the
+  // identity, and no periodic timer was introduced.
+  const refuseAt = indexSrc.indexOf('verdict.plan === "refuse"');
+  const exitAt = indexSrc.indexOf("process.exit(78)");
+  const refuseBlock = refuseAt >= 0 && exitAt > refuseAt ? indexSrc.slice(refuseAt, exitAt) : "";
+  check(
+    "P2-234: the daemon reads the identity through the verdict, exactly once at boot",
+    (indexSrc.match(/identityVerdict\(/g) || []).length === 1 &&
+      indexSrc.indexOf("async function loadIdentity") < indexSrc.indexOf("identityVerdict(") &&
+      indexSrc.includes('quarantineName(basename(STATE_FILE'),
+  );
+  check(
+    "P2-234: the refuse path moves the file to quarantine and never deletes it",
+    refuseBlock.includes("quarantineName(") &&
+      refuseBlock.includes("renameSync(") &&
+      refuseBlock.includes("chmodSync(") &&
+      refuseBlock.includes('audit("identity.unreadable"') &&
+      refuseBlock.includes('log("error", verdict.message') &&
+      !/unlink|rmsync|rm\(/i.test(refuseBlock),
+  );
+  check(
+    "P2-234: the refuse path never recreates the identity and exits with the documented code",
+    !refuseBlock.includes("newIdentity") &&
+      !refuseBlock.includes("writeStateAtomic") &&
+      indexSrc.includes("process.exit(78)"),
+  );
+  check(
+    "P2-234: no periodic identity timer was introduced",
+    indexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/identity/i.test(l)),
+  );
+}
+
+// --- P2-254: automatic identity backup copy (identitybackup.ts) + wiring -----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const modSrc = src(["apps", "daemon", "src", "identitybackup.ts"]);
+  const statefileSrc = src(["apps", "daemon", "src", "statefile.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  const DAY = 24 * 60 * 60 * 1000;
+  const T0 = 1_000_000;
+  type WritePlanInput = Parameters<typeof backupWritePlan>[0];
+  const writePlan = (over: Partial<WritePlanInput>) =>
+    backupWritePlan({
+      contentUsable: true,
+      backupExists: true,
+      lastBackupAt: T0,
+      now: T0 + DAY,
+      minIntervalMs: DAY,
+      ...over,
+    });
+
+  // backupName — full table
+  const bnInputs = ["daemon.json", "x", "", "   ", "daemon.json.backup"];
+  check(
+    "P2-254: backupName is never empty and never equals the original",
+    bnInputs.every(
+      (n) => backupName(n).trim().length > 0 && backupName(n) !== n && backupName(n) !== n.trim(),
+    ),
+  );
+  check(
+    "P2-254: backupName is always a sibling bare name in the state dir (no separators, no travel)",
+    bnInputs.every((n) => !/[\\/]/.test(backupName(n)) && !backupName(n).includes("..")),
+  );
+  check(
+    "P2-254: backupName is deterministic and documented for daemon.json",
+    backupName("daemon.json") === "daemon.json.backup" &&
+      backupName("daemon.json") === backupName("daemon.json"),
+  );
+  check(
+    "P2-254: backupName strips directory components — always a bare sibling name",
+    backupName("a/b.json") === "b.json.backup" &&
+      backupName("..\\..\\x.json") === "x.json.backup" &&
+      backupName("a/b/") === "b.backup" &&
+      backupName("dir/.") === "dir.backup" &&
+      backupName("dir/..") === "dir.backup" &&
+      backupName("///") === "daemon.json.backup" &&
+      !backupName("a/b.json").includes("/") &&
+      !backupName("a\\b.json").includes("\\") &&
+      !backupName("dir/..").includes(".."),
+  );
+
+  // backupWritePlan — full table, rules in the documented order
+  const garbage = { contentUsable: false, backupExists: false, lastBackupAt: null } as const;
+  check(
+    "P2-254: unusable content is never copied even with no backup at all — rule 1 beats rule 2",
+    writePlan(garbage).decision === "skip" && writePlan(garbage).reason === "unusable-content",
+  );
+  check(
+    "P2-254: unusable content never overwrites an existing good copy either",
+    writePlan({ contentUsable: false }).decision === "skip" &&
+      writePlan({ contentUsable: false }).reason === "unusable-content",
+  );
+  check(
+    "P2-254: a nonexistent backup with usable content is always written",
+    writePlan({ backupExists: false, lastBackupAt: null }).decision === "write" &&
+      writePlan({ backupExists: false, lastBackupAt: null }).reason === "no-backup-yet",
+  );
+  check(
+    "P2-254: a copy exactly at the minimum interval is written (explicit threshold)",
+    writePlan({ lastBackupAt: T0, now: T0 + DAY }).decision === "write",
+  );
+  check(
+    "P2-254: a copy older than the interval is written",
+    writePlan({ lastBackupAt: T0 - DAY, now: T0 + DAY }).decision === "write" &&
+      writePlan({ lastBackupAt: T0 - DAY, now: T0 + DAY }).reason === "backup-stale",
+  );
+  check(
+    "P2-254: a copy newer than the interval is skipped",
+    writePlan({ lastBackupAt: T0, now: T0 + 1 }).decision === "skip" &&
+      writePlan({ lastBackupAt: T0, now: T0 + 1 }).reason === "backup-fresh",
+  );
+  check(
+    "P2-254: an instant in the future is treated as now — the age is never negative",
+    writePlan({ lastBackupAt: T0 + 10 * DAY, now: T0 + DAY }).decision === "skip" &&
+      writePlan({ lastBackupAt: T0 + 10 * DAY, now: T0 + DAY }).reason === "backup-fresh",
+  );
+  check(
+    "P2-254: a non-finite instant is refused instead of guessed",
+    [Number.NaN, Number.POSITIVE_INFINITY].every((bad) =>
+      [
+        writePlan({ now: bad }),
+        writePlan({ lastBackupAt: bad }),
+      ].every((p) => p.decision === "skip" && p.reason === "non-finite-instant"),
+    ),
+  );
+  check(
+    "P2-254: the write plan is deterministic for the same input",
+    JSON.stringify(writePlan({})) === JSON.stringify(writePlan({})),
+  );
+
+  // identityRecoveryPlan — verdicts built exactly as identityVerdict returns them
+  const VALID =
+    '{"room":"abc","ecdhPub":"pub","ecdhPriv":"priv","vapid":{"publicKey":"a","privateKey":"b"},"clients":[]}';
+  const mainUse = identityVerdict(true, VALID, null);
+  const mainMissing = identityVerdict(false, null, null);
+  const mainReadFail = identityVerdict(true, null, "EACCES");
+  const mainContentRefuse = identityVerdict(true, "{", null);
+  const backupUse = identityVerdict(true, VALID, null);
+  const backupRefuse = identityVerdict(true, "{", null);
+  check(
+    "P2-254: a usable main wins over everything — the copy is never even consulted",
+    identityRecoveryPlan(mainUse, true, backupUse) === "use-main" &&
+      identityRecoveryPlan(mainUse, false, null) === "use-main",
+  );
+  check(
+    "P2-254: a main read failure never restores, even with a usable copy present",
+    identityRecoveryPlan(mainReadFail, true, backupUse) === "refuse",
+  );
+  check(
+    "P2-254: a missing main file stays a first run and never restores",
+    identityRecoveryPlan(mainMissing, true, backupUse) === "first-run" &&
+      identityRecoveryPlan(mainMissing, false, null) === "first-run",
+  );
+  check(
+    "P2-254: a content refusal with a usable copy restores from it",
+    identityRecoveryPlan(mainContentRefuse, true, backupUse) === "restore-from-backup",
+  );
+  check(
+    "P2-254: a content refusal with an unusable copy refuses with the existing message path",
+    identityRecoveryPlan(mainContentRefuse, true, backupRefuse) === "refuse",
+  );
+  check(
+    "P2-254: a content refusal without any copy refuses",
+    identityRecoveryPlan(mainContentRefuse, false, null) === "refuse",
+  );
+  check(
+    "P2-254: the recovery plan is identical for the same input in two calls",
+    (
+      [
+        [mainUse, true, backupUse],
+        [mainReadFail, true, backupUse],
+        [mainMissing, false, null],
+        [mainContentRefuse, true, backupUse],
+        [mainContentRefuse, true, backupRefuse],
+        [mainContentRefuse, false, null],
+      ] as Array<[IdentityVerdict, boolean, IdentityVerdict | null]>
+    ).every(
+      ([m, ex, b]) =>
+        JSON.stringify(identityRecoveryPlan(m, ex, b)) ===
+        JSON.stringify(identityRecoveryPlan(m, ex, b)),
+    ),
+  );
+
+  // purity: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const modCode = modSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-254: identitybackup.ts is pure (no node:fs/path/child_process/fetch imports)",
+    !/node:(fs|path|child_process|crypto|os|http)/.test(modCode) && !/\bfetch\(/.test(modCode),
+  );
+
+  // real-repo wiring: the copy is written by writeStateAtomic (same atomic
+  // 0600 write as the main file), only as a persistence side effect — no new
+  // timers — and the P2-234 quarantine path stays untouched.
+  const helperAt = daemonIndexSrc.indexOf("function persistIdentityBackup");
+  const loadAt = daemonIndexSrc.indexOf("async function loadIdentity");
+  const helperSlice = helperAt >= 0 && loadAt > helperAt ? daemonIndexSrc.slice(helperAt, loadAt) : "";
+  check(
+    "P2-254: the backup copy is written by writeStateAtomic, the same atomic 0600 write",
+    helperSlice.includes("writeStateAtomic(backupPath") &&
+      !helperSlice.includes("writeFileSync(") &&
+      !helperSlice.includes("chmodSync(") &&
+      /mode:\s*0o600/.test(statefileSrc),
+  );
+  check(
+    "P2-254: every successful state persistence triggers the backup exactly once per site",
+    (daemonIndexSrc.match(/persistIdentityBackup\(serialized\)/g) || []).length === 4,
+  );
+  check(
+    "P2-254: no new periodic timer was introduced for the backup copy",
+    !/setInterval|setTimeout/.test(helperSlice) &&
+      daemonIndexSrc
+        .split("\n")
+        .filter((l) => l.includes("setInterval"))
+        .every((l) => !/backup/i.test(l)),
+  );
+  check(
+    "P2-254: the boot restore preserves the illegible file via the P2-234 quarantine path first, then restores",
+    daemonIndexSrc.includes("identityRecoveryPlan(") &&
+      daemonIndexSrc.indexOf("quarantineName(basename(STATE_FILE") > -1 &&
+      daemonIndexSrc.indexOf("renameSync(STATE_FILE, qfile)") <
+        daemonIndexSrc.indexOf("writeStateAtomic(STATE_FILE, backupContent)") &&
+      daemonIndexSrc.includes('audit("identity.restored-from-backup")'),
+  );
+  const recoveryAt = daemonIndexSrc.indexOf("let restoredContent: string | null = null;");
+  const refuseIfAt = daemonIndexSrc.indexOf('verdict.plan === "refuse"');
+  const recoverySlice =
+    recoveryAt >= 0 && refuseIfAt > recoveryAt ? daemonIndexSrc.slice(recoveryAt, refuseIfAt) : "";
+  check(
+    "P2-254: a failed restore write rolls the preserved bytes back and refuses — never a missing main",
+    recoverySlice.includes("writeStateAtomic(STATE_FILE, backupContent)") &&
+      recoverySlice.indexOf("renameSync(preserved, STATE_FILE)") >
+        recoverySlice.indexOf("writeStateAtomic(STATE_FILE, backupContent)") &&
+      recoverySlice.includes("restoredContent = backupContent") &&
+      recoverySlice.indexOf("writeStateAtomic(STATE_FILE, backupContent)") <
+        recoverySlice.indexOf("restored = true"),
+  );
+  check(
+    "P2-254: boot and persistence derive the backup path from one single source",
+    (daemonIndexSrc.match(/identityBackupPath\(\)/g) || []).length >= 2 &&
+      (daemonIndexSrc.match(/join\((?:dir|STATE_DIR), backupName\(basename\(STATE_FILE\)\)\)/g) || [])
+        .length === 1,
+  );
+  check(
+    "P2-254: the P2-234 refuse path stays intact — one verdict read, quarantine move, exit 78",
+    (daemonIndexSrc.match(/identityVerdict\(/g) || []).length === 1 &&
+      daemonIndexSrc.includes("quarantineName(basename(STATE_FILE") &&
+        daemonIndexSrc.includes("process.exit(78)") &&
+      daemonIndexSrc.includes('audit("identity.unreadable"'),
+  );
+}
+
+
+// --- P2-235: right-click context menu (ctxmenu.ts) ---------------------------
+{
+  const allow = externalOpenDecision("https://example.com/docs");
+  const refuse = externalOpenDecision("file:///etc/passwd");
+  const base: Parameters<typeof contextMenuSpec>[3] = {
+    editable: false,
+    canCut: false,
+    canCopy: false,
+    canPaste: false,
+    canSelectAll: false,
+    selectionText: "",
+    linkUrl: "",
+    misspelledWord: "",
+    suggestions: [],
+  };
+  const spec = (
+    harnessSession: boolean,
+    packaged: boolean,
+    decision: ReturnType<typeof externalOpenDecision>,
+    over: Partial<typeof base> = {},
+  ) => contextMenuSpec(harnessSession, packaged, decision, { ...base, ...over });
+
+  // rule 1 — the harness-session rule is FIRST: selection, editable field,
+  // link, misspelling and dev mode together still produce an empty list.
+  check(
+    "P2-235: harness session with selection and link → empty list",
+    spec(true, false, allow, { selectionText: "trecho", canCopy: true, linkUrl: "https://example.com/x" }).length === 0,
+  );
+  check(
+    "P2-235: harness session is empty even fully loaded in a dev build",
+    spec(true, false, allow, {
+      editable: true,
+      canCut: true,
+      canCopy: true,
+      canPaste: true,
+      canSelectAll: true,
+      selectionText: "x",
+      linkUrl: "https://example.com/x",
+      misspelledWord: "errro",
+      suggestions: ["erro"],
+    }).length === 0,
+  );
+
+  // rule 2 — packaged NEVER renders Inspect Element; dev (unpackaged,
+  // non-harness) does.
+  check(
+    "P2-235: packaged never renders Inspecionar elemento",
+    spec(false, true, allow, { editable: true, canPaste: true }).every((i) => i.id !== "ctx-inspect"),
+  );
+  const devOnly = spec(false, false, allow, {});
+  check(
+    "P2-235: unpackaged outside harness renders Inspecionar elemento",
+    devOnly.length === 1 && devOnly[0]?.id === "ctx-inspect" && devOnly[0]?.label === "Inspecionar elemento",
+  );
+
+  // editable field: paste flag on → Colar; paste flag off → no Colar at all
+  const editablePaste = spec(false, true, allow, {
+    editable: true,
+    canCut: true,
+    canCopy: true,
+    canPaste: true,
+    canSelectAll: true,
+  });
+  check(
+    "P2-235: editable with canPaste renders Colar",
+    editablePaste.some((i) => i.id === "ctx-paste" && i.label === "Colar"),
+  );
+  const editableNoPaste = spec(false, true, allow, {
+    editable: true,
+    canCut: true,
+    canCopy: true,
+    canSelectAll: true,
+  });
+  check(
+    "P2-235: editable with canPaste off renders no Colar",
+    editableNoPaste.every((i) => i.id !== "ctx-paste"),
+  );
+
+  // selection outside an editable field: Copiar, never Colar
+  const sel = spec(false, true, allow, { canCopy: true, selectionText: "trecho selecionado" });
+  check(
+    "P2-235: selection outside editable renders Copiar and never Colar",
+    sel.some((i) => i.id === "ctx-copy" && i.label === "Copiar") && sel.every((i) => i.id !== "ctx-paste"),
+  );
+
+  // nothing selected, not editable, packaged: only the documented items (none)
+  check(
+    "P2-235: nothing selected and not editable renders no edit items",
+    spec(false, true, allow, {}).every(
+      (i) => !["ctx-cut", "ctx-copy", "ctx-paste", "ctx-select-all"].includes(i.id ?? ""),
+    ),
+  );
+
+  // link actions follow the extlink verdict: approved → open + copy address,
+  // refused → at most copy address, never open.
+  const openLink = spec(false, true, allow, { linkUrl: "https://example.com/docs" });
+  check(
+    "P2-235: approved link renders Abrir link + Copiar endereço do link",
+    openLink.some((i) => i.id === "ctx-open-link" && i.label === "Abrir link") &&
+      openLink.some((i) => i.id === "ctx-copy-link" && i.label === "Copiar endereço do link"),
+  );
+  const refusedLink = spec(false, true, refuse, { linkUrl: "file:///etc/passwd" });
+  check(
+    "P2-235: refused link renders only copy address, never open",
+    refusedLink.some((i) => i.id === "ctx-copy-link") && refusedLink.every((i) => i.id !== "ctx-open-link"),
+  );
+
+  // spelling suggestions: capped at the documented ceiling, never above;
+  // an empty suggestion list renders no suggestion item at all.
+  const capped = spec(false, true, allow, {
+    misspelledWord: "errro",
+    suggestions: ["erro", "terra", "erros", "terro", "retro", "erro3"],
+  });
+  const spellItems = capped.filter((i) => (i.id ?? "").startsWith("ctx-spell-"));
+  check(
+    "P2-235: suggestions are capped at the documented ceiling",
+    spellItems.length === SPELLING_SUGGESTIONS_MAX && spellItems.length < 6,
+  );
+  check(
+    "P2-235: empty suggestion list renders no suggestion item",
+    spec(false, true, allow, { misspelledWord: "errro", suggestions: [] }).every(
+      (i) => !(i.id ?? "").startsWith("ctx-spell-"),
+    ),
+  );
+
+  // stable ordering between two calls with the same input
+  const stable: Parameters<typeof contextMenuSpec>[3] = {
+    editable: true,
+    canCut: true,
+    canCopy: true,
+    canPaste: true,
+    canSelectAll: true,
+    selectionText: "x",
+    linkUrl: "https://example.com/x",
+    misspelledWord: "errro",
+    suggestions: ["erro", "terra"],
+  };
+  check(
+    "P2-235: item order is stable between two calls with the same input",
+    JSON.stringify(contextMenuSpec(false, false, allow, stable)) ===
+      JSON.stringify(contextMenuSpec(false, false, allow, stable)),
+  );
+
+  // copy discipline: short pt-BR labels, no emoji (P2-118/P2-107), no absolute
+  // file path, no URL scheme in any label
+  const kitchen = contextMenuSpec(false, false, allow, stable);
+  const BANNED = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2300}-\u{23FF}\u{2500}-\u{25FF}\u{FE0F}]/u;
+  check(
+    "P2-235: labels are path-free, scheme-free and emoji-free",
+    kitchen
+      .filter((i) => typeof i.label === "string")
+      .every(
+        (i) =>
+          (i.label as string).length > 0 &&
+          !i.label!.includes("/") &&
+          !i.label!.includes("\\") &&
+          !i.label!.includes("://") &&
+          !i.label!.includes("file:") &&
+          !i.label!.includes("http:") &&
+          !BANNED.test(i.label as string),
+      ),
+  );
+  check(
+    "P2-235: no dangling separator and none as first or last item",
+    (() => {
+      const kinds = kitchen.map((i) => (i.type === "separator" ? "sep" : "item"));
+      return kinds[0] === "item" && kinds[kinds.length - 1] === "item" && kinds.every((k, i) => k === "item" || kinds[i - 1] === "item");
+    })(),
+  );
+
+  // module purity: same hygiene as menu.ts/hotkey.ts (no electron, no node
+  // builtins, no I/O, no timers — comments stripped before the check)
+  const ctxSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "ctxmenu.ts"), "utf8");
+  const ctxCode = ctxSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-235: ctxmenu.ts is pure — no electron/node builtins/timers",
+    !/electron|node:|require\(|setInterval|setTimeout|\bfetch\(/.test(ctxCode),
+  );
+
+  // the scheme verdict type comes from the existing extlink module
+  check(
+    "P2-235: ctxmenu.ts takes the link verdict from extlink.ts (P2-178)",
+    ctxCode.includes('from "./extlink"'),
+  );
+
+  // real main.ts: ONE context-menu listener, harness flag consulted first, the
+  // verdict from extlink, an empty list meaning no menu, and no new timer or
+  // IPC channel anywhere in the block.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-235: main.ts registers exactly one context-menu listener",
+    (mainSrc.match(/on\("context-menu"/g) ?? []).length === 1,
+  );
+  check(
+    "P2-235: main.ts feeds HERMETIC_E2E (harness session) as the first spec input",
+    /win\.webContents\.on\("context-menu", \(_event, params\) => \{[\s\S]*?contextMenuSpec\(HERMETIC_E2E, app\.isPackaged, decision,/.test(mainSrc),
+  );
+  check(
+    "P2-235: main.ts resolves the context-menu link verdict through externalOpenDecision",
+    mainSrc.includes("externalOpenDecision(params.linkURL)"),
+  );
+  check(
+    "P2-235: main.ts shows no menu when the spec list is empty",
+    mainSrc.includes("if (items.length === 0) return;"),
+  );
+  const ctxListenerAt = mainSrc.indexOf('win.webContents.on("context-menu"');
+  const ctxListenerBlock = ctxListenerAt >= 0 ? mainSrc.slice(ctxListenerAt, ctxListenerAt + 2400) : "";
+  check(
+    "P2-235: the context-menu block introduces no timer and no IPC channel",
+    ctxListenerBlock.length > 0 &&
+      !ctxListenerBlock.includes("setInterval") &&
+      !ctxListenerBlock.includes("setTimeout") &&
+      !ctxListenerBlock.includes("ipcMain"),
+  );
+
+  // in the pure module the harness rule is literally the first consulted rule,
+  // before the packaged rule and before any label is emitted
+  const specBody = ctxSrc.slice(ctxSrc.indexOf("export function contextMenuSpec"));
+  check(
+    "P2-235: in the pure spec the harness-session rule is the first consulted",
+    specBody.indexOf("if (harnessSession) return [];") >= 0 &&
+      specBody.indexOf("if (harnessSession) return [];") < specBody.indexOf("packaged ?") &&
+      specBody.indexOf("if (harnessSession) return [];") < specBody.indexOf("Recortar"),
+  );
+}
+
+// --- P2-236: routine run lease (routinelease.ts) + wiring -------------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const leaseSrc = src(["apps", "daemon", "src", "routinelease.ts"]);
+  const routinesSrc = src(["apps", "daemon", "src", "routines.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  // --- parseRunLease table -------------------------------------------------
+
+  check(
+    "P2-236: parseRunLease — an empty env keeps the documented default with no problem",
+    parseRunLease({}).leaseMs === DEFAULT_RUN_LEASE_MS &&
+      parseRunLease({}).problems.length === 0 &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "   " }).leaseMs === DEFAULT_RUN_LEASE_MS &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "   " }).problems.length === 0,
+  );
+  check(
+    "P2-236: parseRunLease — a valid whole positive ms value is accepted as-is",
+    parseRunLease({ OCR_RUN_LEASE_MS: "3600000" }).leaseMs === 3_600_000 &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "3600000" }).problems.length === 0,
+  );
+  check(
+    "P2-236: parseRunLease — the documented off keyword disables the lease",
+    parseRunLease({ OCR_RUN_LEASE_MS: "off" }).leaseMs === RUN_LEASE_OFF_MS &&
+      parseRunLease({ OCR_RUN_LEASE_MS: "off" }).problems.length === 0 &&
+      parseRunLease({ OCR_RUN_LEASE_MS: " OFF " }).leaseMs === RUN_LEASE_OFF_MS,
+  );
+  const badLeases: Array<[string, string]> = [
+    ["abc", "non-numeric"],
+    ["0", "zero"],
+    ["-5", "negative"],
+    ["1500.5", "fractional"],
+    [String(RUN_LEASE_CEILING_MS + 1), "above ceiling"],
+  ];
+  check(
+    "P2-236: parseRunLease — non-numeric, zero, negative, fractional and above-ceiling are all problems",
+    badLeases.every(
+      ([raw]) =>
+        parseRunLease({ OCR_RUN_LEASE_MS: raw }).problems.length === 1 &&
+        parseRunLease({ OCR_RUN_LEASE_MS: raw }).leaseMs === DEFAULT_RUN_LEASE_MS,
+    ),
+  );
+  check(
+    "P2-236: parseRunLease — several problems accumulate from one value without short-circuit",
+    parseRunLease({ OCR_RUN_LEASE_MS: "-2.5" }).problems.length === 2,
+  );
+
+  // --- leaseVerdict table --------------------------------------------------
+
+  const LEASE = DEFAULT_RUN_LEASE_MS; // the documented 2 h default, explicit here
+  const NOW = 1_000_000_000_000;
+
+  check("P2-236: leaseVerdict — an empty list yields nothing to do", leaseVerdict(NOW, LEASE, []).length === 0);
+
+  const scenarios: Array<[string, RoutineRunFacts, string]> = [
+    ["not in flight with an ancient start stamp survives", { id: "r", inFlight: false, startedAt: NOW - LEASE * 10 }, "none"],
+    ["in flight within the lease survives", { id: "r", inFlight: true, startedAt: NOW - LEASE + 1 }, "none"],
+    // the documented threshold: a run exactly at the lease boundary is NOT killed
+    ["in flight exactly at the lease threshold survives", { id: "r", inFlight: true, startedAt: NOW - LEASE }, "none"],
+    ["in flight strictly older than the lease is killed", { id: "r", inFlight: true, startedAt: NOW - LEASE - 1 }, "kill"],
+    ["in flight without a start stamp is stamped", { id: "r", inFlight: true }, "stamp"],
+  ];
+  check(
+    "P2-236: leaseVerdict — the full plan table lands on the documented plan",
+    scenarios.every(([, facts, plan]) => leaseVerdict(NOW, LEASE, [facts])[0].plan === plan),
+  );
+
+  const pass1 = leaseVerdict(1000, LEASE, [{ id: "r1", inFlight: true }])[0];
+  const pass2 = leaseVerdict(1000 + LEASE + 1, LEASE, [{ id: "r1", inFlight: true, startedAt: 1000 }])[0];
+  check(
+    "P2-236: leaseVerdict — the same routine is killed only on a later pass, after stamp + lease",
+    pass1.plan === "stamp" && pass2.plan === "kill",
+  );
+  check(
+    "P2-236: leaseVerdict — a stamped run is never killed in the same pass it got the stamp",
+    leaseVerdict(1000, LEASE, [{ id: "r1", inFlight: true }]).every((v) => v.plan !== "kill"),
+  );
+  check(
+    "P2-236: leaseVerdict — a disabled lease returns nothing to do even for an ancient in-flight run",
+    leaseVerdict(NOW, RUN_LEASE_OFF_MS, [
+      { id: "old", inFlight: true, startedAt: NOW - LEASE * 10 },
+      { id: "nostamp", inFlight: true },
+      { id: "idle", inFlight: false },
+    ]).every((v) => v.plan === "none"),
+  );
+
+  const mixed: RoutineRunFacts[] = [
+    { id: "a", inFlight: true, startedAt: NOW - LEASE - 1 },
+    { id: "b", inFlight: false, startedAt: NOW - LEASE * 10 },
+    { id: "c", inFlight: true },
+    { id: "d", inFlight: true, startedAt: NOW },
+  ];
+  check(
+    "P2-236: leaseVerdict — iteration order is preserved and every id comes from the input list",
+    JSON.stringify(leaseVerdict(NOW, LEASE, mixed)) ===
+      JSON.stringify([
+        { id: "a", plan: "kill" },
+        { id: "b", plan: "none" },
+        { id: "c", plan: "stamp" },
+        { id: "d", plan: "none" },
+      ]) &&
+      leaseVerdict(NOW, LEASE, mixed).every((v) => mixed.some((m) => m.id === v.id)),
+  );
+
+  // --- kill phrase hygiene --------------------------------------------------
+
+  check(
+    "P2-236: the kill phrase is static, short, path-free, URL-scheme-free and session-free",
+    RUN_LEASE_KILL_MESSAGE.length > 0 &&
+      RUN_LEASE_KILL_MESSAGE.length <= 200 &&
+      RUN_LEASE_KILL_MESSAGE === RUN_LEASE_KILL_MESSAGE.trim() &&
+      !/[\\/]/.test(RUN_LEASE_KILL_MESSAGE) &&
+      !/[A-Za-z]:/.test(RUN_LEASE_KILL_MESSAGE) &&
+      !/https?:/i.test(RUN_LEASE_KILL_MESSAGE) &&
+      !/\bses[a-z0-9]{6,}/i.test(RUN_LEASE_KILL_MESSAGE),
+  );
+
+  // --- purity + real-repo wiring --------------------------------------------
+
+  // strip block + line comments first — the header prose names the banned modules
+  const leaseCode = leaseSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check(
+    "P2-236: routinelease.ts is pure (no node:fs/child_process/path/os/http imports, no fetch)",
+    !/node:(fs|child_process|path|os|http)/.test(leaseCode) && !/\bfetch\(/.test(leaseCode),
+  );
+  check(
+    "P2-236: Routine gains runStartedAt additively — the on-disk marker fields are untouched",
+    routinesSrc.includes("runStartedAt?: number;") &&
+      routinesSrc.includes("lastSessionID?: string;") &&
+      routinesSrc.includes("lastStatus?:") &&
+      routinesSrc.includes("lastError?:"),
+  );
+
+  const fireAt = daemonIndexSrc.indexOf("async function fireRoutine");
+  const stampAt = daemonIndexSrc.indexOf("r.runStartedAt = Date.now();");
+  check(
+    "P2-236: the run start is stamped where the in-flight marker is written (fireRoutine, all modes)",
+    stampAt > fireAt && stampAt < fireAt + 800 && daemonIndexSrc.includes("r.lastSessionID = created.id;"),
+  );
+
+  const sweepAt = daemonIndexSrc.indexOf("function checkRoutines");
+  const sweepEnd = daemonIndexSrc.indexOf("setInterval(checkRoutines");
+  check(
+    "P2-236: the lease verdict is consulted inside the existing periodic sweep",
+    sweepAt >= 0 &&
+      sweepEnd > sweepAt &&
+      daemonIndexSrc.indexOf("leaseVerdict(") > sweepAt &&
+      daemonIndexSrc.indexOf("leaseVerdict(") < sweepEnd,
+  );
+
+  const releaseAt = daemonIndexSrc.indexOf("function releaseStuckRun");
+  const releaseBlock = releaseAt >= 0 ? daemonIndexSrc.slice(releaseAt, sweepAt) : "";
+  check(
+    "P2-236: the release path clears the in-flight marker and never deletes the routine",
+    releaseBlock.includes("pendingRuns.delete(") &&
+      releaseBlock.includes("r.lastSessionID = undefined;") &&
+      releaseBlock.includes('r.lastError = RUN_LEASE_KILL_MESSAGE;') &&
+      releaseBlock.includes("saveRoutines(routines);") &&
+      !/splice|\.filter\(|\.pop\(/.test(releaseBlock),
+  );
+
+  const mainAt = daemonIndexSrc.indexOf("async function main");
+  check(
+    "P2-236: an invalid OCR_RUN_LEASE_MS refuses the boot next to the other knobs (fail-closed)",
+    daemonIndexSrc.includes("const runLease = parseRunLease(process.env);") &&
+      mainAt >= 0 &&
+      daemonIndexSrc.indexOf("if (runLease.problems.length > 0)") > mainAt,
+  );
+  check(
+    "P2-236: no periodic lease timer was introduced",
+    daemonIndexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/lease|stuck/i.test(l)),
+  );
+}
+
+// --- P2-286: routine due verdict (routinedue.ts) + wiring --------------------
+
+{
+  const daemonIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const routinedueSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "routinedue.ts"), "utf8");
+
+  // Local calendar helpers — fixtures are built from local accessors so the
+  // table holds on any machine timezone.
+  const dayKey = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const at = (h: number, m: number) => {
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  };
+  const daily = (over: Partial<RoutineDueFacts> = {}): RoutineDueFacts => ({
+    hour: 9,
+    minute: 0,
+    mode: "daily",
+    ...over,
+  });
+  const todayStr = dayKey(new Date(at(9, 10)));
+
+  // --- rule 1: refuse, and never fire (fail-closed) -------------------------
+  check(
+    "P2-286: missing input (undefined and null) refuses and never fires",
+    routineDue(at(9, 10), undefined, ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse" &&
+      routineDue(at(9, 10), null, ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+  );
+  check(
+    "P2-286: non-object input (number, string, array) refuses and never fires",
+    [42, "x", []].every(
+      (i) => routineDue(at(9, 10), i as never, ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+    ),
+  );
+  check(
+    "P2-286: non-integer hour or minute refuses and never fires",
+    routineDue(at(9, 10), daily({ hour: 7.5 }), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse" &&
+      routineDue(at(9, 10), daily({ minute: 30.5 }), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+  );
+  check(
+    "P2-286: a non-finite now refuses and never fires",
+    routineDue(NaN, daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse" &&
+      routineDue(Infinity, daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "refuse",
+  );
+
+  // --- rules 2-4: wait ------------------------------------------------------
+  check(
+    "P2-286: a routine already fulfilled on the current local day waits",
+    (() => {
+      const v = routineDue(at(9, 10), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "already-done";
+    })(),
+  );
+  check(
+    "P2-286: weekday mode with today outside the day list waits",
+    (() => {
+      const dow = new Date(at(9, 10)).getDay();
+      const v = routineDue(at(9, 10), daily({ mode: "days", days: [(dow + 1) % 7] }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "day-not-scheduled";
+    })(),
+  );
+  check(
+    "P2-286: an instant before the scheduled time waits",
+    (() => {
+      const v = routineDue(at(8, 59), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "before-time";
+    })(),
+  );
+
+  // --- rule 5 and fire ------------------------------------------------------
+  check(
+    "P2-286: an instant beyond the documented delay window closes the day without firing",
+    (() => {
+      const v = routineDue(at(15, 0), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "close-day" && v.reason === "past-window";
+    })(),
+  );
+  check(
+    "P2-286: an instant inside the window fires, the window edge included",
+    routineDue(at(9, 10), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "fire" &&
+      routineDue(at(9, 30), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "fire" &&
+      routineDue(at(9, 31), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN).plan === "close-day",
+  );
+
+  // --- rule order, clock property, ceiling, determinism ----------------------
+  check(
+    "P2-286: rule order — already fulfilled today stays wait even with the instant beyond the window",
+    (() => {
+      const v = routineDue(at(23, 0), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return v.plan === "wait" && v.reason === "already-done";
+    })(),
+  );
+  check(
+    "P2-286: a clock moved backward on the same local day never fires the routine again",
+    (() => {
+      const fired = routineDue(at(9, 10), daily(), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      const rewoundBefore = routineDue(at(8, 55), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      const rewoundInside = routineDue(at(9, 5), daily({ lastRun: todayStr }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      return fired.plan === "fire" && rewoundBefore.plan === "wait" && rewoundInside.plan === "wait";
+    })(),
+  );
+  check(
+    "P2-286: an exhausted attempt ceiling closes the day, one retry below it still fires",
+    (() => {
+      const done = routineDue(at(9, 10), daily({ attemptsToday: ROUTINE_DUE_MAX_ATTEMPTS }), ROUTINE_DUE_DELAY_WINDOW_MIN);
+      const retry = routineDue(
+        at(9, 10),
+        daily({ attemptsToday: ROUTINE_DUE_MAX_ATTEMPTS - 1 }),
+        ROUTINE_DUE_DELAY_WINDOW_MIN,
+      );
+      return done.plan === "close-day" && done.reason === "attempts-exhausted" && retry.plan === "fire";
+    })(),
+  );
+  check("P2-286: the same input yields the identical verdict in two calls", (() => {
+    const input = daily({ lastRun: "2020-01-02", attemptsToday: 1 });
+    return (
+      JSON.stringify(routineDue(at(9, 10), input, ROUTINE_DUE_DELAY_WINDOW_MIN)) ===
+      JSON.stringify(routineDue(at(9, 10), input, ROUTINE_DUE_DELAY_WINDOW_MIN))
+    );
+  })());
+
+  // --- purity + real-repo wiring --------------------------------------------
+  // strip block + line comments first — the header prose names the banned modules
+  const routinedueCode = routinedueSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check(
+    "P2-286: routinedue.ts is pure — no imports at all, so no fs/child_process/http/fetch",
+    !/^import /m.test(routinedueCode) &&
+      !/node:(fs|child_process|path|os|http)/.test(routinedueCode) &&
+      !/\bfetch\(/.test(routinedueCode),
+  );
+  const sweepAt = daemonIndexSrc.indexOf("function checkRoutines");
+  const sweepEnd = daemonIndexSrc.indexOf("setInterval(checkRoutines");
+  check(
+    "P2-286: the fire decision in checkRoutines comes from the module, not a hand-rolled time comparison",
+    sweepAt >= 0 &&
+      sweepEnd > sweepAt &&
+      daemonIndexSrc.indexOf("routineDue(") > sweepAt &&
+      daemonIndexSrc.indexOf("routineDue(") < sweepEnd &&
+      !daemonIndexSrc.includes("if (nowMin < r.hour * 60 + r.minute) continue;"),
+  );
+  const fireAt = daemonIndexSrc.indexOf("async function fireRoutine");
+  const fireBlock = fireAt >= 0 ? daemonIndexSrc.slice(fireAt, daemonIndexSrc.indexOf("async function completeRoutine")) : "";
+  check(
+    "P2-286: the failure path consults the documented ceiling and closes the day instead of clearing the mark forever",
+    fireBlock.includes("bumpFireAttempt(") &&
+      fireBlock.includes("ROUTINE_DUE_MAX_ATTEMPTS") &&
+      fireBlock.includes("ROUTINE_DUE_EXHAUSTED_MESSAGE"),
+  );
+  check(
+    "P2-286: no periodic timer was introduced for the routine due decision",
+    daemonIndexSrc
+      .split("\n")
+      .filter((l) => l.includes("setInterval"))
+      .every((l) => !/routinedue|fireAttempt|routineDue/i.test(l)) &&
+      daemonIndexSrc.includes("setInterval(checkRoutines, 30_000);"),
+  );
+  check(
+    "P2-286: creation after the scheduled time marks the current local day with the existing lastRun field",
+    daemonIndexSrc.includes("routine.lastRun = created.toLocaleDateString") &&
+      !daemonIndexSrc.includes("lastRunOverride"),
+  );
+  check(
+    "P2-286: the exhaustion phrase is static, short and content-free",
+    ROUTINE_DUE_EXHAUSTED_MESSAGE.length > 0 &&
+      ROUTINE_DUE_EXHAUSTED_MESSAGE.length <= 200 &&
+      !/[\\/]/.test(ROUTINE_DUE_EXHAUSTED_MESSAGE) &&
+      !/https?:/i.test(ROUTINE_DUE_EXHAUSTED_MESSAGE) &&
+      !/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(ROUTINE_DUE_EXHAUSTED_MESSAGE),
+  );
+}
+
+// --- P2-316: per-routine execution history (routinehistory.ts) + wiring -----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const historySrc = src(["apps", "daemon", "src", "routinehistory.ts"]);
+  const routinesFileSrc = src(["apps", "daemon", "src", "routinesfile.ts"]);
+  const routinesModSrc = src(["apps", "daemon", "src", "routines.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  // helpers — fixed instants so the tables hold anywhere, anytime
+  const t = (iso: string) => `${iso}`;
+  const rec = (at: string, durationMs: number, outcome: RoutineHistoryRecord["outcome"], sessionId?: string): RoutineHistoryRecord =>
+    sessionId === undefined ? { at, durationMs, outcome } : { at, durationMs, outcome, sessionId };
+  const T0 = t("2026-09-01T10:00:00.000Z");
+  const T1 = t("2026-09-02T10:00:00.000Z");
+  const T2 = t("2026-09-03T10:00:00.000Z");
+  const T3 = t("2026-09-04T10:00:00.000Z");
+  const atOf = (h: RoutineHistoryRecord[]) => h.map((r) => r.at);
+
+  // --- module shape: documented cap ----------------------------------------
+  check(
+    "P2-316: the cap is a documented positive integer well above one day of triggers",
+    Number.isInteger(ROUTINE_HISTORY_CAP) && ROUTINE_HISTORY_CAP >= 2 && ROUTINE_HISTORY_CAP <= 1000,
+  );
+
+  // --- insertion, ordering, cap (table) --------------------------------------
+  const appendTable: Array<{
+    name: string;
+    history: unknown;
+    record: RoutineHistoryRecord;
+    want: string[];
+  }> = [
+    {
+      name: "missing history → the record lands alone",
+      history: undefined,
+      record: rec(T1, 5, "completed"),
+      want: [T1],
+    },
+    {
+      name: "empty history → the record lands alone",
+      history: [],
+      record: rec(T1, 5, "failed"),
+      want: [T1],
+    },
+    {
+      name: "older history → the new record comes first (newest first)",
+      history: [rec(T1, 5, "completed")],
+      record: rec(T2, 7, "completed"),
+      want: [T2, T1],
+    },
+    {
+      name: "newer history → the new record still sorts newest first",
+      history: [rec(T2, 5, "completed")],
+      record: rec(T1, 7, "failed"),
+      want: [T2, T1],
+    },
+    {
+      name: "degenerate history shapes survive as normalization, not a throw",
+      history: { not: "an array" },
+      record: rec(T1, 5, "skipped"),
+      want: [T1],
+    },
+  ];
+  check(
+    "P2-316: append table — insertion and newest-first ordering",
+    appendTable.every(({ history, record, want }) => atOf(appendRoutineHistory(history, record)).join() === want.join()) &&
+      atOf(appendRoutineHistory(null, rec(T0, 0, "completed"))).join() === T0,
+  );
+
+  check(
+    "P2-316: the cap discards the oldest, never refuses the newest (chunkstore staged-ids form)",
+    (() => {
+      let full: RoutineHistoryRecord[] = [];
+      for (let i = 0; i < ROUTINE_HISTORY_CAP; i++) {
+        full = appendRoutineHistory(full, rec(t(`2026-01-01T10:00:${String(i).padStart(2, "0")}Z`), i, "completed"));
+      }
+      const atCap = full.length === ROUTINE_HISTORY_CAP && full[0].at === t("2026-01-01T10:00:29Z");
+      const over = appendRoutineHistory(full, rec(t("2026-01-01T10:00:59Z"), 99, "failed"));
+      return (
+        atCap &&
+        over.length === ROUTINE_HISTORY_CAP &&
+        over[0].at === t("2026-01-01T10:00:59Z") &&
+        !over.some((r) => r.at === t("2026-01-01T10:00:00Z")) && // oldest discarded
+        over.every((r) => r.at !== t("2026-01-01T10:00:00Z"))
+      );
+    })(),
+  );
+
+  // --- degenerate records: each invalid field is refused ---------------------
+  check(
+    "P2-316: degenerate records are refused whole — bad outcome, bad instant, bad duration, non-object",
+    [
+      rec("not-a-date", 1, "completed"),
+      rec(T0, -1, "completed"),
+      rec(T0, 1.5, "completed"),
+      rec(T0, Number.NaN, "completed"),
+      rec(T0, 1, "perfect" as never),
+      rec(T0, 1, undefined as never),
+      null,
+      "record",
+      42,
+      [],
+      { at: T0, durationMs: 1 }, // missing outcome
+    ].every((r) => isRoutineHistoryRecord(r) === null) &&
+      isRoutineHistoryRecord(rec(T0, 0, "skipped")) !== null,
+  );
+
+  check(
+    "P2-316: a history with malformed entries keeps only the valid records (each discarded alone)",
+    (() => {
+      const mixed = [
+        "lixo",
+        42,
+        null,
+        { at: T0 },
+        { at: T0, durationMs: -5, outcome: "completed" },
+        rec(T1, 3, "failed"),
+        { at: T2, durationMs: 4, outcome: "completed", extra: "campo hostil" },
+      ];
+      const out = normalizeRoutineHistory(mixed);
+      return out.length === 2 && out[0].at === T2 && out[1].at === T1 && !("extra" in out[0]);
+    })(),
+  );
+
+  check(
+    "P2-316: absent, truncated and non-array histories normalize to empty without throwing",
+    normalizeRoutineHistory(undefined).length === 0 &&
+      normalizeRoutineHistory(null).length === 0 &&
+      normalizeRoutineHistory("truncado").length === 0 &&
+      normalizeRoutineHistory({}).length === 0 &&
+      normalizeRoutineHistory([null, "x", {}]).length === 0,
+  );
+
+  // --- purity: same input twice, identical result; no mutation ---------------
+  const pureInput = [rec(T0, 1, "completed")];
+  const pureRecord = rec(T1, 2, "failed", "ses_abc");
+  const once = appendRoutineHistory(pureInput, pureRecord);
+  const twice = appendRoutineHistory(pureInput, pureRecord);
+  check(
+    "P2-316: the same input in two calls yields the identical result, and no argument is mutated",
+    JSON.stringify(once) === JSON.stringify(twice) &&
+      JSON.stringify(pureInput) === JSON.stringify([rec(T0, 1, "completed")]) &&
+      pureRecord.sessionId === "ses_abc",
+  );
+
+  // --- privacy contract -------------------------------------------------------
+  check(
+    "P2-316: a record serializes to exactly the four documented fields — never a fifth",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "completed", startedAtMs: 1_000, endedAtMs: 3_500, sessionId: "ses_x" });
+      const keys = built ? Object.keys(built).sort().join() : "";
+      return (
+        built !== null &&
+        keys === "at,durationMs,outcome,sessionId" &&
+        Object.keys(rec(T0, 0, "failed")).sort().join() === "at,durationMs,outcome"
+      );
+    })(),
+  );
+  check(
+    "P2-316: normalize strips hostile extra fields — prompt text, agent reply, path — field by field",
+    (() => {
+      const hostile = normalizeRoutineHistory([
+        { at: T0, durationMs: 1, outcome: "failed", prompt: "PROMPT-SECRETO", output: "RESPOSTA-DO-AGENTE", path: "/Users/x/y" },
+      ]);
+      const json = JSON.stringify(hostile);
+      return hostile.length === 1 && !/PROMPT-SECRETO|RESPOSTA-DO-AGENTE|Users/.test(json);
+    })(),
+  );
+  check(
+    "P2-316: the builder takes no free text — a failed run is the word failed, never the error message",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "failed", startedAtMs: 10, endedAtMs: 22 });
+      return built !== null && built.outcome === "failed" && !("why" in built) && !("error" in built);
+    })(),
+  );
+
+  // --- sweep-level acceptance: one record per trigger, the right outcome -----
+  check(
+    "P2-316: a routine that fires resolves exactly one completed record; one that fails, exactly one failed record",
+    (() => {
+      // Routine A: the sweep fires it (no record yet — the run is in flight),
+      // the run completes → exactly one record with the real duration + session.
+      const historyA = appendRoutineHistory(undefined, recordRoutineTrigger({ outcome: "completed", startedAtMs: Date.parse(T0), endedAtMs: Date.parse(T0) + 2500, sessionId: "ses_a" })!);
+      // Routine B: the fire itself fails → exactly one failed record, no session.
+      const historyB = appendRoutineHistory(undefined, recordRoutineTrigger({ outcome: "failed", startedAtMs: Date.parse(T0), endedAtMs: Date.parse(T0) + 120 })!);
+      return (
+        historyA.length === 1 &&
+        historyA[0].outcome === "completed" &&
+        historyA[0].sessionId === "ses_a" &&
+        historyA[0].durationMs === 2500 &&
+        historyB.length === 1 &&
+        historyB[0].outcome === "failed" &&
+        historyB[0].sessionId === undefined
+      );
+    })(),
+  );
+  check(
+    "P2-316: a skipped day is a zero-duration record without a session",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "skipped", startedAtMs: Date.parse(T0), endedAtMs: Date.parse(T0) });
+      return built !== null && built.durationMs === 0 && built.sessionId === undefined && built.outcome === "skipped";
+    })(),
+  );
+  check(
+    "P2-316: a backward clock clamps the duration at zero instead of going negative",
+    (() => {
+      const built = recordRoutineTrigger({ outcome: "completed", startedAtMs: 2_000, endedAtMs: 1_000 });
+      return built !== null && built.durationMs === 0;
+    })(),
+  );
+
+  // --- routinesfile load tolerance --------------------------------------------
+  const OLD_FILE = JSON.stringify([
+    { id: "a", name: "Antiga", prompt: "p", hour: 7, minute: 30, lastRun: "2026-08-01" },
+  ]);
+  const WITH_HISTORY = JSON.stringify([
+    {
+      id: "b",
+      name: "Com histórico",
+      prompt: "p2",
+      hour: 8,
+      minute: 0,
+      lastRun: "2026-09-07",
+      history: [
+        { at: T1, durationMs: 30, outcome: "completed", sessionId: "ses_b" },
+        { at: T0, durationMs: 10, outcome: "failed" },
+        "registro estragado",
+        { at: "sem data", durationMs: 10, outcome: "completed" },
+      ],
+    },
+  ]);
+  const BAD_HISTORY = JSON.stringify([
+    { id: "c", name: "Estragada", prompt: "p3", hour: 9, minute: 0, history: "banana" },
+    { id: "d", name: "Vazia", prompt: "p4", hour: 9, minute: 5, history: [] },
+  ]);
+  check(
+    "P2-316: an old routines file without history loads normally and gains no field",
+    (() => {
+      const v = routinesVerdict(true, OLD_FILE, null);
+      return v.plan === "use" && v.routines.length === 1 && v.routines[0].history === undefined;
+    })(),
+  );
+  check(
+    "P2-316: malformed records are discarded alone — the routine and its valid history survive",
+    (() => {
+      const v = routinesVerdict(true, WITH_HISTORY, null);
+      const h = v.plan === "use" ? v.routines[0].history : undefined;
+      return (
+        v.plan === "use" &&
+        v.routines.length === 1 &&
+        v.routines[0].id === "b" &&
+        h !== undefined &&
+        h.length === 2 &&
+        h[0].at === T1 &&
+        h[0].sessionId === "ses_b" &&
+        h[1].outcome === "failed"
+      );
+    })(),
+  );
+  check(
+    "P2-316: a non-array or empty history drops the field instead of persisting an empty shell",
+    (() => {
+      const v = routinesVerdict(true, BAD_HISTORY, null);
+      return (
+        v.plan === "use" &&
+        v.routines.length === 2 &&
+        v.routines[0].history === undefined &&
+        v.routines[1].history === undefined
+      );
+    })(),
+  );
+
+  // --- purity of the module + real-repo wiring --------------------------------
+  const historyCode = historySrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check(
+    "P2-316: routinehistory.ts is pure (no imports at all, no fs/child_process/http, no fetch, no clock reads)",
+    !/^import /m.test(historyCode) &&
+      !/node:(fs|child_process|path|os|http)/.test(historyCode) &&
+      !/\bfetch\(/.test(historyCode) &&
+      !/Date\.now\(\)/.test(historyCode),
+  );
+  check(
+    "P2-316: Routine gains history additively — the scheduling and marker fields are untouched",
+    routinesModSrc.includes("history?: RoutineHistoryRecord[]") &&
+      routinesModSrc.includes("lastRun?: string;") &&
+      routinesModSrc.includes("lastFiredAt?: number;") &&
+      routinesModSrc.includes("runStartedAt?: number;") &&
+      routinesModSrc.includes("lastStatus?"),
+  );
+  check(
+    "P2-316: the load sanitizes the history in the same verdict that validates routines (no new file, still pure)",
+    routinesFileSrc.includes('from "./routinehistory.js"') &&
+      routinesFileSrc.includes("withSanitizedHistory(") &&
+      !/node:(fs|child_process|path|os|http)/.test(
+        routinesFileSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""),
+      ) &&
+      !/\bfetch\(/.test(routinesFileSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")),
+  );
+
+  const fireAt = daemonIndexSrc.indexOf("async function fireRoutine");
+  const fireCatchAt = daemonIndexSrc.indexOf("} catch (err) {", fireAt);
+  const fireBlock = daemonIndexSrc.slice(fireAt, fireCatchAt);
+  const catchBlock = daemonIndexSrc.slice(fireCatchAt, daemonIndexSrc.indexOf("async function completeRoutine"));
+  check(
+    "P2-316: a successful fire writes no record — the record comes when the run resolves",
+    !fireBlock.includes("recordRoutineTriggerResult(") &&
+      catchBlock.includes('recordRoutineTriggerResult(r, "failed", firedAt, r.lastSessionID)'),
+  );
+  const completeAt = daemonIndexSrc.indexOf("async function completeRoutine");
+  const failRoutineAt = daemonIndexSrc.indexOf("function failRoutine");
+  const completeBlock = daemonIndexSrc.slice(completeAt, failRoutineAt);
+  check(
+    "P2-316: completion and run failure each land their record beside the existing status write",
+    completeBlock.split('recordRoutineTriggerResult(r, "completed"').length === 2 &&
+      completeBlock.split('recordRoutineTriggerResult(r, "failed"').length === 2 &&
+      completeBlock.includes("r.runStartedAt, sessionID"),
+  );
+  const releaseBlock = daemonIndexSrc.slice(
+    daemonIndexSrc.indexOf("function releaseStuckRun"),
+    daemonIndexSrc.indexOf("function checkRoutines"),
+  );
+  check(
+    "P2-316: a released stuck run is a failed record captured before the markers clear",
+    releaseBlock.includes('recordRoutineTriggerResult(r, "failed", stuckStartedAt, stuckSessionId)') &&
+      releaseBlock.indexOf("stuckStartedAt = r.runStartedAt") < releaseBlock.indexOf("r.runStartedAt = undefined"),
+  );
+  const sweepAt = daemonIndexSrc.indexOf("function checkRoutines");
+  const sweepEnd = daemonIndexSrc.indexOf("setInterval(checkRoutines");
+  const closeDayBlock = daemonIndexSrc.slice(sweepAt, sweepEnd);
+  check(
+    "P2-316: the skipped day is recorded inside the existing close-day branch, once per day",
+    closeDayBlock.includes('recordRoutineTriggerResult(r, "skipped", nowMs)') &&
+      closeDayBlock.indexOf('recordRoutineTriggerResult(r, "skipped", nowMs)') >
+        closeDayBlock.indexOf("if (r.lastRun !== today) {"),
+  );
+  check(
+    "P2-316: the routines listing keeps returning the routines — the history rides the same objects",
+    daemonIndexSrc.includes('return { id: req.id, status: 200, body: { routines } };'),
+  );
+  check(
+    "P2-316: no new timer, route or dependency was introduced for the history",
+    daemonIndexSrc.split("\n").filter((l) => l.includes("setInterval")).every((l) => !/history/i.test(l)) &&
+      !daemonIndexSrc.includes("routinehistoryRouter") &&
+      !daemonIndexSrc.includes("/__ocr/routine-history"),
+  );
+}
+
+// --- P2-239: the real service-worker policy, loaded in an isolated VM -------
+
+// The policy module is a classic script: no import/export, no fetch, no
+// caches, no listeners, no mutable global state — decisions only.
+import vm from "node:vm";
+
+const swPolicySrc = readFileSync(
+  new URL("../apps/web/public/sw-policy.js", import.meta.url),
+  "utf8",
+);
+const swSrc = readFileSync(new URL("../apps/web/public/sw.js", import.meta.url), "utf8");
+
+const swSandbox: Record<string, unknown> = {};
+swSandbox.self = swSandbox;
+vm.createContext(swSandbox);
+vm.runInContext(swPolicySrc, swSandbox, { filename: "apps/web/public/sw-policy.js" });
+const swPolicy = swSandbox as unknown as {
+  precacheTargets: (rootDocument: string) => string[];
+  strategyFor: (path: string, method?: string) => string;
+  offlineDocument: () => string;
+  staleEntries: (cachedPaths: string[], currentTargets: string[]) => string[];
+};
+
+const htmlDoc = (head: string) =>
+  `<!doctype html><html><head>${head}</head><body><div id="root"></div></body></html>`;
+const VITE_JS = "/assets/index-B3iKfWlp.js";
+const VITE_CSS = "/assets/index-DiSUPidX.css";
+const LEGACY_ASSET = "/assets/vendor.a1b2c3d4.css";
+
+check(
+  "P2-239: precacheTargets — empty document -> empty list, never throws",
+  JSON.stringify(swPolicy.precacheTargets("")) === "[]" &&
+    JSON.stringify(swPolicy.precacheTargets(undefined as unknown as string)) === "[]",
+);
+
+check(
+  "P2-239: precacheTargets — document without references -> empty list",
+  JSON.stringify(swPolicy.precacheTargets(htmlDoc("<meta charset=\"utf-8\"><p>hello</p>"))) === "[]",
+);
+
+check(
+  "P2-239: precacheTargets — two versioned assets in stable order of appearance",
+  JSON.stringify(
+    swPolicy.precacheTargets(
+      htmlDoc(`<link rel="stylesheet" href="${VITE_CSS}"><script type="module" src="${VITE_JS}"></script>`),
+    ),
+  ) === JSON.stringify([VITE_CSS, VITE_JS]),
+);
+
+check(
+  "P2-239: precacheTargets — a repeated reference appears exactly once",
+  JSON.stringify(
+    swPolicy.precacheTargets(htmlDoc(`<link href="${VITE_CSS}"><link href="${VITE_CSS}">`)),
+  ) === JSON.stringify([VITE_CSS]),
+);
+
+check(
+  "P2-239: precacheTargets — other origins and protocol-relative addresses ignored",
+  JSON.stringify(
+    swPolicy.precacheTargets(
+      htmlDoc(
+        `<link href="https://evil.example/x.js"><script src="//cdn.example/y.js"></script><link href="${VITE_CSS}">`,
+      ),
+    ),
+  ) === JSON.stringify([VITE_CSS]),
+);
+
+check(
+  "P2-239: precacheTargets — data: URIs and anchors ignored",
+  JSON.stringify(
+    swPolicy.precacheTargets(
+      htmlDoc(
+        `<img src="data:image/png;base64,AAAA"><a href="#top">t</a><link href="${VITE_CSS}#map">`,
+      ),
+    ),
+  ) === JSON.stringify([VITE_CSS]),
+);
+
+check(
+  "P2-239: strategyFor — versioned assets are cache-first (Vite and legacy hash styles)",
+  swPolicy.strategyFor(VITE_JS) === "cache-first" &&
+    swPolicy.strategyFor(LEGACY_ASSET) === "cache-first",
+);
+
+check(
+  "P2-239: strategyFor — plain words and counters never read as hashes",
+  swPolicy.strategyFor("/manual-download.pdf") === "network-first-nosave" &&
+    swPolicy.strategyFor("/icon-512.png") === "network-first-nosave" &&
+    swPolicy.strategyFor("/recorder-worklet.js") === "network-first-nosave",
+);
+
+check(
+  "P2-239: strategyFor — the navigation document is network-first",
+  swPolicy.strategyFor("/") === "network-first" &&
+    swPolicy.strategyFor("/index.html") === "network-first",
+);
+
+check(
+  "P2-239: strategyFor — unknown paths are network-first without recording",
+  swPolicy.strategyFor("/settings") === "network-first-nosave" &&
+    swPolicy.strategyFor("/manifest.webmanifest") === "network-first-nosave",
+);
+
+check(
+  "P2-239: strategyFor — non-GET always goes to the network without recording, even versioned",
+  swPolicy.strategyFor(VITE_JS, "POST") === "network-first-nosave" &&
+    swPolicy.strategyFor("/", "HEAD") === "network-first-nosave" &&
+    swPolicy.strategyFor(LEGACY_ASSET, "PUT") === "network-first-nosave",
+);
+
+check(
+  "P2-239: staleEntries — leftovers of an earlier publication are returned, order preserved",
+  JSON.stringify(
+    swPolicy.staleEntries(
+      ["/assets/old-Aaaaaaa1.js", "/", VITE_JS, "/assets/old-Bbbbbbb2.css", "/icon.svg"],
+      [VITE_JS],
+    ),
+  ) === JSON.stringify(["/assets/old-Aaaaaaa1.js", "/assets/old-Bbbbbbb2.css"]),
+);
+
+check(
+  "P2-239: staleEntries — current targets are never returned, neither is the root document",
+  JSON.stringify(swPolicy.staleEntries(["/", "/index.html", VITE_JS], [VITE_JS, "/index.html"])) ===
+    "[]" &&
+    JSON.stringify(swPolicy.staleEntries(["/"], [])) === "[]",
+);
+
+check(
+  "P2-239: staleEntries — never returns a path outside the received list",
+  swPolicy
+    .staleEntries(["/assets/old-Ccccccc3.js"], ["/assets/other-Dddddd4.js"])
+    .every((p) => p === "/assets/old-Ccccccc3.js"),
+);
+
+check(
+  "P2-239: decisions are stable across repeated calls with the same input",
+  JSON.stringify(swPolicy.precacheTargets(htmlDoc(`<script src="${VITE_JS}"></script>`))) ===
+    JSON.stringify(swPolicy.precacheTargets(htmlDoc(`<script src="${VITE_JS}"></script>`))) &&
+    swPolicy.strategyFor(VITE_JS) === swPolicy.strategyFor(VITE_JS) &&
+    JSON.stringify(swPolicy.staleEntries([VITE_CSS], [])) ===
+      JSON.stringify(swPolicy.staleEntries([VITE_CSS], [])),
+);
+
+const offlineHtml = swPolicy.offlineDocument();
+check(
+  "P2-239: offlineDocument — static, Portuguese, short and self-contained",
+  offlineHtml === swPolicy.offlineDocument() &&
+    offlineHtml.includes("<!doctype html>") &&
+    /conexão/i.test(offlineHtml) &&
+    !offlineHtml.includes("://") &&
+    !/https?:/i.test(offlineHtml) &&
+    !/href=|src=/i.test(offlineHtml) &&
+    !/\/(Users|home|var|tmp)\//.test(offlineHtml) &&
+    !/session|sessid|token/i.test(offlineHtml),
+);
+
+// Source pins on the two real public files: the worker must orchestrate only.
+const swCode = swSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+const policyCode = swPolicySrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+check(
+  "P2-239: importScripts of the policy is the first instruction of sw.js",
+  swCode.trim().startsWith('importScripts("/sw-policy.js")'),
+);
+
+check(
+  "P2-239: none of the five decisions is reimplemented inside sw.js",
+  swSrc.includes("self.precacheTargets(") &&
+    swSrc.includes("self.strategyFor(url.pathname, event.request.method)") &&
+    swSrc.includes("self.offlineDocument()") &&
+    // P2-246: the sweep is consumed through sweepPlan, which delegates to
+    // staleEntries inside the policy — still no decision lives in sw.js.
+    swSrc.includes("self.sweepPlan(") &&
+    !swSrc.includes("[A-Za-z0-9") &&
+    !swSrc.includes("(?:") &&
+    !/<!doctype|<html/i.test(swSrc),
+);
+
+check(
+  "P2-239: the cache name moved on so the new publication inherits nothing",
+  swSrc.includes('const CACHE = "ocr-shell-v3"') && !swSrc.includes("ocr-shell-v2"),
+);
+
+check(
+  "P2-239: sw-policy.js is a pure classic script and the only home of the decisions",
+  !/^\s*(import|export)\b/m.test(policyCode) &&
+    !policyCode.includes("fetch(") &&
+    !policyCode.includes("caches") &&
+    !policyCode.includes("addEventListener") &&
+    !/\b(let|var)\b/.test(policyCode) &&
+    ["precacheTargets", "strategyFor", "offlineDocument", "staleEntries"].every((fn) =>
+      policyCode.includes(`self.${fn} = ${fn};`),
+    ) &&
+    policyCode.includes('"cache-first"') &&
+    policyCode.includes('"network-first"') &&
+    policyCode.includes('"network-first-nosave"'),
+);
+
+// --- P2-246: publication takeover and sweep respect live clients -------------
+
+// The REAL policy file, already loaded above in an isolated node:vm context
+// (P2-239); no logic is copied into the test — the table below exercises the
+// published functions directly.
+const plans = swSandbox as unknown as {
+  takeoverPlan: (clientCount: unknown) => string;
+  sweepPlan: (clientCount: unknown, cachedPaths: string[], currentTargets: string[]) => string[];
+  staleEntries: (cachedPaths: string[], currentTargets: string[]) => string[];
+};
+
+const OLD_LEFTOVER = "/assets/old-Qqqqqqq1.js";
+const OTHER_LEFTOVER = "/assets/old-Rrrrrrr2.css";
+const CURRENT_TARGET = VITE_JS;
+
+check(
+  "P2-246: takeoverPlan — zero clients is the only takeover-now (first install breaks nothing)",
+  plans.takeoverPlan(0) === "takeover-now",
+);
+
+check(
+  "P2-246: takeoverPlan — one live client waits",
+  plans.takeoverPlan(1) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — many live clients wait",
+  plans.takeoverPlan(2) === "wait" && plans.takeoverPlan(50) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — non-numeric counts wait (fail-closed)",
+  plans.takeoverPlan(undefined) === "wait" &&
+    plans.takeoverPlan(null) === "wait" &&
+    plans.takeoverPlan("1") === "wait" &&
+    plans.takeoverPlan(true) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — non-finite counts wait (fail-closed)",
+  plans.takeoverPlan(Number.NaN) === "wait" &&
+    plans.takeoverPlan(Number.POSITIVE_INFINITY) === "wait" &&
+    plans.takeoverPlan(Number.NEGATIVE_INFINITY) === "wait",
+);
+
+check(
+  "P2-246: takeoverPlan — negative counts wait (fail-closed)",
+  plans.takeoverPlan(-1) === "wait" && plans.takeoverPlan(-100) === "wait",
+);
+
+check(
+  "P2-246: sweepPlan — rule order: a live client AND obvious leftovers at the same time is still an empty sweep",
+  JSON.stringify(
+    plans.sweepPlan(1, ["/", OLD_LEFTOVER, OTHER_LEFTOVER, CURRENT_TARGET], [CURRENT_TARGET]),
+  ) === "[]",
+);
+
+check(
+  "P2-246: sweepPlan — with no client the result is exactly what staleEntries decides for the same input",
+  JSON.stringify(plans.sweepPlan(0, ["/", OLD_LEFTOVER, CURRENT_TARGET, OTHER_LEFTOVER], [CURRENT_TARGET])) ===
+    JSON.stringify(plans.staleEntries(["/", OLD_LEFTOVER, CURRENT_TARGET, OTHER_LEFTOVER], [CURRENT_TARGET])) &&
+    JSON.stringify(plans.sweepPlan(0, [OLD_LEFTOVER, OTHER_LEFTOVER], [])) ===
+      JSON.stringify(plans.staleEntries([OLD_LEFTOVER, OTHER_LEFTOVER], [])),
+);
+
+check(
+  "P2-246: sweepPlan — the root document is never returned",
+  !plans.sweepPlan(0, ["/", "/index.html", OLD_LEFTOVER], [CURRENT_TARGET]).includes("/"),
+);
+
+check(
+  "P2-246: sweepPlan — the current publication target is never returned",
+  !plans.sweepPlan(0, [CURRENT_TARGET, OLD_LEFTOVER], [CURRENT_TARGET]).includes(CURRENT_TARGET),
+);
+
+check(
+  "P2-246: sweepPlan — never returns a path outside the received list",
+  plans
+    .sweepPlan(0, [OLD_LEFTOVER], [CURRENT_TARGET])
+    .every((p) => p === OLD_LEFTOVER),
+);
+
+check(
+  "P2-246: sweepPlan — received order is preserved",
+  JSON.stringify(plans.sweepPlan(0, [OTHER_LEFTOVER, "/", OLD_LEFTOVER], [CURRENT_TARGET])) ===
+    JSON.stringify([OTHER_LEFTOVER, OLD_LEFTOVER]),
+);
+
+check(
+  "P2-246: sweepPlan — stable result across two calls with the same input",
+  JSON.stringify(plans.sweepPlan(0, [OLD_LEFTOVER, CURRENT_TARGET], [CURRENT_TARGET])) ===
+    JSON.stringify(plans.sweepPlan(0, [OLD_LEFTOVER, CURRENT_TARGET], [CURRENT_TARGET])),
+);
+
+check(
+  "P2-246: sweepPlan — doubtful counts never sweep, fail-closed",
+  JSON.stringify(plans.sweepPlan(Number.NaN, [OLD_LEFTOVER], [])) === "[]" &&
+    JSON.stringify(plans.sweepPlan(-2, [OLD_LEFTOVER], [])) === "[]" &&
+    JSON.stringify(plans.sweepPlan(undefined, [OLD_LEFTOVER], [])) === "[]",
+);
+
+// Source pins on the real worker and real entrypoint.
+const mainTsx = readFileSync(new URL("../apps/web/src/main.tsx", import.meta.url), "utf8");
+const swCode246 = swSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+check(
+  "P2-246: sw.js — importScripts stays the first instruction and both decisions consult the plans",
+  swCode246.trim().startsWith('importScripts("/sw-policy.js")') &&
+    swCode246.includes('if (self.takeoverPlan(windows.length) === "takeover-now") self.skipWaiting();') &&
+    swCode246.includes("self.sweepPlan(windows.length, have, precacheList)"),
+);
+
+check(
+  "P2-246: sw.js — no takeover or sweep threshold is decided locally (the count is only passed through)",
+  !/windows\.length\s*[<>=!]/.test(swCode246),
+);
+
+check(
+  "P2-246: sw-policy.js — the policy publishes the two plans and keeps the fail-closed rule",
+  policyCode.includes("self.takeoverPlan = takeoverPlan;") &&
+    policyCode.includes("self.sweepPlan = sweepPlan;") &&
+    policyCode.includes('"takeover-now"') &&
+    policyCode.includes('"wait"') &&
+    policyCode.includes("Number.isFinite"),
+);
+
+check(
+  "P2-246/P2-266: main.tsx — the P3-005 file-scheme guard stays intact and the only SW interface is the documented one",
+  mainTsx.includes('import.meta.env.PROD') &&
+    mainTsx.includes('location.protocol !== "file:"') &&
+    mainTsx.includes('navigator.serviceWorker.register("/sw.js")') &&
+    // P2-266: the page applies the plan on visibility, reloads once on
+    // controller change and posts only the documented swap message.
+    mainTsx.includes("visibilitychange") &&
+    mainTsx.includes("controllerchange") &&
+    mainTsx.includes("swReloaded") &&
+    mainTsx.includes("swSwap") &&
+    // Still banned: any local decision-making surface.
+    !mainTsx.includes("updatefound") &&
+    !mainTsx.includes("MessageChannel") &&
+    !mainTsx.includes("setTimeout") &&
+    !mainTsx.includes("setInterval"),
+);
+
+// --- P2-266: the installed-app update plan (lib/swupdate.ts) ---------------------
+
+const swUpdateBase: SwUpdateInput = {
+  registered: true,
+  waitingWorker: false,
+  lastCheckAt: 1_000_000,
+  now: 1_000_000 + 10_000,
+  streaming: false,
+  draftUnsent: false,
+  minIntervalMs: 60_000, // explicit threshold for every timing case below
+};
+
+check(
+  "P2-266: swUpdatePlan — no registration is idle even with a waiting worker (no interlocutor)",
+  swUpdatePlan({ ...swUpdateBase, registered: false, waitingWorker: true }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, registered: false, waitingWorker: true }).reason ===
+      "no-registration",
+);
+
+check(
+  "P2-266: swUpdatePlan — rule order: waiting worker AND streaming at the same time loses to the stream",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, waitingWorker: true, streaming: true });
+    return v.plan === "idle" && v.reason === "user-work";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — rule order: waiting worker AND unsent draft at the same time loses to the draft",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, waitingWorker: true, draftUnsent: true });
+    return v.plan === "idle" && v.reason === "user-work";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — waiting worker with no work in progress offers the new version",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, waitingWorker: true });
+    return v.plan === "offer" && v.reason === "waiting-worker";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — a check exactly at the minimum interval is due (threshold: 60000ms)",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now - 60_000 });
+    return v.plan === "check" && v.reason === "check-due";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — a check older than the minimum interval is due",
+  swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now - 60_001 }).plan === "check",
+);
+
+check(
+  "P2-266: swUpdatePlan — a check younger than the minimum interval waits",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now - 59_999 });
+    return v.plan === "idle" && v.reason === "too-recent";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — a future last-check instant is treated as just checked (age never negative)",
+  (() => {
+    const v = swUpdatePlan({ ...swUpdateBase, lastCheckAt: swUpdateBase.now + 60_000 });
+    return v.plan === "idle" && v.reason === "too-recent";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — non-finite instants are refused, never guessed",
+  swUpdatePlan({ ...swUpdateBase, now: Number.NaN }).reason === "bad-instants" &&
+    swUpdatePlan({ ...swUpdateBase, lastCheckAt: Number.NaN }).reason === "bad-instants" &&
+    swUpdatePlan({ ...swUpdateBase, now: Number.POSITIVE_INFINITY }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, lastCheckAt: Number.NEGATIVE_INFINITY }).plan === "idle",
+);
+
+check(
+  "P2-266: swUpdatePlan — the demo hatch offers only when the caller already resolved it",
+  swUpdatePlan({ ...swUpdateBase, demo: true }).plan === "offer" &&
+    swUpdatePlan({ ...swUpdateBase, demo: true }).reason === "demo" &&
+    // the hatch never overrides the higher rules
+    swUpdatePlan({ ...swUpdateBase, demo: true, registered: false }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, demo: true, streaming: true }).plan === "idle" &&
+    swUpdatePlan({ ...swUpdateBase, demo: true, waitingWorker: true }).reason ===
+      "waiting-worker",
+);
+
+check(
+  "P2-266: swUpdatePlan — the documented default interval applies when the caller passes none",
+  (() => {
+    const v = swUpdatePlan({
+      ...swUpdateBase,
+      minIntervalMs: undefined,
+      lastCheckAt: swUpdateBase.now - (SW_UPDATE_MIN_INTERVAL_MS - 1),
+    });
+    const due = swUpdatePlan({
+      ...swUpdateBase,
+      minIntervalMs: undefined,
+      lastCheckAt: swUpdateBase.now - SW_UPDATE_MIN_INTERVAL_MS,
+    });
+    return SW_UPDATE_MIN_INTERVAL_MS > 0 && v.plan === "idle" && due.plan === "check";
+  })(),
+);
+
+check(
+  "P2-266: swUpdatePlan — identical input, identical verdict (two calls)",
+  (() => {
+    const input: SwUpdateInput = { ...swUpdateBase, waitingWorker: true, streaming: false };
+    return (
+      JSON.stringify(swUpdatePlan(input)) === JSON.stringify(swUpdatePlan(input)) &&
+      JSON.stringify(swUpdatePlan({ ...input, waitingWorker: false, demo: true })) ===
+        JSON.stringify(swUpdatePlan({ ...input, waitingWorker: false, demo: true }))
+    );
+  })(),
+);
+
+check(
+  "P2-266: demoForced — the demo parameter counts only inside the desktop shell in a harness session",
+  demoForced("?swupdate=demo", { desktopShell: true, harnessSession: true }) === true &&
+    demoForced("?swupdate=demo", { desktopShell: true, harnessSession: false }) === false &&
+    demoForced("?swupdate=demo", { desktopShell: false, harnessSession: true }) === false &&
+    demoForced("?swupdate=demo", { desktopShell: false, harnessSession: false }) === false &&
+    // every normal boot ignores it
+    demoForced("", { desktopShell: true, harnessSession: true }) === false &&
+    demoForced("?swupdate=ready", { desktopShell: true, harnessSession: true }) === false &&
+    demoForced("?other=1", { desktopShell: true, harnessSession: true }) === false,
+);
+
+// Source pin: the real module keeps the purity hygiene (comments stripped
+// first — the same normalization the P2-239 policy pins use).
+const swUpdateSrc = readFileSync(
+  new URL("../apps/web/src/lib/swupdate.ts", import.meta.url),
+  "utf8",
+).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+check(
+  "P2-266: swupdate.ts — the decision module stays pure (no DOM, storage or network identifiers in code)",
+  !/\b(navigator|window|document|localStorage|fetch)\b/.test(swUpdateSrc),
+);
+
+check(
+  "P2-266: sw.js — the message listener skips waiting exclusively for the documented swap message",
+  (() => {
+    const start = swSrc.indexOf('self.addEventListener("message"');
+    if (start === -1) return false;
+    const nextListener = swSrc.indexOf('self.addEventListener("', start + 10);
+    const block = swSrc.slice(start, nextListener === -1 ? undefined : nextListener);
+    const skipSites = (swSrc.match(/skipWaiting\(\)/g) ?? []).length;
+    return (
+      block.includes(`event.data === "${SW_SWAP_MESSAGE}"`) &&
+      block.includes("self.skipWaiting()") &&
+      skipSites === 2 && // the P2-246 takeover-plan call and this one — nothing else
+      swSrc.split(SW_SWAP_MESSAGE).length === 2 // the literal appears exactly once
+    );
+  })(),
+);
+
+
+// --- P2-240: honest queue view (backlogview.ts) ---------------------------------
+{
+  const s = (text: string) => backlogSections(text);
+
+  // backlogSections — full table
+  check("P2-240: backlogSections — empty text yields no sections without throwing", JSON.stringify(s("")) === "[]");
+  check(
+    "P2-240: backlogSections — text without any heading yields no sections",
+    JSON.stringify(s("just prose\nmore prose\n- [ ] (P9-9) [P2] not a section\n")) === "[]",
+  );
+  check(
+    "P2-240: backlogSections — a section ends at the NEXT heading of the same level",
+    (() => {
+      const r = s("# Top\nintro\n## Ready\n- [ ] (P1-1) [P1] a — t\n### deep\nstill ready\n## Blocked\n- [ ] (P1-2) [P1] b — t\n# Tail\ntail body");
+      return (
+        r.length === 5 &&
+        r[0]!.heading === "Top" && r[0]!.level === 1 && JSON.stringify(r[0]!.lines) === JSON.stringify(["intro", "## Ready", "- [ ] (P1-1) [P1] a — t", "### deep", "still ready", "## Blocked", "- [ ] (P1-2) [P1] b — t"]) &&
+        r[1]!.heading === "Ready" && r[1]!.level === 2 && JSON.stringify(r[1]!.lines) === JSON.stringify(["- [ ] (P1-1) [P1] a — t", "### deep", "still ready"]) &&
+        r[2]!.heading === "deep" && r[2]!.level === 3 &&
+        r[3]!.heading === "Blocked" && r[3]!.level === 2 && JSON.stringify(r[3]!.lines) === JSON.stringify(["- [ ] (P1-2) [P1] b — t", "# Tail", "tail body"]) &&
+        r[4]!.heading === "Tail" && r[4]!.level === 1 && JSON.stringify(r[4]!.lines) === JSON.stringify(["tail body"])
+      );
+    })(),
+  );
+  check(
+    "P2-240: backlogSections — repeated same-level headings each start their own section, read order preserved",
+    (() => {
+      const r = s("## Blocked\none\n## Blocked\ntwo\n## Done\nx");
+      return (
+        r.length === 3 &&
+        r[0]!.heading === "Blocked" && JSON.stringify(r[0]!.lines) === JSON.stringify(["one"]) &&
+        r[1]!.heading === "Blocked" && JSON.stringify(r[1]!.lines) === JSON.stringify(["two"]) &&
+        r[2]!.heading === "Done" && r[2]!.lines.length === 1
+      );
+    })(),
+  );
+
+  // queueView — full table
+  const q = (text: string) => queueView(text);
+  check("P2-240: queueView — empty text yields empty lists without throwing", q("").ready.length === 0 && q("").blocked.length === 0 && q("").misplaced === 0);
+  check(
+    "P2-240: queueView — text without any heading yields empty lists (all unmarked lines are misplaced ground)",
+    (() => {
+      const r = q("loose\n- [ ] (P9-1) [P2] orphan — t\n");
+      return r.ready.length === 0 && r.blocked.length === 0 && r.misplaced === 1;
+    })(),
+  );
+  check(
+    "P2-240: queueView — empty Ready with a full Blocked section yields zero ready",
+    (() => {
+      const r = q("## Ready\n\n## Blocked\n- [ ] (P2-109) [P2] parked — spec: x (area: web)\n");
+      return r.ready.length === 0 && r.blocked.length === 1 && r.blocked[0]!.id === "P2-109" && r.blocked[0]!.area === "web";
+    })(),
+  );
+  check(
+    "P2-240: queueView — three repeated Blocked sections sum every line exactly once",
+    (() => {
+      const r = q("## Ready\n\n## Blocked\n- [ ] (P1-1) [P2] a — t\n\n## Blocked\n- [ ] (P1-2) [P2] b — t\n\n## Blocked\n- [ ] (P1-3) [P2] c — t\n");
+      return (
+        r.ready.length === 0 &&
+        r.blocked.length === 3 &&
+        JSON.stringify(r.blocked.map((x) => x.id)) === JSON.stringify(["P1-1", "P1-2", "P1-3"])
+      );
+    })(),
+  );
+  check(
+    "P2-240: queueView — unmarked line inside Done stays out of both lists and counts as misplaced",
+    (() => {
+      const r = q("## Ready\n\n## Done\n- [ ] (P0-9) [P1] ghost line quoted in a done spec — t\n");
+      return r.ready.length === 0 && r.blocked.length === 0 && r.misplaced === 1;
+    })(),
+  );
+  check(
+    "P2-240: queueView — a done-marked line never enters either list",
+    (() => {
+      const r = q("## Ready\n- [x] (P1-1) [P1] finished — t\n## Blocked\n- [x] (P1-2) [P1] also done — t\n");
+      return r.ready.length === 0 && r.blocked.length === 0 && r.misplaced === 0;
+    })(),
+  );
+  check(
+    "P2-240: queueView — red-team RT- ids parse as real tasks, never as \"?\" (RT-341 gate lesson)",
+    (() => {
+      const r = q("## Ready\n- [ ] (RT-341) [P0] Redteam finding 2026-09-08 — spec: \n- [ ] (P2-315) [P2] work — t\n");
+      return (
+        r.ready.length === 2 &&
+        r.ready[0]!.id === "RT-341" &&
+        r.ready[1]!.id === "P2-315" &&
+        !r.ready.some((t) => t.id === "?")
+      );
+    })(),
+  );
+  check("P2-240: queueView — RT- id without digits still degrades to \"?\"", q("## Ready\n- [ ] (RT-) [P0] malformed — t\n").ready[0]!.id === "?");
+
+  check("pilotforensic dataTask accepts the red-team RT- namespace", dataTask({ task: "RT-341" }) === "RT-341" && dataTask({ task: "P2-315" }) === "P2-315");
+
+  check("pilotforensic dataTask refuses malformed RT- ids", dataTask({ task: "RT-" }) === undefined && dataTask({ task: "RTX-1" }) === undefined && dataTask({ task: "???" }) === undefined);
+
+  check(
+    "P2-240: queueView — a line without an area tag yields an empty area",
+    (() => {
+      const r = q("## Ready\n- [ ] (P2-5) [P2] no tag here — t\n");
+      return r.ready.length === 1 && r.ready[0]!.area === "";
+    })(),
+  );
+  check(
+    "P2-240: queueView — a line that does not match the format degrades without throwing",
+    (() => {
+      const r = q("## Ready\n- [ ] free-form line nobody can parse\n");
+      return r.ready.length === 1 && r.ready[0]!.id === "?" && r.ready[0]!.title === "- [ ] free-form line nobody can parse" && r.ready[0]!.area === "";
+    })(),
+  );
+  check(
+    "P2-240: queueView — read order is preserved in both lists",
+    (() => {
+      const r = q("## Ready\n- [ ] (P1-9) [P1] first — t\n- [ ] (P1-2) [P1] second — t\n## Blocked\n- [ ] (P1-8) [P2] third — t\n- [ ] (P1-3) [P2] fourth — t\n");
+      return (
+        JSON.stringify(r.ready.map((x) => x.id)) === JSON.stringify(["P1-9", "P1-2"]) &&
+        JSON.stringify(r.blocked.map((x) => x.id)) === JSON.stringify(["P1-8", "P1-3"])
+      );
+    })(),
+  );
+  check(
+    "P2-240: queueView — the same identifier never appears in both lists (first occurrence wins)",
+    (() => {
+      const r = q("## Ready\n- [ ] (P1-1) [P1] live — t\n## Blocked\n- [ ] (P1-1) [P1] same id again — t\n- [ ] (P1-2) [P1] blocked — t\n## Ready\n- [ ] (P1-2) [P1] echo — t\n");
+      return (
+        r.ready.length === 1 && r.ready[0]!.id === "P1-1" &&
+        r.blocked.length === 1 && r.blocked[0]!.id === "P1-2"
+      );
+    })(),
+  );
+  check(
+    "P2-240: queueView — stable result across two calls with the same input",
+    (() => {
+      const text = "## Ready\n- [ ] (P1-1) [P1] a — t (area: daemon)\n## Blocked\n- [ ] (P1-2) [P2] b — t\n## Done\n- [ ] ghost\n";
+      return JSON.stringify(q(text)) === JSON.stringify(q(text));
+    })(),
+  );
+
+  // Real-repo assertions against today's BACKLOG.md: the panel must never
+  // again report a ready task that lives outside ## Ready.
+  const backlogText = readFileSync(new URL("../BACKLOG.md", import.meta.url), "utf8");
+  const backlog = q(backlogText);
+  const readyIds = new Set(backlog.ready.map((t) => t.id));
+  check(
+    "P2-240: real BACKLOG.md — no identifier appears in both lists at once",
+    backlog.ready.every((t) => !backlog.blocked.some((b) => b.id === t.id)) &&
+      new Set([...backlog.ready, ...backlog.blocked].map((t) => t.id)).size === backlog.ready.length + backlog.blocked.length,
+  );
+  check(
+    "P2-240: real BACKLOG.md — no line living under ## Done leaks into ready",
+    (() => {
+      const doneIdx = backlogText.split("\n").lastIndexOf("## Done");
+      if (doneIdx < 0) return true;
+      const doneIds = new Set(
+        backlogText
+          .split("\n")
+          .slice(doneIdx)
+          .filter((l) => l.startsWith("- [x]"))
+          .map((l) => l.match(/\(([P\d][\w.-]*)\)/)?.[1]),
+      );
+      return backlog.ready.every((t) => !doneIds.has(t.id)) && !readyIds.has("?");
+    })(),
+  );
+
+  // Source pins on the real route: section-aware module, unchanged body, no new timers.
+  const backlogViewSrc = readFileSync(new URL("../apps/daemon/src/backlogview.ts", import.meta.url), "utf8");
+  const routeSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+  check(
+    "P2-240: backlogview stays pure — no node: builtins, no child_process, no fetch",
+    !backlogViewSrc.includes("node:") && !backlogViewSrc.includes("child_process") && !backlogViewSrc.includes("fetch("),
+  );
+  check(
+    "P2-240: the route consumes the module and no longer slices the file by heading",
+    routeSrc.includes("const view = queueView(md);") &&
+      !routeSrc.includes('md.split("\\n## Ready\\n")') &&
+      !routeSrc.includes('md.split("## Ready\\n")') &&
+      !routeSrc.includes('md.split("\\n## Blocked\\n")'),
+  );
+  check(
+    "P2-240: the response body is byte-identical in shape ({ ready, blocked } of { id, title, area })",
+    routeSrc.includes("send(200, { ready, blocked });") && !routeSrc.includes("view.misplaced"),
+  );
+  check(
+    "P2-240: no new periodic timer was introduced by the route change",
+    (routeSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+}
+
+// --- P2-242: boot-smoke parity — CI boots the real package like release -----
+
+{
+  const wfJob = (name: string, platform: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform, steps });
+  const wfStep = (run: string, extra: Partial<WorkflowStep> = {}): WorkflowStep => ({
+    name: extra.name ?? "step",
+    run,
+    shell: extra.shell ?? null,
+    timeoutMinutes: extra.timeoutMinutes ?? null,
+  });
+  const pkg = wfStep("npm run dist --workspace @ocr/desktop -- --mac --dir", { name: "Package mac bundle" });
+  const boot = (extra: Partial<WorkflowStep> = {}): WorkflowStep =>
+    wfStep('node apps/desktop/scripts/packaged-boot.mjs "$APP"', { name: "Smoke-boot the packaged app", shell: "bash", timeoutMinutes: 10, ...extra });
+  const daemon = (extra: Partial<WorkflowStep> = {}): WorkflowStep =>
+    wfStep('node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', { name: "Smoke the packaged daemon sidecar", shell: "bash", timeoutMinutes: 5, ...extra });
+
+  // parseWorkflowJobs — the full table.
+  check("P2-242: parseWorkflowJobs — empty text yields an empty job list", parseWorkflowJobs("").length === 0 && parseWorkflowJobs("   \n\n").length === 0);
+  check(
+    "P2-242: parseWorkflowJobs — text with a jobs key but no job, and text without a jobs key, both yield an empty list",
+    parseWorkflowJobs("jobs:\n").length === 0 && parseWorkflowJobs("name: CI\non:\n  push:\n    branches: [main]\n").length === 0,
+  );
+  const twoSteps = parseWorkflowJobs(
+    [
+      "name: T",
+      "on: push",
+      "jobs:",
+      "  verify:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - name: First",
+      "        run: echo one",
+      "      - name: Second",
+      "        shell: bash",
+      "        timeout-minutes: 5",
+      "        run: |",
+      "          echo two",
+          "          echo three",
+      "",
+    ].join("\n"),
+  );
+  check(
+    "P2-242: parseWorkflowJobs — a job with two steps returns both in order with name, platform, command, shell and timeout",
+    twoSteps.length === 1 &&
+      twoSteps[0].name === "verify" &&
+      twoSteps[0].platform === "ubuntu-latest" &&
+      twoSteps[0].steps.length === 2 &&
+      twoSteps[0].steps[0].name === "First" &&
+      twoSteps[0].steps[0].run === "echo one" &&
+      twoSteps[0].steps[0].shell === null &&
+      twoSteps[0].steps[0].timeoutMinutes === null &&
+      twoSteps[0].steps[1].name === "Second" &&
+      twoSteps[0].steps[1].run === "echo two\necho three" &&
+      twoSteps[0].steps[1].shell === "bash" &&
+      twoSteps[0].steps[1].timeoutMinutes === 5,
+    JSON.stringify(twoSteps),
+  );
+  check(
+    "P2-242: parseWorkflowJobs — a step without shell and timeout reports both fields as absent",
+    twoSteps[0]?.steps[0]?.shell === null && twoSteps[0]?.steps[0]?.timeoutMinutes === null,
+  );
+  check(
+    "P2-242: parseWorkflowJobs — malformed text never throws and degrades to a recognizable partial structure",
+    (() => {
+      const samples = [
+        "jobs:",
+        "  :::",
+        "    - ]]]",
+        " broken: {{",
+        "jobs:\n  a:\n   steps:\n    - run: |",
+        "jobs: [\n  broken",
+        "\tjobs:\n\t x: y",
+        "jobs:\n  bad key: {",
+      ];
+      try {
+        return samples.every((s) => Array.isArray(parseWorkflowJobs(s)));
+      } catch {
+        return false;
+      }
+    })(),
+  );
+
+  // bootSmokeParity — the full table.
+  check("P2-242: bootSmokeParity — two empty job lists yield zero problems", bootSmokeParity([], []).length === 0);
+  // Since P2-253 the daemon smoke is owed by both workflows, so the fixtures
+  // below carry a proper daemon step unless the daemon rule is the one under
+  // test — the boot rules stay independently pinned.
+  const noBoot = bootSmokeParity([wfJob("desktop-package", "macos-14", [pkg])], []);
+  check(
+    "P2-242: bootSmokeParity — a packaging job without the real boot yields the problem naming the job (plus the P2-253 daemon problem)",
+    noBoot.length === 2 && noBoot[0].includes('"desktop-package"') && noBoot[0].includes("never boots the real package") && noBoot[1].includes("packaged daemon sidecar"),
+    noBoot.join(" | "),
+  );
+  const bootFirst = bootSmokeParity([wfJob("j", "ubuntu-latest", [boot(), pkg, daemon()])], []);
+  check(
+    "P2-242: bootSmokeParity — a real boot positioned before the packaging step yields the position problem",
+    bootFirst.length === 1 && bootFirst[0].includes("before the packaging step"),
+    bootFirst.join(" | "),
+  );
+  const noShell = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null }), daemon()])], []);
+  check(
+    "P2-242: bootSmokeParity — a boot step without shell: bash yields the shell problem",
+    noShell.length === 1 && noShell[0].includes("without declaring shell: bash"),
+    noShell.join(" | "),
+  );
+  const noTimeout = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ timeoutMinutes: null }), daemon()])], []);
+  check(
+    "P2-242: bootSmokeParity — a boot step without its own timeout yields the timeout problem",
+    noTimeout.length === 1 && noTimeout[0].includes("without its own timeout-minutes"),
+    noTimeout.join(" | "),
+  );
+  const twoCauses = bootSmokeParity([wfJob("j", "ubuntu-latest", [pkg, boot({ shell: null, timeoutMinutes: null }), daemon()])], []);
+  check(
+    "P2-242: bootSmokeParity — two simultaneous causes yield two problems, never one merged verdict",
+    twoCauses.length === 2 && twoCauses.some((p) => p.includes("shell: bash")) && twoCauses.some((p) => p.includes("timeout-minutes")),
+    twoCauses.join(" | "),
+  );
+  const nonPackaging = bootSmokeParity(
+    [
+      wfJob("verify", "ubuntu-latest", [wfStep("npm run build", { name: "Build" }), wfStep("npm run test:unit", { name: "Unit tests" })]),
+      wfJob("smoke-only", "ubuntu-latest", [wfStep("npm run dist:smoke --workspace @ocr/desktop -- --no-installer", { name: "Smoke" })]),
+    ],
+    [],
+  );
+  check(
+    "P2-242: bootSmokeParity — a job that packages nothing (including a dist:smoke-only job) never generates a problem",
+    nonPackaging.length === 0,
+    nonPackaging.join(" | "),
+  );
+  const happyCi = [wfJob("desktop-package", "macos-14", [wfStep("npm ci", { name: "Install" }), pkg, boot(), daemon()])];
+  const happyRelease = [wfJob("desktop-dmg", "macos-14", [pkg, boot(), daemon()])];
+  check("P2-242: bootSmokeParity — packaging jobs with a proper boot after packaging yield zero problems", bootSmokeParity(happyCi, happyRelease).length === 0);
+  const stableA = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null }), daemon()])]);
+  const stableB = bootSmokeParity(happyCi, [wfJob("desktop-win", "windows-latest", [pkg, boot({ shell: null, timeoutMinutes: null }), daemon()])]);
+  check(
+    "P2-242: bootSmokeParity — the problem order is stable between two calls with the same input",
+    JSON.stringify(stableA) === JSON.stringify(stableB) && stableA.length === 2,
+    stableA.join(" | "),
+  );
+  const withProblems = [...noBoot, ...bootFirst, ...noShell, ...noTimeout, ...twoCauses];
+  check(
+    "P2-242: bootSmokeParity — no problem text contains an absolute file path",
+    withProblems.every((p) => !p.startsWith("/") && !p.includes("/Users/") && !p.includes("/home/") && !p.includes("C:\\")),
+  );
+
+  // Real-repo assertion: the actual ci.yml and release.yml parse clean and
+  // both packaging jobs of ci.yml carry the boot step with the release
+  // contract — zero problems across both workflows.
+  const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+  const releaseJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8"));
+  check(
+    "P2-242: the real workflows parse into the expected job set",
+    ["verify", "scope", "desktop-package", "desktop-package-win", "verify-win", "relay-image"].every((n) => ciJobs.some((j) => j.name === n)) &&
+      ["release", "desktop-dmg", "desktop-win", "release-verify", "release-feeds", "release-publish"].every((n) => releaseJobs.some((j) => j.name === n)),
+  );
+  const parity = bootSmokeParity(ciJobs, releaseJobs);
+  check("P2-242: real ci.yml + release.yml through both modules — zero boot-smoke parity problems", parity.length === 0, parity.join(" | "));
+  const macJob = ciJobs.find((j) => j.name === "desktop-package");
+  const winJob = ciJobs.find((j) => j.name === "desktop-package-win");
+  for (const [label, job, packagingRun] of [
+    ["mac", macJob, "npm run dist --workspace @ocr/desktop -- --mac --dir"],
+    ["windows", winJob, "npm run dist --workspace @ocr/desktop -- --win --dir"],
+  ] as const) {
+    const steps = job?.steps ?? [];
+    const bootIdx = steps.findIndex((s) => /packaged-boot\.mjs/.test(s.run));
+    const pkgIdx = steps.findIndex((s) => s.run === packagingRun);
+    const smokeIdx = steps.findIndex((s) => s.run.includes("dist:smoke --workspace @ocr/desktop -- --no-installer"));
+    const bootStep = bootIdx > -1 ? steps[bootIdx] : null;
+    check(
+      `P2-242: ci.yml ${label} packaging job — the real boot runs after packaging and after the inspection smoke, with shell: bash and its own timeout`,
+      pkgIdx > -1 &&
+        smokeIdx > pkgIdx &&
+        bootIdx > smokeIdx &&
+        bootStep?.shell === "bash" &&
+        typeof bootStep?.timeoutMinutes === "number" &&
+        (bootStep?.timeoutMinutes ?? 0) > 0,
+      JSON.stringify(steps.map((s) => ({ name: s.name, shell: s.shell, timeout: s.timeoutMinutes }))),
+    );
+  }
+  check(
+    "P2-242: ci.yml — the boot step resolves the dir-target bundle per platform (.app on macOS, win-unpacked on Windows)",
+    (macJob?.steps.find((s) => /packaged-boot\.mjs/.test(s.run))?.run ?? "").includes("-name '*.app'") &&
+      (winJob?.steps.find((s) => /packaged-boot\.mjs/.test(s.run))?.run ?? "").includes("win-unpacked"),
+  );
+  check(
+    "P2-242: ci.yml — no packaging-job step uploads artifacts, publishes, signs or notarizes",
+    [macJob, winJob].every(
+      (j) =>
+        j &&
+        j.steps.every((s) => !/upload-artifact|gh release|ghr|--publish|notariz/i.test(s.run)) &&
+        j.steps.some((s) => s.run.includes("packaged-boot.mjs")),
+    ),
+  );
+  check(
+    "P2-242: ci.yml — the pre-existing steps of both packaging jobs are still present",
+    (macJob?.steps.map((s) => s.name) ?? []).join("\n").includes("Install dependencies") &&
+      (macJob?.steps.map((s) => s.name) ?? []).join("\n").includes("Bundle budget") &&
+      (macJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Package mac bundle")) &&
+      (macJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Smoke-check the packaged bundle")) &&
+      (winJob?.steps.map((s) => s.name) ?? []).join("\n").includes("Install dependencies") &&
+      (winJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Package Windows bundle")) &&
+      (winJob?.steps.map((s) => s.name) ?? []).some((n) => n.startsWith("Smoke-check the packaged bundle")),
+    JSON.stringify({ mac: macJob?.steps.map((s) => s.name), win: winJob?.steps.map((s) => s.name) }),
+  );
+  check(
+    "P2-242: release.yml — both release packaging jobs still boot the real package (parity baseline)",
+    ["desktop-dmg", "desktop-win"].every((name) => {
+      const job = releaseJobs.find((j) => j.name === name);
+      const bootStep = job?.steps.find((s) => /packaged-boot\.mjs/.test(s.run));
+      return job && bootStep && bootStep.shell === "bash" && typeof bootStep.timeoutMinutes === "number";
+    }),
+  );
+}
+
+// --- P2-251: packaged daemon smoke — daemonVerdict table + release wiring -----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "packaged-daemon-verdict.mjs"]);
+  const smokeSrc = src(["apps", "desktop", "scripts", "packaged-daemon-smoke.mjs"]);
+
+  const OK = { exitCode: null, signal: null, elapsedMs: 1500, healthAnswered: true, healthStatus: 200, stderrTail: "" };
+  const v = (over: Partial<typeof OK>) => daemonVerdict({ ...OK, ...over });
+  const reasons = (over: Partial<typeof OK>) => v(over).problems.map((p) => p.reason);
+
+  // full verdict table
+  check("P2-251: all facts good → ok with no reason and no problems", v(OK).ok === true && v(OK).reason === null && v(OK).problems.length === 0);
+  check(
+    "P2-251: child dead before health answered → daemon-exited with the error tail cited",
+    (() => {
+      const r = v({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "ReferenceError: boom at main" });
+      return r.ok === false && r.reason === "daemon-exited" && r.problems[0].message.includes("boom") && r.problems[0].message.includes("código 1");
+    })(),
+  );
+  check(
+    "P2-251: a signal death is cited too",
+    v({ signal: "SIGKILL", healthAnswered: false, healthStatus: null }).problems[0].message.includes("SIGKILL"),
+  );
+  check(
+    "P2-251: module-resolution tail → its own named problem",
+    (() => {
+      const r = v({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "Error: Cannot find module 'ws'" });
+      return r.problems.some((p) => p.reason === "module-resolution") && r.reason !== null;
+    })(),
+  );
+  check(
+    "P2-251: health that never answered within the deadline → health-unreachable citing the wait",
+    (() => {
+      const r = v({ healthAnswered: false, healthStatus: null, elapsedMs: 45_000 });
+      return r.ok === false && r.reason === "health-unreachable" && r.problems[0].message.includes("45s");
+    })(),
+  );
+  check(
+    "P2-251: health answered outside the success range → health-status citing the code",
+    v({ healthStatus: 401 }).reason === "health-status" && v({ healthStatus: 401 }).problems[0].message.includes("401"),
+  );
+  check("P2-251: every 2xx code approves; 3xx/4xx/5xx do not", [200, 204, 299].every((s) => v({ healthStatus: s }).ok === true) && [301, 401, 500].every((s) => v({ healthStatus: s }).ok === false));
+  check(
+    "P2-251: no short-circuit — dead child with a module-resolution tail and no health answer yields ALL three problems in order",
+    JSON.stringify(reasons({ exitCode: 1, healthAnswered: false, healthStatus: null, stderrTail: "Error: MODULE_NOT_FOUND" })) ===
+      JSON.stringify(["daemon-exited", "module-resolution", "health-unreachable"]),
+  );
+  check(
+    "P2-251: health answered but the child died afterwards is still a rejection (only alive+healthy passes)",
+    v({ exitCode: 1 }).ok === false && reasons({ exitCode: 1 }).includes("daemon-exited"),
+  );
+  check(
+    "P2-251: the verdict is identical for the same input in two calls",
+    (() => {
+      const facts = { exitCode: 1, signal: null, elapsedMs: 9000, healthAnswered: false, healthStatus: null, stderrTail: "Cannot find module 'x'" };
+      return JSON.stringify(daemonVerdict(facts)) === JSON.stringify(daemonVerdict(facts));
+    })(),
+  );
+  check(
+    "P2-251: MODULE_RESOLUTION_RE covers the three shapes esbuild/node emit",
+    MODULE_RESOLUTION_RE.test("Cannot find module './x'") && MODULE_RESOLUTION_RE.test("code: 'MODULE_NOT_FOUND'") && MODULE_RESOLUTION_RE.test("ERR_MODULE_NOT_FOUND"),
+  );
+
+  // message hygiene: the tail citation is bounded, one line, and the module
+  // stays pure (P2-194 lesson) — no fs, no process spawn, no network.
+  check(
+    "P2-251: the cited tail is bounded to 240 chars and flattened to one line",
+    (() => {
+      const long = "a".repeat(500) + "\n" + "b".repeat(500);
+      const msg = v({ exitCode: 1, stderrTail: long }).problems[0].message;
+      return !msg.includes("\n") && msg.length < 500;
+    })(),
+  );
+  check(
+    "P2-251: packaged-daemon-verdict.mjs is pure — no node:fs, no node:child_process, no fetch anywhere in the source",
+    !/node:(fs|child_process)|fetch/.test(verdictSrc),
+  );
+
+  // the driver script carries the production-spawn + hermetic contract
+  check(
+    "P2-251: packaged-daemon-smoke.mjs spawns the packaged Electron as Node exactly like daemon.ts does",
+    smokeSrc.includes("ELECTRON_RUN_AS_NODE") && smokeSrc.includes("OCR_METRICS_PORT") && smokeSrc.includes("resolveExecutable"),
+  );
+  check(
+    "P2-251: the driver is hermetic — temp HOME, relay off via the daemon's own fail-closed preflight, temp state dir removed on exit",
+    smokeSrc.includes("HOME: tempHome") && smokeSrc.includes("USERPROFILE: tempHome") && smokeSrc.includes('RELAY_URL: "off"') && smokeSrc.includes("rmSync(tempHome"),
+  );
+  check(
+    "P2-251: the driver never prints the pairing URI (stdout discarded unread) and resolves the entry the resolveEntry way",
+    smokeSrc.includes("child.stdout?.resume()") && smokeSrc.includes('"daemon", "index.js"') && smokeSrc.includes("packaged-daemon-verdict.mjs"),
+  );
+
+  // bootsmokeparity: the new release-only requirement
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac --dir", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+  check(
+    "P2-251: a release packaging job without the daemon smoke yields exactly one problem naming the job",
+    (() => {
+      const problems = bootSmokeParity([], [wfJob("desktop-dmg", [pkgStep, bootStep])]);
+      return problems.length === 1 && problems[0].includes('"desktop-dmg"') && problems[0].includes("packaged daemon sidecar");
+    })(),
+  );
+  check(
+    "P2-253: a ci.yml packaging job is no longer exempt from the daemon-smoke requirement",
+    (() => {
+      const problems = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep])], []);
+      return problems.length === 1 && problems[0].includes('"desktop-package"') && problems[0].includes("packaged daemon sidecar");
+    })(),
+  );
+  check(
+    "P2-251: a daemon smoke placed before packaging with bad shell/timeout yields one problem per cause (position, shell, timeout)",
+    (() => {
+      const problems = bootSmokeParity([], [wfJob("desktop-win", [{ ...daemonStep, shell: null, timeoutMinutes: null }, pkgStep, daemonStep, bootStep])]);
+      return (
+        problems.length === 3 &&
+        problems.some((p) => p.includes("before the packaging step")) &&
+        problems.some((p) => p.includes("shell: bash")) &&
+        problems.some((p) => p.includes("timeout-minutes"))
+      );
+    })(),
+  );
+  check(
+    "P2-251: a release packaging job with both steps after packaging yields zero problems",
+    bootSmokeParity([], [wfJob("desktop-dmg", [pkgStep, bootStep, daemonStep])]).length === 0,
+  );
+
+  // real-repo assertion: release.yml runs the daemon smoke in BOTH packaging
+  // jobs, after the packaged boot and before the artifact upload, with
+  // shell: bash and its own timeout.
+  const release = src([".github", "workflows", "release.yml"]);
+  const dmgStart = release.indexOf("\n  desktop-dmg:");
+  const dmgEnd = release.indexOf("\n  desktop-win:");
+  const dmg = dmgStart > -1 && dmgEnd > dmgStart ? release.slice(dmgStart, dmgEnd) : "";
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  for (const [label, jobYml, uploadMarker] of [
+    ["desktop-dmg", dmg, "Attach DMG + update metadata"],
+    ["desktop-win", win, "Attach setup exe + update metadata"],
+  ] as const) {
+    const bootAt = jobYml.indexOf("Smoke-boot the packaged app");
+    const smokeAt = jobYml.indexOf("Smoke the packaged daemon sidecar");
+    const uploadAt = jobYml.indexOf(uploadMarker);
+    const stepSlice = smokeAt > -1 ? jobYml.slice(smokeAt, jobYml.indexOf("\n      - name:", smokeAt)) : "";
+    check(
+      `P2-251: release.yml ${label} runs the daemon smoke between the packaged boot and the upload`,
+      smokeAt > -1 && bootAt > -1 && smokeAt > bootAt && uploadAt > smokeAt,
+    );
+    check(
+      `P2-251: release.yml ${label} declares shell: bash and its own timeout on the daemon smoke`,
+      stepSlice.includes("shell: bash") && /timeout-minutes:/.test(stepSlice),
+    );
+    check(
+      `P2-251: release.yml ${label} invokes packaged-daemon-smoke.mjs against the resolved bundle`,
+      stepSlice.includes("node apps/desktop/scripts/packaged-daemon-smoke.mjs"),
+    );
+  }
+}
+
+// --- P2-253: bootSmokeParity demands the daemon smoke from ci.yml too -------
+
+{
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac --dir", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+
+  const missing = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep])], []);
+  check(
+    "P2-253: a ci job that packages and boots but never smokes the daemon yields the problem naming the job",
+    missing.length === 1 && missing[0].includes('"desktop-package"') && missing[0].includes("never boots the packaged daemon sidecar"),
+    missing.join(" | "),
+  );
+  const smokeFirst = bootSmokeParity([wfJob("desktop-package", [daemonStep, pkgStep, bootStep])], []);
+  check(
+    "P2-253: a ci daemon smoke positioned before the packaging step yields the position problem",
+    smokeFirst.length === 1 && smokeFirst[0].includes("smokes the daemon sidecar before the packaging step"),
+    smokeFirst.join(" | "),
+  );
+  const smokeNoShell = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, shell: null }])], []);
+  check(
+    "P2-253: a ci daemon smoke without shell: bash yields the shell problem",
+    smokeNoShell.length === 1 && smokeNoShell[0].includes("smokes the daemon sidecar without declaring shell: bash"),
+    smokeNoShell.join(" | "),
+  );
+  const smokeNoTimeout = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, timeoutMinutes: null }])], []);
+  check(
+    "P2-253: a ci daemon smoke without its own timeout-minutes yields the timeout problem",
+    smokeNoTimeout.length === 1 && smokeNoTimeout[0].includes("smokes the daemon sidecar without its own timeout-minutes"),
+    smokeNoTimeout.join(" | "),
+  );
+  check(
+    "P2-253: a complete correct ci packaging job (package, boot, daemon smoke — in that order) yields zero problems",
+    bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, daemonStep])], []).length === 0,
+  );
+  check(
+    "P2-253: a ci job that packages nothing is never flagged for the daemon smoke",
+    bootSmokeParity([wfJob("verify", [{ name: "Build", run: "npm run build", shell: "bash", timeoutMinutes: 5 }])], []).length === 0,
+  );
+
+  const twoCauses = bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, shell: null, timeoutMinutes: null }])], []);
+  check(
+    "P2-253: two simultaneous daemon-smoke causes yield two problems, no short-circuit",
+    twoCauses.length === 2 && twoCauses.some((p) => p.includes("shell: bash")) && twoCauses.some((p) => p.includes("timeout-minutes")),
+    twoCauses.join(" | "),
+  );
+  check(
+    "P2-253: the problem order is stable for the same input across two calls",
+    JSON.stringify(twoCauses) ===
+      JSON.stringify(bootSmokeParity([wfJob("desktop-package", [pkgStep, bootStep, { ...daemonStep, shell: null, timeoutMinutes: null }])], [])),
+  );
+  check(
+    "P2-253: no problem text embeds a file path coming from the input",
+    [...missing, ...smokeFirst, ...smokeNoShell, ...smokeNoTimeout, ...twoCauses].every(
+      (p) => !p.startsWith("/") && !p.includes("/Users/") && !p.includes("/home/") && !p.includes("C:\\"),
+    ),
+  );
+
+  // Real-repo assertion: the actual ci.yml carries the daemon smoke in BOTH
+  // packaging jobs — after the packaged boot, with shell: bash and its own
+  // timeout — and bootSmokeParity is green against both real workflows.
+  const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+  const releaseJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8"));
+  for (const job of ciJobs.filter((j) => j.name === "desktop-package" || j.name === "desktop-package-win")) {
+    const bootAt = job.steps.findIndex((s) => /packaged-boot\.mjs/.test(s.run));
+    const smokeAt = job.steps.findIndex((s) => /packaged-daemon-smoke\.mjs/.test(s.run));
+    const smoke = smokeAt > -1 ? job.steps[smokeAt] : null;
+    check(
+      `P2-253: ci.yml ${job.name} — the daemon smoke runs after the packaged boot, with shell: bash and its own timeout-minutes`,
+      bootAt > -1 && smokeAt > bootAt && smoke?.shell === "bash" && typeof smoke?.timeoutMinutes === "number" && (smoke?.timeoutMinutes ?? 0) > 0,
+      JSON.stringify(job.steps.map((s) => ({ name: s.name, shell: s.shell, timeout: s.timeoutMinutes }))),
+    );
+    check(
+      `P2-253: ci.yml ${job.name} — the daemon smoke invokes the same release script and never uploads or publishes`,
+      (job.steps[smokeAt]?.run ?? "").includes("node apps/desktop/scripts/packaged-daemon-smoke.mjs") &&
+        !/upload-artifact|gh release|ghr|--publish|notariz/i.test(job.steps[smokeAt]?.run ?? ""),
+    );
+  }
+  const parity = bootSmokeParity(ciJobs, releaseJobs);
+  check("P2-253: scripts/bootsmokeparity.ts is green against the real files of both workflows", parity.length === 0, parity.join(" | "));
+}
+
+// --- P2-304: installer smoke — installerVerdict table + release.yml wiring --
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "installer-smoke-verdict.mjs"]);
+  const driverSrc = src(["apps", "desktop", "scripts", "installer-smoke.mjs"]);
+
+  const GOOD = {
+    install: { exitCode: 0, signal: null, dirAppeared: true },
+    layout: { executable: true, daemonEntry: true, webDist: true, uninstaller: true },
+    boot: { driverAvailable: true, loadFinished: true, rootEmpty: false, canarySeen: true, consoleErrors: [] as string[] },
+    uninstall: { attempted: true, exitCode: 0, signal: null },
+    dirGone: true,
+  };
+  const v = (over: Partial<typeof GOOD>) => installerVerdict({ ...GOOD, ...over });
+
+  // full verdict table (first match wins: install → layout → boot →
+  // uninstall → leftovers — each stage subsumes the ones after it)
+  check("P2-304: all facts good → ok with no reason", installerVerdict(GOOD).ok === true && installerVerdict(GOOD).reason === null);
+  check("P2-304: installer exit code non-zero → install-failed", v({ install: { exitCode: 3, signal: null, dirAppeared: true } }).reason === "install-failed");
+  check("P2-304: installer killed by signal → install-failed", v({ install: { exitCode: null, signal: "SIGKILL", dirAppeared: true } }).reason === "install-failed");
+  check("P2-304: install dir never appeared → install-failed", v({ install: { exitCode: 0, signal: null, dirAppeared: false } }).reason === "install-failed");
+  check("P2-304: missing executable → layout-missing", v({ layout: { executable: false, daemonEntry: true, webDist: true, uninstaller: true } }).reason === "layout-missing");
+  check("P2-304: missing daemon entry → layout-missing", v({ layout: { executable: true, daemonEntry: false, webDist: true, uninstaller: true } }).reason === "layout-missing");
+  check("P2-304: missing web dist → layout-missing", v({ layout: { executable: true, daemonEntry: true, webDist: false, uninstaller: true } }).reason === "layout-missing");
+  check("P2-304: missing uninstaller → layout-missing", v({ layout: { executable: true, daemonEntry: true, webDist: true, uninstaller: false } }).reason === "layout-missing");
+  check(
+    "P2-304: layout-missing names every missing piece in one message",
+    (() => {
+      const verdict = v({ layout: { executable: false, daemonEntry: false, webDist: false, uninstaller: false } });
+      return verdict.reason === "layout-missing" && /ausente/.test(verdict.message) && /executável/.test(verdict.message) && /desinstalador/.test(verdict.message);
+    })(),
+  );
+  check("P2-304: driver unavailable fails closed → boot-failed", v({ boot: { ...GOOD.boot, driverAvailable: false } }).reason === "boot-failed");
+  check("P2-304: load not finished → boot-failed", v({ boot: { ...GOOD.boot, loadFinished: false } }).reason === "boot-failed");
+  check("P2-304: blank window → boot-failed", v({ boot: { ...GOOD.boot, rootEmpty: true } }).reason === "boot-failed");
+  check("P2-304: canary not seen → boot-failed (never a vacuous pass)", v({ boot: { ...GOOD.boot, canarySeen: false } }).reason === "boot-failed");
+  check("P2-304: console errors → boot-failed", v({ boot: { ...GOOD.boot, consoleErrors: ["boom"] } }).reason === "boot-failed");
+  check("P2-304: boot-failed cites the inner boot reason", v({ boot: { ...GOOD.boot, loadFinished: false } }).message.includes("load-failed"));
+  check("P2-304: uninstaller exit non-zero → uninstall-failed", v({ uninstall: { attempted: true, exitCode: 5, signal: null } }).reason === "uninstall-failed");
+  check("P2-304: uninstall never attempted → uninstall-failed (fail closed)", v({ uninstall: { attempted: false, exitCode: null, signal: null } }).reason === "uninstall-failed");
+  check("P2-304: dir still present after a clean uninstall → leftover-files", v({ dirGone: false }).reason === "leftover-files");
+  check("P2-304: install-failed outranks everything (later stages never ran)", v({ install: { exitCode: 1, signal: null, dirAppeared: false }, dirGone: false }).reason === "install-failed");
+  check("P2-304: uninstall-failed outranks leftover-files", v({ uninstall: { attempted: true, exitCode: 5, signal: null }, dirGone: false }).reason === "uninstall-failed");
+
+  // message hygiene: short pt-BR, no paths, no URL schemes, no secrets
+  const all = [
+    installerVerdict(GOOD),
+    v({ install: { exitCode: 3, signal: null, dirAppeared: true } }),
+    v({ layout: { executable: true, daemonEntry: false, webDist: true, uninstaller: true } }),
+    v({ boot: { ...GOOD.boot, driverAvailable: false } }),
+    v({ boot: { ...GOOD.boot, loadFinished: false } }),
+    v({ uninstall: { attempted: true, exitCode: 5, signal: null } }),
+    v({ dirGone: false }),
+  ];
+  check(
+    "P2-304: every verdict message is non-empty and free of paths, URLs and secrets",
+    all.every((x) => typeof x.message === "string" && x.message.trim().length > 0 && !/[\\/]/.test(x.message) && !/https?:/i.test(x.message)),
+  );
+  check("P2-304: each reason carries a distinct message", new Set(all.map((x) => x.message)).size === all.length);
+
+  // the verdict module stays pure (P2-194 lesson): no I/O of any kind
+  check(
+    "P2-304: installer-smoke-verdict.mjs is pure (no node: fs/os/path/net/http/child_process imports)",
+    !/node:(fs|os|path|net|http|child_process)/.test(verdictSrc.replace(/\/\/.*$/gm, "")),
+  );
+
+  // the driver carries the full pipeline and the hermetic contract of
+  // packaged-boot.mjs verbatim (P2-242 lesson: no thinner CI-only variant)
+  check(
+    "P2-304: driver installs silently — /S and /D= last unquoted argument (NSIS contract)",
+    driverSrc.includes('"/S"') && driverSrc.includes("`/D=${installDir}`") && driverSrc.includes("windowsVerbatimArguments"),
+  );
+  check(
+    "P2-304: driver reuses the packaged-boot hermetic contract (same env fn, same canary, same verdict module)",
+    driverSrc.includes('hermeticBootEnv } from "./packaged-boot.mjs"') &&
+      driverSrc.includes('CANARY } from "./packaged-boot-verdict.mjs"') &&
+      driverSrc.includes('installerVerdict } from "./installer-smoke-verdict.mjs"'),
+  );
+  check(
+    "P2-304: driver checks the installed layout (exe, resources/daemon, resources/web-dist, uninstaller)",
+    driverSrc.includes('"resources", "daemon", "index.js"') &&
+      driverSrc.includes('"resources", "web-dist", "index.html"') &&
+      driverSrc.includes("uninstallerPath"),
+  );
+  check(
+    "P2-304: driver fails closed BEFORE any machine mutation when playwright-core is unavailable",
+    driverSrc.includes("refusing to pass vacuously") && driverSrc.indexOf("refusing to pass vacuously") < driverSrc.indexOf("const installer = spawn"),
+  );
+  check(
+    "P2-304: driver refuses non-Windows hosts (NSIS never executes there) and bounds every child",
+    driverSrc.includes('process.platform !== "win32"') && driverSrc.includes("waitExit"),
+  );
+  check(
+    "P2-304: driver runs the uninstaller silently and requires the install dir to vanish",
+    driverSrc.includes("uninstallerPath, [\"/S\"]") && driverSrc.includes("dirGone"),
+  );
+  check(
+    "P2-304: driver cleans up the temp install tree and temp home even on failure",
+    driverSrc.includes("rmSync(workspace") && driverSrc.includes("rmSync(tempHome"),
+  );
+
+  // parity rules (synthetic fixtures, same shape as the P2-251/P2-253 ones)
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac --dir", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+  const installerStep: WorkflowStep = { name: "Smoke-install the Windows installer", run: 'node apps/desktop/scripts/installer-smoke.mjs "$EXE"', shell: "bash", timeoutMinutes: 10 };
+  const setupUpload: WorkflowStep = {
+    name: "Attach setup exe + update metadata to the GitHub release",
+    run: 'gh release upload "$GITHUB_REF_NAME" \\\n  apps/desktop/dist/*.exe apps/desktop/dist/latest.yml \\\n  --clobber',
+    shell: "bash",
+    timeoutMinutes: 5,
+  };
+  const winJob = (steps: WorkflowStep[]) => bootSmokeParity([], [wfJob("desktop-win", steps)]);
+  check(
+    "P2-304: a job shipping the setup exe without the installer smoke yields exactly one problem naming the job",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, setupUpload]);
+      return problems.length === 1 && problems[0].includes('"desktop-win"') && problems[0].includes("never smoke-installs");
+    })(),
+  );
+  check(
+    "P2-304: a complete correct job (package, boot, daemon smoke, installer smoke, upload) yields zero problems",
+    winJob([pkgStep, bootStep, daemonStep, installerStep, setupUpload]).length === 0,
+  );
+  check(
+    "P2-304: two installer smokes yield the uniqueness problem",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, installerStep, installerStep, setupUpload]);
+      return problems.length === 1 && problems[0].includes("more than once");
+    })(),
+  );
+  check(
+    "P2-304: an installer smoke before packaging yields the position problem",
+    (() => {
+      const problems = winJob([installerStep, pkgStep, bootStep, daemonStep, setupUpload]);
+      return problems.length === 1 && problems[0].includes("before the packaging step");
+    })(),
+  );
+  check(
+    "P2-304: an installer smoke after the upload yields the position problem",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, setupUpload, installerStep]);
+      return problems.length === 1 && problems[0].includes("after the upload");
+    })(),
+  );
+  check(
+    "P2-304: shell/timeout hygiene yields one problem per cause, no short-circuit",
+    (() => {
+      const problems = winJob([pkgStep, bootStep, daemonStep, { ...installerStep, shell: null, timeoutMinutes: null }, setupUpload]);
+      return problems.length === 2 && problems.some((p) => p.includes("shell: bash")) && problems.some((p) => p.includes("timeout-minutes"));
+    })(),
+  );
+  check(
+    "P2-304: a ci job that never uploads the setup exe is never flagged (dir-target packaging)",
+    bootSmokeParity([wfJob("desktop-package-win", [pkgStep, bootStep, daemonStep])], []).length === 0,
+  );
+  check(
+    "P2-304: a job uploading only the dmg is never flagged for the installer rule (dmg carries its own smoke, P2-309)",
+    bootSmokeParity(
+      [],
+      [
+        wfJob("desktop-dmg", [
+          pkgStep,
+          bootStep,
+          daemonStep,
+          { name: "Smoke-mount the macOS disk image", run: 'node apps/desktop/scripts/dmg-smoke.mjs "$DMG"', shell: "bash", timeoutMinutes: 10 },
+          { name: "Attach DMG", run: "gh release upload apps/desktop/dist/*.dmg", shell: "bash", timeoutMinutes: 5 },
+        ]),
+      ],
+    ).length === 0,
+  );
+
+  // real-repo assertion: the actual release.yml runs the installer smoke in
+  // desktop-win exactly once, after the daemon smoke and before the upload,
+  // with shell: bash + its own timeout — and parity stays green overall.
+  const release = src([".github", "workflows", "release.yml"]);
+  const winStart = release.indexOf("\n  desktop-win:");
+  const winEnd = release.indexOf("\n  release-verify:");
+  const win = winStart > -1 && winEnd > winStart ? release.slice(winStart, winEnd) : "";
+  const daemonAt = win.indexOf("Smoke the packaged daemon sidecar");
+  const smokeAt = win.indexOf("Smoke-install the Windows installer");
+  const uploadAt = win.indexOf("Attach setup exe + update metadata");
+  const stepSlice = smokeAt > -1 ? win.slice(smokeAt, win.indexOf("\n      - name:", smokeAt)) : "";
+  check(
+    "P2-304: release.yml desktop-win runs the installer smoke between the daemon smoke and the upload",
+    daemonAt > -1 && smokeAt > daemonAt && uploadAt > smokeAt,
+  );
+  check(
+    "P2-304: exactly one installer-smoke.mjs occurrence in the desktop-win job",
+    win.split("installer-smoke.mjs").length === 2,
+  );
+  check(
+    "P2-304: the installer smoke step declares shell: bash and its own timeout-minutes",
+    stepSlice.includes("shell: bash") && /timeout-minutes: \d+/.test(stepSlice),
+  );
+  check(
+    "P2-304: the step resolves the setup exe under apps/desktop/dist and runs installer-smoke.mjs against it",
+    stepSlice.includes("find apps/desktop/dist") && stepSlice.includes("node apps/desktop/scripts/installer-smoke.mjs"),
+  );
+  {
+    const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+    const releaseJobs = parseWorkflowJobs(release);
+    const problems = bootSmokeParity(ciJobs, releaseJobs);
+    check("P2-304: bootSmokeParity is green against the real workflows with the installer rule", problems.length === 0, problems.join(" | "));
+  }
+}
+
+// --- P2-309: DMG smoke — dmgVerdict table + release.yml wiring --------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const verdictSrc = src(["apps", "desktop", "scripts", "dmg-smoke-verdict.mjs"]);
+  const driverSrc = src(["apps", "desktop", "scripts", "dmg-smoke.mjs"]);
+
+  const GOOD = {
+    attach: { exitCode: 0, signal: null, mounted: true },
+    layout: { singleAppBundle: true, executable: true, daemonEntry: true, webDist: true },
+    applicationsLink: { present: true, targetOk: true },
+    boot: { driverAvailable: true, loadFinished: true, rootEmpty: false, canarySeen: true, consoleErrors: [] as string[] },
+    detach: { attempted: true, exitCode: 0, signal: null },
+  };
+  const v = (over: Partial<typeof GOOD>) => dmgVerdict({ ...GOOD, ...over });
+
+  // full verdict table (first match wins: attach → layout → applications
+  // link → boot → detach — each stage subsumes the ones after it)
+  check("P2-309: all facts good → ok with no reason", dmgVerdict(GOOD).ok === true && dmgVerdict(GOOD).reason === null);
+  check("P2-309: attach exit code non-zero → attach-failed", v({ attach: { exitCode: 5, signal: null, mounted: true } }).reason === "attach-failed");
+  check("P2-309: attach killed by signal → attach-failed", v({ attach: { exitCode: null, signal: "SIGKILL", mounted: true } }).reason === "attach-failed");
+  check("P2-309: volume never appeared → attach-failed", v({ attach: { exitCode: 0, signal: null, mounted: false } }).reason === "attach-failed");
+  check("P2-309: not exactly one app bundle → layout-missing", v({ layout: { ...GOOD.layout, singleAppBundle: false } }).reason === "layout-missing");
+  check("P2-309: missing executable → layout-missing", v({ layout: { ...GOOD.layout, executable: false } }).reason === "layout-missing");
+  check("P2-309: missing daemon entry → layout-missing", v({ layout: { ...GOOD.layout, daemonEntry: false } }).reason === "layout-missing");
+  check("P2-309: missing web dist → layout-missing", v({ layout: { ...GOOD.layout, webDist: false } }).reason === "layout-missing");
+  check(
+    "P2-309: layout-missing names every missing piece in one message",
+    (() => {
+      const verdict = v({ layout: { singleAppBundle: false, executable: false, daemonEntry: false, webDist: false } });
+      return verdict.reason === "layout-missing" && /ausente/.test(verdict.message) && /executável/.test(verdict.message) && /daemon/.test(verdict.message);
+    })(),
+  );
+  check("P2-309: Applications symlink absent → applications-link-missing", v({ applicationsLink: { present: false, targetOk: false } }).reason === "applications-link-missing");
+  check("P2-309: Applications symlink wrong target → applications-link-missing", v({ applicationsLink: { present: true, targetOk: false } }).reason === "applications-link-missing");
+  check("P2-309: driver unavailable fails closed → boot-failed", v({ boot: { ...GOOD.boot, driverAvailable: false } }).reason === "boot-failed");
+  check("P2-309: load not finished → boot-failed", v({ boot: { ...GOOD.boot, loadFinished: false } }).reason === "boot-failed");
+  check("P2-309: blank window → boot-failed", v({ boot: { ...GOOD.boot, rootEmpty: true } }).reason === "boot-failed");
+  check("P2-309: canary not seen → boot-failed (never a vacuous pass)", v({ boot: { ...GOOD.boot, canarySeen: false } }).reason === "boot-failed");
+  check("P2-309: console errors → boot-failed", v({ boot: { ...GOOD.boot, consoleErrors: ["boom"] } }).reason === "boot-failed");
+  check("P2-309: boot-failed cites the inner boot reason", v({ boot: { ...GOOD.boot, loadFinished: false } }).message.includes("load-failed"));
+  check("P2-309: detach exit non-zero → detach-failed", v({ detach: { attempted: true, exitCode: 16, signal: null } }).reason === "detach-failed");
+  check("P2-309: detach killed by signal → detach-failed", v({ detach: { attempted: true, exitCode: null, signal: "SIGKILL" } }).reason === "detach-failed");
+  check("P2-309: detach never attempted → detach-failed (fail closed)", v({ detach: { attempted: false, exitCode: null, signal: null } }).reason === "detach-failed");
+  check("P2-309: attach-failed outranks everything (later stages never ran)", v({ attach: { exitCode: 5, signal: null, mounted: false }, detach: { attempted: false, exitCode: null, signal: null } }).reason === "attach-failed");
+  check("P2-309: boot-failed outranks detach-failed", v({ boot: { ...GOOD.boot, loadFinished: false }, detach: { attempted: true, exitCode: 16, signal: null } }).reason === "boot-failed");
+
+  // determinism: the same input yields the identical verdict in two calls,
+  // for the all-green input and for a failing one
+  const failing = { ...GOOD, boot: { ...GOOD.boot, consoleErrors: ["boom"] } };
+  check(
+    "P2-309: identical result for the same input in two calls (ok and failing)",
+    JSON.stringify(dmgVerdict(GOOD)) === JSON.stringify(dmgVerdict(GOOD)) &&
+      JSON.stringify(dmgVerdict(failing)) === JSON.stringify(dmgVerdict(failing)),
+  );
+
+  // message hygiene: short pt-BR, no paths, no URL schemes, no secrets
+  const all = [
+    dmgVerdict(GOOD),
+    v({ attach: { exitCode: 5, signal: null, mounted: true } }),
+    v({ layout: { singleAppBundle: false, executable: true, daemonEntry: true, webDist: true } }),
+    v({ applicationsLink: { present: false, targetOk: false } }),
+    v({ applicationsLink: { present: true, targetOk: false } }),
+    v({ boot: { ...GOOD.boot, driverAvailable: false } }),
+    v({ boot: { ...GOOD.boot, loadFinished: false } }),
+    v({ detach: { attempted: true, exitCode: 16, signal: null } }),
+    v({ detach: { attempted: false, exitCode: null, signal: null } }),
+  ];
+  check(
+    "P2-309: every verdict message is non-empty and free of paths, URLs and secrets",
+    all.every((x) => typeof x.message === "string" && x.message.trim().length > 0 && !/[\\/]/.test(x.message) && !/https?:/i.test(x.message)),
+  );
+  check("P2-309: each reason carries a distinct message", new Set(all.map((x) => x.message)).size === all.length);
+
+  // the verdict module stays pure (P2-194 lesson): no I/O of any kind
+  check(
+    "P2-309: dmg-smoke-verdict.mjs is pure (no node: fs/os/path/net/http/child_process imports)",
+    !/node:(fs|os|path|net|http|child_process)/.test(verdictSrc.replace(/\/\/.*$/gm, "")),
+  );
+
+  // the driver carries the full pipeline and the hermetic contract of
+  // packaged-boot.mjs verbatim (P2-242 lesson: no thinner CI-only variant)
+  check(
+    "P2-309: driver mounts non-interactively — hdiutil attach readonly, nobrowse, no EULA, temp mount point",
+    driverSrc.includes('"attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint"') && driverSrc.includes("mkdtempSync"),
+  );
+  check(
+    "P2-309: driver reuses the packaged-boot hermetic contract (same env fn, same executable resolution, same canary, same verdict module)",
+    driverSrc.includes('hermeticBootEnv, resolveExecutable } from "./packaged-boot.mjs"') &&
+      driverSrc.includes('CANARY } from "./packaged-boot-verdict.mjs"') &&
+      driverSrc.includes('dmgVerdict } from "./dmg-smoke-verdict.mjs"'),
+  );
+  check(
+    "P2-309: driver checks the mounted layout (exactly one .app, executable, resources/daemon, resources/web-dist)",
+    driverSrc.includes('endsWith(".app")') &&
+      driverSrc.includes("resolveDaemonEntry") &&
+      driverSrc.includes('"Contents", "Resources", "web-dist", "index.html"'),
+  );
+  check(
+    "P2-309: driver checks the Applications symlink via readlink (present AND pointing at /Applications)",
+    driverSrc.includes("readlinkSync") && driverSrc.includes('"/Applications"') && driverSrc.includes("isSymbolicLink"),
+  );
+  check(
+    "P2-309: driver fails closed BEFORE mounting anything when playwright-core is unavailable",
+    driverSrc.includes("refusing to pass vacuously") && driverSrc.indexOf("refusing to pass vacuously") < driverSrc.indexOf('"attach", "-readonly"'),
+  );
+  check(
+    "P2-309: driver refuses non-macOS hosts (hdiutil never executes there) and bounds every hdiutil child",
+    driverSrc.includes('process.platform !== "darwin"') && driverSrc.includes("waitExit"),
+  );
+  check(
+    "P2-309: driver boots the same beats as packaged-boot (firstWindow, load state, canary injection, #root)",
+    driverSrc.includes("firstWindow") && driverSrc.includes('waitForLoadState("load"') && driverSrc.includes("console.error('${CANARY}')"),
+  );
+  check(
+    "P2-309: driver detaches ALWAYS — plain first, -force retry, safety net even when the attempt dies",
+    driverSrc.includes('"detach", mount') && driverSrc.includes('"detach", "-force", mount') && driverSrc.includes("!detach.attempted"),
+  );
+  check(
+    "P2-309: driver cleans up the temp workspace even on failure",
+    driverSrc.includes("rmSync(workspace"),
+  );
+
+  // parity rules (synthetic fixtures, same shape as the P2-304 ones)
+  const wfJob = (name: string, steps: WorkflowStep[]): WorkflowJob => ({ name, platform: "x", steps });
+  const pkgStep: WorkflowStep = { name: "Package", run: "npm run dist --workspace @ocr/desktop -- --mac", shell: null, timeoutMinutes: null };
+  const bootStep: WorkflowStep = { name: "Boot", run: 'node apps/desktop/scripts/packaged-boot.mjs "$APP"', shell: "bash", timeoutMinutes: 10 };
+  const daemonStep: WorkflowStep = { name: "Smoke the packaged daemon sidecar", run: 'node apps/desktop/scripts/packaged-daemon-smoke.mjs "$APP"', shell: "bash", timeoutMinutes: 5 };
+  const dmgStep: WorkflowStep = { name: "Smoke-mount the macOS disk image", run: 'node apps/desktop/scripts/dmg-smoke.mjs "$DMG"', shell: "bash", timeoutMinutes: 10 };
+  const dmgUpload: WorkflowStep = {
+    name: "Attach DMG + update metadata to the GitHub release",
+    run: 'gh release upload "$GITHUB_REF_NAME" \\\n  apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml \\\n  --clobber',
+    shell: "bash",
+    timeoutMinutes: 5,
+  };
+  const dmgJob = (steps: WorkflowStep[]) => bootSmokeParity([], [wfJob("desktop-dmg", steps)]);
+  check(
+    "P2-309: a job shipping the disk image without the DMG smoke yields exactly one problem naming the job",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, dmgUpload]);
+      return problems.length === 1 && problems[0].includes('"desktop-dmg"') && problems[0].includes("never smoke-mounts");
+    })(),
+  );
+  check(
+    "P2-309: a complete correct job (package, boot, daemon smoke, dmg smoke, upload) yields zero problems",
+    dmgJob([pkgStep, bootStep, daemonStep, dmgStep, dmgUpload]).length === 0,
+  );
+  check(
+    "P2-309: two dmg smokes yield the uniqueness problem",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, dmgStep, dmgStep, dmgUpload]);
+      return problems.length === 1 && problems[0].includes("more than once");
+    })(),
+  );
+  check(
+    "P2-309: a dmg smoke before packaging yields the position problem",
+    (() => {
+      const problems = dmgJob([dmgStep, pkgStep, bootStep, daemonStep, dmgUpload]);
+      return problems.length === 1 && problems[0].includes("before the packaging step");
+    })(),
+  );
+  check(
+    "P2-309: a dmg smoke after the upload yields the position problem",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, dmgUpload, dmgStep]);
+      return problems.length === 1 && problems[0].includes("after the upload");
+    })(),
+  );
+  check(
+    "P2-309: shell/timeout hygiene yields one problem per cause, no short-circuit",
+    (() => {
+      const problems = dmgJob([pkgStep, bootStep, daemonStep, { ...dmgStep, shell: null, timeoutMinutes: null }, dmgUpload]);
+      return problems.length === 2 && problems.some((p) => p.includes("shell: bash")) && problems.some((p) => p.includes("timeout-minutes"));
+    })(),
+  );
+  check(
+    "P2-309: a job uploading only the setup exe is never flagged for the dmg rule",
+    bootSmokeParity([], [wfJob("desktop-win", [pkgStep, bootStep, daemonStep])]).length === 0,
+  );
+  check(
+    "P2-309: the problem order is stable for the same input across two calls",
+    (() => {
+      const broken = [pkgStep, bootStep, daemonStep, { ...dmgStep, shell: null, timeoutMinutes: null }, dmgUpload];
+      return JSON.stringify(dmgJob(broken)) === JSON.stringify(dmgJob(broken));
+    })(),
+  );
+
+  // real-repo assertion: the actual release.yml runs the dmg smoke in
+  // desktop-dmg exactly once, after the gatekeeper verification of the
+  // distributed DMG and before the feed build + upload, with shell: bash and
+  // its own timeout — and parity stays green overall.
+  const release = src([".github", "workflows", "release.yml"]);
+  const dmgStart = release.indexOf("\n  desktop-dmg:");
+  const dmgEnd = release.indexOf("\n  desktop-win:");
+  const dmgYml = dmgStart > -1 && dmgEnd > dmgStart ? release.slice(dmgStart, dmgEnd) : "";
+  const gatekeeperAt = dmgYml.indexOf("Gatekeeper verification of the distributed DMG");
+  const smokeAt = dmgYml.indexOf("Smoke-mount the macOS disk image");
+  const feedAt = dmgYml.indexOf("Build the Squirrel.Mac JSON feed");
+  const uploadAt = dmgYml.indexOf("Attach DMG + update metadata");
+  const stepSlice = smokeAt > -1 ? dmgYml.slice(smokeAt, dmgYml.indexOf("\n      - name:", smokeAt)) : "";
+  check(
+    "P2-309: release.yml desktop-dmg runs the dmg smoke after the gatekeeper verification and before the feed build + upload",
+    gatekeeperAt > -1 && smokeAt > gatekeeperAt && feedAt > smokeAt && uploadAt > feedAt,
+  );
+  check(
+    "P2-309: exactly one Smoke-mount step and one dmg-smoke.mjs occurrence in the desktop-dmg job",
+    dmgYml.split("Smoke-mount the macOS disk image").length === 2 && dmgYml.split("dmg-smoke.mjs").length === 2,
+  );
+  check(
+    "P2-309: the dmg smoke step declares shell: bash and its own timeout-minutes",
+    stepSlice.includes("shell: bash") && /timeout-minutes: \d+/.test(stepSlice),
+  );
+  check(
+    "P2-309: the step resolves the .dmg under apps/desktop/dist and runs dmg-smoke.mjs against it",
+    stepSlice.includes("find apps/desktop/dist") && stepSlice.includes("node apps/desktop/scripts/dmg-smoke.mjs"),
+  );
+  {
+    const ciJobs = parseWorkflowJobs(readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8"));
+    const releaseJobs = parseWorkflowJobs(release);
+    const problems = bootSmokeParity(ciJobs, releaseJobs);
+    check("P2-309: bootSmokeParity is green against the real workflows with the dmg rule", problems.length === 0, problems.join(" | "));
+  }
+}
+
+// --- download plan (P2-241) ---------------------------------------------------
+// The whole verdict table is pinned by contract: rule 1 = harness session,
+// rule 2 = refused scheme (the P2-178 extlink verdict), rule 3 = invalid
+// name, rule 4 = announced size above the documented ceiling.
+
+const dlLimits = { nameMax: DOWNLOAD_NAME_MAX, bytesMax: DOWNLOAD_MAX_BYTES };
+const dlHttps = externalOpenDecision("https://example.com/file.pdf");
+
+const dlOk = downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.pdf", announcedBytes: 1024, limits: dlLimits });
+check("downloadVerdict saves a valid http(s) download", dlOk.action === "salvar");
+check("downloadVerdict save plan carries the sanitized name", dlOk.action === "salvar" && dlOk.name === "file.pdf");
+check("downloadVerdict save plan carries the static save phrase", dlOk.action === "salvar" && dlOk.reason === DOWNLOAD_PHRASES.save);
+check("DOWNLOAD_LIMITS carries the documented constants", DOWNLOAD_LIMITS.nameMax === DOWNLOAD_NAME_MAX && DOWNLOAD_LIMITS.bytesMax === DOWNLOAD_MAX_BYTES);
+
+// Rule 1 by contract: a harness session refuses before any scheme, name or
+// size consideration — the P2-221/P2-235/P2-238 lesson, first rule stays first.
+const dlHarness = downloadVerdict({ harnessSession: true, schemeVerdict: dlHttps, announcedName: "file.pdf", announcedBytes: 1024, limits: dlLimits });
+check("downloadVerdict refuses in a harness session even with allowed scheme and valid name", dlHarness.action === "recusar");
+check("downloadVerdict harness refusal carries no name", dlHarness.action === "recusar" && dlHarness.name === "");
+check("downloadVerdict harness refusal is the harness phrase", dlHarness.action === "recusar" && dlHarness.reason === DOWNLOAD_PHRASES.harness);
+
+// Rule order: harness and refused scheme hold simultaneously — the harness
+// reason wins, because rule 1 is consulted first.
+const dlOrder = downloadVerdict({ harnessSession: true, schemeVerdict: externalOpenDecision("file:///etc/passwd"), announcedName: "evil.txt", announcedBytes: 1024, limits: dlLimits });
+check("downloadVerdict rule order — harness beats refused scheme", dlOrder.action === "recusar" && dlOrder.reason === DOWNLOAD_PHRASES.harness);
+
+// Rule 2: whatever the extlink verdict refuses, the download refuses.
+for (const [scheme, url] of [
+  ["file", "file:///etc/passwd"],
+  ["javascript", "javascript:alert(1)"],
+  ["data", "data:text/plain,hi"],
+  ["blob", "blob:https://example.com/uuid"],
+  ["unknown", "smb://server/share"],
+] as Array<[string, string]>) {
+  const plan = downloadVerdict({ harnessSession: false, schemeVerdict: externalOpenDecision(url), announcedName: "ok-name.txt", announcedBytes: 1024, limits: dlLimits });
+  check(`downloadVerdict refuses ${scheme} scheme outside harness`, plan.action === "recusar" && plan.reason === DOWNLOAD_PHRASES.scheme && plan.name === "");
+}
+
+// Rule 3: the full invalid-name table (fail-closed, through the verdict).
+for (const [label, badName] of [
+  ["empty string", ""],
+  ["spaces only", "   "],
+  ["slash", "a/b.txt"],
+  ["backslash", "a\\b.txt"],
+  ["dot dot", "a..b.txt"],
+  ["colon", "a:b.txt"],
+  ["control char", "a\tb.txt"],
+  ["windows reserved", "CON.txt"],
+  ["name above the ceiling", "x".repeat(DOWNLOAD_NAME_MAX + 1)],
+  ["non-string", 42],
+  ["null", null],
+  ["absent", undefined],
+] as Array<[string, unknown]>) {
+  const plan = downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: badName, announcedBytes: 1024, limits: dlLimits });
+  check(`downloadVerdict refuses invalid name (${label})`, plan.action === "recusar" && plan.reason === DOWNLOAD_PHRASES.name && plan.name === "");
+}
+check("downloadVerdict accepts the name at the exact documented ceiling", safeDownloadName("x".repeat(DOWNLOAD_NAME_MAX)) === "x".repeat(DOWNLOAD_NAME_MAX));
+
+// Rule 4: announced size above the ceiling refuses; the boundary itself and
+// every unknown shape never refuse on their own.
+check(
+  "downloadVerdict refuses announced size above the ceiling",
+  downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.iso", announcedBytes: DOWNLOAD_MAX_BYTES + 1, limits: dlLimits }).action === "recusar",
+);
+check(
+  "downloadVerdict saves the announced size at the exact ceiling boundary",
+  downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.iso", announcedBytes: DOWNLOAD_MAX_BYTES, limits: dlLimits }).action === "salvar",
+);
+for (const [label, size] of [
+  ["zero (unknown)", 0],
+  ["negative (unknown)", -1],
+  ["null", null],
+  ["undefined", undefined],
+  ["string", "1024"],
+  ["NaN", Number.NaN],
+  ["Infinity", Number.POSITIVE_INFINITY],
+] as Array<[string, unknown]>) {
+  const plan = downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.bin", announcedBytes: size, limits: dlLimits });
+  check(`downloadVerdict unknown size never refuses on its own (${label})`, plan.action === "salvar" && plan.name === "file.bin");
+}
+
+// Determinism: the same input yields a byte-identical plan twice.
+check(
+  "downloadVerdict is stable across two calls with the same input",
+  JSON.stringify(downloadVerdict({ harnessSession: false, schemeVerdict: dlHttps, announcedName: "file.pdf", announcedBytes: 1024, limits: dlLimits })) ===
+    JSON.stringify(dlOk),
+);
+
+// Phrase hygiene: every static phrase is free of absolute paths and URL
+// schemes — no colon and no slash of any kind can appear.
+for (const [key, phrase] of Object.entries(DOWNLOAD_PHRASES)) {
+  check(`downloadVerdict phrase ${key} has no absolute path or URL scheme`, !phrase.includes("/") && !phrase.includes("\\") && !phrase.includes(":"));
+}
+
+// safeDownloadName directly: extension preserved, trimming, reserved names.
+check("safeDownloadName preserves the extension when it exists", safeDownloadName("relatório final.pdf") === "relatório final.pdf");
+check("safeDownloadName trims surrounding spaces", safeDownloadName("  file.zip  ") === "file.zip");
+check("safeDownloadName refuses a bare reserved name without extension", safeDownloadName("NUL") === null);
+check("safeDownloadName refuses an uppercase reserved name", safeDownloadName("lpt3.zip") === null);
+check("safeDownloadName allows ordinary names through unchanged", safeDownloadName("nota-fiscal 2026.pdf") === "nota-fiscal 2026.pdf");
+
+// uniqueDownloadName: never overwrites an existing file.
+check("uniqueDownloadName returns the plain name in an empty folder", uniqueDownloadName("a.txt", []) === "a.txt");
+check("uniqueDownloadName avoids one existing name", uniqueDownloadName("a.txt", ["a.txt"]) === "a (1).txt");
+check("uniqueDownloadName avoids two existing names", uniqueDownloadName("a.txt", ["a.txt", "a (1).txt"]) === "a (2).txt");
+check("uniqueDownloadName handles extensionless names", uniqueDownloadName("README", ["README"]) === "README (1)");
+check("uniqueDownloadName keeps dotfile stems extensionless", uniqueDownloadName(".hidden", [".hidden"]) === ".hidden (1)");
+check("uniqueDownloadName never returns a name already present", ["a.txt", "a (1).txt", "a (2).txt"].every((taken) => uniqueDownloadName("a.txt", [taken, "other.bin"]) !== taken));
+
+// Module purity: same hygiene as extlink.ts / hotkey.ts — no electron, no
+// node builtins, no I/O of any kind.
+const dlModuleSrc = readFileSync(new URL("../apps/desktop/src/downloadplan.ts", import.meta.url), "utf8");
+check(
+  "P2-241: downloadplan stays pure — no electron import, no node: builtins, no fetch",
+  !dlModuleSrc.includes('from "electron"') && !dlModuleSrc.includes("node:") && !dlModuleSrc.includes("fetch("),
+);
+
+// Source pins on the real main.ts: exactly one listener, harness rule first,
+// reveal-not-execute, one notification, no new timer, no save dialog.
+const dlMainSrc = readFileSync(new URL("../apps/desktop/src/main.ts", import.meta.url), "utf8");
+const dlIdx = dlMainSrc.indexOf('session.defaultSession.on("will-download"');
+const dlEndMarker = dlMainSrc.indexOf("// P2-184:", dlIdx);
+const dlBlock = dlMainSrc.slice(dlIdx, dlEndMarker > dlIdx ? dlEndMarker : dlIdx + 4000);
+check("P2-241: main.ts registers exactly one will-download listener", (dlMainSrc.match(/\.on\("will-download"/g) || []).length === 1);
+check("P2-241: the handler consults the pure verdict before anything else", dlBlock.includes("const plan = downloadVerdict({") && dlBlock.indexOf("const plan = downloadVerdict({") < dlBlock.indexOf("item.cancel()") && dlBlock.indexOf("const plan = downloadVerdict({") < dlBlock.indexOf("item.setSavePath("));
+check("P2-241: the harness-session rule is the first input consulted", /const plan = downloadVerdict\(\{\s*harnessSession: HERMETIC_E2E,/.test(dlBlock));
+check("P2-241: the handler consumes the P2-178 extlink verdict", dlBlock.includes("schemeVerdict: externalOpenDecision(item.getURL())"));
+check("P2-241: the refuse plan cancels the item", dlBlock.includes("item.cancel()"));
+check("P2-241: the save plan sets the path without any dialog", dlBlock.includes("item.setSavePath(") && !dlBlock.includes("showSaveDialog") && !dlBlock.includes("showMessageBox"));
+check("P2-241: the done path reveals the file and never executes or opens it", dlBlock.includes("shell.showItemInFolder(") && !/shell\.openItem|shell\.openPath|shell\.openExternal|\.exec\(|spawn\(/.test(dlBlock));
+check("P2-241: at most one notification is sent per download", (dlBlock.match(/new Notification\(/g) || []).length === 1);
+check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.includes("setInterval(") && !dlBlock.includes("setTimeout("));
+
+// --- P2-245: wingetmanifest — buildWingetManifests full table -----------------
+{
+  const sha = "a".repeat(64);
+  const setup = "OpenCode Remote Setup 0.3.0.exe";
+  const url = `${WINGET_RELEASES_BASE}v0.3.0/${encodeURIComponent(setup)}`;
+  const threw = (fn: () => unknown): boolean => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const docs: WingetManifestDoc[] = buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, sha);
+  check(
+    "P2-245: valid input builds exactly three docs in stable file-name order",
+    docs.length === 3 &&
+      JSON.stringify(docs.map((d) => d.fileName)) ===
+        JSON.stringify([
+          `${WINGET_PACKAGE_ID}.installer.yaml`,
+          `${WINGET_PACKAGE_ID}.locale.en-US.yaml`,
+          `${WINGET_PACKAGE_ID}.yaml`,
+        ]),
+    JSON.stringify(docs.map((d) => d.fileName)),
+  );
+  check(
+    "P2-245: the installer doc carries the URL and the lowercase sha256 verbatim",
+    docs[0]!.text.includes(`InstallerUrl: ${url}`) && docs[0]!.text.includes(`InstallerSha256: ${sha}`),
+    docs[0]!.text,
+  );
+  check(
+    "P2-245: the version doc pins the package id, the version and the default locale",
+    docs[2]!.text.includes(`PackageIdentifier: ${WINGET_PACKAGE_ID}`) &&
+      docs[2]!.text.includes("PackageVersion: 0.3.0") &&
+      docs[2]!.text.includes("DefaultLocale: en-US"),
+    docs[2]!.text,
+  );
+  check(
+    "P2-245: empty version is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "", url, sha)),
+  );
+  check(
+    "P2-245: malformed version is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "banana", url, sha)) &&
+      threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "0.3", url, sha)),
+  );
+  check(
+    "P2-245: a non-https installer address is refused",
+    threw(() =>
+      buildWingetManifests(
+        WINGET_PACKAGE_ID,
+        "0.3.0",
+        `http://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${setup}`,
+        sha,
+      ),
+    ),
+  );
+  check(
+    "P2-245: an installer address outside the project's releases page is refused",
+    threw(() =>
+      buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", "https://evil.example.com/downloads/setup.exe", sha),
+    ) &&
+      threw(() =>
+        buildWingetManifests(
+          WINGET_PACKAGE_ID,
+          "0.3.0",
+          `https://github.com/other/repo/releases/download/v0.3.0/${setup}`,
+          sha,
+        ),
+      ),
+  );
+  check(
+    "P2-245: a short sha256 is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, "a".repeat(63))),
+  );
+  check(
+    "P2-245: a sha256 with a non-hex character is refused",
+    threw(() => buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, `${"a".repeat(63)}g`)),
+  );
+}
+
+// --- P2-245: wingetmanifest — wingetProblems full table -----------------------
+{
+  const sha = "a".repeat(64);
+  const setup = "OpenCode Remote Setup 0.3.0.exe";
+  const url = `${WINGET_RELEASES_BASE}v0.3.0/${encodeURIComponent(setup)}`;
+  const tag = "v0.3.0";
+  const assets = [setup, "opencode-remote-v0.3.0.tar.gz"];
+  const checksums = `${sha}  ${setup}\n${"b".repeat(64)}  opencode-remote-v0.3.0.tar.gz\n`;
+  const docs = buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, sha);
+  const clean = wingetProblems(docs, tag, assets, checksums);
+  check(
+    "P2-245: a consistent manifest set against the release facts returns zero problems",
+    clean.length === 0,
+    JSON.stringify(clean),
+  );
+  check(
+    "P2-245: empty lists return zero problems",
+    wingetProblems([], tag, [], "").length === 0,
+  );
+
+  const causeOf = (problems: readonly string[]) => problems.join(" | ");
+  const badVersion = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.1", url, sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: a declared version different from the tag is a problem naming the cause",
+    badVersion.length === 1 && badVersion[0]!.includes("0.3.1") && badVersion[0]!.includes(tag),
+    causeOf(badVersion),
+  );
+
+  const absent = wingetProblems(docs, tag, ["opencode-remote-v0.3.0.tar.gz"], checksums);
+  check(
+    "P2-245: an installer address pointing at an absent asset is a problem",
+    absent.length === 1 && absent[0]!.includes(setup) && absent[0]!.includes("does not carry"),
+    causeOf(absent),
+  );
+
+  const otherSha = "c".repeat(64);
+  const divergent = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.0", url, otherSha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: a declared sha256 diverging from checksums.txt is a problem",
+    divergent.length === 1 && divergent[0]!.includes(otherSha) && divergent[0]!.includes("checksums.txt"),
+    causeOf(divergent),
+  );
+
+  const wrongId = wingetProblems(
+    buildWingetManifests("other.publisher.app", "0.3.0", url, sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: a package identifier different from the documented one is a problem",
+    wrongId.length === 1 && wrongId[0]!.includes("other.publisher.app") && wrongId[0]!.includes(WINGET_PACKAGE_ID),
+    causeOf(wrongId),
+  );
+
+  const twoCauses = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.1", url, otherSha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: two simultaneous causes return two problems, never a single verdict",
+    twoCauses.length === 2 && twoCauses[0]!.includes("version") && twoCauses[1]!.includes("sha256"),
+    causeOf(twoCauses),
+  );
+
+  const again = wingetProblems(
+    buildWingetManifests(WINGET_PACKAGE_ID, "0.3.1", url, otherSha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-245: the problem order is stable between two calls with the same input",
+    JSON.stringify(twoCauses) === JSON.stringify(again),
+  );
+  check(
+    "P2-245: no problem text carries an absolute file path or a secret",
+    twoCauses.every(
+      (p) =>
+        !p.includes("/Users/") &&
+        !p.includes("/home/") &&
+        !p.includes("GH_TOKEN") &&
+        !p.includes("secrets."),
+    ),
+    causeOf(twoCauses),
+  );
+}
+
+// --- P2-245: real-repo assertion — release.yml wires the winget step ---------
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const jobStart = release.indexOf("\n  release-publish:");
+  const job = jobStart === -1 ? "" : release.slice(jobStart);
+  const stepName = "Attach the winget manifests to the release";
+  const wingetIdx = job.indexOf(stepName);
+  const checksumIdx = job.indexOf("Attach the SHA-256 checksum manifest");
+  const publishIdx = job.indexOf("Publish the draft release only when every required asset is attached");
+  const nextStep = job.indexOf("\n      - name:", wingetIdx);
+  const step = wingetIdx === -1 ? "" : job.slice(wingetIdx, nextStep);
+  check(
+    "P2-245: release.yml declares the winget step exactly once inside release-publish",
+    jobStart !== -1 && (job.split(stepName).length - 1) === 1,
+  );
+  check(
+    "P2-245: the winget step runs after the checksum manifest and before the publish step",
+    checksumIdx !== -1 && wingetIdx !== -1 && publishIdx !== -1 && checksumIdx < wingetIdx && wingetIdx < publishIdx,
+  );
+  check(
+    "P2-245: the winget step declares shell: bash and its own timeout (P2-126/P2-164 lessons)",
+    step.includes("shell: bash") && step.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-245: the winget step builds, verifies and uploads via the pure module, committing nothing",
+    step.includes("winget-driver.mts") &&
+      step.includes("scripts/wingetmanifest") &&
+      step.includes("wingetProblems") &&
+      step.includes("gh release upload") &&
+      !step.includes("git commit") &&
+      !step.includes("git push"),
+  );
+  check(
+    "P2-245: the winget step references no secret beyond the job's github.token",
+    step.includes("${{ github.token }}") && !step.includes("secrets."),
+    step,
+  );
+  const wingetSrc = readFileSync(join(root, "scripts", "wingetmanifest.ts"), "utf8");
+  check(
+    "P2-245: wingetmanifest stays pure — no node:fs, no child process, no fetch",
+    !wingetSrc.includes("node:fs") &&
+      !wingetSrc.includes("node:child_process") &&
+      !wingetSrc.includes("fetch("),
+  );
+}
+
+// --- P2-250: lazy capability re-probing (readiness.ts) -------------------------
+
+{
+  const MIN = 60_000;
+  const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const plan = (ready: boolean, probedAt: number, inFlight: boolean, minIntervalMs = MIN) =>
+    readinessRefreshPlan(ready, probedAt, NOW, inFlight, { minIntervalMs });
+
+  // rule 1 — a verdict that says the capability works is NEVER re-probed,
+  // no matter how old it is (the happy path must cost zero)
+  {
+    const hugeAge = 10 * 365 * 24 * 3_600_000;
+    const p = plan(true, NOW - hugeAge, false);
+    check(
+      "P2-250: a ready verdict is never re-probed, even with an enormous age",
+      p.action === "reuse" && p.reason === "verdict-ready",
+    );
+  }
+
+  // rule 2 — a probe already in flight is never duplicated
+  {
+    const p = plan(false, NOW - 10 * MIN, true);
+    check(
+      "P2-250: a probe in flight is never duplicated",
+      p.action === "reuse" && p.reason === "probe-in-flight",
+    );
+  }
+
+  // rule 3 — strictly newer than the interval is reused
+  {
+    const p = plan(false, NOW - (MIN - 1), false);
+    check(
+      "P2-250: a verdict newer than the interval is reused",
+      p.action === "reuse" && p.reason === "fresh",
+    );
+  }
+
+  // rule 3 boundary — exactly at the interval is NOT newer anymore: redo
+  {
+    const p = plan(false, NOW - MIN, false);
+    check(
+      "P2-250: a verdict exactly at the interval (age === minIntervalMs) is re-probed",
+      p.action === "redo" && p.reason === "stale",
+    );
+  }
+
+  // rule 4 — past the interval is redone
+  {
+    const p = plan(false, NOW - (MIN + 1), false);
+    check(
+      "P2-250: a verdict older than the interval is re-probed",
+      p.action === "redo" && p.reason === "stale",
+    );
+  }
+
+  // guard — a future probedAt is treated as now: age clamps to zero
+  {
+    const p = plan(false, NOW + 5_000, false);
+    check(
+      "P2-250: an instant in the future is treated as now (age never negative)",
+      p.action === "reuse" && p.reason === "fresh",
+    );
+  }
+
+  // guard — non-finite instants are refused, never guessed about
+  {
+    const a = readinessRefreshPlan(false, NaN, NOW, false, { minIntervalMs: MIN });
+    const b = readinessRefreshPlan(false, NOW, Infinity, false, { minIntervalMs: MIN });
+    check(
+      "P2-250: a non-finite instant is refused (reuse, never a guessed probe)",
+      a.action === "reuse" && a.reason === "invalid-instant" && b.action === "reuse" && b.reason === "invalid-instant",
+    );
+  }
+}
+
+{
+  // parseReadinessKnobs: empty environment reproduces the documented defaults
+  const cfg = parseReadinessKnobs({});
+  check(
+    "P2-250: an empty environment yields the documented defaults",
+    cfg.minIntervalMs === READINESS_DEFAULT_INTERVAL_MS &&
+      cfg.disabled === false &&
+      cfg.problems.length === 0 &&
+      READINESS_DEFAULT_INTERVAL_MS === 60_000,
+  );
+
+  // blank value behaves like absent (the only no-problem fallback)
+  check(
+    "P2-250: a blank OCR_READINESS_MIN_MS keeps the default with no problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "   " }).problems.length === 0 &&
+      parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "   " }).minIntervalMs === READINESS_DEFAULT_INTERVAL_MS,
+  );
+
+  // the documented disable value is accepted (any case), enable too
+  check(
+    "P2-250: the documented disable value turns revalidation off with no problem",
+    (["off", "0", "false", "OFF", "False"] as const).every(
+      (v) => parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).disabled === true &&
+        parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).problems.length === 0,
+    ) &&
+      (["on", "1", "true"] as const).every(
+        (v) => parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).disabled === false &&
+          parseReadinessKnobs({ [READINESS_DISABLE_ENV]: v }).problems.length === 0,
+      ),
+  );
+
+  // fail-closed table: non-numeric, zero, negative, fractional, above ceiling
+  check(
+    "P2-250: a non-numeric interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "abc" }).problems.length === 1 &&
+      parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "abc" }).minIntervalMs === READINESS_DEFAULT_INTERVAL_MS,
+  );
+  check(
+    "P2-250: a zero interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "0" }).problems.length === 1,
+  );
+  check(
+    "P2-250: a negative interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "-5" }).problems.length === 1,
+  );
+  check(
+    "P2-250: a fractional interval is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "1500.5" }).problems.length === 1,
+  );
+  check(
+    "P2-250: an interval above the documented ceiling is a problem",
+    parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: String(READINESS_INTERVAL_CEILING_MS + 1) }).problems.length === 1 &&
+      parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: String(READINESS_INTERVAL_CEILING_MS) }).problems.length === 0,
+  );
+
+  // ALL problems at once, never a short-circuit
+  {
+    const cfg = parseReadinessKnobs({ [READINESS_INTERVAL_ENV]: "abc", [READINESS_DISABLE_ENV]: "banana" });
+    check(
+      "P2-250: several problems are returned at once, never short-circuited",
+      cfg.problems.length === 2 && cfg.disabled === false,
+    );
+  }
+}
+
+// --- P2-250: real-repo assertions — purity + lazy wiring ------------------------
+{
+  const readinessSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "readiness.ts"), "utf8");
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  // source with block and // comments stripped, so prose comments never trip
+  // a code-shaped assertion
+  const code = daemonSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((l) => l.split("//")[0])
+    .join("\n");
+
+  // the module stays pure: index.ts runs main() on import, so unit tests must
+  // never boot a daemon through it (lessons P2-149 / P2-228)
+  check(
+    "P2-250: readiness.ts stays pure — no node:fs, node:path, node:child_process or fetch imports",
+    !readinessSrc.includes('from "node:fs"') &&
+      !readinessSrc.includes('from "node:path"') &&
+      !readinessSrc.includes('from "node:child_process"') &&
+      !readinessSrc.includes("fetch(") &&
+      !readinessSrc.includes("require("),
+  );
+
+  // the boot probe of each capability still happens EXACTLY once:
+  // detectWhisperDetail (boot + lazy helper), probeDocConvert (definition +
+  // boot + lazy helper), probeOpencodeVersion (definition + boot + lazy helper)
+  check(
+    "P2-250: the boot probe of each capability still happens exactly once",
+    (code.match(/\bdetectWhisperDetail\(/g) || []).length === 2 &&
+      (code.match(/\bprobeDocConvert\(/g) || []).length === 3 &&
+      (code.match(/\bprobeOpencodeVersion\(/g) || []).length === 3,
+  );
+
+  // revalidation appears ONLY at the described use points: the transcribe
+  // refusal, the health route (doc-convert + version + browse) and the
+  // settings read. P2-284 adds the browse verdict on the health route as the
+  // fifth use point. P2-288 is the sanctioned continuation: the settings read
+  // now revalidates doc-convert and browse at the same point it answers them,
+  // so the count is seven. P2-296 is the same sanctioned continuation for the
+  // voice verdict: the health route and the settings read both revalidate the
+  // transcription at the same point they answer it, so the count is nine.
+  {
+    const lines = code.split("\n");
+    const callLines = lines.filter((l) =>
+      /maybeReprobe(?:Transcription|DocConvert|OpencodeVersion|Browse)\(/.test(l) && !l.includes("function maybeReprobe"),
+    );
+    check(
+      "P2-250: revalidation fires at exactly nine use points (transcribe refusal + health ×4, settings ×4)",
+      callLines.length === 9 &&
+        callLines.filter((l) => l.includes("maybeReprobeTranscription")).length === 3 &&
+        callLines.filter((l) => l.includes("maybeReprobeDocConvert")).length === 2 &&
+        callLines.filter((l) => l.includes("maybeReprobeOpencodeVersion")).length === 2 &&
+        callLines.filter((l) => l.includes("maybeReprobeBrowse")).length === 2,
+    );
+    // each call sits inside a route handler region (tunnel proxy or handleApi),
+    // never inside main()
+    const mainIdx = daemonSrc.indexOf("async function main()");
+    check(
+      "P2-250: no revalidation call site lives inside main()",
+      callLines.every((l) => {
+        const idx = daemonSrc.indexOf(l);
+        return idx !== -1 && idx < mainIdx;
+      }),
+    );
+  }
+
+  // no new periodic scheduling anywhere in the readiness wiring
+  {
+    const timerLines = code.split("\n").filter((l) => l.includes("setInterval(") || l.includes("setTimeout("));
+    check(
+      "P2-250: no timer is introduced by the readiness wiring",
+      timerLines.length > 0 &&
+        timerLines.every((l) => !l.toLowerCase().includes("readiness") && !l.includes("maybeReprobe") && !l.includes("P2-250")),
+    );
+  }
+
+  // the re-probe log lines carry ONLY the capability name and the resulting
+  // state (lesson P2-182: never a path, a resolved binary or env content).
+  // P2-284: browse joins the same one-line-per-redone-probe policy.
+  // P2-298: tts joins the same policy too.
+  {
+    const logLines = code.split("\n").filter((l) => l.includes("readiness re-probe"));
+    check(
+      "P2-250: each re-done probe logs exactly one line with capability + state only",
+      logLines.length === 4 &&
+        logLines.every((l) => /capability: "(transcription|tts|doc-convert|browse)", state: [\w.()]+?\s*\}/.test(l)),
+    );
+  }
+
+  // the health payload keeps the P2-232 fields verbatim and gains only the
+  // additive per-capability last-checked instants
+  check(
+    "P2-250: the health payload keeps docConvertState/Message/Exts and adds only checkedAt fields",
+    daemonSrc.includes("docConvertState: docConvert.state") &&
+      daemonSrc.includes("docConvertMessage: docConvert.message") &&
+      daemonSrc.includes("docConvertExts: docConvert.exts") &&
+      daemonSrc.includes('docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt)') &&
+      daemonSrc.includes('versionCheckedAt: readinessCheckedAt(readinessState["opencode-version"].probedAt)'),
+  );
+}
+
+// --- P2-249: Windows uninstall cleanup (uninstallplan.ts + installer.nsh + electron-builder.yml)
+
+{
+  const plan = (names: string[]) => uninstallCleanupPlan("OpenCode Remote", names);
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+  // empty observed list → empty plan
+  const emptyPlan = plan([]);
+  check(
+    "P2-249: an empty observed list yields an empty plan",
+    emptyPlan.remove.length === 0 && emptyPlan.preserve.length === 0 && emptyPlan.refused.length === 0,
+  );
+
+  // a name outside the documented set is always preserved, never guessed
+  const unknown = plan(["Notes.txt", "Cache", "MinhaPasta"]);
+  check(
+    "P2-249: a name outside the documented set is preserved, never guessed",
+    same(unknown.preserve, ["Cache", "MinhaPasta", "Notes.txt"]) &&
+      unknown.remove.length === 0 &&
+      unknown.refused.length === 0,
+  );
+
+  // every documented name is removed (and only there)
+  const documented = plan([...UNINSTALL_REMOVABLE_NAMES]);
+  check(
+    "P2-249: every documented app name is scheduled for removal, ascending",
+    same(documented.remove, [...UNINSTALL_REMOVABLE_NAMES].sort()) && documented.preserve.length === 0,
+  );
+  check(
+    "P2-249: the documented set covers the identity/pairing state file and the shell state + logs",
+    same([...UNINSTALL_REMOVABLE_NAMES].sort(), [
+      "close-hint.flag",
+      "daemon.json",
+      "gpu-state.json",
+      "logs",
+      "quit-ask.json",
+      "relay.json",
+      "startup.json",
+      "update-staging",
+      "window-state.json",
+    ]),
+  );
+
+  // refusals: empty, separator, parent jump, absolute path — never removed,
+  // never preserved, surfaced in the refused bucket
+  const refused = plan(["", "logs\\sub", "logs/sub", "..", "/etc", "C:\\Users", "C:"]);
+  check(
+    "P2-249: empty, separator, parent-jump and absolute-path names are refused, not removed",
+    same(refused.refused, ["", "..", "/etc", "C:", "C:\\Users", "logs/sub", "logs\\sub"]) &&
+      refused.remove.length === 0 &&
+      refused.preserve.length === 0,
+  );
+  for (const bad of ["", "..", "/etc", "C:\\Users", "C:", "a/b", "a\\b"]) {
+    const p = plan([bad]);
+    check(
+      `P2-249: a refused name never lands in remove or preserve (${JSON.stringify(bad)})`,
+      p.refused.length === 1 && p.remove.length === 0 && p.preserve.length === 0,
+    );
+  }
+
+  // determinism: the same input in two different orders yields an identical plan
+  const a = plan(["logs", "relay.json", "Random", "startup.json", "..", "daemon.json"]);
+  const b = plan(["daemon.json", "..", "startup.json", "Random", "relay.json", "logs"]);
+  check(
+    "P2-249: the same input in two different orders produces an identical plan",
+    JSON.stringify(a) === JSON.stringify(b) && same(a.remove, ["daemon.json", "logs", "relay.json", "startup.json"]),
+  );
+
+  // the plan never contains a name it did not receive
+  const received = new Set(["logs", "relay.json", "Random", "..", "", "/abs"]);
+  const mixed = plan([...received]);
+  check(
+    "P2-249: the plan never returns a name it was not given",
+    [...mixed.remove, ...mixed.preserve, ...mixed.refused].every((n) => received.has(n)),
+  );
+
+  // module hygiene: uninstallplan.ts stays pure — zero imports, no I/O
+  const planSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "desktop", "src", "uninstallplan.ts"),
+    "utf8",
+  );
+  check(
+    "P2-249: uninstallplan.ts imports nothing (no electron, node:fs, node:path, fetch)",
+    planSrc.split("\n").filter((l) => l.trim().startsWith("import ") || l.includes("require(") || l.includes('from "')).length === 0,
+  );
+
+  // real installer.nsh: the customUnInstall macro exists, removes the
+  // autostart entry and never touches a user folder
+  const nsh = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "build", "installer.nsh"), "utf8");
+  check(
+    "P2-249: installer.nsh defines the customUnInstall macro electron-builder invokes",
+    /!macro\s+customUnInstall\b/.test(nsh),
+  );
+  check(
+    "P2-249: installer.nsh deletes the per-user Run autostart entry the login item created",
+    nsh.includes("DeleteRegValue HKCU") && nsh.includes("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+  );
+  check(
+    "P2-249: installer.nsh cites no Documents/Desktop/Downloads constant and removes no folder",
+    !/\$(DESKTOP|DOCUMENTS|DOWNLOADS)/i.test(nsh) && !/\bRMDir\b/i.test(nsh) && !/\bDelete\s+\S/.test(nsh),
+  );
+
+  // real electron-builder.yml: the nsis block declares the data wipe; the
+  // other platform blocks stay byte-identical in their anchors
+  const yml = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "electron-builder.yml"), "utf8");
+  const nsisAt = yml.indexOf("nsis:");
+  const linuxAt = yml.indexOf("linux:");
+  const wipeAt = yml.indexOf("deleteAppDataOnUninstall: true");
+  check(
+    "P2-249: the nsis block declares deleteAppDataOnUninstall inside it",
+    nsisAt !== -1 && wipeAt > nsisAt && (linuxAt === -1 || wipeAt < linuxAt),
+  );
+  check(
+    "P2-249: the nsis block keeps oneClick/perMachine/allowToChangeInstallationDirectory and the artifactName",
+    yml.includes("oneClick: false") &&
+      yml.includes("perMachine: false") &&
+      yml.includes("allowToChangeInstallationDirectory: true") &&
+      yml.includes("artifactName: OpenCode-Remote-Setup-${version}.exe"),
+  );
+  check(
+    "P2-249: the mac, dmg, win and linux blocks are untouched (anchor lines intact)",
+    yml.includes("hardenedRuntime: true") &&
+      yml.includes("entitlements: build/entitlements.mac.plist") &&
+      yml.includes("artifactName: OpenCode-Remote-${version}-${arch}.${ext}") &&
+      yml.includes("title: OpenCode Remote ${version}") &&
+      yml.includes("target: dir") &&
+      yml.indexOf("target:") < nsisAt,
+  );
+}
+
+// --- P2-255: caskmanifest — buildCaskManifest full table ----------------------
+{
+  const armSha = "a".repeat(64);
+  const x64Sha = "b".repeat(64);
+  const armDmg = "OpenCode-Remote-0.3.0-arm64.dmg";
+  const x64Dmg = "OpenCode-Remote-0.3.0-x64.dmg";
+  const armUrl = `${CASK_RELEASES_BASE}v0.3.0/${armDmg}`;
+  const x64Url = `${CASK_RELEASES_BASE}v0.3.0/${x64Dmg}`;
+  const threw = (fn: () => unknown): boolean => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const cask: CaskManifest = buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha);
+  check(
+    "P2-255: the valid cask carries the documented file name and cask token",
+    cask.fileName === CASK_FILE_NAME &&
+      cask.fileName === "opencode-remote-cask.rb" &&
+      cask.text.includes(`cask "${CASK_IDENTIFIER}" do`) &&
+      CASK_IDENTIFIER === "opencode-remote",
+    cask.text,
+  );
+  check(
+    "P2-255: the valid cask declares both architecture blocks with their url and sha256",
+    cask.text.includes("on_arm do") &&
+      cask.text.includes("on_intel do") &&
+      cask.text.includes(`url "${armUrl}"`) &&
+      cask.text.includes(`url "${x64Url}"`) &&
+      cask.text.includes(`sha256 "${armSha}"`) &&
+      cask.text.includes(`sha256 "${x64Sha}"`),
+    cask.text,
+  );
+  check(
+    "P2-255: the same input builds byte-identical cask text in two calls",
+    JSON.stringify(cask) === JSON.stringify(buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha)),
+  );
+  check(
+    "P2-255: empty and malformed versions are refused",
+    threw(() => buildCaskManifest("", armUrl, x64Url, armSha, x64Sha)) &&
+      threw(() => buildCaskManifest("banana", armUrl, x64Url, armSha, x64Sha)) &&
+      threw(() => buildCaskManifest("0.3", armUrl, x64Url, armSha, x64Sha)),
+  );
+  check(
+    "P2-255: a non-https DMG address is refused (either architecture)",
+    threw(() =>
+      buildCaskManifest(
+        "0.3.0",
+        `http://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${armDmg}`,
+        x64Url,
+        armSha,
+        x64Sha,
+      ),
+    ) &&
+      threw(() =>
+        buildCaskManifest(
+          "0.3.0",
+          armUrl,
+          `http://github.com/caiovicentino/opencode-remote/releases/download/v0.3.0/${x64Dmg}`,
+          armSha,
+          x64Sha,
+        ),
+      ),
+  );
+  check(
+    "P2-255: a DMG address outside the project's releases page is refused",
+    threw(() => buildCaskManifest("0.3.0", "https://evil.example.com/downloads/app.dmg", x64Url, armSha, x64Sha)) &&
+      threw(() =>
+        buildCaskManifest(
+          "0.3.0",
+          armUrl,
+          "https://github.com/other/repo/releases/download/v0.3.0/app.dmg",
+          armSha,
+          x64Sha,
+        ),
+      ),
+  );
+  check(
+    "P2-255: a sha256 of the wrong size is refused",
+    threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, "a".repeat(63), x64Sha)) &&
+      threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, armSha, "b".repeat(65))),
+  );
+  check(
+    "P2-255: a sha256 with a non-hex character is refused",
+    threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, `${"a".repeat(63)}g`, x64Sha)) &&
+      threw(() => buildCaskManifest("0.3.0", armUrl, x64Url, armSha, `${"b".repeat(63)}G`)),
+  );
+}
+
+// --- P2-255: caskmanifest — caskProblems full table ----------------------------
+{
+  const tag = "v0.3.0";
+  const armSha = "a".repeat(64);
+  const x64Sha = "b".repeat(64);
+  const armDmg = "OpenCode-Remote-0.3.0-arm64.dmg";
+  const x64Dmg = "OpenCode-Remote-0.3.0-x64.dmg";
+  const armUrl = `${CASK_RELEASES_BASE}v0.3.0/${armDmg}`;
+  const x64Url = `${CASK_RELEASES_BASE}v0.3.0/${x64Dmg}`;
+  const tarball = "opencode-remote-v0.3.0.tar.gz";
+  const assets = [armDmg, x64Dmg, tarball];
+  const checksums = `${armSha}  ${armDmg}\n${x64Sha}  ${x64Dmg}\n${"c".repeat(64)}  ${tarball}\n`;
+  const clean = caskProblems(buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha), tag, assets, checksums);
+  check(
+    "P2-255: a consistent cask against the release facts returns zero problems",
+    clean.length === 0,
+    JSON.stringify(clean),
+  );
+  const causeOf = (problems: readonly string[]) => problems.join(" | ");
+
+  const badVersion = caskProblems(
+    buildCaskManifest("0.3.1", armUrl, x64Url, armSha, x64Sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-255: a declared version different from the tag is one problem naming the cause",
+    badVersion.length === 1 && badVersion[0]!.includes("0.3.1") && badVersion[0]!.includes(tag),
+    causeOf(badVersion),
+  );
+
+  const noArm = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha),
+    tag,
+    [x64Dmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: an absent Apple Silicon DMG is one problem naming the asset",
+    noArm.length === 1 && noArm[0]!.includes(armDmg) && noArm[0]!.includes("Apple Silicon"),
+    causeOf(noArm),
+  );
+
+  const noIntel = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, x64Url, armSha, x64Sha),
+    tag,
+    [armDmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: an absent Intel DMG is one problem naming the asset",
+    noIntel.length === 1 && noIntel[0]!.includes(x64Dmg) && noIntel[0]!.includes("Intel"),
+    causeOf(noIntel),
+  );
+
+  const otherArmSha = "d".repeat(64);
+  const divergent = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, x64Url, otherArmSha, x64Sha),
+    tag,
+    assets,
+    checksums,
+  );
+  check(
+    "P2-255: a declared sha256 diverging from checksums.txt is one problem",
+    divergent.length === 1 &&
+      divergent[0]!.includes(otherArmSha) &&
+      divergent[0]!.includes("checksums.txt"),
+    causeOf(divergent),
+  );
+
+  const otherVersionUrl = `${CASK_RELEASES_BASE}v0.4.0/OpenCode-Remote-0.4.0-x64.dmg`;
+  const otherVersion = caskProblems(
+    buildCaskManifest("0.3.0", armUrl, otherVersionUrl, armSha, x64Sha),
+    tag,
+    [armDmg, x64Dmg, tarball, "OpenCode-Remote-0.4.0-x64.dmg"],
+    `${checksums}${x64Sha}  OpenCode-Remote-0.4.0-x64.dmg\n`,
+  );
+  check(
+    "P2-255: an Intel address pointing at another release's version is one problem",
+    otherVersion.length === 1 && otherVersion[0]!.includes("v0.4.0") && otherVersion[0]!.includes(tag),
+    causeOf(otherVersion),
+  );
+
+  const multi = caskProblems(
+    buildCaskManifest("0.3.1", armUrl, otherVersionUrl, otherArmSha, x64Sha),
+    tag,
+    [x64Dmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: several simultaneous causes return several problems, never a single verdict",
+    multi.length === 6 &&
+      multi[0]!.includes("version") &&
+      multi[1]!.includes("Apple Silicon") &&
+      multi[2]!.includes("Intel") &&
+      multi[3]!.includes("sha256") &&
+      multi[4]!.includes("sha256") &&
+      multi[5]!.includes("v0.4.0"),
+    causeOf(multi),
+  );
+  const again = caskProblems(
+    buildCaskManifest("0.3.1", armUrl, otherVersionUrl, otherArmSha, x64Sha),
+    tag,
+    [x64Dmg, tarball],
+    checksums,
+  );
+  check(
+    "P2-255: the problem order is stable between two calls with the same input",
+    JSON.stringify(multi) === JSON.stringify(again),
+  );
+  check(
+    "P2-255: no problem text carries an absolute file path or a secret",
+    multi.every(
+      (p) =>
+        !p.includes("/Users/") && !p.includes("/home/") && !p.includes("GH_TOKEN") && !p.includes("secrets."),
+    ),
+    causeOf(multi),
+  );
+}
+
+// --- P2-255: real-repo assertion — release.yml wires the cask step ------------
+{
+  const root = join(import.meta.dirname, "..");
+  const release = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const jobStart = release.indexOf("\n  release-publish:");
+  const job = jobStart === -1 ? "" : release.slice(jobStart);
+  const stepName = "Attach the Homebrew cask to the release";
+  const caskIdx = job.indexOf(stepName);
+  const checksumIdx = job.indexOf("Attach the SHA-256 checksum manifest");
+  const wingetIdx = job.indexOf("Attach the winget manifests to the release");
+  const publishIdx = job.indexOf("Publish the draft release only when every required asset is attached");
+  const nextStep = job.indexOf("\n      - name:", caskIdx);
+  const step = caskIdx === -1 ? "" : job.slice(caskIdx, nextStep);
+  check(
+    "P2-255: release.yml declares the cask step exactly once inside release-publish",
+    jobStart !== -1 && (job.split(stepName).length - 1) === 1,
+  );
+  check(
+    "P2-255: the cask step runs after the winget manifests and before the publish step",
+    checksumIdx !== -1 && wingetIdx !== -1 && caskIdx !== -1 && publishIdx !== -1 && checksumIdx < wingetIdx && wingetIdx < caskIdx && caskIdx < publishIdx,
+  );
+  check(
+    "P2-255: the cask step declares shell: bash and its own timeout (P2-126/P2-164 lessons)",
+    step.includes("shell: bash") && step.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-255: the cask step builds, verifies and uploads via the pure module, committing nothing",
+    step.includes("cask-driver.mts") &&
+      step.includes("scripts/caskmanifest") &&
+      step.includes("caskProblems") &&
+      step.includes("gh release upload") &&
+      !step.includes("git commit") &&
+      !step.includes("git push"),
+  );
+  check(
+    "P2-255: the cask step references no secret beyond the job's github.token",
+    step.includes("${{ github.token }}") && !step.includes("secrets."),
+    step,
+  );
+  const caskSrc = readFileSync(join(root, "scripts", "caskmanifest.ts"), "utf8");
+  check(
+    "P2-255: caskmanifest stays pure — no node:fs, no child process, no fetch",
+    !caskSrc.includes("node:fs") &&
+      !caskSrc.includes("node:child_process") &&
+      !caskSrc.includes("fetch("),
+  );
+}
+
+// --- P2-256: routines-file load verdict (routinesfile.ts) + atomic wiring ---
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const routinesFileSrc = src(["apps", "daemon", "src", "routinesfile.ts"]);
+  const routinesModSrc = src(["apps", "daemon", "src", "routines.ts"]);
+  const daemonIndexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  const GOOD = JSON.stringify([
+    { id: "a", name: "Café", prompt: "resuma o dia", hour: 7, minute: 30, mode: "daily" },
+    { id: "b", name: "Relatório", prompt: "gere o relatório", hour: 8, minute: 0, mode: "days", days: [1, 3] },
+  ]);
+
+  // full verdict table — [exists, content, readFailure, expected plan]
+  const table: Array<[boolean, string | null, string | null, RoutinesVerdict["plan"]]> = [
+    [false, null, null, "first-run"], // missing file → first run
+    [true, "isto não é json {", null, "refuse"], // unparseable text
+    [true, "", null, "refuse"], // empty text does not parse either
+    [true, "42", null, "refuse"], // parses, not a list
+    [true, '{"a":1}', null, "refuse"], // object, not a list
+    [true, '"texto"', null, "refuse"], // JSON string, not a list
+    [true, "[]", null, "use"], // well-formed empty list
+    [true, GOOD, null, "use"], // well-formed list
+    [true, null, "EACCES", "refuse"], // read failure with the file present
+    [false, null, "EBUSY", "refuse"], // read failure with the file absent — never first-run
+  ];
+  const verdicts = table.map(([ex, c, fail]) => routinesVerdict(ex, c, fail));
+  check(
+    "P2-256: verdict table — every row lands on the documented plan",
+    verdicts.every((v, i) => v.plan === table[i][3]),
+  );
+  check(
+    "P2-256: a missing file is a first run and never a quarantine",
+    routinesVerdict(false, null, null).plan === "first-run" &&
+      routinesVerdict(false, null, null).quarantine === false &&
+      routinesVerdict(false, null, null).routines.length === 0,
+  );
+  check(
+    "P2-256: a read failure is a refusal, never an empty list and never a quarantine — even when an empty text is present at the same time",
+    routinesVerdict(true, "", "EACCES").plan === "refuse" &&
+      routinesVerdict(true, "", "EACCES").quarantine === false &&
+      routinesVerdict(true, "  \n\t ", "EACCES").quarantine === false &&
+      routinesVerdict(false, null, "EBUSY").plan === "refuse" &&
+      routinesVerdict(false, null, "EBUSY").quarantine === false,
+  );
+  check(
+    "P2-256: unreadable content and non-list JSON refuse with the quarantine mark",
+    routinesVerdict(true, "{", null).quarantine === true &&
+      routinesVerdict(true, "", null).quarantine === true &&
+      routinesVerdict(true, "42", null).quarantine === true &&
+      routinesVerdict(true, '{"a":1}', null).quarantine === true &&
+      routinesVerdict(true, '"texto"', null).quarantine === true,
+  );
+  check(
+    "P2-256: a well-formed empty list is used with zero routines",
+    (() => {
+      const v = routinesVerdict(true, "[]", null);
+      return v.plan === "use" && v.routines.length === 0 && v.discarded === 0 && v.quarantine === false;
+    })(),
+  );
+  const midInvalid = JSON.stringify([
+    { id: "a", name: "ok", prompt: "p", hour: 1, minute: 0 },
+    "entrada estragada",
+    42,
+    null,
+    { id: "", name: "sem id", prompt: "p", hour: 1, minute: 0 },
+    { id: "b", name: "ok2", prompt: "p2", hour: 2, minute: 15 },
+  ]);
+  check(
+    "P2-256: an invalid entry in the middle is discarded and counted instead of dropping the list",
+    (() => {
+      const v = routinesVerdict(true, midInvalid, null);
+      return (
+        v.plan === "use" &&
+        v.discarded === 4 &&
+        v.routines.length === 2 &&
+        v.routines[0].id === "a" &&
+        v.routines[1].id === "b"
+      );
+    })(),
+  );
+  check(
+    "P2-256: a well-formed list is used with every entry, optional fields untouched",
+    (() => {
+      const v = routinesVerdict(true, GOOD, null);
+      return (
+        v.plan === "use" &&
+        v.discarded === 0 &&
+        v.routines.length === 2 &&
+        v.routines[1].days?.join() === "1,3" &&
+        v.routines[0].mode === "daily"
+      );
+    })(),
+  );
+  check(
+    "P2-256: the same input always yields an identical verdict",
+    [GOOD, "[]", "{", "", null].every(
+      (c) => JSON.stringify(routinesVerdict(true, c, null)) === JSON.stringify(routinesVerdict(true, c, null)),
+    ) &&
+      JSON.stringify(routinesVerdict(false, null, "EBUSY")) ===
+        JSON.stringify(routinesVerdict(false, null, "EBUSY")),
+  );
+
+  // message hygiene: static, short, no path, no URL scheme, never content
+  const hostile = JSON.stringify([
+    { id: "x", name: "NOME-SEGREDO-XYZ", prompt: "PROMPT-SECRETO-123456", hour: 1, minute: 0 },
+  ]);
+  const all = [
+    ...verdicts,
+    routinesVerdict(true, hostile, null),
+    routinesVerdict(true, hostile.slice(0, 9), null),
+    routinesVerdict(true, null, "EACCES"),
+    routinesVerdict(false, null, null),
+    routinesVerdict(true, midInvalid, null),
+    { plan: "refuse", quarantine: false, routines: [], discarded: 0, message: ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE },
+  ];
+  check(
+    "P2-256: every message is non-empty and free of paths and URL schemes",
+    all.every(
+      (v) =>
+        v.message.trim().length > 0 && !/[\\/]/.test(v.message) && !v.message.includes("://"),
+    ),
+  );
+  check(
+    "P2-256: no message echoes a file name, a routine prompt or a secret",
+    all.every(
+      (v) =>
+        !v.message.includes(".json") &&
+        !v.message.includes("NOME-SEGREDO") &&
+        !v.message.includes("PROMPT-SECRETO") &&
+        !v.message.includes("opencode-remote"),
+    ),
+  );
+  check(
+    "P2-256: messages are the static exported phrases",
+    verdicts.every((v, i) => {
+      const expected =
+        v.plan === "refuse"
+          ? table[i][2] !== null
+            ? ROUTINES_REFUSE_READ_MESSAGE
+            : ROUTINES_REFUSE_CONTENT_MESSAGE
+          : v.plan === "first-run"
+            ? ROUTINES_FIRST_RUN_MESSAGE
+            : ROUTINES_USE_MESSAGE;
+      return v.message === expected;
+    }),
+  );
+
+  // purity: unit tests must never boot a daemon on import
+  // (strip line comments first — the header prose names the banned modules)
+  const routinesFileCode = routinesFileSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-256: routinesfile.ts is pure (no node:fs/path/child_process/os/fetch imports)",
+    !/node:(fs|path|child_process|os|http|crypto)/.test(routinesFileCode) &&
+      !/\bfetch\(/.test(routinesFileCode),
+  );
+
+  // real-repo wiring: the save path is the same atomic 0600 write as the
+  // state file — the mode comes from the write itself, never a chmod after,
+  // and no raw writeFileSync survives anywhere in the module.
+  check(
+    "P2-256: routines.ts saves through writeStateAtomic — no raw writeFileSync, no chmod after the write",
+    routinesModSrc.includes("writeStateAtomic(") &&
+      !routinesModSrc.includes("writeFileSync") &&
+      !routinesModSrc.includes("chmodSync(FILE"),
+  );
+  check(
+    "P2-256: routines.ts loads through the pure verdict and preserves an illegible file beside the original, never deleting",
+    routinesModSrc.includes("routinesVerdict(") &&
+      routinesModSrc.includes("quarantineName(") &&
+      routinesModSrc.includes("renameSync(") &&
+      !/unlink|rmsync|rm\(/i.test(routinesModSrc),
+  );
+  check(
+    "P2-256: the refusal log never promises preservation when the quarantine move failed",
+    routinesModSrc.includes("ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE") &&
+      /quarantine && !quarantined \? ROUTINES_REFUSE_PRESERVE_FAILED_MESSAGE/.test(routinesModSrc),
+  );
+  check(
+    "P2-256: the first save after a refusal preserves the original through the same quarantine move before any write",
+    routinesModSrc.includes("let refusalPendingPreservation") &&
+      (() => {
+        const saveFn = routinesModSrc.slice(routinesModSrc.indexOf("export function saveRoutines"));
+        return (
+          saveFn.includes("preserveRefusedOriginal()") &&
+          saveFn.indexOf("preserveRefusedOriginal()") < saveFn.indexOf("writeStateAtomic(") &&
+          saveFn.includes("writeStateAtomic(")
+        );
+      })(),
+  );
+  check(
+    "P2-256: a save whose preservation fails is skipped, never overwriting the unreadable original",
+    /if \(refusalPendingPreservation && !preserveRefusedOriginal\(\)\)/.test(routinesModSrc) &&
+      routinesModSrc.includes("refusalPendingPreservation = false; // the original is already gone"),
+  );
+
+  // real-repo wiring: no new periodic timer, one boot read, and every
+  // routine persistence still rides saveRoutines.
+  const routineTimerLines = daemonIndexSrc
+    .split("\n")
+    .filter((l) => /setInterval|setTimeout/.test(l) && /routin/i.test(l));
+  check(
+    "P2-256: the only periodic routine timers are the pre-existing 30 s sweep + 10 s first kick",
+    routineTimerLines.length === 2 &&
+      routineTimerLines.every((l) => /checkRoutines,\s*(30_000|10_000)/.test(l)),
+  );
+  check(
+    "P2-256: the existing routine write points are unchanged — one boot read, every save through saveRoutines",
+    // P2-286 added two legitimate write points: the capped failure path
+    // (retry vs close-day) and the close-day sweep branch, both persisting
+    // through the same saveRoutines.
+    (daemonIndexSrc.match(/saveRoutines\(/g) || []).length === 13 &&
+      (daemonIndexSrc.match(/loadRoutines\(/g) || []).length === 1 &&
+      !daemonIndexSrc.includes("routines.json"),
+  );
+}
+
+// --- P2-257: deferred-update reminder plan (updateremind.ts) ---------------------
+{
+  const root = join(import.meta.dirname, "..");
+  const downloaded = { status: "update-downloaded", version: "0.3.0", harnessSession: false };
+  const limits = { minIntervalMs: UPDATE_REMIND_LIMITS.minIntervalMs, maxPerVersion: UPDATE_REMIND_LIMITS.maxPerVersion };
+  const now = 10_000_000_000;
+  const oldOffer = { version: "0.3.0", at: now - limits.minIntervalMs - 1, count: 1 };
+  const freshOffer = { version: "0.3.0", at: now - 60_000, count: 1 };
+
+  // Rule 1: every state that is not "update-downloaded" waits.
+  for (const status of [
+    "disabled",
+    "update-available",
+    "update-available-manual",
+    "update-installer-ready",
+    "update-not-available",
+    "unrecognized-feed",
+    "feed-unreachable",
+  ]) {
+    const plan = updateReminderPlan({ status, version: null, harnessSession: false }, oldOffer, now, limits);
+    check(`P2-257: state ${status} never reminds`, plan.action === "wait" && plan.reason === "state-not-downloaded");
+  }
+  // Rule order proven: state-not-downloaded AND an expired interval at the
+  // same time — the state rule wins.
+  const ruleOrder = updateReminderPlan(
+    { status: "update-not-available", version: null, harnessSession: false },
+    oldOffer,
+    now,
+    limits,
+  );
+  check(
+    "P2-257: state rule beats an expired interval (rule order)",
+    ruleOrder.action === "wait" && ruleOrder.reason === "state-not-downloaded",
+  );
+  // Rule 0 proven the same way: the harness-session rule is the FIRST decision.
+  const harness = updateReminderPlan({ ...downloaded, harnessSession: true }, oldOffer, now, limits);
+  check(
+    "P2-257: harness session is the first decision of the path",
+    harness.action === "wait" && harness.reason === "harness-session",
+  );
+
+  // Rule 2: a new version zeroes the count — even one whose cap was reached.
+  const inherited = updateReminderPlan(
+    downloaded,
+    { version: "0.2.9", at: now - 60_000, count: limits.maxPerVersion },
+    now,
+    limits,
+  );
+  check(
+    "P2-257: a new version zeroes the count (cap of the old one not inherited)",
+    inherited.action === "remind" && inherited.reason === "due",
+  );
+
+  // Rule 3: the per-version cap is respected.
+  const atCap = updateReminderPlan(
+    downloaded,
+    { version: "0.3.0", at: now - limits.minIntervalMs - 1, count: limits.maxPerVersion },
+    now,
+    limits,
+  );
+  check("P2-257: cap reached never reminds", atCap.action === "wait" && atCap.reason === "cap-reached");
+  const underCap = updateReminderPlan(downloaded, oldOffer, now, limits);
+  check(
+    "P2-257: one offer under the cap with the interval elapsed reminds",
+    underCap.action === "remind" && underCap.reason === "due",
+  );
+
+  // Rule 4: the documented minimum interval, threshold explicit.
+  const exactlyAtLimit = updateReminderPlan(
+    downloaded,
+    { version: "0.3.0", at: now - limits.minIntervalMs, count: 1 },
+    now,
+    limits,
+  );
+  check(
+    "P2-257: offer exactly at the minimum interval (age === minIntervalMs) reminds",
+    exactlyAtLimit.action === "remind",
+  );
+  const olderThanLimit = updateReminderPlan(
+    downloaded,
+    { version: "0.3.0", at: now - limits.minIntervalMs - 3_600_000, count: 1 },
+    now,
+    limits,
+  );
+  check("P2-257: offer older than the interval reminds", olderThanLimit.action === "remind");
+  const newerThanLimit = updateReminderPlan(
+    downloaded,
+    { version: "0.3.0", at: now - limits.minIntervalMs + 1, count: 1 },
+    now,
+    limits,
+  );
+  check(
+    "P2-257: offer newer than the interval waits",
+    newerThanLimit.action === "wait" && newerThanLimit.reason === "interval-not-elapsed",
+  );
+
+  // Fail-closed edges.
+  const future = updateReminderPlan(downloaded, { version: "0.3.0", at: now + 60_000, count: 1 }, now, limits);
+  check(
+    "P2-257: a future offer instant is treated as now (age never negative)",
+    future.action === "wait" && future.reason === "interval-not-elapsed",
+  );
+  const nonFiniteNow = updateReminderPlan(downloaded, oldOffer, Number.NaN, limits);
+  check(
+    "P2-257: a non-finite current instant is refused, not guessed",
+    nonFiniteNow.action === "wait" && nonFiniteNow.reason === "invalid-instant",
+  );
+  const nonFiniteAt = updateReminderPlan(downloaded, { version: "0.3.0", at: Number.POSITIVE_INFINITY, count: 1 }, now, limits);
+  check(
+    "P2-257: a non-finite last-offer instant is refused too",
+    nonFiniteAt.action === "wait" && nonFiniteAt.reason === "invalid-instant",
+  );
+  const textCount = updateReminderPlan(
+    downloaded,
+    { version: "0.3.0", at: now - limits.minIntervalMs - 1, count: "2" as unknown as number },
+    now,
+    { ...limits, maxPerVersion: 2 },
+  );
+  check("P2-257: a textual count is treated as zero", textCount.action === "remind");
+  const negativeCount = updateReminderPlan(
+    downloaded,
+    { version: "0.3.0", at: now - limits.minIntervalMs - 1, count: -1 },
+    now,
+    { ...limits, maxPerVersion: 0 },
+  );
+  check(
+    "P2-257: a negative count is normalized to zero before the cap check",
+    negativeCount.action === "wait" && negativeCount.reason === "cap-reached",
+  );
+
+  // Determinism: same input → identical verdict in two calls.
+  const first = updateReminderPlan(downloaded, oldOffer, now, limits);
+  const second = updateReminderPlan(downloaded, oldOffer, now, limits);
+  check("P2-257: same input → identical verdict in two calls", JSON.stringify(first) === JSON.stringify(second));
+
+  // The truthful tray label.
+  check(
+    "P2-257: label says installation happens by accepting the offer",
+    UPDATE_DOWNLOADED_TRAY_LABEL.includes("aceitar a oferta"),
+  );
+  check(
+    "P2-257: label does not promise a plain restart",
+    !UPDATE_DOWNLOADED_TRAY_LABEL.toLowerCase().includes("reinicie") &&
+      !UPDATE_DOWNLOADED_TRAY_LABEL.toLowerCase().includes("reinicializa") &&
+      !UPDATE_DOWNLOADED_TRAY_LABEL.toLowerCase().includes("restart"),
+  );
+  check(
+    "P2-257: label carries no path, no address, no port and no secret",
+    !UPDATE_DOWNLOADED_TRAY_LABEL.includes("/") &&
+      !UPDATE_DOWNLOADED_TRAY_LABEL.includes("://") &&
+      !UPDATE_DOWNLOADED_TRAY_LABEL.includes("127.") &&
+      !UPDATE_DOWNLOADED_TRAY_LABEL.includes("localhost") &&
+      !/\b\d{2,}\b/.test(UPDATE_DOWNLOADED_TRAY_LABEL) &&
+      !/[A-Za-z0-9_]{24,}/.test(UPDATE_DOWNLOADED_TRAY_LABEL),
+  );
+  check(
+    "P2-257: label fits the documented tray text budget",
+    UPDATE_DOWNLOADED_TRAY_LABEL.length <= TRAY_TIP_MAX_CHARS,
+  );
+
+  // Source hygiene: the module stays pure.
+  const remindSrc = readFileSync(join(root, "apps", "desktop", "src", "updateremind.ts"), "utf8");
+  check(
+    "P2-257: updateremind.ts stays pure — no electron, no node:fs, no fetch",
+    !remindSrc.includes("from \"electron\"") && !remindSrc.includes("node:fs") && !remindSrc.includes("fetch("),
+  );
+
+  // Source wiring: main.ts reuses the SAME timer, keeps the harness rule
+  // first and never reorders the existing tray items.
+  const mainSrc = readFileSync(join(root, "apps", "desktop", "src", "main.ts"), "utf8");
+  const reminderBlock = mainSrc.slice(
+    mainSrc.indexOf("function scheduleUpdateReminder"),
+    mainSrc.indexOf("async function offerUpdateReminderDialog"),
+  );
+  check(
+    "P2-257: the reminder arms the SAME timer updateschedule.ts feeds — no new periodic timer",
+    reminderBlock.includes("updateRecheckTimer = setTimeout(() => fireUpdateReminder()") &&
+      !reminderBlock.includes("setInterval"),
+  );
+  check("P2-257: the reminder adds no IPC channel", !reminderBlock.includes("ipcMain"));
+
+  const dialogStart = mainSrc.indexOf("async function offerUpdateReminderDialog");
+  const askAt = mainSrc.indexOf("updateDialogSinks.askInstall", dialogStart);
+  const harnessAt = mainSrc.indexOf("HERMETIC_E2E", dialogStart);
+  check(
+    "P2-257: the harness-session rule is evaluated before any dialog opening",
+    dialogStart >= 0 && askAt > dialogStart && harnessAt > dialogStart && harnessAt < askAt,
+  );
+
+  const trayStart = mainSrc.indexOf("function trayMenuItems");
+  const trayEnd = mainSrc.indexOf("function ", trayStart + 10);
+  const traySrc = mainSrc.slice(trayStart, trayEnd);
+  const markers = ["trayMenuLine", "Open OpenCode Remote", "Restart daemon", "Start at login", "Open logs folder", "Quit"];
+  const positions = markers.map((m) => traySrc.indexOf(m));
+  check(
+    "P2-257: existing tray items keep their order",
+    positions.every((p, i) => p >= 0 && (i === 0 || p > positions[i - 1])),
+  );
+}
+
+// --- P2-258: download progress in the tray (updateprogress.ts) --------------------
+{
+  const root = join(import.meta.dirname, "..");
+  const limits = { silenceMs: UPDATE_PROGRESS_LIMITS.silenceMs };
+  const now = 10_000_000_000;
+  const live = now - 1_000;
+
+  // Rule 2: a total that is absent, zero, text or non-finite is unknown
+  // progress with a number-free label — never an invented percentage.
+  for (const total of [undefined, 0, -5, "900", Number.NaN, Number.POSITIVE_INFINITY]) {
+    const view = updateProgressView(100, total as number, live, now, limits);
+    check(
+      `P2-258: total ${String(total)} → unknown with number-free label`,
+      view.verdict === "unknown" && view.label === UPDATE_PROGRESS_LABEL_DOWNLOADING && view.percent === null && !view.label.includes("%"),
+    );
+  }
+
+  // Rule 3: non-finite or negative bytes are treated as zero (fail-closed).
+  for (const bytes of [Number.NaN, Number.NEGATIVE_INFINITY, -1]) {
+    const view = updateProgressView(bytes, 1000, live, now, limits);
+    check(
+      `P2-258: bytes ${String(bytes)} treated as zero`,
+      view.verdict === "downloading" && view.percent === 0 && view.label === `${UPDATE_PROGRESS_LABEL_DOWNLOADING} 0%`,
+    );
+  }
+
+  // Rule 4: bytes above the total cap at one hundred percent, never beyond.
+  const over = updateProgressView(1500, 1000, live, now, limits);
+  check(
+    "P2-258: bytes above the total cap at 100%",
+    over.verdict === "downloading" && over.percent === 100 && over.label === `${UPDATE_PROGRESS_LABEL_DOWNLOADING} 100%`,
+  );
+
+  // Distinct labels for 0%, an intermediate value and 100%.
+  const zero = updateProgressView(0, 1000, live, now, limits);
+  const mid = updateProgressView(420, 1000, live, now, limits);
+  const full = updateProgressView(1000, 1000, live, now, limits);
+  check(
+    "P2-258: 0%, intermediate and 100% carry three distinct labels",
+    zero.label === `${UPDATE_PROGRESS_LABEL_DOWNLOADING} 0%` &&
+      mid.label === `${UPDATE_PROGRESS_LABEL_DOWNLOADING} 42%` &&
+      full.label === `${UPDATE_PROGRESS_LABEL_DOWNLOADING} 100%` &&
+      new Set([zero.label, mid.label, full.label]).size === 3,
+  );
+
+  // Rule 1 with the threshold explicit: silence exactly at the documented
+  // limit is still downloading; silence above it is stuck.
+  const silence = 1_000;
+  const atLimit = updateProgressView(300, 1000, now - silence, now, { silenceMs: silence });
+  check("P2-258: silence exactly at the documented limit is NOT stuck (age === silenceMs)", atLimit.verdict === "downloading");
+  const aboveLimit = updateProgressView(300, 1000, now - silence - 1, now, { silenceMs: silence });
+  check(
+    "P2-258: silence above the documented limit is stuck",
+    aboveLimit.verdict === "stuck" && aboveLimit.label === UPDATE_PROGRESS_LABEL_STUCK && aboveLimit.percent === null,
+  );
+  const realLimits = updateProgressView(300, 1000, now - UPDATE_PROGRESS_LIMITS.silenceMs - 1, now, limits);
+  check("P2-258: stuck also fires with the real documented limit", realLimits.verdict === "stuck");
+
+  // Rule order proven: silence above the limit AND a high percentage hold at
+  // the same time — stuck wins, a download stopped at ninety percent is
+  // still stopped.
+  const order = updateProgressView(900, 1000, now - silence - 1, now, { silenceMs: silence });
+  check("P2-258: silence beats a high percentage (rule order)", order.verdict === "stuck" && order.label === UPDATE_PROGRESS_LABEL_STUCK);
+
+  // Rule 6: an instant in the future is treated as now — the age is never
+  // negative.
+  const future = updateProgressView(500, 1000, now + 60_000, now, limits);
+  check("P2-258: a future last-progress instant is treated as now", future.verdict === "downloading" && future.percent === 50);
+
+  // Rule 5: a non-finite instant is refused instead of guessed.
+  const nonFiniteNow = updateProgressView(500, 1000, live, Number.NaN, limits);
+  check("P2-258: a non-finite current instant is refused", nonFiniteNow.verdict === "unknown" && nonFiniteNow.reason === "invalid-instant");
+  const nonFiniteAt = updateProgressView(500, 1000, Number.POSITIVE_INFINITY, now, limits);
+  check(
+    "P2-258: a non-finite last-progress instant is refused too",
+    nonFiniteAt.verdict === "unknown" && nonFiniteAt.reason === "invalid-instant",
+  );
+
+  // Determinism: same input → identical verdict in two calls.
+  const first = updateProgressView(420, 1000, live, now, limits);
+  const second = updateProgressView(420, 1000, live, now, limits);
+  check("P2-258: same input → identical verdict in two calls", JSON.stringify(first) === JSON.stringify(second));
+
+  // Label hygiene: every verdict's label is static, carries no path, no
+  // address, no port, no feed URL and no secret, and fits the documented
+  // tray text budget.
+  const views = [
+    updateProgressView(0, 1000, live, now, limits),
+    updateProgressView(420, 1000, live, now, limits),
+    updateProgressView(1000, 1000, live, now, limits),
+    updateProgressView(100, undefined as unknown as number, live, now, limits),
+    updateProgressView(900, 1000, now - silence - 1, now, { silenceMs: silence }),
+  ];
+  for (const view of views) {
+    const clean =
+      !view.label.includes("/") &&
+      !view.label.includes("://") &&
+      !view.label.includes("127.") &&
+      !view.label.includes("localhost") &&
+      !/[A-Za-z0-9_]{24,}/.test(view.label) &&
+      view.label.length <= TRAY_TIP_MAX_CHARS;
+    check(`P2-258: "${view.label}" is static and secret-free within the tray budget`, clean);
+  }
+
+  // Source hygiene: the module stays pure and the harness-session reason is
+  // documented in its header.
+  const progressSrc = readFileSync(join(root, "apps", "desktop", "src", "updateprogress.ts"), "utf8");
+  check(
+    "P2-258: updateprogress.ts stays pure — no electron, no node:fs, no fetch",
+    !progressSrc.includes("from \"electron\"") && !progressSrc.includes("node:fs") && !progressSrc.includes("fetch("),
+  );
+  check("P2-258: the harness-session reason is documented in the module header", progressSrc.includes("OCR_DESKTOP_SESSION"));
+
+  // Source wiring: update.ts only forwards the updater's own progress event;
+  // main.ts consumes it with no new timer, no new IPC, nothing opened, and
+  // the existing tray item order intact.
+  const updateSrc = readFileSync(join(root, "apps", "desktop", "src", "update.ts"), "utf8");
+  check(
+    "P2-258: update.ts forwards the updater's own download-progress event to the injected sink, exactly once",
+    (updateSrc.match(/updater\.on\("download-progress"/g) ?? []).length === 1 && updateSrc.includes("hooks.onProgress?.(info)"),
+  );
+
+  const mainSrc = readFileSync(join(root, "apps", "desktop", "src", "main.ts"), "utf8");
+  const blockStart = mainSrc.indexOf("download progress in the tray (P2-258)");
+  const blockEnd = mainSrc.indexOf("deferred-update reminder (P2-257)");
+  const block = blockStart >= 0 && blockEnd > blockStart ? mainSrc.slice(blockStart, blockEnd) : "";
+  check("P2-258: main.ts has the progress wiring block", blockStart >= 0 && blockEnd > blockStart);
+  check(
+    "P2-258: the progress block opens no window, dialog or focus — the harness-session rule has nothing to gate",
+    block.length > 0 &&
+      !block.includes("dialog.") &&
+      !block.includes("shell.") &&
+      !block.includes("showMainWindow") &&
+      !block.includes("new BrowserWindow") &&
+      !block.includes("openExternal"),
+  );
+  check(
+    "P2-258: the progress block adds no timer and no IPC channel",
+    block.length > 0 && !block.includes("setTimeout") && !block.includes("setInterval") && !block.includes("ipcMain"),
+  );
+  check(
+    "P2-258: no new periodic timer in main.ts (the two pre-existing setInterval calls stay alone)",
+    (mainSrc.match(/setInterval/g) ?? []).length === 2,
+  );
+  check(
+    "P2-258: the stalled verdict is evaluated on the SAME tick updateschedule.ts feeds",
+    mainSrc.includes("evaluateUpdateProgressSilence();\n    runUpdateCheck(\"scheduled\")"),
+  );
+
+  const trayStart258 = mainSrc.indexOf("function trayMenuItems");
+  const trayEnd258 = mainSrc.indexOf("function ", trayStart258 + 10);
+  const traySrc258 = mainSrc.slice(trayStart258, trayEnd258);
+  const markers258 = ["trayMenuLine", "Open OpenCode Remote", "Check for updates", "Restart daemon", "Start at login", "Open logs folder", "Quit"];
+  const positions258 = markers258.map((m) => traySrc258.indexOf(m));
+  check(
+    "P2-258: existing tray items keep their order",
+    positions258.every((p, i) => p >= 0 && (i === 0 || p > positions258[i - 1])),
+  );
+}
+
+// --- P2-264: disk-space gate for the update download (updatespace.ts) --------------
+{
+  const root = join(import.meta.dirname, "..");
+  const limits = UPDATE_SPACE_LIMITS;
+  const size = 500_000_000; // 500 MB announced release
+  // The threshold, explicit: necessary = size × multiplier + headroom.
+  const necessary = size * UPDATE_SPACE_SIZE_MULTIPLIER + UPDATE_SPACE_HEADROOM_BYTES;
+
+  // Rule 1: free bytes that are absent, text, non-finite or negative postpone
+  // fail-closed — downloading without knowing is exactly what breaks today.
+  for (const free of [null, undefined, "500000000", Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+    const view = updateSpaceVerdict(free as number, size, limits);
+    check(
+      `P2-264: free bytes ${String(free)} → postpone (fail-closed)`,
+      view.verdict === "postpone" && view.reason === "invalid-free-bytes" && view.label === UPDATE_SPACE_LABEL_POSTPONED_UNKNOWN,
+    );
+  }
+
+  // Rule 2: an announced size that is absent or <= 0 warns and NEVER
+  // postpones — the feed may omit the size and refusing for that would stop
+  // the whole product. Even a nearly full volume warns here, not postpones.
+  for (const announced of [null, undefined, 0, -1, "500000000", Number.NaN, Number.POSITIVE_INFINITY]) {
+    const view = updateSpaceVerdict(100, announced as number, limits);
+    check(
+      `P2-264: announced size ${String(announced)} → warn (never refuse the update)`,
+      view.verdict === "warn" && view.reason === "invalid-release-size" && view.label === UPDATE_SPACE_LABEL_SIZE_UNKNOWN,
+    );
+  }
+
+  // Rule 3 with the threshold explicit: free exactly AT the necessary is not
+  // below it (warn band); one byte below postpones.
+  const atThreshold = updateSpaceVerdict(necessary, size, limits);
+  check(
+    "P2-264: free exactly at the necessary (size × multiplier + headroom) is NOT postponed",
+    atThreshold.verdict === "warn" && atThreshold.reason === "low-space-warning",
+  );
+  const oneByteBelow = updateSpaceVerdict(necessary - 1, size, limits);
+  check(
+    "P2-264: one byte below the necessary postpones",
+    oneByteBelow.verdict === "postpone" && oneByteBelow.reason === "insufficient-space" && oneByteBelow.label === UPDATE_SPACE_LABEL_POSTPONED,
+  );
+  // The multiplier is part of the threshold: free above size × 1 + headroom
+  // but below size × 2 + headroom still postpones — the unpacked copy needs
+  // room at the same time as the downloaded package.
+  const halfWay = updateSpaceVerdict(size + UPDATE_SPACE_HEADROOM_BYTES + 1, size, limits);
+  check("P2-264: free above the plain size but below size × multiplier postpones", halfWay.verdict === "postpone");
+
+  // Rule 4: inside the warning headroom above the necessary → warn.
+  const inBand = updateSpaceVerdict(necessary + 1, size, limits);
+  check(
+    "P2-264: free above the necessary but inside the warning headroom warns",
+    inBand.verdict === "warn" && inBand.reason === "low-space-warning" && inBand.label === UPDATE_SPACE_LABEL_WARN,
+  );
+  // Rule 5: at the end of the warning band and comfortably above → download.
+  const atBandEnd = updateSpaceVerdict(necessary + UPDATE_SPACE_HEADROOM_BYTES, size, limits);
+  check(
+    "P2-264: free at the end of the warning band downloads",
+    atBandEnd.verdict === "download" && atBandEnd.reason === "enough-space" && atBandEnd.label === UPDATE_SPACE_LABEL_DOWNLOAD,
+  );
+  const roomy = updateSpaceVerdict(necessary * 4, size, limits);
+  check("P2-264: comfortable free space downloads", roomy.verdict === "download");
+
+  // Rule order proven: non-finite free bytes AND an absent announced size at
+  // the same time — the free-bytes rule wins and the result is postpone.
+  const order = updateSpaceVerdict(Number.NaN, null, limits);
+  check(
+    "P2-264: invalid free bytes beat an absent size (rule order)",
+    order.verdict === "postpone" && order.reason === "invalid-free-bytes",
+  );
+
+  // Determinism: same input → identical verdict in two calls.
+  const first = updateSpaceVerdict(necessary, size, limits);
+  const second = updateSpaceVerdict(necessary, size, limits);
+  check("P2-264: same input → identical verdict in two calls", JSON.stringify(first) === JSON.stringify(second));
+
+  // Label hygiene: every reason's label is static, carries no path, no volume
+  // name, no address, no port and no secret, and fits the documented tray
+  // text budget.
+  const views = [
+    updateSpaceVerdict(null, size, limits),
+    updateSpaceVerdict(100, null, limits),
+    updateSpaceVerdict(necessary - 1, size, limits),
+    updateSpaceVerdict(necessary + 1, size, limits),
+    updateSpaceVerdict(necessary * 4, size, limits),
+  ];
+  for (const view of views) {
+    const clean =
+      !view.label.includes("/") &&
+      !view.label.includes("://") &&
+      !view.label.includes("127.") &&
+      !view.label.includes("localhost") &&
+      !view.label.includes("Macintosh") &&
+      !view.label.includes("HD") &&
+      !/[A-Za-z0-9_]{24,}/.test(view.label) &&
+      view.label.length <= TRAY_TIP_MAX_CHARS;
+    check(`P2-264: "${view.label}" is static, volume-free and secret-free within the tray budget`, clean);
+  }
+
+  // The documented constants themselves.
+  check("P2-264: the documented multiplier is 2 (package + unpacked copy)", UPDATE_SPACE_SIZE_MULTIPLIER === 2);
+  check(
+    "P2-264: the documented headroom is positive and finite",
+    Number.isFinite(UPDATE_SPACE_HEADROOM_BYTES) && UPDATE_SPACE_HEADROOM_BYTES > 0,
+  );
+
+  // Source hygiene: the module stays pure — no electron, no node:fs, no fetch.
+  const spaceSrc = readFileSync(join(root, "apps", "desktop", "src", "updatespace.ts"), "utf8");
+  check(
+    "P2-264: updatespace.ts stays pure — no electron, no node:fs, no fetch",
+    !spaceSrc.includes("from \"electron\"") && !spaceSrc.includes("node:fs") && !spaceSrc.includes("fetch("),
+  );
+  check("P2-264: the harness-session reason is documented in the module header", spaceSrc.includes("OCR_DESKTOP_SESSION"));
+
+  // Source wiring: main.ts reads the real free space exactly once per
+  // decision, on the SAME tick updateschedule.ts feeds, opens nothing, adds
+  // no timer, no IPC channel, and never cancels, deletes or installs.
+  const mainSrc = readFileSync(join(root, "apps", "desktop", "src", "main.ts"), "utf8");
+  const blockStart = mainSrc.indexOf("disk-space gate for the scheduled update (P2-264)");
+  const blockEnd = mainSrc.indexOf("deferred-update reminder (P2-257)");
+  const block = blockStart >= 0 && blockEnd > blockStart ? mainSrc.slice(blockStart, blockEnd) : "";
+  check("P2-264: main.ts has the disk-space gate block", blockStart >= 0 && blockEnd > blockStart);
+  check(
+    "P2-264: the gate reads the real free space exactly once per decision (one statfsSync)",
+    block.includes("statfsSync") && (block.match(/statfsSync/g) ?? []).length === 1,
+  );
+  check(
+    "P2-264: the gate block opens no window, dialog or focus — nothing for the harness rule to gate",
+    block.length > 0 &&
+      !block.includes("dialog.") &&
+      !block.includes("shell.") &&
+      !block.includes("showMainWindow") &&
+      !block.includes("new BrowserWindow") &&
+      !block.includes("openExternal"),
+  );
+  check(
+    "P2-264: the gate block adds no timer and no IPC channel",
+    block.length > 0 && !block.includes("setTimeout") && !block.includes("setInterval") && !block.includes("ipcMain"),
+  );
+  check(
+    "P2-264: postpone re-arms the SAME schedule instead of adding one",
+    block.includes("scheduleNextUpdateCheck(\"update-available\")"),
+  );
+  check(
+    "P2-264: the gate never cancels, deletes or installs",
+    !block.includes("rmSync") && !block.includes("unlink") && !block.includes("quitAndInstall") && !block.includes("cancelUpdate"),
+  );
+  check(
+    "P2-264: no new periodic timer in main.ts (the two pre-existing setInterval calls stay alone)",
+    (mainSrc.match(/setInterval/g) ?? []).length === 2,
+  );
+  check(
+    "P2-264: the gate is consulted before any check for updates is started in runUpdateCheck",
+    mainSrc.indexOf("updateSpaceGateSkip()") > 0 &&
+      mainSrc.indexOf("updateSpaceGateSkip()") < mainSrc.indexOf("void checkForUpdatesOnBoot({"),
+  );
+  check(
+    "P2-264: only the scheduled recheck consults the gate — boot and the explicit tray check are untouched",
+    mainSrc.includes("if (source === \"scheduled\" && updateSpaceGateSkip()) return;"),
+  );
+  check(
+    "P2-264: the postpone label outranks the stalled invite but not the downloaded release",
+    mainSrc.indexOf("UPDATE_DOWNLOADED_TRAY_LABEL") < mainSrc.indexOf("if (updateSpaceLabel) return updateSpaceLabel;") &&
+      mainSrc.indexOf("if (updateSpaceLabel) return updateSpaceLabel;") < mainSrc.indexOf("if (lastUpdateStatus === \"update-available\" && lastUpdateProgressLabel) return lastUpdateProgressLabel;"),
+  );
+
+  const trayStart264 = mainSrc.indexOf("function trayMenuItems");
+  const trayEnd264 = mainSrc.indexOf("function ", trayStart264 + 10);
+  const traySrc264 = mainSrc.slice(trayStart264, trayEnd264);
+  const markers264 = ["trayMenuLine", "Open OpenCode Remote", "Check for updates", "Restart daemon", "Start at login", "Open logs folder", "Quit"];
+  const positions264 = markers264.map((m) => traySrc264.indexOf(m));
+  check(
+    "P2-264: existing tray items keep their order",
+    positions264.every((p, i) => p >= 0 && (i === 0 || p > positions264[i - 1])),
+  );
+}
+
+// --- P2-267: macOS data wipe (datawipe.ts + menu.ts + main.ts wiring) --------
+
+{
+  const GOOD_ROOT = "/Users/ze/Library/Application Support/OpenCode Remote";
+  const FULL = ["daemon.json", "logs", "startup.json"];
+  const verdict = (harnessSession: boolean, dataRoot: string | null | undefined, confirmed: boolean, removable: readonly string[]) =>
+    dataWipeVerdict({ harnessSession, dataRoot, confirmed, removableNames: removable });
+
+  // --- the complete verdict table, rules in the documented order ------------
+  // 1. harness session refuses BEFORE any other decision — even with the
+  //    confirmation present and a full removable list.
+  check(
+    "P2-267: harness session refuses even with confirmation present and a full list",
+    verdict(true, GOOD_ROOT, true, FULL).action === "refuse",
+  );
+  check(
+    "P2-267: the harness refusal is the harness reason (rule order: first)",
+    verdict(true, GOOD_ROOT, true, FULL).reason === WIPE_REASON_HARNESS &&
+      verdict(true, null, false, []).reason === WIPE_REASON_HARNESS,
+  );
+  // 2. an invalid data root refuses even with confirmation present (two rules
+  //    true at the same time — the root rule must win over the wipe).
+  check(
+    "P2-267: an invalid root with confirmation present still refuses (rule order)",
+    verdict(false, "./dados relativos", true, FULL).action === "refuse" &&
+      verdict(false, "./dados relativos", true, FULL).reason === WIPE_REASON_ROOT,
+  );
+  for (const bad of [null, undefined, ""] as (string | null | undefined)[]) {
+    check(
+      `P2-267: an absent or empty root refuses fail-closed (${String(bad)})`,
+      verdict(false, bad, true, FULL).action === "refuse" && verdict(false, bad, true, FULL).reason === WIPE_REASON_ROOT,
+    );
+  }
+  for (const relative of ["dados do app", "./dados", "../sub", "OpenCode Remote"]) {
+    check(
+      `P2-267: a relative root refuses (${JSON.stringify(relative)})`,
+      verdict(false, relative, true, FULL).action === "refuse",
+    );
+  }
+  for (const volume of ["/", "C:\\", "C:/", "C:", "\\\\srv", "\\\\srv\\"]) {
+    check(
+      `P2-267: a bare filesystem root refuses (${JSON.stringify(volume)})`,
+      verdict(false, volume, true, FULL).action === "refuse",
+    );
+  }
+  check(
+    "P2-267: isAbsoluteDataRoot accepts the documented absolute shapes only",
+    isAbsoluteDataRoot("/Users/ze/dados") && isAbsoluteDataRoot("C:\\Users\\ze") && isAbsoluteDataRoot("C:/x") &&
+      !isAbsoluteDataRoot("dados") && !isAbsoluteDataRoot("./dados") && !isAbsoluteDataRoot("C:"),
+  );
+  // 3. a missing explicit confirmation refuses — nothing is deleted without a
+  //    deliberate click.
+  check(
+    "P2-267: a missing confirmation refuses",
+    verdict(false, GOOD_ROOT, false, FULL).action === "refuse" &&
+      verdict(false, GOOD_ROOT, false, FULL).reason === WIPE_REASON_UNCONFIRMED,
+  );
+  // 4. an empty removable list is nothing-to-do (confirmed, good root).
+  check(
+    "P2-267: an empty removable list becomes nothing-to-do",
+    verdict(false, GOOD_ROOT, true, []).action === "noop" &&
+      verdict(false, GOOD_ROOT, true, []).reason === WIPE_REASON_NOTHING,
+  );
+  // 5. the happy case wipes and carries the static confirmation text.
+  const happy = verdict(false, GOOD_ROOT, true, FULL);
+  check(
+    "P2-267: the happy case wipes with a non-empty confirmation text",
+    happy.action === "wipe" && happy.confirmText === WIPE_STEP1_MESSAGE && happy.confirmText.length > 0,
+  );
+  check(
+    "P2-267: refuse and noop verdicts carry no confirmation text",
+    [verdict(true, GOOD_ROOT, true, FULL), verdict(false, GOOD_ROOT, false, FULL), verdict(false, GOOD_ROOT, true, [])].every(
+      (v) => v.action !== "wipe" && v.confirmText === "",
+    ),
+  );
+
+  // Purity: the same input in two calls yields an identical verdict.
+  check(
+    "P2-267: the same input in two calls yields an identical verdict",
+    JSON.stringify(verdict(false, GOOD_ROOT, true, FULL)) === JSON.stringify(dataWipeVerdict({ harnessSession: false, dataRoot: GOOD_ROOT, confirmed: true, removableNames: FULL })),
+  );
+
+  // Text hygiene: every generated string is static, path-free, volume-free
+  // and secret-free — categories, never paths, drives or keys.
+  const texts = [
+    verdict(true, GOOD_ROOT, true, FULL).reason,
+    verdict(false, "./x", true, FULL).reason,
+    verdict(false, GOOD_ROOT, false, FULL).reason,
+    verdict(false, GOOD_ROOT, true, []).reason,
+    happy.reason,
+    happy.confirmText,
+    WIPE_DIALOG_TITLE,
+    WIPE_STEP1_MESSAGE,
+    WIPE_STEP1_DETAIL,
+    WIPE_STEP2_MESSAGE,
+    WIPE_STEP2_DETAIL,
+    WIPE_BUTTON_NEXT,
+    WIPE_BUTTON_WIPE,
+    WIPE_BUTTON_CANCEL,
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("://") &&
+    !/[A-Za-z]:[\\/]/.test(s) &&
+    !s.includes("Users") &&
+    !s.includes("~") &&
+    !/[A-Za-z0-9+/_-]{40,}/.test(s);
+  check(
+    "P2-267: every reason and dialog copy is static, path-free, volume-free and secret-free",
+    texts.every(clean),
+  );
+  check(
+    "P2-267: the step-1 copy lists what goes and what stays; step 2 warns the paired phones",
+    WIPE_STEP1_MESSAGE.includes("identidade") &&
+      WIPE_STEP1_MESSAGE.includes("celulares pareados") &&
+      WIPE_STEP1_DETAIL.includes("O que fica") &&
+      WIPE_STEP2_MESSAGE.includes("todos os celulares pareados perdem o acesso"),
+  );
+  check(
+    "P2-267: both dialog steps put Cancel last (Escape) at the fixed index",
+    WIPE_BUTTON_INDEX.primary === 0 && WIPE_BUTTON_INDEX.cancel === 1 && WIPE_BUTTON_CANCEL.length > 0 &&
+      WIPE_BUTTON_NEXT.length > 0 && WIPE_BUTTON_WIPE.length > 0,
+  );
+
+  // --- executor against a fake fs (the real disk is never touched) ----------
+  const planOf = (observed: string[]) => uninstallCleanupPlan("OpenCode Remote", observed);
+  const fakeFs = (failFor: readonly string[] = []): { calls: string[]; fs: { rmSync(path: string, opts: { recursive: boolean; force: boolean }): void } } => {
+    const calls: string[] = [];
+    return {
+      calls,
+      fs: {
+        rmSync: (p) => {
+          if (failFor.some((n) => p.endsWith(n))) {
+            const err = new Error("permission denied") as NodeJS.ErrnoException;
+            err.code = "EPERM";
+            throw err;
+          }
+          calls.push(p);
+        },
+      },
+    };
+  };
+
+  {
+    // only the plan's removable names are deleted, joined under the root
+    const { calls, fs } = fakeFs();
+    const report = wipePlannedChildren("/dados", planOf(["daemon.json", "logs", "Notes.txt", "", "../escape"]), fs, "/");
+    check(
+      "P2-267: the executor deletes exactly the removable immediate children under the root",
+      JSON.stringify(calls) === JSON.stringify(["/dados/daemon.json", "/dados/logs"]) &&
+        JSON.stringify(report.removed) === JSON.stringify(["daemon.json", "logs"]) &&
+        report.failed.length === 0,
+    );
+    check(
+      "P2-267: a preserved or plan-refused name is never touched",
+      calls.every((p) => !p.includes("Notes.txt") && !p.includes("escape")),
+    );
+  }
+  {
+    // defense in depth: even a hand-built plan with a refused name in remove
+    // cannot make the executor act on it
+    const smuggled: UninstallCleanupPlan = {
+      dataRootName: "OpenCode Remote",
+      remove: ["daemon.json", "..", "a\\b", "/etc", "C:\\Users"],
+      preserve: [],
+      refused: [],
+    };
+    const { calls, fs } = fakeFs();
+    const report = wipePlannedChildren("/dados", smuggled, fs, "/");
+    check(
+      "P2-267: a structurally unsafe name is skipped even when smuggled into the plan",
+      JSON.stringify(report.removed) === JSON.stringify(["daemon.json"]) && JSON.stringify(calls) === JSON.stringify(["/dados/daemon.json"]),
+    );
+  }
+  {
+    // a removal failure is a report line, never an exception, and never stops
+    // the remaining removals; the report carries names + stable codes only
+    const { calls, fs } = fakeFs(["logs"]);
+    const report: WipeReport = wipePlannedChildren("/dados", planOf(["daemon.json", "logs", "startup.json"]), fs, "/");
+    check(
+      "P2-267: a removal failure becomes a report entry and the other removals continue",
+      JSON.stringify(report.removed) === JSON.stringify(["daemon.json", "startup.json"]) &&
+        report.failed.length === 1 &&
+        report.failed[0].name === "logs" &&
+        report.failed[0].code === "EPERM" &&
+        calls.length === 2,
+    );
+    check(
+      "P2-267: the report carries no path — bare names and stable codes only",
+      !JSON.stringify(report).includes("/") && !JSON.stringify(report).includes("permission"),
+    );
+  }
+  check(
+    "P2-267: the executor is deterministic for the same plan in two calls",
+    JSON.stringify(wipePlannedChildren("/dados", planOf(["daemon.json", "logs"]), fakeFs().fs, "/")) ===
+      JSON.stringify({ removed: ["daemon.json", "logs"], failed: [] }),
+  );
+
+  // --- real-source assertions ----------------------------------------------
+  const wipeSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "datawipe.ts"), "utf8");
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-267: datawipe.ts imports only the pure uninstallplan vocabulary — no electron, node:fs, node:path, fetch",
+    wipeSrc.split("\n").filter((l) => l.trim().startsWith("import ") || l.includes("require(")).length === 1 &&
+      wipeSrc.includes('from "./uninstallplan"') &&
+      !/from\s+"electron"/.test(wipeSrc) &&
+      !/from\s+"node:fs"/.test(wipeSrc) &&
+      !/from\s+"node:path"/.test(wipeSrc) &&
+      !wipeSrc.includes("fetch("),
+  );
+
+  // The wipe section of the real main.ts: verdict (harness rule) BEFORE any
+  // dialog, no new periodic timer, executor gated by the final verdict.
+  const wipeAt = mainSrc.indexOf("data wipe (P2-267, datawipe.ts)");
+  const trayFnAt = mainSrc.indexOf("function trayMenuItems");
+  const wipeBlock = wipeAt >= 0 && trayFnAt > wipeAt ? mainSrc.slice(wipeAt, trayFnAt) : "";
+  check("P2-267: main.ts has the data-wipe wiring block", wipeBlock.length > 0);
+  check(
+    "P2-267: the verdict is consulted exactly twice (gate + final authorization)",
+    (wipeBlock.match(/dataWipeVerdict\(/g) ?? []).length === 2,
+  );
+  check(
+    "P2-267: the harness rule is evaluated before any dialog opening",
+    wipeBlock.indexOf("dataWipeVerdict(") > -1 &&
+      wipeBlock.indexOf("dataWipeVerdict(") < wipeBlock.indexOf("askDataWipeDialog()") &&
+      wipeBlock.indexOf("harnessSession: HERMETIC_E2E") > -1 &&
+      wipeBlock.indexOf("harnessSession: HERMETIC_E2E") < wipeBlock.indexOf("askDataWipeDialog()"),
+  );
+  check(
+    "P2-267: the executor runs only after the final verdict and ends in a quit",
+    wipeBlock.indexOf("wipePlannedChildren(") > wipeBlock.lastIndexOf("dataWipeVerdict(") &&
+      wipeBlock.indexOf("realQuit()") > wipeBlock.indexOf("wipePlannedChildren("),
+  );
+  check(
+    "P2-267: the wipe flow adds no timer",
+    !wipeBlock.includes("setInterval") && !wipeBlock.includes("setTimeout"),
+  );
+  check(
+    "P2-267: no new periodic timer in main.ts (the two pre-existing setInterval calls stay alone)",
+    (mainSrc.match(/setInterval/g) ?? []).length === 2,
+  );
+  check(
+    "P2-267: the menu item is wired to runDataWipe",
+    mainSrc.includes('"help-wipe-data": () => void runDataWipe()'),
+  );
+
+  // The Help submenu carries the explicit item, behind its own separator.
+  const help = menuSpec("darwin", null, false).find((i) => i.label === "Ajuda");
+  const helpItems = help?.submenu ?? [];
+  const logsAt = helpItems.findIndex((i) => i.id === "help-logs");
+  const diagAt = helpItems.findIndex((i) => i.id === "help-diagnostics");
+  const sepAt = helpItems.findIndex((i) => i.type === "separator");
+  const wipeItemAt = helpItems.findIndex((i) => i.id === "help-wipe-data");
+  check(
+    "P2-267: the Help submenu gains the explicit data-wipe item behind a separator",
+    logsAt > -1 && diagAt > logsAt && sepAt > diagAt && wipeItemAt === sepAt + 1 && helpItems[wipeItemAt]?.label === "Apagar dados do app…",
+  );
+  check(
+    "P2-267: the wipe item carries no renderer action (shell-wired by id only)",
+    helpItems[wipeItemAt]?.action === undefined,
+  );
+}
+
+// --- P2-269: dependency advisory verdict (auditverdict.ts) ------------------
+{
+  const adv = (id: string, pkg: string, severity: AuditSeverity, devOnly = false): AuditAdvisory => ({
+    id,
+    package: pkg,
+    severity,
+    devOnly,
+  });
+  const CRIT = adv("GHSA-b-crit", "left-pad", "critical");
+  const HIGH = adv("GHSA-c-high", "right-pad", "high");
+  const MOD = adv("GHSA-a-mod", "middle-pad", "moderate");
+  const NOW = Date.parse("2026-09-06T12:00:00Z");
+  const FLOOR: AuditSeverity = "high";
+  const okList = (list: readonly AuditAdvisory[]) => ({ ok: true, advisories: list });
+  const futureExemption = (id: string): AuditExemption => ({
+    id,
+    reason: "documented one-sentence motive",
+    expiresAt: "2026-10-01T00:00:00Z",
+  });
+
+  // Rule 1: an absent, shapeless or failed collection warns and NEVER
+  // rejects — even with a critical advisory riding along.
+  check(
+    "P2-269: a failed collection warns even with a critical advisory present (rule order)",
+    auditVerdict({ ok: false, advisories: [CRIT] }, [], NOW, FLOOR).outcome === "warn",
+  );
+  check(
+    "P2-269: an absent collection warns and never rejects",
+    auditVerdict(null, [], NOW, FLOOR).outcome === "warn" &&
+      auditVerdict(undefined, [], NOW, FLOOR).outcome === "warn",
+  );
+  check(
+    "P2-269: a shapeless collection (no advisory list) warns and never rejects",
+    auditVerdict({ ok: true } as unknown as { ok: boolean; advisories: AuditAdvisory[] }, [], NOW, FLOOR).outcome === "warn",
+  );
+
+  // Rule order, second proof: a critical runtime advisory and an expired
+  // exemption at the same time — the void exemption counts nothing and the
+  // advisory rejects.
+  const expired: AuditExemption[] = [
+    { id: "GHSA-b-crit", reason: "window closed", expiresAt: "2026-09-01T00:00:00Z" },
+  ];
+  check(
+    "P2-269: a critical runtime advisory with an expired exemption rejects (rule order)",
+    auditVerdict(okList([CRIT]), expired, NOW, FLOOR).outcome === "reject",
+  );
+
+  // Rule 2: a dev-only advisory never blocks, whatever its severity.
+  check(
+    "P2-269: a critical dev-only advisory warns",
+    auditVerdict(okList([adv("GHSA-b-crit", "left-pad", "critical", true)]), [], NOW, FLOOR).outcome === "warn",
+  );
+
+  // Rule 5 boundaries, floor explicit: exactly at the floor rejects, one
+  // step below warns.
+  check(
+    "P2-269: an advisory exactly at the explicit floor (high) rejects",
+    auditVerdict(okList([HIGH]), [], NOW, "high").outcome === "reject",
+  );
+  check(
+    "P2-269: an advisory one step below the floor (moderate < high) warns",
+    auditVerdict(okList([MOD]), [], NOW, "high").outcome === "warn",
+  );
+
+  // Rule 6: the plain blocking case.
+  check(
+    "P2-269: a critical runtime advisory without exemption rejects",
+    auditVerdict(okList([CRIT]), [], NOW, FLOOR).outcome === "reject",
+  );
+
+  // Rule 4: a still-valid exemption downgrades to warn and the advisory
+  // never disappears from the report.
+  const exempted = auditVerdict(okList([CRIT]), [futureExemption("GHSA-b-crit")], NOW, FLOOR);
+  check(
+    "P2-269: a still-valid exemption downgrades a critical runtime advisory to warn",
+    exempted.outcome === "warn",
+  );
+  check(
+    "P2-269: the exempted advisory stays in the report with its deadline",
+    exempted.lines.some((l) => l.includes("GHSA-b-crit") && l.includes("2026-10-01T00:00:00Z")),
+  );
+
+  // A healthy collection that found nothing approves.
+  check(
+    "P2-269: a healthy empty advisory list approves",
+    auditVerdict(okList([]), [], NOW, FLOOR).outcome === "approve",
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable identifier ordering regardless of the input order.
+  const messy = [HIGH, MOD, CRIT, adv("GHSA-d-dev", "devdep", "high", true)];
+  const exemptedMod = [futureExemption("GHSA-a-mod")];
+  const run1 = auditVerdict(okList(messy), exemptedMod, NOW, FLOOR);
+  const run2 = auditVerdict(okList([...messy].reverse()), exemptedMod, NOW, FLOOR);
+  check(
+    "P2-269: the same input yields an identical report in two calls",
+    JSON.stringify(run1) === JSON.stringify(auditVerdict(okList(messy), exemptedMod, NOW, FLOOR)),
+  );
+  check(
+    "P2-269: report lines are stably ordered by advisory identifier",
+    JSON.stringify(run1) === JSON.stringify(run2) &&
+      JSON.stringify(run1.lines.map((l) => l.split(" ")[2])) ===
+        JSON.stringify(["GHSA-a-mod", "GHSA-b-crit", "GHSA-c-high", "GHSA-d-dev"]),
+  );
+
+  // The documented floor is high: only high and critical runtime advisories
+  // block CI.
+  check(
+    "P2-269: the documented severity floor is high",
+    AUDIT_SEVERITY_FLOOR === "high",
+  );
+
+  // Real-repo assertions: the CI step, the exemptions file and the purity of
+  // the verdict module.
+  const repoRoot = join(import.meta.dirname, "..");
+  const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const stepAt = verifyJob.indexOf("- name: Dependency advisories");
+  const nextStepAt = verifyJob.indexOf("- name:", stepAt + 10);
+  const stepBlock = stepAt >= 0 && nextStepAt > stepAt ? verifyJob.slice(stepAt, nextStepAt) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-269: the dependency-advisories step exists exactly once in ci.yml",
+    ciYml.split("- name: Dependency advisories").length === 2,
+  );
+  check(
+    "P2-269: the step sits after the install step and before the build step",
+    installAt > -1 && stepAt > installAt && buildAt > stepAt,
+  );
+  check(
+    "P2-269: the step declares shell bash and its own timeout-minutes",
+    stepBlock.includes("shell: bash") && stepBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-269: the step runs the audit-deps script via the package.json entry",
+    stepBlock.includes("npm run audit:deps") &&
+      (JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts["audit:deps"] ===
+        "tsx scripts/audit-deps.ts",
+  );
+
+  // The versioned exemption list: every entry carries id, motive and a
+  // parseable expiry date, and no entry ever carries a token, a machine path
+  // or an address.
+  const exemptionsRaw = readFileSync(join(repoRoot, "scripts", "audit-exemptions.json"), "utf8");
+  const exemptionsDoc = JSON.parse(exemptionsRaw) as { exemptions?: AuditExemption[] };
+  check(
+    "P2-269: the exemptions file holds an exemptions array",
+    Array.isArray(exemptionsDoc.exemptions),
+  );
+  check(
+    "P2-269: every exemption entry has id, one-sentence reason and a parseable expiry",
+    (exemptionsDoc.exemptions ?? []).every(
+      (e) =>
+        typeof e.id === "string" && e.id.length > 0 &&
+        typeof e.reason === "string" && e.reason.length > 0 &&
+        typeof e.expiresAt === "string" && !Number.isNaN(Date.parse(e.expiresAt)),
+    ),
+  );
+  check(
+    "P2-269: the exemptions file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(exemptionsRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(exemptionsRaw) &&
+      !/https?:\/\//.test(exemptionsRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const verdictSrc = readFileSync(join(repoRoot, "scripts", "auditverdict.ts"), "utf8");
+  check(
+    "P2-269: auditverdict.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(verdictSrc) && !verdictSrc.includes("fetch("),
+  );
+}
+
+// --- P2-271: workflow permissions verdict (workflowperms.ts) -----------------
+{
+  const job = (
+    file: string,
+    name: string,
+    jobScopes: string[],
+    fileScopes: string[] = [],
+    readFailed = false,
+  ): WorkflowJobPerms => ({
+    file,
+    job: name,
+    jobScopes,
+    fileScopes,
+    ...(readFailed ? { readFailed: true } : {}),
+  });
+  const RO = ["contents:read"];
+  const allow = (entries: Record<string, string[]>): WorkflowScopeAllowlist => entries;
+
+  // Rule 1: an absent, empty or failed-read input warns and NEVER approves —
+  // checking zero jobs is exactly the same as having no gate.
+  check(
+    "P2-271: an absent input warns and never approves",
+    workflowPermsVerdict(null, {}).outcome === "warn" &&
+      workflowPermsVerdict(undefined, {}).outcome === "warn",
+  );
+  check(
+    "P2-271: an empty job list warns and never approves",
+    workflowPermsVerdict([], {}).outcome === "warn",
+  );
+  check(
+    "P2-271: a failed read warns even with a broad-write job present (rule order)",
+    workflowPermsVerdict(
+      [job("ci.yml", "broken", [], [], true), job("ci.yml", "wide", [BROAD_WRITE_SCOPE])],
+      allow({ "ci.yml/wide": [BROAD_WRITE_SCOPE] }),
+    ).outcome === "warn",
+  );
+  check(
+    "P2-271: an entry marked as a failed read warns even claiming a write scope",
+    workflowPermsVerdict([job("ci.yml", "broken", ["contents:write"], [], true)], allow({})).outcome === "warn",
+  );
+
+  // Rule order, second proof: a broad write and a job without any
+  // declaration at the same time — the outcome is reject, not warn.
+  check(
+    "P2-271: a broad-write job rejects while another job declares nothing at all (rule order)",
+    workflowPermsVerdict(
+      [job("a.yml", "wide", [BROAD_WRITE_SCOPE]), job("b.yml", "silent", [])],
+      allow({}),
+    ).outcome === "reject",
+  );
+
+  // Rule 2 boundaries: the broad write rejects even when the allowlist
+  // would legitimize it — no allowlist entry can ever save write-all.
+  check(
+    "P2-271: the broad write rejects even with a matching allowlist entry",
+    workflowPermsVerdict([job("a.yml", "wide", [BROAD_WRITE_SCOPE])], allow({ "a.yml/wide": [BROAD_WRITE_SCOPE] }))
+      .outcome === "reject",
+  );
+  check("P2-271: the documented broad write is the write-all declaration", BROAD_WRITE_SCOPE === "write-all");
+
+  // Rule 3: no declaration of its own and nothing inherited.
+  check(
+    "P2-271: a job with no declaration of its own and none inherited rejects",
+    workflowPermsVerdict([job("ci.yml", "ghost", [], [])], allow({ "ci.yml/ghost": RO })).outcome === "reject",
+  );
+
+  // Rule 4: a top-only declaration counts as declared, reported inherited.
+  const inherited = workflowPermsVerdict([job("ci.yml", "scoped", [], RO)], allow({ "ci.yml/scoped": RO }));
+  check(
+    "P2-271: a top-only declaration approves and is reported as inherited",
+    inherited.outcome === "approve" &&
+      inherited.lines.some((l) => l.includes("ci.yml/scoped") && l.includes("(inherited from the workflow top)")),
+  );
+
+  // Rule 5: a declared scope outside the documented allowlist rejects.
+  check(
+    "P2-271: a declared scope outside the documented allowlist rejects",
+    workflowPermsVerdict(
+      [job("ci.yml", "greedy", ["contents:read", "actions:write"])],
+      allow({ "ci.yml/greedy": RO }),
+    ).outcome === "reject",
+  );
+
+  // Rule 6: the happy case — a read-only job with its own declaration.
+  const happy = workflowPermsVerdict([job("ci.yml", "verify", RO)], allow({ "ci.yml/verify": RO }));
+  check(
+    "P2-271: a read-only job with its own declaration approves",
+    happy.outcome === "approve" && happy.lines.length === 1,
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable (file, job) ordering regardless of the input order.
+  const messy = [job("b.yml", "zeta", RO), job("a.yml", "alpha", ["contents:write"]), job("a.yml", "beta", [], RO)];
+  const allowMessy = allow({ "b.yml/zeta": RO, "a.yml/alpha": ["contents:write"], "a.yml/beta": RO });
+  const run1 = workflowPermsVerdict(messy, allowMessy);
+  const run2 = workflowPermsVerdict([...messy].reverse(), allowMessy);
+  check(
+    "P2-271: the same input yields an identical report in two calls",
+    JSON.stringify(run1) === JSON.stringify(workflowPermsVerdict(messy, allowMessy)),
+  );
+  check(
+    "P2-271: report lines are stably ordered by file and job name",
+    JSON.stringify(run1) === JSON.stringify(run2) &&
+      JSON.stringify(run1.lines.map((l) => l.split(" ")[2])) ===
+        JSON.stringify(["a.yml/alpha", "a.yml/beta", "b.yml/zeta"]),
+  );
+
+  // Real-repo assertions: both real workflows, the CI step, the allowlist
+  // file and the purity of the verdict module.
+  const root = join(import.meta.dirname, "..");
+  const ciYml = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const releaseYml = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const ciParsed = parseWorkflowPermissions(ciYml);
+  const releaseParsed = parseWorkflowPermissions(releaseYml);
+  check(
+    "P2-271: the real ci.yml exposes exactly the six expected jobs",
+    JSON.stringify(ciParsed.jobs.map((j) => j.job)) ===
+      JSON.stringify(["verify", "scope", "desktop-package", "desktop-package-win", "verify-win", "relay-image"]),
+  );
+  check(
+    "P2-271: every job of both real workflows declares permissions",
+    ciParsed.jobs.length > 0 &&
+      releaseParsed.jobs.length > 0 &&
+      ciParsed.jobs.every((j) => j.scopes.length > 0) &&
+      releaseParsed.jobs.every((j) => j.scopes.length > 0),
+  );
+  check(
+    "P2-271: no ci.yml job declares a write of any kind",
+    ciParsed.jobs.every((j) => j.scopes.every((s) => !s.endsWith(":write") && s !== BROAD_WRITE_SCOPE)),
+  );
+
+  // The gate step: unique, pinned between install and build, bash shell and
+  // own timeout (P2-245/P2-255 lessons), wired through package.json.
+  const gateName = "- name: Workflow permissions gate";
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-271: the workflow-perms step exists exactly once in ci.yml",
+    ciYml.split(gateName).length === 2,
+  );
+  check(
+    "P2-271: the step sits after the install step and before the build step",
+    installAt > -1 && gateAt > installAt && buildAt > gateAt,
+  );
+  check(
+    "P2-271: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-271: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:workflow-perms") &&
+      (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> })
+        .scripts["check:workflow-perms"] === "tsx scripts/check-workflow-perms.ts",
+  );
+
+  // The versioned allowlist: one entry per real job, and never a token, a
+  // machine path or an address.
+  const scopesRaw = readFileSync(join(root, "scripts", "workflow-scopes.json"), "utf8");
+  const scopesDoc = JSON.parse(scopesRaw) as { jobs?: WorkflowScopeAllowlist };
+  check(
+    "P2-271: the allowlist file holds one entry per real workflow job",
+    typeof scopesDoc.jobs === "object" &&
+      Object.keys(scopesDoc.jobs ?? {}).length === ciParsed.jobs.length + releaseParsed.jobs.length,
+  );
+  check(
+    "P2-271: the allowlist file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(scopesRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(scopesRaw) &&
+      !/https?:\/\//.test(scopesRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const permsSrc = readFileSync(join(root, "scripts", "workflowperms.ts"), "utf8");
+  check(
+    "P2-271: workflowperms.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(permsSrc) && !permsSrc.includes("fetch("),
+  );
+}
+
+// --- P2-272: push subscription admission + endpoint redaction (pushsubs.ts) --
+{
+  const CAP = 3;
+  const MAXLEN = 128;
+  const mkUrl = (n: number) => "https://push.example.invalid/" + "a".repeat(Math.max(0, n - "https://push.example.invalid/".length));
+  const sub = (endpoint: string) => ({ endpoint, keys: { p256dh: "k-p256dh", auth: "k-auth" } });
+  const v = (s: unknown, list: ReturnType<typeof sub>[], cap = CAP, maxLen = MAXLEN) =>
+    pushSubscriptionVerdict(s, list, cap, maxLen);
+
+  // Rule 1: the signature itself is absent.
+  check("P2-272: an absent/garbage signature is refused", [undefined, null, "sub", 42].every((s) => v(s, []).verdict === "recusar"));
+
+  // Rule 2: shape — textual endpoint and both keys, or nothing is stored.
+  check(
+    "P2-272: missing keys or an empty/non-textual endpoint is refused",
+    [
+      v({}, []).verdict,
+      v({ endpoint: "" }, []).verdict,
+      v({ endpoint: 42 }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x" }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x", keys: {} }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x", keys: { p256dh: "k" } }, []).verdict,
+      v({ endpoint: "https://push.example.invalid/x", keys: { p256dh: "", auth: "a" } }, []).verdict,
+    ].every((verdict) => verdict === "recusar"),
+  );
+
+  // Rule 3: https-only, fail-closed — an unknown scheme is never guessed.
+  check(
+    "P2-272: a plain-http or scheme-less endpoint is refused",
+    [
+      v(sub("http://push.example.invalid/x"), []).verdict,
+      v(sub("push.example.invalid/x"), []).verdict,
+      v(sub("ftp://push.example.invalid/x"), []).verdict,
+      v(sub("://push.example.invalid/x"), []).verdict,
+    ].every((verdict) => verdict === "recusar"),
+  );
+
+  // Rule 4: the size ceiling fires BEFORE any comparison with the list.
+  check("P2-272: an endpoint exactly at the documented max length is accepted", v(sub(mkUrl(MAXLEN)), []).verdict === "acrescentar");
+  check(
+    "P2-272: an endpoint one char above the documented max length is refused",
+    v(sub(mkUrl(MAXLEN + 1)), []).verdict === "recusar",
+  );
+
+  // Rule 5: a known endpoint refreshes — never duplicates.
+  {
+    const list = [sub("https://a.example.invalid/1"), sub("https://a.example.invalid/2")];
+    const before = list.length;
+    check("P2-272: a repeated endpoint is a replace, never a list growth", v(sub("https://a.example.invalid/1"), list).verdict === "substituir" && list.length === before);
+  }
+
+  // Rule 6: at the ceiling a NEW endpoint is refused — never a silent evict.
+  {
+    const full = [sub("https://a.example.invalid/1"), sub("https://b.example.invalid/2"), sub("https://c.example.invalid/3")];
+    check("P2-272: a full list (explicit cap) refuses a new endpoint", v(sub("https://d.example.invalid/4"), full, CAP, MAXLEN).verdict === "recusar");
+    check("P2-272: one below the cap appends", v(sub("https://d.example.invalid/4"), full.slice(0, 2), CAP, MAXLEN).verdict === "acrescentar");
+  }
+
+  // Rule order proven through the static reason each rule leaves behind.
+  {
+    const schemeReason = v(sub("http://push.example.invalid/x"), []).reason;
+    const sizeReason = v(sub(mkUrl(MAXLEN + 1)), []).reason;
+    const full = [sub("https://a.example.invalid/1"), sub("https://b.example.invalid/2"), sub("https://c.example.invalid/3")];
+    check(
+      "P2-272: http endpoint + full list → refuse (the https rule comes first)",
+      v(sub("http://push.example.invalid/x"), full, CAP, MAXLEN).verdict === "recusar" &&
+        v(sub("http://push.example.invalid/x"), full, CAP, MAXLEN).reason === schemeReason,
+    );
+    check(
+      "P2-272: giant endpoint + repeated endpoint → refuse (the size rule comes first)",
+      v(sub(mkUrl(MAXLEN + 1)), [sub(mkUrl(MAXLEN + 1))]).verdict === "recusar" &&
+        v(sub(mkUrl(MAXLEN + 1)), [sub(mkUrl(MAXLEN + 1))]).reason === sizeReason,
+    );
+  }
+
+  // Determinism: the same inputs, the same report, every call.
+  {
+    const a = JSON.stringify(v(sub(mkUrl(64)), [sub(mkUrl(64))]));
+    const b = JSON.stringify(v(sub(mkUrl(64)), [sub(mkUrl(64))]));
+    check("P2-272: the verdict is identical for the same input in two calls", a === b);
+  }
+
+  // The module defaults are the documented constants.
+  check(
+    "P2-272: the documented constants flow through as defaults",
+    PUSH_SUBSCRIPTIONS_MAX > 0 && PUSH_SUBSCRIPTION_MAX_ENDPOINT_LENGTH > 0 && pushSubscriptionVerdict(sub(mkUrl(64)), []).verdict === "acrescentar",
+  );
+
+  // redactPushEndpoint: host + fixed-length suffix, never path/query/whole URL.
+  {
+    const ep = "https://fcm.googleapis.com/fcm/send/SECRET-TOKEN?trace=1";
+    const label = redactPushEndpoint(ep);
+    check(
+      "P2-272: the redacted label carries the host but no path, query or whole endpoint",
+      label.includes("fcm.googleapis.com") &&
+        !label.includes("/fcm/send/SECRET-TOKEN") &&
+        !label.includes("SECRET-TOKEN") &&
+        !label.includes("?trace=1") &&
+        !label.includes(ep),
+    );
+    check("P2-272: the label suffix has a fixed length", /\([0-9a-f]{8}\)$/.test(label));
+    check("P2-272: the label is stable for the same endpoint", redactPushEndpoint(ep) === label);
+    check(
+      "P2-272: two endpoints on the same host differ only by the suffix",
+      redactPushEndpoint("https://fcm.googleapis.com/fcm/send/A") !== redactPushEndpoint("https://fcm.googleapis.com/fcm/send/B") &&
+        redactPushEndpoint("https://fcm.googleapis.com/fcm/send/A").startsWith("fcm.googleapis.com"),
+    );
+    check(
+      "P2-272: an invalid endpoint never throws and falls back to a static label",
+      ["", "not a url", "::::", null, undefined, 42, "http://"].map((e) => redactPushEndpoint(e)).every((l) => l === "endpoint"),
+    );
+  }
+
+  // Purity + wiring, read from the real sources.
+  const pushsubsSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "pushsubs.ts"), "utf8");
+  check(
+    "P2-272: the real pushsubs.ts imports no node:fs, node:http, node:crypto, ws or fetch",
+    pushsubsSrc
+      .split("\n")
+      .filter((l) => l.trimStart().startsWith("import "))
+      .every((l) => !l.includes("node:fs") && !l.includes("node:http") && !l.includes("node:crypto") && !/from\s+"ws"/.test(l) && !l.includes("fetch")) &&
+      !pushsubsSrc.includes("require("),
+  );
+
+  const daemonIdxSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check(
+    "P2-272: no push surface echoes a full endpoint — attempts carry the redacted label in the same field",
+    !daemonIdxSrc.includes("endpoint: sub.endpoint") && (daemonIdxSrc.match(/redactPushEndpoint\(sub\.endpoint\)/g) ?? []).length >= 4,
+  );
+  check(
+    "P2-272: the push status route keeps its response shape",
+    daemonIdxSrc.includes("body: { subscribers: loadSubscriptions().length, last: lastPushResult }"),
+  );
+  check(
+    "P2-272: subscriptions.json is written atomically (tmp+rename, created 0600) — never a bare writeFileSync",
+    daemonIdxSrc.includes("writeStateAtomic(subscriptionsFile()") && !daemonIdxSrc.includes("writeFileSync(subscriptionsFile()"),
+  );
+  check(
+    "P2-272: the POST route admits subscriptions only through the pure verdict",
+    daemonIdxSrc.includes("pushSubscriptionVerdict(req.body, subs)"),
+  );
+  {
+    const postAt = daemonIdxSrc.indexOf('"/__ocr/push-subscription"');
+    const pushBlock = daemonIdxSrc.slice(postAt, daemonIdxSrc.indexOf("shouldPaginateMessages", postAt));
+    check(
+      "P2-272: the push subscription routes never touch the paired-phones allowlist",
+      pushBlock.includes("/__ocr/push-subscription") && !pushBlock.includes("allowlist") && !pushBlock.includes("Allowlist"),
+    );
+  }
+  check(
+    "P2-272: no new periodic timer in the daemon",
+    (daemonIdxSrc.match(/setInterval\(/g) ?? []).length === 5,
+  );
+}
+
+// --- P2-277: paste-to-attach verdict table (pasteattach.ts) + composer wiring --
+{
+  const mk = (type: string, size: number, name = "item.bin"): PasteItem => ({ type, size, name });
+  const img = (size = 1024, name = "shot.png"): PasteItem => ({ type: "image", size, name });
+
+  // rule 1 — missing, empty or non-vector lists are ignore, NEVER refuse:
+  // paste stays a text gesture first, never an error message.
+  for (const bad of [undefined, null, 42, "list", {}, true]) {
+    const p = pastePlan(bad as unknown as PasteItem[]);
+    check(
+      `P2-277: a ${bad === undefined ? "missing" : `non-array ${typeof bad}`} list is ignored, never refused`,
+      p.verdict === "ignore" && p.attach.length === 0 && p.reason === "",
+    );
+  }
+  check("P2-277: an empty list is ignored, never refused", (() => {
+    const p = pastePlan([]);
+    return p.verdict === "ignore" && p.attach.length === 0 && p.reason === "";
+  })());
+
+  // rule 2 — plain text with content alone is ignore, and it wins over an
+  // image riding in the same paste (rule order made visible).
+  check("P2-277: plain text alone is ignored so the field pastes it", (() => {
+    const p = pastePlan([mk("text", 12, "")]);
+    return p.verdict === "ignore" && p.reason === "";
+  })());
+  for (const ordered of [
+    [mk("text", 30, ""), img()],
+    [img(), mk("text", 30, "")],
+  ]) {
+    check(
+      "P2-277: text with content ignores the paste even when an image rides along (rule order)",
+      pastePlan(ordered).verdict === "ignore" && pastePlan(ordered).reason === "",
+    );
+  }
+
+  // rule 3 — unknown types are discarded, never guessed into an attach.
+  check("P2-277: an unknown-only paste is ignored without becoming an attach", (() => {
+    const p = pastePlan([mk("application/x-mystery", 512)]);
+    return p.verdict === "ignore" && p.attach.length === 0;
+  })());
+  check("P2-277: an unknown item next to an image is dropped, the image attaches", (() => {
+    const image = img();
+    const p = pastePlan([mk("application/x-mystery", 512), image]);
+    return p.verdict === "attach" && p.attach.length === 1 && p.attach[0] === image;
+  })());
+
+  // rule 4 — byte ceiling: exactly at the ceiling attaches, one byte above
+  // refuses; the explicit threshold is part of the table.
+  check("P2-277: an item exactly at the explicit byte ceiling attaches", pastePlan([img(100)], 100, 4).verdict === "attach");
+  check("P2-277: one byte above the explicit ceiling refuses", (() => {
+    const p = pastePlan([img(101)], 100, 4);
+    return p.verdict === "refuse" && p.reason === PASTE_REFUSE_ITEM_BYTES;
+  })());
+  check("P2-277: an item exactly at the documented default ceiling attaches", pastePlan([img(PASTE_MAX_ITEM_BYTES)]).verdict === "attach");
+  check("P2-277: one byte above the documented default ceiling refuses", pastePlan([img(PASTE_MAX_ITEM_BYTES + 1)]).reason === PASTE_REFUSE_ITEM_BYTES);
+
+  // rule 5 — quantity ceiling: exactly at it attaches, one above refuses
+  // (explicit threshold and the documented default).
+  check("P2-277: exactly the explicit item ceiling attaches all of them", (() => {
+    const p = pastePlan([img(10, "a.png"), img(20, "b.png")], 100, 2);
+    return p.verdict === "attach" && p.attach.length === 2 && p.attach[1].name === "b.png";
+  })());
+  check("P2-277: one above the explicit item ceiling refuses instead of truncating", (() => {
+    const p = pastePlan([img(10, "a.png"), img(20, "b.png"), img(30, "c.png")], 100, 2);
+    return p.verdict === "refuse" && p.reason === PASTE_REFUSE_TOO_MANY;
+  })());
+  check("P2-277: one above the documented default ceiling refuses too", pastePlan(Array.from({ length: PASTE_MAX_ITEMS + 1 }, (_, i) => img(10, `${i}.png`))).reason === PASTE_REFUSE_TOO_MANY);
+
+  // rules 4 before 5 — when both ceilings are violated at once the byte
+  // reason wins, because size is measured before quantity.
+  check("P2-277: byte ceiling and quantity ceiling together refuse with the byte reason", (() => {
+    const p = pastePlan([img(1000, "big.png"), img(10, "a.png"), img(20, "b.png"), img(30, "c.png"), img(40, "d.png")], 100, 4);
+    return p.verdict === "refuse" && p.reason === PASTE_REFUSE_ITEM_BYTES;
+  })());
+
+  // rule 6 — stable order and identical result for the same input twice.
+  {
+    const input = [mk("application/x-mystery", 1), img(10, "first.png"), img(20, "second.png"), mk("text", 0, "")];
+    const a = pastePlan(input, 100, 4);
+    const b = pastePlan(input, 100, 4);
+    check(
+      "P2-277: the same input twice yields an identical plan (stable order, discarded text/unknown)",
+      JSON.stringify(a) === JSON.stringify(b) &&
+        a.verdict === "attach" &&
+        a.attach.length === 2 &&
+        a.attach[0].name === "first.png" &&
+        a.attach[1].name === "second.png",
+    );
+  }
+
+  // the static reason is a bare key — no file path, URL scheme or secret
+  // vocabulary ever rides back from the module.
+  const reasonInputs: PasteItem[][] = [
+    [],
+    [mk("text", 5, "")],
+    [img(PASTE_MAX_ITEM_BYTES + 1, "/Users/evan/secret.png")],
+    [img(10, "https://evil.example/x.png"), img(10, "a.png"), img(10, "b.png"), img(10, "c.png"), img(10, "d.png")],
+  ];
+  check(
+    "P2-277: no returned reason carries a file path, URL scheme or secret",
+    reasonInputs.every((list) => {
+      const r = pastePlan(list).reason;
+      return /^[A-Za-z]*$/.test(r) && !r.includes("/") && !r.includes(":") && !r.includes("sk-");
+    }),
+  );
+
+  // i18n: both refuse reasons resolve in en and pt with key parity.
+  check(
+    "P2-277: paste reasons resolve in en and pt",
+    [PASTE_REFUSE_ITEM_BYTES, PASTE_REFUSE_TOO_MANY].every(
+      (k) =>
+        translate("en", k) !== k && translate("pt", k) !== k && translate("en", k) !== translate("pt", k),
+    ),
+  );
+  check(
+    "P2-277: fallback names are documented static strings",
+    PASTE_FALLBACK_IMAGE_NAME === "pasted-image.png" && PASTE_FALLBACK_FILE_NAME.length > 0,
+  );
+
+  // Purity, in the spirit of composer/degraded/machinestate: no React, no
+  // DOM, no fetch, no I/O vocabulary anywhere in the module.
+  const pasteSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "pasteattach.ts"), "utf8");
+  check(
+    "P2-277: pasteattach.ts imports nothing and touches no DOM/fetch/IO",
+    !/\bimport\b/.test(pasteSrc) &&
+      !pasteSrc.includes("document.") &&
+      !pasteSrc.includes("window.") &&
+      !pasteSrc.includes("fetch(") &&
+      !pasteSrc.includes("require("),
+  );
+
+  // Wiring, read from the real ChatView: the paste listener lives on the
+  // composer (textarea onPaste) and never on window, and attaching reuses
+  // the existing attachFile path (attachRef) — no new upload path.
+  const chatSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "ChatView.tsx"), "utf8");
+  check(
+    "P2-277: the paste listener is wired on the composer textarea, not the window",
+    chatSrc.includes("onPaste={onComposerPaste}") && !chatSrc.includes('window.addEventListener("paste"'),
+  );
+  {
+    const fnAt = chatSrc.indexOf("function onComposerPaste");
+    const fnBody = chatSrc.slice(fnAt, chatSrc.indexOf("\n  }", fnAt));
+    check(
+      "P2-277: the composer paste path decides through pastePlan and attaches via the existing attachFile",
+      fnBody.includes("pastePlan(items)") &&
+        fnBody.includes("attachRef.current(") &&
+        !fnBody.includes("uploadBytes") &&
+        !fnBody.includes("fetch("),
+    );
+    check(
+      "P2-277: a nameless pasted image gets the documented static name",
+      fnBody.includes("PASTE_FALLBACK_IMAGE_NAME") && fnBody.includes("PASTE_FALLBACK_FILE_NAME"),
+    );
+  }
+}
+
+// --- P2-282: copy-message verdict table (copymsg.ts) + bubble wiring ---------
+{
+  const mk = (type: string, text: string, language?: string): CopyPart =>
+    language === undefined ? { type, text } : { type, text, language };
+
+  // rule 1 — missing, empty or non-vector lists are unavailable, NEVER an
+  // empty copy: a button that copies nothing is worse than no button.
+  for (const bad of [undefined, null, 42, "parts", {}, true]) {
+    const p = copyPlan(bad as unknown as CopyPart[]);
+    check(
+      `P2-282: a ${bad === undefined ? "missing" : `non-array ${typeof bad}`} part list is unavailable`,
+      p.verdict === "unavailable" && p.text === "" && p.reason === COPY_UNAVAILABLE_NOTHING,
+    );
+  }
+  check("P2-282: an empty part list is unavailable", (() => {
+    const p = copyPlan([]);
+    return p.verdict === "unavailable" && p.text === "" && p.reason === COPY_UNAVAILABLE_NOTHING;
+  })());
+
+  // rule 2 — reasoning and tool-call parts are dropped before any joining;
+  // whoever copies wants the answer, not the machine's internal trail.
+  check("P2-282: a reasoning-only message is unavailable", (() => {
+    const p = copyPlan([mk("reasoning", "internal trail")]);
+    return p.verdict === "unavailable" && p.text === "";
+  })());
+  check("P2-282: a tool-call-only message is unavailable", (() => {
+    const p = copyPlan([mk("tool", "ran a tool")]);
+    return p.verdict === "unavailable" && p.text === "";
+  })());
+  check("P2-282: reasoning + text copies only the text (rule order)", (() => {
+    const p = copyPlan([mk("reasoning", "SECRET-TRAIL"), mk("text", "the answer")]);
+    return p.verdict === "copy" && p.text === "the answer" && !p.text.includes("SECRET-TRAIL");
+  })());
+  check("P2-282: tool output with a machine path never reaches the copy", (() => {
+    const p = copyPlan([
+      mk("text", "answer"),
+      mk("tool", "read /Users/evan/.ssh/id_rsa"),
+      mk("reasoning", "sk-live-abcdef"),
+    ]);
+    return p.verdict === "copy" && p.text === "answer";
+  })());
+
+  // rule 3 — an empty/whitespace-only part is discarded and never leaves a
+  // doubled blank line behind.
+  check("P2-282: an empty part is dropped without a doubled blank line", (() => {
+    const p = copyPlan([mk("text", "a"), mk("text", "   "), mk("text", ""), mk("text", "b")]);
+    return p.verdict === "copy" && p.text === "a\n\nb";
+  })());
+
+  // rule 4 — code blocks enter with fences and the declared language.
+  check("P2-282: a code block keeps its fences and declared language", (() => {
+    const p = copyPlan([mk("code", "const x = 1;", "ts")]);
+    return p.verdict === "copy" && p.text === "```ts\nconst x = 1;\n```";
+  })());
+  check("P2-282: a code block without a language keeps bare fences", (() => {
+    const p = copyPlan([mk("code", "hi()")]);
+    return p.verdict === "copy" && p.text === "```\nhi()\n```";
+  })());
+  check("P2-282: a language that could break the fence is dropped, the block is not", (() => {
+    const p = copyPlan([mk("code", "hi()", "js\n```")]);
+    return p.verdict === "copy" && p.text === "```\nhi()\n```";
+  })());
+  check("P2-282: text and code join with one blank line in input order", (() => {
+    const p = copyPlan([mk("text", "before"), mk("code", "hi()", "py"), mk("text", "after")]);
+    return p.text === "before\n\n```py\nhi()\n```\n\nafter";
+  })());
+
+  // rule 5 — a message with no usable part left is unavailable: the stripping
+  // rules ran before the final emptiness check.
+  check("P2-282: whitespace reasoning + empty text is unavailable (rule order)", (() => {
+    const p = copyPlan([mk("reasoning", "   "), mk("text", "  ")]);
+    return p.verdict === "unavailable" && p.text === "" && p.reason === COPY_UNAVAILABLE_NOTHING;
+  })());
+
+  // rule 6 — stable order and identical result for the same input twice.
+  {
+    const input = [
+      mk("reasoning", "trail"),
+      mk("text", "one"),
+      mk("code", "two()", "js"),
+      mk("text", "  "),
+    ];
+    const a = copyPlan(input);
+    const b = copyPlan(input);
+    check(
+      "P2-282: the same input twice yields an identical plan (stable order, no truncation)",
+      JSON.stringify(a) === JSON.stringify(b) &&
+        a.verdict === "copy" &&
+        a.text === "one\n\n```js\ntwo()\n```",
+    );
+  }
+
+  // no returned text or reason ever carries a system file path, an internal
+  // URL scheme or secret vocabulary.
+  check(
+    "P2-282: no returned text carries a file path, URL scheme or secret",
+    [
+      [mk("text", "answer"), mk("tool", "cat /Users/evan/.ssh/id_rsa"), mk("reasoning", "sk-live-abcdef")],
+      [mk("code", "x", "ts"), mk("tool", "ocr-upload://abc")],
+      [mk("reasoning", "https://internal.example/secret")],
+    ].every((list) => {
+      const p = copyPlan(list);
+      return (
+        !p.text.includes("/Users/") &&
+        !p.text.includes("://") &&
+        !p.text.includes("sk-") &&
+        !p.text.includes("id_rsa") &&
+        !p.reason.includes("/") &&
+        !p.reason.includes(":") &&
+        !p.reason.includes("sk-")
+      );
+    }),
+  );
+
+  // i18n: the unavailable reason and the visible strings resolve in en and
+  // pt with key parity (P2-118/P2-275 lessons).
+  check(
+    "P2-282: copy strings resolve in en and pt with key parity",
+    ["copyMessage", "copyMsgFailed", "copyMsgNothing", COPY_UNAVAILABLE_NOTHING].every(
+      (k) =>
+        translate("en", k) !== k &&
+        translate("pt", k) !== k &&
+        translate("en", k) !== translate("pt", k),
+    ),
+  );
+
+  // Purity, in the spirit of composer/thinking/chatfind: no React, no DOM,
+  // no fetch, no I/O vocabulary anywhere in the module.
+  const copySrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "copymsg.ts"), "utf8");
+  check(
+    "P2-282: copymsg.ts imports nothing and touches no DOM/fetch/IO",
+    !/\bimport\b/.test(copySrc) &&
+      !copySrc.includes("document.") &&
+      !copySrc.includes("window.") &&
+      !copySrc.includes("fetch(") &&
+      !copySrc.includes("require("),
+  );
+
+  // Wiring, read from the real ChatView: the bubble action serves the plan
+  // through the existing copyText — no new clipboard path anywhere.
+  const chatSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "ChatView.tsx"), "utf8");
+  check(
+    "P2-282: the bubble copy action reuses the existing copyText, never a new clipboard path",
+    chatSrc.includes("copyText(") &&
+      !chatSrc.includes("navigator.clipboard") &&
+      !chatSrc.includes("writeText"),
+  );
+  check(
+    "P2-282: the copy button is served by copyPlan and mounted for every copyable bubble",
+    chatSrc.includes("copyPlan(copyPartsOf(b))") &&
+      chatSrc.includes('className="msg-copy"') &&
+      chatSrc.includes('plan.verdict === "copy"') &&
+      chatSrc.includes("onClick={() => copyBubble(bubbleIdx, plan.text)}"),
+  );
+  check(
+    "P2-282: the copy target is not hover-gated — no mouse-only reveal wiring in the component",
+    !chatSrc.includes("onMouseEnter") && !chatSrc.includes("onMouseLeave"),
+  );
+  check(
+    "P2-282: copy failure surfaces where every conversation error already appears",
+    chatSrc.includes('setError(t("copyMsgFailed"))'),
+  );
+  check(
+    "P2-282: success is a calm ~2s confirmation on the button itself",
+    chatSrc.includes("setCopiedBubble(null), 2000"),
+  );
+
+  // CSS: the 44x44 touch target lives in the base rules (phone-first, always
+  // visible); pointer devices reveal the same mounted button opacity-only.
+  const cssSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const copyCss = cssSrc.slice(
+    cssSrc.indexOf(".msg-copy-row {"),
+    cssSrc.indexOf(".composer {"),
+  );
+  const copyBaseAt = copyCss.indexOf(".msg-copy {");
+  const copyBase = copyCss.slice(copyBaseAt, copyCss.indexOf("}", copyBaseAt));
+  check(
+    "P2-282: the copy touch target is 44x44 and visible in the base rules",
+    copyBase.includes("min-width: 44px") &&
+      copyBase.includes("min-height: 44px") &&
+      copyBase.includes("opacity: 1") &&
+      !copyBase.includes("opacity: 0"),
+  );
+  check(
+    "P2-282: the pointer reveal is opacity-only inside a hover-capable media query",
+    copyCss.includes("@media (hover: hover) and (pointer: fine)") &&
+      copyCss.includes(".msg:hover .msg-copy") &&
+      copyCss.includes(".msg-copy:focus-visible") &&
+      !copyCss.includes("display: none"),
+  );
+}
+
+// --- P2-278: action pinning verdict (actionpins.ts) --------------------------
+{
+  const mkRef = (
+    file: string,
+    job: string,
+    owner: string,
+    action: string,
+    ref: string,
+    readFailed = false,
+  ): ActionRef => ({ file, job, owner, action, ref, ...(readFailed ? { readFailed: true } : {}) });
+  const OWNERS = ["caiovicentino"];
+  const NOW = Date.parse("2026-09-06T12:00:00.000Z");
+  const LONG_SHA = "11d5960a326750d5838078e36cf38b85af677262";
+  const shortSha = LONG_SHA.slice(0, 39);
+  const nonHexSha = LONG_SHA.slice(0, 10) + "g" + LONG_SHA.slice(11);
+
+  // Rule 1: an absent, empty or failed-read input warns and NEVER approves —
+  // checking zero references is exactly the same as having no gate.
+  check(
+    "P2-278: an absent input warns and never approves",
+    actionPinsVerdict(null, OWNERS, [], NOW).outcome === "warn" &&
+      actionPinsVerdict(undefined, OWNERS, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-278: an empty reference list warns and never approves",
+    actionPinsVerdict([], OWNERS, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-278: a failed read warns even with an unpinned third-party ref present (rule order)",
+    actionPinsVerdict(
+      [mkRef("ci.yml", "verify", "", "", "", true), mkRef("release.yml", "release", "docker", "login-action", "v3")],
+      OWNERS,
+      [],
+      NOW,
+    ).outcome === "warn",
+  );
+
+  // Rule 2: a non-finite current instant is refused instead of guessed.
+  check(
+    "P2-278: a non-finite current instant is rejected",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", "v3")], OWNERS, [], NaN).outcome ===
+      "reject" &&
+      actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", "v3")], OWNERS, [], Infinity)
+        .outcome === "reject",
+  );
+
+  // Rule 3: a local action of this very repository is ignored, never a line.
+  check(
+    "P2-278: a local reference is ignored without becoming a report line",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "", "./.github/actions/local", "")], OWNERS, [], NOW)
+      .outcome === "approve" && actionPinsVerdict([mkRef("ci.yml", "verify", "", "./.github/actions/local", "")], OWNERS, [], NOW).lines.length === 0,
+  );
+
+  // Rule 4: the case the gate exists for — a third-party ref without a full
+  // commit SHA rejects; a short SHA and a non-hex character reject too.
+  check(
+    "P2-278: an unpinned third-party reference rejects",
+    actionPinsVerdict([mkRef("release.yml", "relay-image", "docker", "login-action", "v3")], OWNERS, [], NOW)
+      .outcome === "reject",
+  );
+  check(
+    "P2-278: a short SHA and a non-hex SHA reject",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", shortSha)], OWNERS, [], NOW).outcome ===
+      "reject" &&
+      actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", nonHexSha)], OWNERS, [], NOW)
+        .outcome === "reject",
+  );
+  check(
+    "P2-278: a third-party reference pinned to a forty-hex-digit SHA approves",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "docker", "login-action", LONG_SHA)], OWNERS, [], NOW).outcome ===
+      "approve",
+  );
+
+  // Rule order: an expired exemption stops applying and the unpinned ref
+  // counts in full (reject), even though the exemption entry exists.
+  check(
+    "P2-278: an unpinned third-party ref with an expired exemption rejects (rule order)",
+    actionPinsVerdict(
+      [mkRef("release.yml", "relay-image", "docker", "login-action", "v3")],
+      OWNERS,
+      [{ id: "docker/login-action", reason: "resolution unavailable", expiresAt: "2026-01-01T00:00:00.000Z" }],
+      NOW,
+    ).outcome === "reject",
+  );
+
+  // Rule 5: a still-valid exemption downgrades to warn and stays reported.
+  {
+    const report = actionPinsVerdict(
+      [mkRef("release.yml", "relay-image", "docker", "login-action", "v3")],
+      OWNERS,
+      [{ id: "docker/login-action", reason: "resolution unavailable", expiresAt: "2027-01-01T00:00:00.000Z" }],
+      NOW,
+    );
+    check(
+      "P2-278: a still-valid exemption downgrades to warn and never leaves the report",
+      report.outcome === "warn" &&
+        report.lines.length === 1 &&
+        report.lines[0]?.includes("exempt until 2027-01-01T00:00:00.000Z"),
+    );
+  }
+
+  // Rule 6: a first-party action pinned only by a tag warns.
+  check(
+    "P2-278: a first-party reference pinned only by a tag warns",
+    actionPinsVerdict([mkRef("ci.yml", "verify", "caiovicentino", "my-action", "v1")], OWNERS, [], NOW).outcome ===
+      "warn",
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable (file, job, action) ordering regardless of the input order.
+  {
+    const messy = [
+      mkRef("release.yml", "release", "docker", "login-action", "v3"),
+      mkRef("ci.yml", "verify", "actions", "setup-node", LONG_SHA),
+      mkRef("ci.yml", "scope", "actions", "checkout", LONG_SHA),
+    ];
+    const run1 = actionPinsVerdict(messy, OWNERS, [], NOW);
+    const run2 = actionPinsVerdict([...messy].reverse(), OWNERS, [], NOW);
+    check(
+      "P2-278: the same input yields an identical report in two calls",
+      JSON.stringify(run1) === JSON.stringify(actionPinsVerdict(messy, OWNERS, [], NOW)),
+    );
+    check(
+      "P2-278: report lines are stably ordered by file, job and action name",
+      JSON.stringify(run1) === JSON.stringify(run2) &&
+        JSON.stringify(run1.lines.map((l) => l.split(" ")[2])) ===
+          JSON.stringify(["ci.yml/scope", "ci.yml/verify", "release.yml/release"]),
+    );
+  }
+
+  // Real-repo assertions: both real workflows, the CI step, the exemptions
+  // file and the purity of the verdict module.
+  const root = join(import.meta.dirname, "..");
+  const ownersDoc = JSON.parse(readFileSync(join(root, "scripts", "action-owners.json"), "utf8")) as {
+    owners: string[];
+  };
+  const firstParty = new Set(ownersDoc.owners);
+  const ciRefs = parseWorkflowActionRefs(
+    readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"),
+  ).refs;
+  const releaseRefs = parseWorkflowActionRefs(
+    readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8"),
+  ).refs;
+  check(
+    "P2-278: the real workflows carry action references to check",
+    ciRefs.length + releaseRefs.length > 0,
+  );
+  check(
+    "P2-278: no third-party reference in the real workflows goes without a full commit SHA",
+    [...ciRefs, ...releaseRefs].every(
+      (r) => firstParty.has(r.owner) || COMMIT_SHA_PATTERN.test(r.ref),
+    ),
+  );
+
+  // The gate step: unique, pinned between install and build, bash shell and
+  // own timeout (P2-245/P2-255 lessons), wired through package.json.
+  const ciYml = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const gateName = "- name: Action pins gate";
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-278: the action-pins step exists exactly once in ci.yml",
+    ciYml.split(gateName).length === 2,
+  );
+  check(
+    "P2-278: the step sits after the install step and before the build step",
+    installAt > -1 && gateAt > installAt && buildAt > gateAt,
+  );
+  check(
+    "P2-278: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-278: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:action-pins") &&
+      (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> })
+        .scripts["check:action-pins"] === "tsx scripts/check-action-pins.ts",
+  );
+
+  // The versioned exemptions file: every entry identified, motivated,
+  // deadlined — and never a token, machine path or address.
+  const exemptionsRaw = readFileSync(join(root, "scripts", "action-exemptions.json"), "utf8");
+  const exemptionsDoc = JSON.parse(exemptionsRaw) as {
+    exemptions: Array<{ id?: string; reason?: string; expiresAt?: string }>;
+  };
+  check(
+    "P2-278: every real exemption entry carries id, reason and a parseable expiry",
+    exemptionsDoc.exemptions.every(
+      (e) =>
+        typeof e.id === "string" &&
+        e.id.length > 0 &&
+        typeof e.reason === "string" &&
+        e.reason.length > 0 &&
+        typeof e.expiresAt === "string" &&
+        !Number.isNaN(Date.parse(e.expiresAt)),
+    ),
+  );
+  check(
+    "P2-278: the exemptions file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(exemptionsRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(exemptionsRaw) &&
+      !/https?:\/\//.test(exemptionsRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const pinsSrc = readFileSync(join(root, "scripts", "actionpins.ts"), "utf8");
+  check(
+    "P2-278: actionpins.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(pinsSrc) && !pinsSrc.includes("fetch("),
+  );
+}
+
+// --- P2-283: lockfile integrity verdict (lockintegrity.ts) --------------------
+{
+  const mkEntry = (
+    path: string,
+    resolved: string,
+    integrity: string,
+    internal = false,
+    readFailed = false,
+  ): LockEntry => ({
+    path,
+    resolved,
+    integrity,
+    internal,
+    ...(readFailed ? { readFailed: true } : {}),
+  });
+  const REGISTRIES = ["https://registry.npmjs.org/"];
+  const NOW = Date.parse("2026-09-06T12:00:00.000Z");
+  const REG = "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz";
+  const SHA512 = "sha512-qqJ8zSCnXblcrXFTiwdt7RrZZXeiGQgT9M4WJfYuQP7YCVcsQpePE3LzIJLFa4M8=";
+  const SHA384 = "sha384-qqJ8zSCnXblcrXFTiwdt7RrZZXeiGQgT9M4WJfYuQP7YCVcsQpePE3LzIJLFa4M8=";
+  const GIT = "git+ssh://git@github.com/evil/pkg.git#1abc2def3456789abcdef";
+  const TARBALL = "https://evil.example/pkg-1.0.0.tgz";
+  const expires = (isodate: string): LockExemption[] => [
+    { id: "node_modules/left-pad", reason: "resolution unavailable", expiresAt: isodate },
+  ];
+
+  // Rule 1: an absent, empty or failed-read input warns and NEVER approves —
+  // checking zero packages is exactly the same as having no gate.
+  check(
+    "P2-283: an absent input warns and never approves",
+    lockIntegrityVerdict(null, REGISTRIES, [], NOW).outcome === "warn" &&
+      lockIntegrityVerdict(undefined, REGISTRIES, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-283: an empty entry list warns and never approves",
+    lockIntegrityVerdict([], REGISTRIES, [], NOW).outcome === "warn",
+  );
+  check(
+    "P2-283: a failed read warns even with a hashless registry entry present (rule order)",
+    lockIntegrityVerdict(
+      [mkEntry("package-lock.json", "", "", false, true), mkEntry("node_modules/left-pad", REG, "")],
+      REGISTRIES,
+      [],
+      NOW,
+    ).outcome === "warn",
+  );
+
+  // Rule 2: a non-finite current instant is refused instead of guessed.
+  check(
+    "P2-283: a non-finite current instant is rejected",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], NaN)
+      .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], Infinity)
+        .outcome === "reject",
+  );
+
+  // Rule 3: a package of this very repository is ignored, never a problem
+  // and never a report line — even with a git origin and no hash at all.
+  check(
+    "P2-283: an internal package is ignored without becoming a report line",
+    lockIntegrityVerdict(
+      [mkEntry("", "", "", true), mkEntry("node_modules/@ocr/web", "apps/web", "", true)],
+      REGISTRIES,
+      [],
+      NOW,
+    ).outcome === "approve" &&
+      lockIntegrityVerdict(
+        [mkEntry("", "", "", true), mkEntry("node_modules/@ocr/web", "apps/web", "", true)],
+        REGISTRIES,
+        [],
+        NOW,
+      ).lines.length === 0,
+  );
+  // Rule 3 is strict: an origin counts as this repository's own only when
+  // it is provably a repo-relative path — every other shape fails closed
+  // and crosses the registry checks (rule 4).
+  check(
+    "P2-283: isInternalOrigin accepts only provably repo-relative origins",
+    isInternalOrigin("apps/web") &&
+      isInternalOrigin("packages/protocol") &&
+      isInternalOrigin("./apps/web") &&
+      !isInternalOrigin("") &&
+      !isInternalOrigin("//evil.example/x.tgz") &&
+      !isInternalOrigin("git@github.com:evil/x.git#1abc2def") &&
+      !isInternalOrigin("github.com:evil/x.git") &&
+      !isInternalOrigin("file:../outside.tgz") &&
+      !isInternalOrigin("https://registry.npmjs.org/x") &&
+      !isInternalOrigin("/abs/path") &&
+      !isInternalOrigin("~/path") &&
+      !isInternalOrigin("../outside"),
+  );
+  check(
+    "P2-283: hostile scheme-less origins are not internal and reject through the verdict",
+    (() => {
+      const hostile = normalizeLockEntries({
+        packages: {
+          "node_modules/@ocr/web": { resolved: "apps/web", link: true },
+          "node_modules/scp": { resolved: "git@github.com:evil/x.git#1abc2def", integrity: SHA512 },
+          "node_modules/proto": { resolved: "//evil.example/x.tgz", integrity: SHA512 },
+        },
+      });
+      const byPath = new Map(hostile.map((e) => [e.path, e]));
+      const scp = byPath.get("node_modules/scp");
+      const proto = byPath.get("node_modules/proto");
+      const report = lockIntegrityVerdict(hostile, REGISTRIES, [], NOW);
+      return (
+        byPath.get("node_modules/@ocr/web")?.internal === true &&
+        scp?.internal === false &&
+        proto?.internal === false &&
+        report.outcome === "reject" &&
+        report.lines.length === 2 &&
+        report.lines.every((l) => l.includes("origin outside the documented public registries"))
+      );
+    })(),
+  );
+
+  // Rule 4: the case the gate exists for — an origin outside the documented
+  // public registries rejects before any other consideration.
+  check(
+    "P2-283: a git origin rejects",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", GIT, "")], REGISTRIES, [], NOW)
+      .outcome === "reject",
+  );
+  check(
+    "P2-283: an arbitrary tarball origin outside the registry rejects",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", TARBALL, SHA512)], REGISTRIES, [], NOW)
+      .outcome === "reject",
+  );
+  check(
+    "P2-283: a registry origin without an integrity hash rejects",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "")], REGISTRIES, [], NOW)
+      .outcome === "reject",
+  );
+  // An integrity string that declares no usable hash material — no dash, no
+  // payload after the dash — is no hash at all and must reject, never ride
+  // the documented-algorithm approval.
+  check(
+    "P2-283: an integrity string without hash material rejects instead of approving",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "sha512")], REGISTRIES, [], NOW)
+      .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "sha512-")], REGISTRIES, [], NOW)
+        .outcome === "reject" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, "-abc")], REGISTRIES, [], NOW)
+        .outcome === "reject" &&
+      lockIntegrityVerdict(
+        [mkEntry("node_modules/left-pad", REG, "sha512")],
+        REGISTRIES,
+        [],
+        NOW,
+      ).lines[0]?.includes("no integrity hash declared"),
+  );
+  check(
+    "P2-283: a still-valid exemption downgrades a hash-material-less integrity string too",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", REG, "sha512-")],
+      REGISTRIES,
+      expires("2027-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "warn",
+  );
+
+  // Rule order proof: an origin outside the registries rejects even when an
+  // exemption exists for the entry — an expired one counts in full, and a
+  // still-valid one cannot save the git origin either (rule 4 precedes the
+  // exemption rules entirely).
+  check(
+    "P2-283: an origin outside the registry and an expired exemption together still reject (rule order)",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", GIT, "")],
+      REGISTRIES,
+      expires("2026-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "reject",
+  );
+  check(
+    "P2-283: a still-valid exemption does not save a git origin (rule order)",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", GIT, "")],
+      REGISTRIES,
+      expires("2027-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "reject",
+  );
+
+  // Rule 6: a hash from another algorithm only warns — the origin is a
+  // documented registry and a hash is declared.
+  check(
+    "P2-283: a hash whose algorithm differs from the documented one warns",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA384)], REGISTRIES, [], NOW)
+      .outcome === "warn",
+  );
+
+  // Rule 7: an expired exemption stops applying and the hashless registry
+  // entry rejects again in full.
+  check(
+    "P2-283: an expired exemption leaves the hashless entry rejecting again",
+    lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", REG, "")],
+      REGISTRIES,
+      expires("2026-01-01T00:00:00.000Z"),
+      NOW,
+    ).outcome === "reject",
+  );
+
+  // Rule 8: a still-valid exemption downgrades to warn and the entry never
+  // leaves the report.
+  {
+    const report = lockIntegrityVerdict(
+      [mkEntry("node_modules/left-pad", REG, "")],
+      REGISTRIES,
+      expires("2027-01-01T00:00:00.000Z"),
+      NOW,
+    );
+    check(
+      "P2-283: a still-valid exemption downgrades to warn and never leaves the report",
+      report.outcome === "warn" &&
+        report.lines.length === 1 &&
+        report.lines[0]?.includes("exempt until 2027-01-01T00:00:00.000Z"),
+    );
+  }
+
+  // Rule 9: the remainder approves.
+  check(
+    "P2-283: a registry origin with the documented hash algorithm approves",
+    lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], NOW)
+      .outcome === "approve" &&
+      lockIntegrityVerdict([mkEntry("node_modules/left-pad", REG, SHA512)], REGISTRIES, [], NOW)
+        .lines.length === 0,
+  );
+
+  // Determinism: identical report for the same input in two calls, and a
+  // stable ordering by entry path regardless of the input order.
+  {
+    const messy = [
+      mkEntry("node_modules/zeta", REG, ""),
+      mkEntry("node_modules/alpha", REG, SHA512),
+      mkEntry("node_modules/mike", REG, SHA384),
+    ];
+    const run1 = lockIntegrityVerdict(messy, REGISTRIES, [], NOW);
+    const run2 = lockIntegrityVerdict([...messy].reverse(), REGISTRIES, [], NOW);
+    check(
+      "P2-283: the same input yields an identical report in two calls",
+      JSON.stringify(run1) === JSON.stringify(lockIntegrityVerdict(messy, REGISTRIES, [], NOW)),
+    );
+    check(
+      "P2-283: report lines are stably ordered by entry path",
+      JSON.stringify(run1) === JSON.stringify(run2) &&
+        run1.lines.length === 2 &&
+        run1.lines[0]?.includes("node_modules/mike") &&
+        run1.lines[1]?.includes("node_modules/zeta"),
+    );
+  }
+
+  // Real-repo assertions: the real lockfile, the real registries file, the
+  // CI step, the exemptions file and the purity of the verdict module.
+  const lockRoot = join(import.meta.dirname, "..");
+  const registriesDoc = JSON.parse(
+    readFileSync(join(lockRoot, "scripts", "lock-registries.json"), "utf8"),
+  ) as { registries: string[] };
+  check(
+    "P2-283: the registries file is a non-empty list of https origins",
+    registriesDoc.registries.length > 0 &&
+      registriesDoc.registries.every((r) => typeof r === "string" && r.startsWith("https://")),
+  );
+  const realEntries = normalizeLockEntries(
+    JSON.parse(readFileSync(join(lockRoot, "package-lock.json"), "utf8")),
+  );
+  const thirdParty = realEntries.filter((e) => !e.internal);
+  check(
+    "P2-283: the real lockfile has third-party entries to check",
+    thirdParty.length > 0,
+  );
+  check(
+    "P2-283: no third-party entry of the real lockfile goes without a hash or outside the accepted registries",
+    thirdParty.every(
+      (e) => originAccepted(e.resolved, registriesDoc.registries) && e.integrity !== "",
+    ) &&
+      lockIntegrityVerdict(realEntries, registriesDoc.registries, [], Date.now()).outcome ===
+        "approve",
+  );
+
+  // The gate step: unique, pinned between install and build, bash shell and
+  // own timeout (P2-245/P2-255 lessons), wired through package.json.
+  const ciYml = readFileSync(join(lockRoot, ".github", "workflows", "ci.yml"), "utf8");
+  const gateName = "- name: Lock integrity gate";
+  const verifyJob = ciYml.slice(0, ciYml.indexOf("\n  scope:"));
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const installAt = verifyJob.indexOf("- name: Install\n");
+  const buildAt = verifyJob.indexOf("- name: Build\n");
+  check(
+    "P2-283: the lock-integrity step exists exactly once in ci.yml",
+    ciYml.split(gateName).length === 2,
+  );
+  check(
+    "P2-283: the step sits after the install step and before the build step",
+    installAt > -1 && gateAt > installAt && buildAt > gateAt,
+  );
+  check(
+    "P2-283: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-283: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:lock-integrity") &&
+      (JSON.parse(readFileSync(join(lockRoot, "package.json"), "utf8")) as {
+        scripts: Record<string, string>;
+      }).scripts["check:lock-integrity"] === "tsx scripts/check-lock-integrity.ts",
+  );
+
+  // The versioned exemptions file: every entry identified, motivated,
+  // deadlined — and never a token, machine path or address.
+  const lockExemptionsRaw = readFileSync(
+    join(lockRoot, "scripts", "lock-exemptions.json"),
+    "utf8",
+  );
+  const lockExemptionsDoc = JSON.parse(lockExemptionsRaw) as {
+    exemptions: Array<{ id?: string; reason?: string; expiresAt?: string }>;
+  };
+  check(
+    "P2-283: every real exemption entry carries id, reason and a parseable expiry",
+    lockExemptionsDoc.exemptions.every(
+      (e) =>
+        typeof e.id === "string" &&
+        e.id.length > 0 &&
+        typeof e.reason === "string" &&
+        e.reason.length > 0 &&
+        typeof e.expiresAt === "string" &&
+        !Number.isNaN(Date.parse(e.expiresAt)),
+    ),
+  );
+  check(
+    "P2-283: the lock exemptions file carries no token, machine path or address",
+    !/ghp_|github_pat_|npm_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]|xox[bap]/.test(lockExemptionsRaw) &&
+      !/\/Users\/|\/home\/|[A-Za-z]:\\/.test(lockExemptionsRaw) &&
+      !/https?:\/\//.test(lockExemptionsRaw),
+  );
+
+  // Purity: the verdict module imports no file system, no process spawning
+  // and no network vocabulary at all.
+  const lockIntegritySrc = readFileSync(join(lockRoot, "scripts", "lockintegrity.ts"), "utf8");
+  check(
+    "P2-283: lockintegrity.ts imports no node:child_process, node:fs or fetch",
+    !/^import[^\n]*(node:child_process|node:fs|fetch)/m.test(lockIntegritySrc) &&
+      !lockIntegritySrc.includes("fetch("),
+  );
+  check(
+    "P2-283: the documented integrity algorithm is exported and pinned",
+    INTEGRITY_ALGORITHM === "sha512",
+  );
+}
+
+// --- P2-284: browse-capability readiness (browsecap.ts) + wiring ---------------
+
+{
+  const fullProbe = { disabled: false, libraryResolved: true, executableFound: true, launchError: null };
+
+  // rule 1 — fail-closed validation: absent input, non-object input and
+  // non-boolean marks are unknown, NEVER ready
+  check(
+    "P2-284: absent input is unknown, never ready",
+    browseReadiness(null).state === "unknown" &&
+      browseReadiness(undefined).state === "unknown" &&
+      browseReadiness(null).message.length > 0,
+  );
+  check(
+    "P2-284: non-object input (string, number, array) is unknown",
+    browseReadiness("corrupt").state === "unknown" &&
+      browseReadiness(42).state === "unknown" &&
+      browseReadiness([]).state === "unknown",
+  );
+  check(
+    "P2-284: a single non-boolean mark poisons the whole verdict into unknown",
+    browseReadiness({ ...fullProbe, libraryResolved: "yes" }).state === "unknown" &&
+      browseReadiness({ ...fullProbe, disabled: 1 }).state === "unknown" &&
+      browseReadiness({ ...fullProbe, executableFound: null }).state === "unknown" &&
+      browseReadiness({ ...fullProbe, libraryResolved: "yes" }).state !== "ready",
+  );
+
+  // rule order — disabled first, then library, then executable, then launch error
+  const disabledVerdict = browseReadiness({ disabled: true, libraryResolved: false, executableFound: false, launchError: null });
+  check(
+    "P2-284: disabled wins over an unresolved library and never suggests installing",
+    disabledVerdict.state === "disabled" && !/instal/i.test(disabledVerdict.message),
+  );
+  check(
+    "P2-284: unresolved library is no-browser before any look at the executable",
+    browseReadiness({ disabled: false, libraryResolved: false, executableFound: true, launchError: null }).state ===
+      "no-browser" &&
+      browseReadiness({ disabled: false, libraryResolved: false, executableFound: false, launchError: null })
+        .state === "no-browser",
+  );
+  check(
+    "P2-284: missing executable is no-browser",
+    browseReadiness({ disabled: false, libraryResolved: true, executableFound: false, launchError: null }).state ===
+      "no-browser",
+  );
+  check(
+    "P2-284: a launch error with the library resolved is no-browser",
+    browseReadiness({ disabled: false, libraryResolved: true, executableFound: true, launchError: "Executable doesn't exist" })
+      .state === "no-browser",
+  );
+  check("P2-284: everything present is ready", browseReadiness(fullProbe).state === "ready");
+
+  // determinism — the same input yields the identical verdict on every call
+  check(
+    "P2-284: same input, identical verdict twice in a row",
+    JSON.stringify(browseReadiness(fullProbe)) === JSON.stringify(browseReadiness(fullProbe)) &&
+      JSON.stringify(browseReadiness(null)) === JSON.stringify(browseReadiness(null)) &&
+      JSON.stringify(browseReadiness({ ...fullProbe, disabled: true })) ===
+        JSON.stringify(browseReadiness({ ...fullProbe, disabled: true })),
+  );
+
+  // phrase hygiene — no path, volume, port, address, env var or raw error tail
+  const nastyTail =
+    "/Volumes/Secret Disk/chromium-1.2.3 died at https://10.0.0.1:9999 with OCR_TAIL=value";
+  const allVerdicts = [
+    browseReadiness(fullProbe),
+    browseReadiness({ ...fullProbe, libraryResolved: false }),
+    browseReadiness({ ...fullProbe, executableFound: false }),
+    browseReadiness({ ...fullProbe, launchError: nastyTail }),
+    browseReadiness({ disabled: true, libraryResolved: false, executableFound: false, launchError: null }),
+    browseReadiness(null),
+  ];
+  check(
+    "P2-284: no phrase carries a path, port, address, env var or the raw error tail",
+    allVerdicts.every(
+      (v) =>
+        v.message.trim().length > 0 &&
+        !/[\\/]/.test(v.message) &&
+        !/https?:/i.test(v.message) &&
+        !v.message.includes("=") &&
+        !/[0-9]/.test(v.message) &&
+        !v.message.includes("OCR_") &&
+        !v.message.includes(nastyTail),
+    ),
+  );
+
+  // real browse.ts — the English install-command error is gone from the
+  // client path, and the new verdict path degrades instead of throwing
+  const browseSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "browse.ts"), "utf8");
+  check(
+    "P2-284: the English install-command phrase is no longer thrown at the client",
+    !browseSrc.includes("npx playwright install chromium") &&
+      !browseSrc.includes("playwright chromium not available") &&
+      browseSrc.includes("browseReadiness(") &&
+      browseSrc.includes("browsePhrase"),
+  );
+  const probeFn = browseSrc.slice(browseSrc.indexOf("export async function probeBrowse"));
+  check(
+    "P2-284: the probe path never throws — a failing library probe degrades to honest marks",
+    browseSrc.includes("export async function probeBrowse") &&
+      probeFn.includes("catch {") &&
+      probeFn.includes("libraryResolved = false"),
+  );
+
+  // real index.ts — the three additive health fields and no new periodic timer
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  check(
+    "P2-284: /api/health gains the three additive browse fields",
+    indexSrc.includes("browseState: browseCap.state") &&
+      indexSrc.includes("browseMessage: browseCap.message") &&
+      indexSrc.includes("browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt)"),
+  );
+  check(
+    "P2-284: no new periodic timer was introduced for the browse capability",
+    !indexSrc.split("\n").some((l) => l.includes("setInterval") && /browse/i.test(l)) &&
+      !/browseInterval|browseTimer/.test(indexSrc) &&
+      indexSrc.includes("await maybeReprobeBrowse()"),
+  );
+  const capFn = indexSrc.slice(indexSrc.indexOf("async function probeBrowseCap"));
+  check(
+    "P2-284: the boot probe path never throws — it degrades to the unknown verdict",
+    capFn.includes("try {") && capFn.includes("browseReadiness(null)"),
+  );
+
+  // real browsecap.ts — pure module hygiene and the documented phrase boundary
+  const browsecapSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "daemon", "src", "browsecap.ts"),
+    "utf8",
+  );
+  check(
+    "P2-284: browsecap.ts imports no node:fs, node:child_process, node:http, playwright-core or fetch",
+    !/^import[^\n]*(node:fs|node:child_process|node:http|playwright-core|fetch)/m.test(browsecapSrc) &&
+      !browsecapSrc.includes("fetch(") &&
+      !browsecapSrc.includes("await import("),
+  );
+  check(
+    "P2-284: the module header documents the rule order and the phrase boundary",
+    browsecapSrc.includes("in THIS order") &&
+      browsecapSrc.includes("absolute path") &&
+      browsecapSrc.includes("raw error tail"),
+  );
+}
+
+// --- P2-285: proxy plan (apps/desktop/src/proxyplan.ts) + wiring -----------------
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const FIXO_ENV = { HTTPS_PROXY: "http://proxy.corp:3128" };
+  const loopback = (v: ReturnType<typeof proxyPlan>) =>
+    PROXY_LOOPBACK_EXCEPTIONS.every((host) => v.exceptions.includes(host));
+  const noCredentialText = (v: ReturnType<typeof proxyPlan>, ...secrets: string[]) =>
+    [v.rule, v.reason, v.exceptions.join(",")].every((text) => !secrets.some((s) => text.includes(s)));
+
+  // Rule 1 — unreadable input fails closed, never into "fixo".
+  check("P2-285: unreadable — missing input becomes desconhecido", proxyPlan().mode === "desconhecido" && proxyPlan(undefined).mode === "desconhecido" && proxyPlan(null).mode === "desconhecido");
+  check("P2-285: unreadable — non-object input becomes desconhecido", ["proxy", 42, true, []].map((v) => proxyPlan(v).mode).every((m) => m === "desconhecido"));
+  check("P2-285: unreadable — a plain object without proxy keys is not garbage — it is empty", proxyPlan({ unrelated: 1 }).mode === "sistema");
+  check("P2-285: unreadable — a non-object env becomes desconhecido", proxyPlan({ env: "http://p:1" }).mode === "desconhecido" && proxyPlan({ env: [] }).mode === "desconhecido");
+  check(
+    "P2-285: unreadable — non-textual values become desconhecido and NEVER fixo",
+    proxyPlan({ env: { HTTPS_PROXY: 42 } }).mode === "desconhecido" &&
+      proxyPlan({ env: { HTTPS_PROXY: true } }).mode === "desconhecido" &&
+      proxyPlan({ env: { NO_PROXY: { bad: 1 } } }).mode === "desconhecido" &&
+      proxyPlan({ preference: 42 }).mode === "desconhecido" &&
+      proxyPlan({ preference: ["direto"] }).mode === "desconhecido",
+  );
+  check(
+    "P2-285: unreadable — a discarded input never routes traffic anywhere",
+    proxyPlan(null).rule.includes("nenhuma regra aplicada") && proxyPlan(null).exceptions.length > 0,
+  );
+  check("P2-285: unreadable — null and empty values count as absent, not as garbage", proxyPlan({ env: { HTTPS_PROXY: null, HTTP_PROXY: "" } }).mode === "sistema");
+
+  // Rule 2 — loopback is always in the exceptions, in all four modes.
+  check("P2-285: exceptions — sistema mode keeps loopback", loopback(proxyPlan({})) && proxyPlan({}).mode === "sistema");
+  check("P2-285: exceptions — direto mode keeps loopback", loopback(proxyPlan({ preference: "direto" })) && proxyPlan({ preference: "direto" }).mode === "direto");
+  check("P2-285: exceptions — fixo mode keeps loopback", loopback(proxyPlan({ env: FIXO_ENV })) && proxyPlan({ env: FIXO_ENV }).mode === "fixo");
+  check("P2-285: exceptions — desconhecido mode keeps loopback", loopback(proxyPlan(null)));
+  check("P2-285: exceptions — the local name rides along in every verdict", proxyPlan({ preference: "direto", localNames: ["Mbp.Corp.local"] }).exceptions.includes("mbp.corp.local"));
+  check("P2-285: exceptions — NO_PROXY content merges after loopback", json(proxyPlan({ env: { NO_PROXY: ".corp.local, *.lan" } }).exceptions).includes(".corp.local"));
+
+  // Rule 3 — invalid addresses are discarded without a trace.
+  const credential = proxyPlan({ env: { HTTPS_PROXY: "http://user:pass@proxy.corp:3128" } });
+  check("P2-285: discard — a credential-bearing address never becomes fixo", credential.mode === "sistema");
+  check("P2-285: discard — the credential address is absent from every returned text", noCredentialText(credential, "user", "pass", "3128"));
+  const scheme = proxyPlan({ env: { HTTPS_PROXY: "ftp://proxy.corp:21" } });
+  check("P2-285: discard — a scheme outside the documented list is discarded", scheme.mode === "sistema" && !scheme.rule.includes("ftp") && !scheme.exceptions.includes("ftp://proxy.corp:21"));
+  const junk = ["http:/proxy:1", "proxy with space:1", "http://host:0", "http://host:99999", "http://host:abc", "http://h/p", "http://h?x", "http://h#f"];
+  check("P2-285: discard — unparseable addresses are discarded", junk.every((j) => parseProxyAddress(j) === null));
+  check("P2-285: discard — a valid address still parses", parseProxyAddress("http://proxy.corp:3128") !== null && parseProxyAddress("proxy.corp:3128") !== null && parseProxyAddress("socks5://[::1]:1080") !== null);
+  const prefInvalid = proxyPlan({ preference: "http://user:pass@p.corp:1", env: FIXO_ENV });
+  check("P2-285: discard — an invalid preference falls through to the environment", prefInvalid.mode === "fixo" && prefInvalid.rule.includes("proxy.corp:3128") && noCredentialText(prefInvalid, "user", "pass"));
+
+  // Rule 4 — a PAC file always degrades to sistema.
+  const pac = proxyPlan({ env: { PAC_URL: "http://wpad.corp/proxy.pac", HTTPS_PROXY: "http://proxy.corp:3128" } });
+  check("P2-285: pac — auto-config becomes sistema instead of fixo, even with a valid address", pac.mode === "sistema" && !pac.rule.includes("proxy.corp"));
+  check("P2-285: pac — the pac text never leaks into the verdict", noCredentialText(pac, "wpad", "proxy.pac"));
+
+  // Rule 5 — empty environment and no preference is today's behavior.
+  check("P2-285: empty — no env and no preference becomes sistema", proxyPlan({}).mode === "sistema" && proxyPlan({ env: {}, preference: null }).mode === "sistema");
+  check("P2-285: empty — only NO_PROXY still counts as empty", proxyPlan({ env: { NO_PROXY: "localhost" } }).mode === "sistema");
+
+  // Rule 6 — valid addresses become fixo with the rule assembled.
+  const onlyHttps = proxyPlan({ env: FIXO_ENV });
+  check("P2-285: fixo — a valid address assembles the per-scheme rule", onlyHttps.mode === "fixo" && onlyHttps.rule === "https=proxy.corp:3128");
+  const both = proxyPlan({ env: { HTTPS_PROXY: "http://p1:3128", HTTP_PROXY: "http://p2:8080" } });
+  check("P2-285: fixo — distinct http/https addresses assemble the mapping rule", both.mode === "fixo" && both.rule === "http=p2:8080;https=p1:3128");
+  const socks = proxyPlan({ env: { ALL_PROXY: "socks5://socks.corp:1080" } });
+  check("P2-285: fixo — ALL_PROXY with socks keeps the scheme marker", socks.mode === "fixo" && socks.rule === "socks5://socks.corp:1080");
+  const allHttp = proxyPlan({ env: { ALL_PROXY: "all.corp:3128" } });
+  check("P2-285: fixo — ALL_PROXY without a scheme applies bare to all protocols", allHttp.mode === "fixo" && allHttp.rule === "all.corp:3128");
+  check("P2-285: fixo — scheme-specific vars win over ALL_PROXY", proxyPlan({ env: { HTTPS_PROXY: "http://p1:3128", ALL_PROXY: "socks5://s:1" } }).rule === "https=p1:3128");
+  check("P2-285: fixo — the bypass exceptions ride with the fixed rule", proxyPlan({ env: { HTTPS_PROXY: "http://p1:3128", NO_PROXY: ".corp" } }).exceptions.includes(".corp"));
+  const prefFixed = proxyPlan({ preference: "proxy.corp:3128" });
+  check("P2-285: fixo — a valid stored preference wins over the environment", prefFixed.mode === "fixo" && prefFixed.rule === "proxy.corp:3128");
+  check("P2-285: fixo — the explicit direct preference becomes direto", proxyPlan({ preference: "direto" }).mode === "direto" && proxyPlan({ preference: "DIRECT" }).mode === "direto");
+  check("P2-285: fixo — the explicit system preference becomes sistema", proxyPlan({ preference: "system", env: FIXO_ENV }).mode === "sistema");
+
+  // Rule order proven: credential + loopback valid at the same time.
+  const order = proxyPlan({ env: { HTTPS_PROXY: "http://user:pass@127.0.0.1:8080" } });
+  check(
+    "P2-285: order — a credential-bearing loopback address is discarded (sistema) while loopback stays in the exceptions",
+    order.mode === "sistema" && loopback(order) && noCredentialText(order, "user", "pass", ":8080"),
+  );
+
+  // Determinism.
+  const determinismInput = { env: { HTTPS_PROXY: "http://p:1", NO_PROXY: "a.local" }, preference: null, localNames: ["mbp"] };
+  check("P2-285: determinism — the same input yields the exact same verdict twice", json(proxyPlan(determinismInput)) === json(proxyPlan(determinismInput)));
+  check("P2-285: determinism — fresh exception arrays each call", proxyPlan(determinismInput).exceptions !== proxyPlan(determinismInput).exceptions);
+
+  // The real sources: wiring and module purity.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check("P2-285: wiring — exactly one proxy application site in main.ts", mainSrc.split("setProxy").length - 1 === 1);
+  check("P2-285: wiring — the application targets the default session", mainSrc.includes("session.defaultSession"));
+  check("P2-285: wiring — the verdict is applied exactly once", mainSrc.split("applyProxyVerdict();").length - 1 === 1);
+  const applyAt = mainSrc.indexOf("applyProxyVerdict();");
+  const firstWindowCall = mainSrc.indexOf("createWindow();");
+  check("P2-285: wiring — the application happens before the first window creation", applyAt >= 0 && firstWindowCall > applyAt);
+  const proxySrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "proxyplan.ts"), "utf8");
+  check(
+    "P2-285: purity — proxyplan.ts imports no electron, node:fs, node:child_process, node:net or fetch",
+    !/(^|\n)\s*import[^\n]*(electron|node:fs|node:child_process|node:net|fetch)/.test(proxySrc) && !/^import\b/m.test(proxySrc),
+  );
+  check(
+    "P2-285: purity — the header documents the rule order and the privacy boundary",
+    proxySrc.includes("RULE ORDER CONTRACT") && proxySrc.includes("PRIVACY BOUNDARY"),
+  );
+  check("P2-285: vocabulary — the documented scheme list is the exported one", json(PROXY_SCHEMES) === json(["http", "https", "socks4", "socks5"]));
+
+  // No input shape ever throws.
+  let threw = false;
+  try {
+    for (const input of [NaN, () => 1, { env: { HTTPS_PROXY: {} } }, { localNames: 7, preference: {} }, new Date()]) {
+      proxyPlan(input);
+    }
+  } catch {
+    threw = true;
+  }
+  check("P2-285: robustness — no input shape ever throws", !threw);
+}
+
+// --- P2-289: the machine-proxy owner choice (apps/desktop/src/proxystore.ts) ------
+// The store is the persistence half of the P2-285 planner: reads are tolerant
+// (any degraded shape is "no stored choice", never an exception) and writes
+// are fail-closed (a credential-bearing, wrong-scheme or unparseable address
+// is refused with a short static reason and nothing is persisted).
+{
+  const dir = mkdtempSync(join(tmpdir(), "ocr-proxystore-"));
+  const file = proxySettingFile(dir);
+  const json = (v: unknown) => JSON.stringify(v);
+
+  // Tolerant reads — the full degraded table.
+  check("P2-289: read — missing file is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, "not json at all", "utf8");
+  check("P2-289: read — corrupted JSON is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, "[1,2,3]", "utf8");
+  check("P2-289: read — a non-object payload is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, "{}", "utf8");
+  check("P2-289: read — an object without the fields is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, JSON.stringify({ mode: "always" }), "utf8");
+  check("P2-289: read — a mode outside the documented table is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, JSON.stringify({ mode: "fixed", address: 42 }), "utf8");
+  check("P2-289: read — a non-textual address is no choice", readProxyChoice(file) === null);
+  writeFileSync(file, JSON.stringify({ mode: "fixed", address: "proxy.corp:3128" }), "utf8");
+  check("P2-289: read — the fixed mode returns the stored address", json(readProxyChoice(file)) === json({ mode: "fixed", address: "proxy.corp:3128" }));
+  writeFileSync(file, JSON.stringify({ mode: "system", address: "ignored.corp:1" }), "utf8");
+  check("P2-289: read — system mode never carries an address", json(readProxyChoice(file)) === json({ mode: "system", address: null }));
+
+  // Fail-closed writes — refused shapes leave the file untouched.
+  const before = readFileSync(file, "utf8");
+  const r1 = writeProxyChoice(file, "junk");
+  check("P2-289: write — a malformed payload is refused with a static reason", !r1.ok && typeof r1.reason === "string" && r1.reason.length > 0);
+  const r2 = writeProxyChoice(file, { mode: "always" });
+  check("P2-289: write — a mode outside the table is refused", !r2.ok && r2.reason.length > 0);
+  const r3 = writeProxyChoice(file, { mode: "fixed" });
+  check("P2-289: write — a fixed choice without an address is refused", !r3.ok && r3.reason.length > 0);
+  const r4 = writeProxyChoice(file, { mode: "fixed", address: "http://user:pass@proxy.corp:3128" });
+  check("P2-289: write — a credential-bearing address is refused with a reason and nothing written", !r4.ok && r4.reason.length > 0 && readFileSync(file, "utf8") === before);
+  const r5 = writeProxyChoice(file, { mode: "fixed", address: "ftp://proxy.corp:21" });
+  check("P2-289: write — a scheme outside the documented list is refused", !r5.ok && r5.reason.length > 0 && readFileSync(file, "utf8") === before);
+  const r6 = writeProxyChoice(file, { mode: "fixed", address: "nonsense with space" });
+  check("P2-289: write — an unparseable address is refused", !r6.ok && r6.reason.length > 0 && readFileSync(file, "utf8") === before);
+
+  // A valid choice round-trips, deterministic across reads.
+  check("P2-289: write — a valid fixed choice persists", writeProxyChoice(file, { mode: "fixed", address: "http://proxy.corp:3128" }).ok);
+  const first = readProxyChoice(file);
+  const second = readProxyChoice(file);
+  check("P2-289: write — the stored choice reads back identical", json(first) === json({ mode: "fixed", address: "http://proxy.corp:3128" }));
+  check("P2-289: read — the same input yields the exact same result twice", json(first) === json(second));
+  check("P2-289: write — a valid system choice persists", writeProxyChoice(file, { mode: "system" }).ok && readProxyChoice(file)?.mode === "system");
+  check("P2-289: write — a valid direct choice persists", writeProxyChoice(file, { mode: "direct" }).ok && readProxyChoice(file)?.mode === "direct");
+  clearProxyChoice(file);
+  check("P2-289: clear — after clearing, the choice is gone", readProxyChoice(file) === null);
+
+  // Owner-restricted permissions, verified for real (POSIX bits; the portable
+  // twin skips this on win32 — see scripts/proxystore.test.ts).
+  writeProxyChoice(file, { mode: "fixed", address: "http://proxy.corp:3128" });
+  if (process.platform !== "win32") {
+    check("P2-289: privacy — the stored choice file is owner-only (0600)", (statSync(file).mode & 0o777) === 0o600);
+  }
+
+  // The real sources: wiring and module purity.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-289: wiring — main.ts feeds proxyPlan with the stored preference beside the environment",
+    mainSrc.includes("const preference = storedProxyPreference();") && /proxyPlan\(\{[\s\S]*?preference,/.test(mainSrc),
+  );
+  check("P2-289: wiring — the stored preference comes from the proxystore", mainSrc.includes("readProxyChoice") && mainSrc.includes("proxySettingFile"));
+  check("P2-289: wiring — the verdict is still applied exactly once", mainSrc.split("applyProxyVerdict();").length - 1 === 1);
+  const applyAt = mainSrc.indexOf("applyProxyVerdict();");
+  const firstWindowCall = mainSrc.indexOf("createWindow();");
+  check("P2-289: wiring — the application still happens before the first window creation", applyAt >= 0 && firstWindowCall > applyAt);
+  check("P2-289: wiring — the log line names the origin", mainSrc.includes("origem ${bootProxyOrigin}"));
+  check("P2-289: wiring — read + write IPC channels exist in the relay-handler shape", mainSrc.includes('"app:proxySetting"') && mainSrc.includes('"app:saveProxyChoice"'));
+  check("P2-289: wiring — the diagnostics bundle carries the mode origin", mainSrc.includes("origin: bootProxyOrigin"));
+  const storeSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "proxystore.ts"), "utf8");
+  check("P2-289: purity — proxystore.ts imports no electron", !storeSrc.includes("electron"));
+
+  // The new Settings labels: exact en/pt key parity (the P2-118/P2-275 bar).
+  const proxyLabelKeys = [
+    "proxyTitle",
+    "proxyHint",
+    "proxyModeSystem",
+    "proxyModeDirect",
+    "proxyModeFixed",
+    "proxyAddressLabel",
+    "proxySave",
+    "proxySaved",
+    "proxyInvalid",
+    "proxyNextStart",
+    "proxyOriginOwner",
+    "proxyOriginEnvironment",
+  ];
+  check(
+    "P2-289: i18n — the proxy labels have exact en/pt key parity and resolve per locale",
+    proxyLabelKeys.every((k) => {
+      const en = (dict.en as Record<string, string>)[k];
+      const pt = (dict.pt as Record<string, string>)[k];
+      return typeof en === "string" && en.trim() !== "" && typeof pt === "string" && pt.trim() !== "";
+    }),
+  );
+
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- P2-307: applying a saved proxy choice (apps/desktop/src/proxyapply.ts) ------
+// Until now the machine-proxy choice only took effect on the next app start
+// while the relay address beside it applied instantly. The pure decision
+// module receives the verdict in effect and the verdict resolved from the
+// freshly saved choice and answers: keep, apply-session or
+// apply-session-and-restart — fail-closed, because an unneeded sidecar
+// restart drops the phone's live conversation.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const EXC = ["localhost", "127.0.0.1", "::1"];
+  const SYSTEM = { mode: "sistema", rule: "modo system — a sessão segue o proxy do sistema", exceptions: EXC, relayProxy: null };
+  const DIRECT = { mode: "direto", rule: "modo direct — conexão direta, sem proxy", exceptions: EXC, relayProxy: null };
+  const FIXED_A = { mode: "fixo", rule: "http=proxy.corp:3128", exceptions: EXC, relayProxy: "proxy.corp:3128" };
+  const FIXED_B = { mode: "fixo", rule: "http=outro.corp:8080", exceptions: EXC, relayProxy: "outro.corp:8080" };
+
+  // The transition table — every documented edge.
+  check("P2-307: sistema → direto muda só a sessão", proxyApplyDecision(SYSTEM, DIRECT).kind === "apply-session");
+  check("P2-307: direto → fixo muda o sidecar também", proxyApplyDecision(DIRECT, FIXED_A).kind === "apply-session-and-restart");
+  check("P2-307: fixo → o mesmo endereço não muda nada", proxyApplyDecision(FIXED_A, { ...FIXED_A, exceptions: [...EXC] }).kind === "keep");
+  check("P2-307: fixo → endereço diferente muda o sidecar também", proxyApplyDecision(FIXED_A, FIXED_B).kind === "apply-session-and-restart");
+  check("P2-307: fixo → sistema muda o sidecar também", proxyApplyDecision(FIXED_A, SYSTEM).kind === "apply-session-and-restart");
+  check("P2-307: um endereço fixo de socks vale só na sessão (o sidecar não o enxerga)", proxyApplyDecision(SYSTEM, { ...FIXED_A, rule: "socks5://socks.corp:1080", relayProxy: null }).kind === "apply-session");
+
+  // Fail-closed: unreadable input is a keep — nothing acts, nobody drops.
+  check(
+    "P2-307: entrada ausente é keep",
+    proxyApplyDecision(undefined, FIXED_A).kind === "keep" &&
+      proxyApplyDecision(SYSTEM, undefined).kind === "keep" &&
+      proxyApplyDecision(undefined, undefined).kind === "keep" &&
+      proxyApplyDecision(null, null).kind === "keep",
+  );
+  check(
+    "P2-307: entrada não objeto é keep",
+    [42, "fixo", true, [], {}].map((bad) => proxyApplyDecision(bad, SYSTEM).kind === "keep" && proxyApplyDecision(SYSTEM, bad).kind === "keep").every((v) => v),
+  );
+  check(
+    "P2-307: campo fora da forma documentada é keep",
+    proxyApplyDecision({ mode: "fixo", rule: "r" }, SYSTEM).kind === "keep" &&
+      proxyApplyDecision({ mode: 42, rule: "r", exceptions: [], relayProxy: null }, SYSTEM).kind === "keep" &&
+      proxyApplyDecision({ mode: "fixo", rule: "r", exceptions: "localhost", relayProxy: null }, SYSTEM).kind === "keep" &&
+      proxyApplyDecision(SYSTEM, { mode: "fixo", rule: "r", exceptions: [42], relayProxy: null }).kind === "keep" &&
+      proxyApplyDecision(SYSTEM, { mode: "fixo", rule: "r", exceptions: [], relayProxy: 42 }).kind === "keep",
+  );
+
+  // Idempotency: the same save repeated is a keep — the state machine mirrors
+  // the main.ts wiring (apply → remember → compare against the remembered).
+  let live: typeof SYSTEM = SYSTEM;
+  const save = (choice: typeof SYSTEM) => {
+    const decision = proxyApplyDecision(live, choice);
+    if (decision.kind !== "keep") live = choice;
+    return decision.kind;
+  };
+  check(
+    "P2-307: idempotência — a mesma escolha salva duas vezes só age na primeira",
+    save(FIXED_A) === "apply-session-and-restart" && save(FIXED_A) === "keep" && save(FIXED_A) === "keep",
+  );
+  check(
+    "P2-307: idempotência — resave de escolha anterior depois de troca também é keep",
+    save(SYSTEM) === "apply-session-and-restart" && save(SYSTEM) === "keep",
+  );
+
+  // Determinism: the same input yields the exact same verdict on every call.
+  check(
+    "P2-307: determinismo — a mesma entrada devolve o veredito idêntico duas chamadas depois",
+    json(proxyApplyDecision(SYSTEM, FIXED_A)) === json(proxyApplyDecision(SYSTEM, FIXED_A)) &&
+      proxyApplyDecision(SYSTEM, FIXED_A).reason === proxyApplyDecision(SYSTEM, FIXED_A).reason,
+  );
+
+  // One static pt-BR reason per verdict — no address, no env var, no path.
+  const reasons = [proxyApplyDecision(SYSTEM, SYSTEM), proxyApplyDecision(SYSTEM, DIRECT), proxyApplyDecision(SYSTEM, FIXED_A), proxyApplyDecision(SYSTEM, "junk")].map((v) => v.reason);
+  check(
+    "P2-307: cada veredito carrega um motivo estático distinto",
+    reasons.every((r) => typeof r === "string" && r.length > 0) && new Set(reasons).size === reasons.length,
+  );
+  check(
+    "P2-307: nenhum motivo carrega endereço, variável de ambiente ou caminho",
+    reasons.every((r) => !r.includes("proxy.corp") && !r.includes("outro.corp") && !r.includes("OCR_") && !r.includes("/")),
+  );
+
+  // The real sources: purity + main.ts wiring.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const applySrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "proxyapply.ts"), "utf8");
+  check(
+    "P2-307: purity — proxyapply.ts não importa electron nem node:fs (nenhum import whatsoever)",
+    !/(^|\n)\s*import[^\n]*(electron|node:fs|node:child_process|node:net|fetch)/.test(applySrc) && !/^import\b/m.test(applySrc),
+  );
+  const handlerAt = mainSrc.indexOf('"app:saveProxyChoice"');
+  const handlerEnd = mainSrc.indexOf("ocr:unread", handlerAt);
+  const handler = handlerAt >= 0 && handlerEnd > handlerAt ? mainSrc.slice(handlerAt, handlerEnd) : "";
+  check("P2-307: wiring — o manipulador de save resolve o plano pelo MESMO caminho do boot", handler.includes("proxyPlan({") && handler.includes("storedProxyPreference()") && handler.includes("proxyEnvSet()"));
+  check("P2-307: wiring — a decisão vem do módulo puro", handler.includes("proxyApplyDecision("));
+  const restartAt = handler.indexOf("restartDaemon");
+  const verdictGuardAt = handler.indexOf('decision.kind === "apply-session-and-restart"');
+  check(
+    "P2-307: wiring — o reinício do sidecar acontece uma única vez e só depois do veredito",
+    handler.split("restartDaemon").length - 1 === 1 && verdictGuardAt >= 0 && restartAt > verdictGuardAt,
+  );
+  check(
+    "P2-307: wiring — o manipulador não chama o caminho de boot nem um segundo setProxy",
+    !handler.includes("applyProxyVerdict") && handler.split("applySessionProxy(").length - 1 === 1 && !handler.includes("setProxy"),
+  );
+  check(
+    "P2-307: wiring — o boot continua aplicando o proxy exatamente uma vez, antes da primeira janela",
+    mainSrc.split("applyProxyVerdict();").length - 1 === 1 &&
+      mainSrc.indexOf("applyProxyVerdict();") < mainSrc.indexOf("createWindow();"),
+  );
+  check(
+    "P2-307: wiring — a sessão continua com um único ponto de aplicação",
+    mainSrc.split("setProxy").length - 1 === 1 && mainSrc.includes("function applySessionProxy("),
+  );
+  check(
+    "P2-307: wiring — o veredito em vigor fica lembrado no processo principal",
+    mainSrc.includes("let liveProxyVerdict") && mainSrc.includes("let liveProxyRelay") && mainSrc.includes("liveProxyVerdict = resolved"),
+  );
+}
+
+// --- P2-288: the settings channel mirrors the doc-conversion and browse verdicts --
+// settingsMirror() decides which readiness fields ride GET /__ocr/settings:
+// rule 1 — absent input, non-object input or a snapshot with any present
+// non-textual field yields the empty set; rule 2 — an out-of-table verdict
+// yields no field for that capability; rule 3 — a never-measured capability
+// yields no field instead of one announcing readiness (fail-closed); rule 4 —
+// the machine's phrase travels verbatim; rule 5 — same input, same result.
+import { settingsMirror } from "../apps/daemon/src/settingsmirror";
+{
+  // The daemon's own phrases, exactly as /api/health serves them (doccap.ts /
+  // browsecap.ts constants, copied as fixtures — the mirror only passes them
+  // through verbatim, it never authors phrases).
+  const DOC = {
+    complete: "Conversão de documentos em PDF pronta neste computador.",
+    partial:
+      "A conversão de documentos neste computador cobre apenas alguns formatos — instale o LibreOffice para converter qualquer documento em PDF.",
+    unavailable:
+      "Este computador ainda não converte documentos em PDF — peça a quem gerencia a máquina para instalar o LibreOffice.",
+  };
+  const BROWSE = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+    disabled:
+      "A navegação de sites está desligada neste computador — quem gerencia a máquina é quem decide quando ligá-la.",
+  };
+  const json = (v: unknown) => JSON.stringify(v);
+
+  // Rule 1 — absent and non-object inputs yield the empty set.
+  check(
+    "P2-288: missing input yields the empty set",
+    json(settingsMirror()) === "{}" && json(settingsMirror(undefined)) === "{}" && json(settingsMirror(null)) === "{}",
+  );
+  check(
+    "P2-288: non-object input yields the empty set",
+    ["doc snapshot", 42, true, [], ["ready"]].every((v) => json(settingsMirror(v)) === "{}"),
+  );
+
+  // Rule 1 — a present non-textual field breaks the snapshot contract and
+  // yields the empty set (a malformed field never becomes a field).
+  check(
+    "P2-288: a non-textual field never becomes a field — the set stays empty",
+    json(settingsMirror({ docConvertState: 42, docConvertMessage: DOC.complete })) === "{}" &&
+      json(settingsMirror({ browseState: true, browseMessage: BROWSE.ready })) === "{}" &&
+      json(settingsMirror({ docConvertState: "complete", docConvertMessage: null })) === "{}" &&
+      json(settingsMirror({ docConvertState: ["complete"], browseState: "ready", browseMessage: BROWSE.ready })) === "{}",
+  );
+
+  // Rule 2 — a verdict outside the documented table yields no field.
+  const outOfTable = (state: unknown) =>
+    json(settingsMirror({ docConvertState: state, docConvertMessage: DOC.complete })) === "{}" &&
+    json(settingsMirror({ browseState: state, browseMessage: BROWSE.ready })) === "{}";
+  check(
+    "P2-288: verdicts outside the documented table yield no field",
+    ["warp-speed", "", "Ready", "no_browser", "complete "].every(outOfTable),
+  );
+
+  // Rule 3 — a never-measured capability stays silent (fail-closed).
+  check(
+    "P2-288: the never-measured verdict (browse unknown) yields no field instead of one announcing readiness",
+    json(settingsMirror({ browseState: "unknown", browseMessage: "Não deu para verificar a navegação de sites agora — o resto do app segue disponível do mesmo jeito." })) === "{}" &&
+      json(settingsMirror({ docConvertState: "complete", docConvertMessage: DOC.complete })) ===
+        json({ docConvertState: "complete", docConvertMessage: DOC.complete }),
+  );
+  check(
+    "P2-288: an absent capability yields no field (the other one is unaffected)",
+    json(settingsMirror({ docConvertState: "partial", docConvertMessage: DOC.partial })) ===
+      json({ docConvertState: "partial", docConvertMessage: DOC.partial }) &&
+      json(settingsMirror({ browseState: "disabled", browseMessage: BROWSE.disabled })) ===
+        json({ browseState: "disabled", browseMessage: BROWSE.disabled }),
+  );
+
+  // A measured capability becomes exactly state + phrase, verbatim.
+  check(
+    "P2-288: a measured capability becomes exactly state + phrase, verbatim",
+    json(settingsMirror({ docConvertState: "unavailable", docConvertMessage: DOC.unavailable })) ===
+      json({ docConvertState: "unavailable", docConvertMessage: DOC.unavailable }) &&
+      json(settingsMirror({ browseState: "no-browser", browseMessage: BROWSE.noBrowser })) ===
+        json({ browseState: "no-browser", browseMessage: BROWSE.noBrowser }),
+  );
+
+  // Both capabilities together become the four fields, in the fixed order.
+  const both = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC.complete,
+    browseState: "ready",
+    browseMessage: BROWSE.ready,
+  });
+  check(
+    "P2-288: both measured capabilities become exactly the four additive fields",
+    json(both) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC.complete,
+        browseState: "ready",
+        browseMessage: BROWSE.ready,
+      }) &&
+      Object.keys(both).join(",") === "docConvertState,docConvertMessage,browseState,browseMessage",
+  );
+
+  // Rule order proven: one capability measured and the other out of the table
+  // at the same time — the measured one still rides the channel.
+  const orderA = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC.complete,
+    browseState: "warp-speed",
+    browseMessage: BROWSE.ready,
+  });
+  const orderB = settingsMirror({
+    docConvertState: "warp-speed",
+    docConvertMessage: DOC.complete,
+    browseState: "disabled",
+    browseMessage: BROWSE.disabled,
+  });
+  check(
+    "P2-288: rule order — one measured capability and one out-of-table verdict coexist",
+    json(orderA) === json({ docConvertState: "complete", docConvertMessage: DOC.complete }) &&
+      json(orderB) === json({ browseState: "disabled", browseMessage: BROWSE.disabled }),
+  );
+
+  // Deterministic: the same input twice, the identical result (keys included).
+  const snap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE.noBrowser,
+  };
+  check("P2-288: the same input yields the identical result on two calls", json(settingsMirror(snap)) === json(settingsMirror(snap)));
+
+  // Hygiene: no returned value ever carries a path, volume, port, address,
+  // raw env variable or secret.
+  const vals = (m: ReturnType<typeof settingsMirror>): string[] => Object.values(m) as string[];
+  const allValues: string[] = [
+    ...vals(settingsMirror({ docConvertState: "complete", docConvertMessage: DOC.complete })),
+    ...vals(settingsMirror({ docConvertState: "partial", docConvertMessage: DOC.partial })),
+    ...vals(settingsMirror({ docConvertState: "unavailable", docConvertMessage: DOC.unavailable })),
+    ...vals(settingsMirror({ browseState: "ready", browseMessage: BROWSE.ready })),
+    ...vals(settingsMirror({ browseState: "no-browser", browseMessage: BROWSE.noBrowser })),
+    ...vals(settingsMirror({ browseState: "disabled", browseMessage: BROWSE.disabled })),
+    ...vals(settingsMirror(snap)),
+  ];
+  check(
+    "P2-288: no returned value contains a path, port, address, env variable or secret",
+    allValues.every(
+      (v) =>
+        !v.includes("://") &&
+        !v.includes("/") &&
+        !v.includes("\\") &&
+        !v.includes("127.0.0.1") &&
+        !v.includes(":8792") &&
+        !v.includes("localhost") &&
+        !v.includes("$") &&
+        !v.includes("Bearer") &&
+        !v.includes("token"),
+    ),
+  );
+
+  // Robustness: no input shape ever throws.
+  let mirrorThrew = false;
+  try {
+    for (const input of [NaN, new Date(), () => 1, { docConvertState: {} }, { browseMessage: Symbol("x") }, { docConvertState: "complete" }]) {
+      settingsMirror(input);
+    }
+  } catch {
+    mirrorThrew = true;
+  }
+  check("P2-288: robustness — no input shape ever throws", !mirrorThrew);
+
+  // Real-repo assertions on the daemon wiring: the GET /__ocr/settings
+  // handler sources the four additive fields from the module, keeps every
+  // existing field in place, re-probes both capabilities at that same point
+  // under the existing readiness policy and introduces no periodic timer.
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const handlerAt = indexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const patchAt = indexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const handler = handlerAt >= 0 && patchAt > handlerAt ? indexSrc.slice(handlerAt, patchAt) : "";
+  check(
+    "P2-288: wiring — the settings GET handler mirrors the four fields from settingsMirror",
+    handler.includes("...settingsMirror({") &&
+      handler.includes("docConvertState: docConvert.state") &&
+      handler.includes("docConvertMessage: docConvert.message") &&
+      handler.includes("browseState: browseCap.state") &&
+      handler.includes("browseMessage: browseCap.message"),
+  );
+  check(
+    "P2-288: wiring — no existing settings field is renamed, removed or repositioned",
+    handler.indexOf("...readSettings()") < handler.indexOf("version: VERSION") &&
+      handler.indexOf("version: VERSION") < handler.indexOf("opencodeVersion: opencodeVersion") &&
+      handler.indexOf("opencodeVersion: opencodeVersion") < handler.indexOf("disk: diskStatus()") &&
+      handler.indexOf("disk: diskStatus()") < handler.indexOf("...settingsMirror({"),
+  );
+  check(
+    "P2-288: wiring — both capabilities are lazily revalidated at the same point, same readiness policy",
+    handler.indexOf("maybeReprobeOpencodeVersion();") < handler.indexOf("maybeReprobeDocConvert();") &&
+      handler.includes("await maybeReprobeBrowse();") &&
+      handler.indexOf("await maybeReprobeBrowse();") < handler.indexOf("...settingsMirror({") &&
+      indexSrc.includes("readinessRefreshPlan(") &&
+      indexSrc.includes("parseReadinessKnobs(process.env)"),
+  );
+  check(
+    "P2-288: wiring — no new periodic timer: the handler has none and the module keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(handler) && (indexSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+
+  // Real-repo assertion on the module itself: pure, no I/O imports at all.
+  const mirrorSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  check(
+    "P2-288: purity — settingsmirror.ts imports no node:fs, node:http, node:child_process, fetch or anything else",
+    !/^import\b/m.test(mirrorSrc) &&
+      !/^import[^\n]*(node:fs|node:http|node:child_process|fetch)/m.test(mirrorSrc) &&
+      !mirrorSrc.includes("require("),
+  );
+  check(
+    "P2-288: purity — the header documents the rule order and the privacy boundary",
+    mirrorSrc.includes("RULE ORDER CONTRACT") && mirrorSrc.includes("PRIVACY BOUNDARY"),
+  );
+  check(
+    "P2-288: the documented tables are exactly the measured /api/health verdicts",
+    mirrorSrc.includes('const DOC_STATES: readonly string[] = ["complete", "partial", "unavailable"];') &&
+      mirrorSrc.includes('const BROWSE_STATES: readonly string[] = ["ready", "no-browser", "disabled"];'),
+  );
+}
+
+// P2-292: the relay and agent mirrorings ride the same pure module — the
+// canonical blocks for the test:unit chain (scripts/settingsmirror.test.ts is
+// the portable twin for the P2-237 sub-battery). Fixtures copied from the
+// real authors: the four relay phrases are the boot-validation problems
+// relayurl.ts authors verbatim (they embed the userinfo-redacted URL, the
+// host or a dotted address — redaction there is userinfo-only), and the
+// agent pair is the P2-149 binary verdict, booleans included.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const DOC = {
+    complete: "Conversão de documentos em PDF pronta neste computador.",
+    partial:
+      "A conversão de documentos neste computador cobre apenas alguns formatos — instale o LibreOffice para converter qualquer documento em PDF.",
+  };
+  const BROWSE = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+  };
+  const RELAY_PROBLEM_URL =
+    'RELAY_URL="wss://relay.example.com:8792/room" is not a valid URL: refusing to dial the relay (fail-closed)';
+  const RELAY_PROBLEM_SCHEME =
+    'RELAY_URL scheme "ws:" is not supported — only ws:// and wss:// are accepted: refusing to dial the relay (fail-closed)';
+  const RELAY_PROBLEM_HOST =
+    'RELAY_URL points at non-loopback host "relay.example.com:8792" over plain ws://: room metadata and pairing traffic would cross the network without TLS — refusing to dial the relay (fail-closed)';
+  const RELAY_PROBLEM_DOTTED =
+    'RELAY_URL="relay.example.com" is not a valid URL: refusing to dial the relay (fail-closed)';
+  // The documented riding shape for a down relay: an address-free phrase —
+  // what relayurl.ts would have to author for the verdict to ride.
+  const RELAY_PHRASE = "Endereço do relay recusado na partida — recusando discar (fail-closed)";
+  const RELAY_OK = { ok: true, reason: null };
+  const RELAY_DOWN = { ok: false, reason: RELAY_PHRASE };
+  const AGENT_PATH = { binaryFound: true, binarySource: "path" };
+  const AGENT_KNOWN = { binaryFound: true, binarySource: "known" };
+  const AGENT_MISSING = { binaryFound: false, binarySource: null };
+
+  // Rule 1 — an absent or non-object capability entry never becomes a field
+  // (and never takes the other capabilities down with it).
+  check(
+    "P2-292: a relay/opencode entry that is absent or not an object never becomes a field",
+    json(settingsMirror({})) === "{}" &&
+      json(settingsMirror({ relay: "wss://relay.example.com:8792/room" })) === "{}" &&
+      json(settingsMirror({ relay: 42 })) === "{}" &&
+      json(settingsMirror({ relay: [] })) === "{}" &&
+      json(settingsMirror({ relay: null })) === "{}" &&
+      json(settingsMirror({ opencode: "warp" })) === "{}" &&
+      json(settingsMirror({ opencode: 42 })) === "{}" &&
+      json(settingsMirror({ relay: 42, docConvertState: "complete", docConvertMessage: DOC.complete })) ===
+        json({ docConvertState: "complete", docConvertMessage: DOC.complete }),
+  );
+  check(
+    "P2-292: a non-textual phrase member never becomes a field",
+    json(settingsMirror({ relay: { ok: true, reason: 42 } })) === "{}" &&
+      json(settingsMirror({ relay: { ok: false, reason: 42 } })) === "{}" &&
+      json(settingsMirror({ relay: { ok: true } })) === "{}" &&
+      json(settingsMirror({ opencode: { binaryFound: true, binarySource: 42 } })) === "{}" &&
+      json(settingsMirror({ opencode: { binaryFound: true } })) === "{}",
+  );
+
+  // Rule 2 — verdicts outside the documented tables yield no field. The
+  // relay phrase is in table only when free of address material: every
+  // boot-validation phrase relayurl.ts authors today embeds the redacted
+  // URL, the host or a dotted address, so a misconfigured RELAY_URL yields
+  // NO relay field at all — silence beats leaking the address.
+  check(
+    "P2-292: a relay verdict outside the documented table yields no field",
+    ["true", 1, 0, null, { yes: true }, []].every(
+      (v) => json(settingsMirror({ relay: { ok: v, reason: RELAY_PHRASE } })) === "{}",
+    ),
+  );
+  check(
+    "P2-292: an agent verdict outside the documented table yields no field",
+    ["true", 1, 0, null, {}].every(
+      (v) => json(settingsMirror({ opencode: { binaryFound: v, binarySource: "path" } })) === "{}",
+    ) &&
+      json(settingsMirror({ opencode: { binaryFound: true, binarySource: "warp" } })) === "{}" &&
+      json(settingsMirror({ opencode: { binaryFound: false, binarySource: "/usr/local/bin/opencode" } })) === "{}",
+  );
+  check(
+    "P2-292: every boot-validation phrase relayurl.ts authors carries address material — the relay field stays silent",
+    [RELAY_PROBLEM_URL, RELAY_PROBLEM_SCHEME, RELAY_PROBLEM_HOST, RELAY_PROBLEM_DOTTED].every(
+      (p) =>
+        json(settingsMirror({ relay: { ok: false, reason: p } })) === "{}" &&
+        json(settingsMirror({ relay: { ok: true, reason: p } })) === "{}",
+    ),
+  );
+
+  // Rule 3 — a never-measured capability stays silent instead of announcing
+  // readiness (fail-closed): no state member, no field, ever.
+  check(
+    "P2-292: a never-measured relay or agent yields no field instead of one announcing readiness",
+    json(settingsMirror({ relay: { reason: null } })) === "{}" &&
+      json(settingsMirror({ relay: { reason: RELAY_PHRASE } })) === "{}" &&
+      json(settingsMirror({ opencode: { binarySource: "path" } })) === "{}" &&
+      json(settingsMirror({ opencode: { binarySource: null } })) === "{}",
+  );
+
+  // Rule 4 — every documented verdict becomes exactly state + phrase,
+  // verbatim, with the same names and values /api/health publishes: the
+  // connected verdict rides with its null phrase, an address-free down
+  // phrase rides verbatim, and the entry's url never does.
+  check(
+    "P2-292: each documented relay verdict becomes exactly state + phrase",
+    json(settingsMirror({ relay: { url: "wss://relay.example.com:8792/room", ...RELAY_OK } })) ===
+      json({ relay: RELAY_OK }) &&
+      json(settingsMirror({ relay: RELAY_DOWN })) === json({ relay: RELAY_DOWN }),
+  );
+  check(
+    "P2-292: each documented agent verdict becomes exactly state + phrase",
+    json(settingsMirror({ opencode: AGENT_PATH })) === json({ opencode: AGENT_PATH }) &&
+      json(settingsMirror({ opencode: AGENT_KNOWN })) === json({ opencode: AGENT_KNOWN }) &&
+      json(settingsMirror({ opencode: AGENT_MISSING })) === json({ opencode: AGENT_MISSING }),
+  );
+
+  // The four capabilities together: the P2-288 fields keep their exact names,
+  // values and order, and the two new pairs append after them.
+  const four = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC.complete,
+    browseState: "ready",
+    browseMessage: BROWSE.ready,
+    relay: RELAY_DOWN,
+    opencode: AGENT_PATH,
+  });
+  check(
+    "P2-292: the four capabilities coexist and the P2-288 mirroring loses no field",
+    json(four) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC.complete,
+        browseState: "ready",
+        browseMessage: BROWSE.ready,
+        relay: RELAY_DOWN,
+        opencode: AGENT_PATH,
+      }) &&
+      Object.keys(four).join(",") ===
+        "docConvertState,docConvertMessage,browseState,browseMessage,relay,opencode",
+  );
+
+  // Rule order proven: a measured relay and an out-of-table agent (and the
+  // mirror image of that case) coexist — one silent capability never takes
+  // the other down.
+  const orderRelay = settingsMirror({ relay: RELAY_OK, opencode: { binaryFound: "true", binarySource: "path" } });
+  const orderAgent = settingsMirror({ relay: { ok: 1, reason: RELAY_PHRASE }, opencode: AGENT_KNOWN });
+  check(
+    "P2-292: rule order — a measured relay and an out-of-table agent coexist (and vice versa)",
+    json(orderRelay) === json({ relay: RELAY_OK }) && json(orderAgent) === json({ opencode: AGENT_KNOWN }),
+  );
+
+  // Privacy boundary proven against the data the daemon really feeds the
+  // mirror: a complete relay address in the url AND the production-authored
+  // problem phrase (host and port embedded) in the reason — the relay field
+  // stays silent and nothing of the address survives anywhere in the output.
+  const withAddress = settingsMirror({
+    relay: { url: "wss://user:token@relay.example.com:8792/room", ok: false, reason: RELAY_PROBLEM_HOST },
+    opencode: AGENT_MISSING,
+  });
+  const flat: string[] = [];
+  const collect = (v: unknown): void => {
+    if (v === null || v === undefined) return;
+    if (typeof v === "object") for (const x of Object.values(v as Record<string, unknown>)) collect(x);
+    else flat.push(String(v));
+  };
+  collect(withAddress);
+  check(
+    "P2-292: a production relay entry (address in the url and in the phrase) yields no relay field and no address, host, port, path or secret",
+    json(withAddress) === json({ opencode: AGENT_MISSING }) &&
+      flat.length > 0 &&
+      flat.every(
+        (v) =>
+          !v.includes("://") &&
+          !v.includes("/") &&
+          !v.includes("relay.example.com") &&
+          !v.includes("8792") &&
+          !v.includes("room") &&
+          !v.includes("user") &&
+          !v.includes("token") &&
+          !v.includes("\\") &&
+          !v.includes("localhost") &&
+          !v.includes("127.0.0.1") &&
+          !v.includes("RELAY_URL"),
+      ),
+  );
+
+  // Rule 5 — the same input yields the identical result on two calls,
+  // nested objects included.
+  const fullSnap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE.noBrowser,
+    relay: { url: "ws://127.0.0.1:8787", ...RELAY_DOWN },
+    opencode: AGENT_PATH,
+  };
+  check("P2-292: the same input yields the identical result on two calls", json(settingsMirror(fullSnap)) === json(settingsMirror(fullSnap)));
+
+  // Real-repo assertions: the module stays pure and the daemon wiring keeps
+  // the additive fields, the existing fields, the lazy revalidation and no
+  // new periodic timer.
+  const p292MirrorSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  const p292Code = p292MirrorSrc
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  check(
+    "P2-292: purity — settingsmirror.ts still imports no node:fs, node:http, node:child_process or fetch",
+    !/^import\b/m.test(p292Code) &&
+      !p292Code.includes("node:fs") &&
+      !p292Code.includes("node:http") &&
+      !p292Code.includes("node:child_process") &&
+      !p292Code.includes("fetch") &&
+      !p292MirrorSrc.includes("require("),
+  );
+  check(
+    "P2-292: the module refuses phrases carrying address material instead of trusting them",
+    p292MirrorSrc.includes("ADDRESS_MATERIAL") &&
+      p292MirrorSrc.includes('no URL authority ("://")') &&
+      p292MirrorSrc.includes("redaction there is userinfo-only"),
+  );
+  const p292IndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const p292HandlerAt = p292IndexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const p292PatchAt = p292IndexSrc.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const p292Handler =
+    p292HandlerAt >= 0 && p292PatchAt > p292HandlerAt ? p292IndexSrc.slice(p292HandlerAt, p292PatchAt) : "";
+  check(
+    "P2-292: the additive relay and agent fields leave the module in the settings GET handler",
+    p292Handler.includes("...settingsMirror({") &&
+      p292Handler.indexOf("docConvertState: docConvert.state") < p292Handler.indexOf("relay: {") &&
+      p292Handler.indexOf("relay: {") < p292Handler.indexOf("opencode: {") &&
+      p292Handler.includes("ok: !relayDisabled") &&
+      p292Handler.includes('reason: relayDisabled ? relayUrl.problems.join(" ") : null') &&
+      p292Handler.includes("binaryFound: binaryPick.path !== null") &&
+      p292Handler.includes("binarySource: binaryPick.source"),
+  );
+  check(
+    "P2-292: no existing settings field is renamed, removed or repositioned",
+    p292Handler.indexOf("...readSettings()") < p292Handler.indexOf("version: VERSION") &&
+      p292Handler.indexOf("version: VERSION") < p292Handler.indexOf("opencodeVersion: opencodeVersion") &&
+      p292Handler.indexOf("opencodeVersion: opencodeVersion") < p292Handler.indexOf("disk: diskStatus()") &&
+      p292Handler.indexOf("disk: diskStatus()") < p292Handler.indexOf("...settingsMirror({") &&
+      p292Handler.indexOf("...settingsMirror({") < p292Handler.indexOf("relay: {") &&
+      p292Handler.indexOf("relay: {") < p292Handler.indexOf("opencode: {"),
+  );
+  check(
+    "P2-292: the lazy revalidation is still called at the same point, same readiness policy",
+    p292Handler.indexOf("maybeReprobeOpencodeVersion();") < p292Handler.indexOf("maybeReprobeDocConvert();") &&
+      p292Handler.indexOf("maybeReprobeDocConvert();") < p292Handler.indexOf("await maybeReprobeBrowse();") &&
+      p292Handler.indexOf("await maybeReprobeBrowse();") < p292Handler.indexOf("...settingsMirror({") &&
+      p292IndexSrc.includes("readinessRefreshPlan(") &&
+      p292IndexSrc.includes("parseReadinessKnobs(process.env)"),
+  );
+  check(
+    "P2-292: no new periodic timer — the handler has none and the module keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(p292Handler) &&
+      (p292IndexSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+}
+
+// P2-296: the voice-transcription readiness rides /api/health and the
+// settings mirror — the canonical blocks for the test:unit chain
+// (scripts/settingsmirror.test.ts is the portable twin for the P2-237
+// sub-battery). Fixtures copied from the real author: the three phrases are
+// the voicecap.ts constants verbatim (the mirror only passes them through,
+// never rewrites them), and the dirty phrase is what a leak would look like.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const VOICE = {
+    ready: "Transcrição de voz pronta neste computador.",
+    missingBinary:
+      "A transcrição de voz ainda não está instalada neste computador — peça a quem gerencia a máquina para instalar o recurso de voz.",
+    missingModel:
+      "O computador tem o motor de transcrição, mas falta o modelo de voz — quem gerencia a máquina precisa concluir a instalação.",
+  };
+  const DOC296 = {
+    complete: "Conversão de documentos em PDF pronta neste computador.",
+    partial:
+      "A conversão de documentos neste computador cobre apenas alguns formatos — instale o LibreOffice para converter qualquer documento em PDF.",
+  };
+  const BROWSE296 = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+  };
+  const RELAY_DOWN_296 = { ok: false, reason: "Endereço do relay recusado na partida — recusando discar (fail-closed)" };
+  const AGENT_PATH_296 = { binaryFound: true, binarySource: "path" };
+
+  // Rule 1 — absent and non-object inputs yield the empty set.
+  check(
+    "P2-296: missing input yields the empty set",
+    json(settingsMirror()) === "{}" && json(settingsMirror(undefined)) === "{}" && json(settingsMirror(null)) === "{}",
+  );
+  check(
+    "P2-296: non-object input yields the empty set",
+    ["voice snapshot", 42, true, [], ["ready"]].every((v) => json(settingsMirror(v)) === "{}"),
+  );
+
+  // Rule 1 — a present non-textual voice field breaks the snapshot contract
+  // and yields the empty set (a malformed field never becomes a field).
+  check(
+    "P2-296: a non-textual voice field never becomes a field",
+    json(settingsMirror({ voiceState: 42, voiceMessage: VOICE.ready })) === "{}" &&
+      json(settingsMirror({ voiceState: true, voiceMessage: VOICE.ready })) === "{}" &&
+      json(settingsMirror({ voiceState: "ready", voiceMessage: null })) === "{}" &&
+      json(settingsMirror({ voiceState: ["ready"], voiceMessage: VOICE.ready })) === "{}",
+  );
+
+  // Rule 2 — a voice verdict outside the documented table yields no field.
+  check(
+    "P2-296: voice verdicts outside the documented table yield no field",
+    ["warp-speed", "", "Ready", "missing_binary", "ready ", "unavailable"].every(
+      (state) => json(settingsMirror({ voiceState: state, voiceMessage: VOICE.ready })) === "{}",
+    ),
+  );
+
+  // Rule 3 — a never-measured voice capability stays silent (fail-closed):
+  // no state member, no field, ever.
+  check(
+    "P2-296: a never-measured voice capability yields no field instead of one announcing readiness",
+    json(settingsMirror({ voiceState: "unknown", voiceMessage: VOICE.ready })) === "{}" &&
+      json(settingsMirror({ voiceMessage: VOICE.ready })) === "{}",
+  );
+
+  // Rule 4 — each of the three documented verdicts becomes exactly state +
+  // phrase, verbatim, the same names and values /api/health publishes.
+  check(
+    "P2-296: each documented voice verdict becomes exactly state + phrase, verbatim",
+    json(settingsMirror({ voiceState: "ready", voiceMessage: VOICE.ready })) ===
+      json({ voiceState: "ready", voiceMessage: VOICE.ready }) &&
+      json(settingsMirror({ voiceState: "missing-binary", voiceMessage: VOICE.missingBinary })) ===
+        json({ voiceState: "missing-binary", voiceMessage: VOICE.missingBinary }) &&
+      json(settingsMirror({ voiceState: "missing-model", voiceMessage: VOICE.missingModel })) ===
+        json({ voiceState: "missing-model", voiceMessage: VOICE.missingModel }),
+  );
+
+  // The five capabilities together: the P2-288 and P2-292 mirrorings keep
+  // their exact names, values and order, and the voice pair appends last.
+  const five = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC296.complete,
+    browseState: "ready",
+    browseMessage: BROWSE296.ready,
+    relay: RELAY_DOWN_296,
+    opencode: AGENT_PATH_296,
+    voiceState: "missing-model",
+    voiceMessage: VOICE.missingModel,
+  });
+  check(
+    "P2-296: the five capabilities coexist and the P2-288/P2-292 mirroring loses no field",
+    json(five) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC296.complete,
+        browseState: "ready",
+        browseMessage: BROWSE296.ready,
+        relay: RELAY_DOWN_296,
+        opencode: AGENT_PATH_296,
+        voiceState: "missing-model",
+        voiceMessage: VOICE.missingModel,
+      }) &&
+      Object.keys(five).join(",") ===
+        "docConvertState,docConvertMessage,browseState,browseMessage,relay,opencode,voiceState,voiceMessage",
+  );
+
+  // Rule order proven: a measured voice and an out-of-table capability
+  // coexist (and the mirror image of that case) — one silent capability
+  // never takes the other down.
+  const orderVoice = settingsMirror({ voiceState: "ready", voiceMessage: VOICE.ready, relay: { ok: 1, reason: null } });
+  const orderDoc = settingsMirror({
+    voiceState: "warp-speed",
+    voiceMessage: VOICE.ready,
+    docConvertState: "partial",
+    docConvertMessage: DOC296.partial,
+  });
+  check(
+    "P2-296: rule order — a measured voice and an out-of-table capability coexist (and vice versa)",
+    json(orderVoice) === json({ voiceState: "ready", voiceMessage: VOICE.ready }) &&
+      json(orderDoc) === json({ docConvertState: "partial", docConvertMessage: DOC296.partial }),
+  );
+
+  // Privacy boundary proven against a leak-shaped input: the phrase carries
+  // an absolute model path, a model file name, an install script name and a
+  // port — the whole voice verdict stays silent and nothing of it survives
+  // anywhere in the output (the measured doc capability is unaffected).
+  const dirty =
+    "Modelo de voz em /Users/caio/.opencode-remote/models/ggml-base.bin — rode scripts/setup-whisper.sh no host e confira a porta 8792";
+  const dirtyOut = settingsMirror({
+    voiceState: "missing-model",
+    voiceMessage: dirty,
+    docConvertState: "partial",
+    docConvertMessage: DOC296.partial,
+  });
+  check(
+    "P2-296: a voice phrase carrying an absolute model path, script name and port silences the verdict",
+    json(dirtyOut) === json({ docConvertState: "partial", docConvertMessage: DOC296.partial }),
+  );
+
+  // Hygiene: no returned value ever carries a path, script name, port,
+  // address, raw env variable or secret (nested relay/opencode entries
+  // flattened, same discipline as the P2-292 privacy case).
+  const flat296: string[] = [];
+  const collect296 = (v: unknown): void => {
+    if (v === null || v === undefined) return;
+    if (typeof v === "object") for (const x of Object.values(v as Record<string, unknown>)) collect296(x);
+    else flat296.push(String(v));
+  };
+  for (const m of [
+    settingsMirror({ voiceState: "ready", voiceMessage: VOICE.ready }),
+    settingsMirror({ voiceState: "missing-binary", voiceMessage: VOICE.missingBinary }),
+    settingsMirror({ voiceState: "missing-model", voiceMessage: VOICE.missingModel }),
+    five,
+    dirtyOut,
+  ]) {
+    collect296(m);
+  }
+  const allVoiceValues: string[] = flat296;
+  check(
+    "P2-296: no returned value contains a path, script name, port, address, env variable or secret",
+    allVoiceValues.length > 0 &&
+      allVoiceValues.every(
+        (v) =>
+          !v.includes("/") &&
+          !v.includes("\\") &&
+          !v.includes("://") &&
+          !v.includes("127.0.0.1") &&
+          !v.includes("8792") &&
+          !v.includes("localhost") &&
+          !v.includes(".sh") &&
+          !v.includes(".bin") &&
+          !v.includes("$") &&
+          !v.includes("Bearer") &&
+          !v.includes("token"),
+      ),
+  );
+
+  // Rule 5 — the same input yields the identical result on two calls.
+  const voiceSnap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC296.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE296.noBrowser,
+    relay: RELAY_DOWN_296,
+    opencode: AGENT_PATH_296,
+    voiceState: "missing-binary",
+    voiceMessage: VOICE.missingBinary,
+  };
+  check("P2-296: the same input yields the identical result on two calls", json(settingsMirror(voiceSnap)) === json(settingsMirror(voiceSnap)));
+
+  // Robustness: no input shape ever throws.
+  let voiceMirrorThrew = false;
+  try {
+    for (const input of [NaN, new Date(), () => 1, { voiceState: {} }, { voiceMessage: Symbol("x") }, { voiceState: "ready" }]) {
+      settingsMirror(input);
+    }
+  } catch {
+    voiceMirrorThrew = true;
+  }
+  check("P2-296: robustness — no input shape ever throws", !voiceMirrorThrew);
+
+  // Real-repo assertions on the daemon wiring: both the /api/health readiness
+  // block and the settings GET handler publish the additive voice fields, keep
+  // every existing field in place, run the lazy transcription re-probe at that
+  // same point under the shared readiness policy and introduce no periodic
+  // timer and no new re-probe log line.
+  const idx296 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const healthAt = idx296.indexOf('seg[1] === "health"');
+  const mcpAt = idx296.indexOf('seg[1] === "mcp"');
+  const health = healthAt >= 0 && mcpAt > healthAt ? idx296.slice(healthAt, mcpAt) : "";
+  check(
+    "P2-296: /api/health publishes the three additive voice fields from the hatch-aware sttStatus()",
+    health.includes("const stt = sttStatus();") &&
+      health.includes("voiceState: stt.state") &&
+      health.includes("voiceMessage: stt.message") &&
+      health.includes("voiceCheckedAt: readinessCheckedAt(readinessState.transcription.probedAt)"),
+  );
+  check(
+    "P2-296: the voice fields are appended after the existing health fields — none renamed, removed or repositioned",
+    [
+      "docConvertState: docConvert.state",
+      "docConvertMessage: docConvert.message",
+      "docConvertExts: docConvert.exts",
+      'docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt)',
+      "browseState: browseCap.state",
+      "browseMessage: browseCap.message",
+      "browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt)",
+      "voiceState: stt.state",
+    ].every((f, i, arr) => health.includes(f) && (i === 0 || health.indexOf(arr[i - 1]) < health.indexOf(f))),
+  );
+  check(
+    "P2-296: the lazy transcription re-probe runs in the health block, under the shared readiness policy",
+    health.includes("await maybeReprobeTranscription();") &&
+      health.indexOf("await maybeReprobeBrowse();") < health.indexOf("await maybeReprobeTranscription();") &&
+      health.indexOf("await maybeReprobeTranscription();") < health.indexOf("const stt = sttStatus();") &&
+      idx296.includes("readinessRefreshPlan(") &&
+      idx296.includes("parseReadinessKnobs(process.env)"),
+  );
+  check("P2-296: no periodic timer in the health block", !/setInterval|setTimeout/.test(health));
+
+  const get296At = idx296.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const patch296At = idx296.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const settings296 = get296At >= 0 && patch296At > get296At ? idx296.slice(get296At, patch296At) : "";
+  check(
+    "P2-296: the settings GET handler sources the voice pair through settingsMirror",
+    settings296.includes("...settingsMirror({") &&
+      settings296.indexOf("opencode: {") < settings296.indexOf("voiceState: stt.state") &&
+      settings296.indexOf("voiceState: stt.state") < settings296.indexOf("voiceMessage: stt.message"),
+  );
+  check(
+    "P2-296: no existing settings field is renamed, removed or repositioned",
+    settings296.indexOf("...readSettings()") < settings296.indexOf("version: VERSION") &&
+      settings296.indexOf("version: VERSION") < settings296.indexOf("opencodeVersion: opencodeVersion") &&
+      settings296.indexOf("opencodeVersion: opencodeVersion") < settings296.indexOf("disk: diskStatus()") &&
+      settings296.indexOf("disk: diskStatus()") < settings296.indexOf("...settingsMirror({") &&
+      settings296.indexOf("...settingsMirror({") < settings296.indexOf("relay: {") &&
+      settings296.indexOf("relay: {") < settings296.indexOf("opencode: {") &&
+      settings296.indexOf("opencode: {") < settings296.indexOf("voiceState: stt.state"),
+  );
+  check(
+    "P2-296: the lazy transcription re-probe runs in the settings handler before the mirror answers",
+    settings296.includes("await maybeReprobeTranscription();") &&
+      settings296.indexOf("await maybeReprobeBrowse();") < settings296.indexOf("await maybeReprobeTranscription();") &&
+      settings296.indexOf("await maybeReprobeTranscription();") < settings296.indexOf("...settingsMirror({"),
+  );
+  check(
+    "P2-296: no new periodic timer — the handlers have none and the daemon keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(settings296) && (idx296.match(/setInterval\(/g) || []).length === 5,
+  );
+  check(
+    "P2-296: no new re-probe log line — each re-probe keeps its one-line policy (four capabilities total, P2-298 added tts)",
+    idx296.split("\n").filter((l) => l.includes("readiness re-probe")).length === 4,
+  );
+
+  // Real-repo assertion on the module itself: still pure, and the voice table
+  // plus the path-material boundary are written where the contract lives.
+  const mirror296Src = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  const mirror296Code = mirror296Src
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  check(
+    "P2-296: purity — settingsmirror.ts still imports no node:fs, node:http, node:child_process or fetch",
+    !/^import\b/m.test(mirror296Code) &&
+      !mirror296Code.includes("node:fs") &&
+      !mirror296Code.includes("node:http") &&
+      !mirror296Code.includes("node:child_process") &&
+      !mirror296Code.includes("fetch") &&
+      !mirror296Src.includes("require("),
+  );
+  check(
+    "P2-296: the module documents the voice table and the path-material privacy boundary",
+    mirror296Src.includes('const VOICE_STATES: readonly string[] = ["ready", "missing-binary", "missing-model"];') &&
+      mirror296Src.includes("PATH_MATERIAL") &&
+      mirror296Src.includes("voice transcription: \"ready\" | \"missing-binary\" | \"missing-model\""),
+  );
+}
+
+// P2-300: the spoken-reply (tts) readiness rides /api/health and the settings
+// mirror — the canonical blocks for the test:unit chain
+// (scripts/settingsmirror.test.ts is the portable twin for the P2-237
+// sub-battery). Fixtures copied from the real author: the two phrases are
+// the ttscap.ts constants verbatim (the mirror only passes them through,
+// never rewrites them), and the dirty phrase is what a leak would look like.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+  const TTS = {
+    ready: "Respostas faladas prontas neste computador.",
+    missingTool:
+      "A fala deste computador ainda não está instalada — peça a quem gerencia a máquina para instalar o recurso de voz.",
+  };
+  const DOC300 = {
+    complete: "Conversão de documentos em PDF pronta neste computador.",
+    partial:
+      "A conversão de documentos neste computador cobre apenas alguns formatos — instale o LibreOffice para converter qualquer documento em PDF.",
+  };
+  const BROWSE300 = {
+    ready: "Navegação de sites pronta neste computador.",
+    noBrowser:
+      "Este computador ainda não tem navegador para abrir sites — instalar o navegador do Playwright é opcional e fica a cargo de quem gerencia a máquina.",
+  };
+  const VOICE300 = {
+    ready: "Transcrição de voz pronta neste computador.",
+    missingBinary:
+      "A transcrição de voz ainda não está instalada neste computador — peça a quem gerencia a máquina para instalar o recurso de voz.",
+  };
+  const RELAY_DOWN_300 = { ok: false, reason: "Endereço do relay recusado na partida — recusando discar (fail-closed)" };
+  const AGENT_PATH_300 = { binaryFound: true, binarySource: "path" };
+
+  // Rule 1 — absent input, non-object input and non-textual fields yield no
+  // tts field (the empty set when the tts pair is all there is).
+  check(
+    "P2-300: missing or non-object input yields no tts field",
+    json(settingsMirror()) === "{}" &&
+      json(settingsMirror(undefined)) === "{}" &&
+      json(settingsMirror(null)) === "{}" &&
+      ["tts snapshot", 42, true, [], ["ready"]].every((v) => json(settingsMirror(v)) === "{}"),
+  );
+  check(
+    "P2-300: a non-textual tts field never becomes a field",
+    json(settingsMirror({ ttsState: 42, ttsMessage: TTS.ready })) === "{}" &&
+      json(settingsMirror({ ttsState: true, ttsMessage: TTS.ready })) === "{}" &&
+      json(settingsMirror({ ttsState: "ready", ttsMessage: null })) === "{}" &&
+      json(settingsMirror({ ttsState: ["ready"], ttsMessage: TTS.ready })) === "{}",
+  );
+
+  // Rule 2 — a speech verdict outside the documented two-state table yields
+  // no field.
+  check(
+    "P2-300: speech verdicts outside the documented table yield no field",
+    ["warp-speed", "", "Ready", "missing_tool", "ready ", "unavailable", "missing-binary"].every(
+      (state) => json(settingsMirror({ ttsState: state, ttsMessage: TTS.ready })) === "{}",
+    ),
+  );
+
+  // Rule 3 — a never-measured speech capability stays silent (fail-closed):
+  // no state member, no field, ever.
+  check(
+    "P2-300: a never-measured speech capability yields no field instead of one announcing readiness",
+    json(settingsMirror({ ttsState: "unknown", ttsMessage: TTS.ready })) === "{}" &&
+      json(settingsMirror({ ttsMessage: TTS.ready })) === "{}",
+  );
+
+  // Rule 4 — each of the two documented verdicts becomes exactly state +
+  // phrase, verbatim, the same names and values /api/health publishes.
+  check(
+    "P2-300: each documented speech verdict becomes exactly state + phrase, verbatim",
+    json(settingsMirror({ ttsState: "ready", ttsMessage: TTS.ready })) ===
+      json({ ttsState: "ready", ttsMessage: TTS.ready }) &&
+      json(settingsMirror({ ttsState: "missing-tool", ttsMessage: TTS.missingTool })) ===
+        json({ ttsState: "missing-tool", ttsMessage: TTS.missingTool }),
+  );
+
+  // Privacy boundary proven against a leak-shaped input: the phrase carries
+  // an absolute tool path, a script name and a port — the whole speech
+  // verdict stays silent (the measured doc capability is unaffected).
+  const dirty300 =
+    "Fala instalada em /usr/local/bin/edge-tts — rode scripts/setup-tts.sh no host e confira a porta 8792";
+  const dirtyOut300 = settingsMirror({
+    ttsState: "ready",
+    ttsMessage: dirty300,
+    docConvertState: "partial",
+    docConvertMessage: DOC300.partial,
+  });
+  check(
+    "P2-300: a speech phrase carrying an absolute tool path, script name and port silences the verdict",
+    json(dirtyOut300) === json({ docConvertState: "partial", docConvertMessage: DOC300.partial }),
+  );
+
+  // The six capabilities together: the P2-288, P2-292 and P2-296 mirrorings
+  // keep their exact names, values and order, and the speech pair appends
+  // last.
+  const six = settingsMirror({
+    docConvertState: "complete",
+    docConvertMessage: DOC300.complete,
+    browseState: "ready",
+    browseMessage: BROWSE300.ready,
+    relay: RELAY_DOWN_300,
+    opencode: AGENT_PATH_300,
+    voiceState: "missing-binary",
+    voiceMessage: VOICE300.missingBinary,
+    ttsState: "missing-tool",
+    ttsMessage: TTS.missingTool,
+  });
+  check(
+    "P2-300: the six capabilities coexist and the P2-288/P2-292/P2-296 mirroring loses no field",
+    json(six) ===
+      json({
+        docConvertState: "complete",
+        docConvertMessage: DOC300.complete,
+        browseState: "ready",
+        browseMessage: BROWSE300.ready,
+        relay: RELAY_DOWN_300,
+        opencode: AGENT_PATH_300,
+        voiceState: "missing-binary",
+        voiceMessage: VOICE300.missingBinary,
+        ttsState: "missing-tool",
+        ttsMessage: TTS.missingTool,
+      }) &&
+      Object.keys(six).join(",") ===
+        "docConvertState,docConvertMessage,browseState,browseMessage,relay,opencode,voiceState,voiceMessage,ttsState,ttsMessage",
+  );
+
+  // Rule order proven: a measured speech verdict and an out-of-table
+  // capability coexist (and the mirror image of that case) — one silent
+  // capability never takes the other down.
+  const orderTts300 = settingsMirror({ ttsState: "ready", ttsMessage: TTS.ready, relay: { ok: 1, reason: null } });
+  const orderDoc300 = settingsMirror({
+    ttsState: "warp-speed",
+    ttsMessage: TTS.ready,
+    docConvertState: "partial",
+    docConvertMessage: DOC300.partial,
+  });
+  check(
+    "P2-300: rule order — a measured speech capability and an out-of-table capability coexist (and vice versa)",
+    json(orderTts300) === json({ ttsState: "ready", ttsMessage: TTS.ready }) &&
+      json(orderDoc300) === json({ docConvertState: "partial", docConvertMessage: DOC300.partial }),
+  );
+
+  // Rule 5 — the same input yields the identical result on two calls.
+  const ttsSnap = {
+    docConvertState: "partial",
+    docConvertMessage: DOC300.partial,
+    browseState: "no-browser",
+    browseMessage: BROWSE300.noBrowser,
+    relay: RELAY_DOWN_300,
+    opencode: AGENT_PATH_300,
+    voiceState: "missing-binary",
+    voiceMessage: VOICE300.missingBinary,
+    ttsState: "missing-tool",
+    ttsMessage: TTS.missingTool,
+  };
+  check("P2-300: the same input yields the identical result on two calls", json(settingsMirror(ttsSnap)) === json(settingsMirror(ttsSnap)));
+
+  // Robustness: no input shape ever throws.
+  let ttsMirrorThrew = false;
+  try {
+    for (const input of [NaN, new Date(), () => 1, { ttsState: {} }, { ttsMessage: Symbol("x") }, { ttsState: "ready" }]) {
+      settingsMirror(input);
+    }
+  } catch {
+    ttsMirrorThrew = true;
+  }
+  check("P2-300: robustness — no input shape ever throws", !ttsMirrorThrew);
+
+  // Real-repo assertions on the daemon wiring: both the /api/health readiness
+  // block and the settings GET handler publish the additive speech fields,
+  // keep every existing field in place, run the lazy tts re-probe at that
+  // same point under the shared readiness policy, introduce no periodic
+  // timer and avoid the voiceState collision.
+  const idx300 = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const healthAt300 = idx300.indexOf('seg[1] === "health"');
+  const mcpAt300 = idx300.indexOf('seg[1] === "mcp"');
+  const health300 = healthAt300 >= 0 && mcpAt300 > healthAt300 ? idx300.slice(healthAt300, mcpAt300) : "";
+  check(
+    "P2-300: /api/health publishes the three additive speech fields from the hatch-aware ttsStatus()",
+    health300.includes("const tts = ttsStatus();") &&
+      health300.includes("ttsState: tts.state") &&
+      health300.includes("ttsMessage: tts.message") &&
+      health300.includes("ttsCheckedAt: readinessCheckedAt(readinessState.tts.probedAt)"),
+  );
+  check(
+    "P2-300: the identifier does not collide with the transcription one — ttsState is the speech state, voiceState stays transcription",
+    health300.includes("voiceState: stt.state") &&
+      health300.includes("ttsState: tts.state") &&
+      !health300.includes("voiceState: tts.") &&
+      !health300.includes("ttsState: stt."),
+  );
+  check(
+    "P2-300: the speech fields are appended after the existing health fields — none renamed, removed or repositioned",
+    [
+      "docConvertState: docConvert.state",
+      "docConvertMessage: docConvert.message",
+      "docConvertExts: docConvert.exts",
+      'docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt)',
+      "browseState: browseCap.state",
+      "browseMessage: browseCap.message",
+      "browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt)",
+      "voiceState: stt.state",
+      "voiceMessage: stt.message",
+      "voiceCheckedAt: readinessCheckedAt(readinessState.transcription.probedAt)",
+      "ttsState: tts.state",
+      "ttsMessage: tts.message",
+      "ttsCheckedAt: readinessCheckedAt(readinessState.tts.probedAt)",
+    ].every((f, i, arr) => health300.includes(f) && (i === 0 || health300.indexOf(arr[i - 1]) < health300.indexOf(f))),
+  );
+  check(
+    "P2-300: the lazy tts re-probe runs in the health block, under the shared readiness policy",
+    health300.includes("maybeReprobeTts();") &&
+      health300.indexOf("await maybeReprobeTranscription();") < health300.indexOf("maybeReprobeTts();") &&
+      health300.indexOf("maybeReprobeTts();") < health300.indexOf("const tts = ttsStatus();") &&
+      idx300.includes("readinessRefreshPlan(") &&
+      idx300.includes("parseReadinessKnobs(process.env)"),
+  );
+  check("P2-300: no periodic timer in the health block", !/setInterval|setTimeout/.test(health300));
+
+  const get300At = idx300.indexOf('req.path === "/__ocr/settings" && req.method === "GET"');
+  const patch300At = idx300.indexOf('req.path === "/__ocr/settings" && req.method === "PATCH"');
+  const settings300 = get300At >= 0 && patch300At > get300At ? idx300.slice(get300At, patch300At) : "";
+  check(
+    "P2-300: the settings GET handler sources the speech pair through settingsMirror",
+    settings300.includes("...settingsMirror({") &&
+      settings300.indexOf("voiceMessage: stt.message") < settings300.indexOf("ttsState: tts.state") &&
+      settings300.indexOf("ttsState: tts.state") < settings300.indexOf("ttsMessage: tts.message") &&
+      !settings300.includes("voiceState: tts."),
+  );
+  check(
+    "P2-300: no existing settings field is renamed, removed or repositioned",
+    settings300.indexOf("...readSettings()") < settings300.indexOf("version: VERSION") &&
+      settings300.indexOf("version: VERSION") < settings300.indexOf("opencodeVersion: opencodeVersion") &&
+      settings300.indexOf("opencodeVersion: opencodeVersion") < settings300.indexOf("disk: diskStatus()") &&
+      settings300.indexOf("disk: diskStatus()") < settings300.indexOf("...settingsMirror({") &&
+      settings300.indexOf("...settingsMirror({") < settings300.indexOf("relay: {") &&
+      settings300.indexOf("relay: {") < settings300.indexOf("opencode: {") &&
+      settings300.indexOf("opencode: {") < settings300.indexOf("voiceState: stt.state") &&
+      settings300.indexOf("voiceState: stt.state") < settings300.indexOf("ttsState: tts.state"),
+  );
+  check(
+    "P2-300: the lazy tts re-probe runs in the settings handler before the mirror answers",
+    settings300.includes("maybeReprobeTts();") &&
+      settings300.indexOf("await maybeReprobeTranscription();") < settings300.indexOf("maybeReprobeTts();") &&
+      settings300.indexOf("maybeReprobeTts();") < settings300.indexOf("...settingsMirror({"),
+  );
+  check(
+    "P2-300: no new periodic timer — the handlers have none and the daemon keeps exactly the five pre-existing ones",
+    !/setInterval|setTimeout/.test(settings300) && (idx300.match(/setInterval\(/g) || []).length === 5,
+  );
+  check(
+    "P2-300: no new re-probe log line — each re-probe keeps its one-line policy (four capabilities total)",
+    idx300.split("\n").filter((l) => l.includes("readiness re-probe")).length === 4,
+  );
+
+  // Real-repo assertion on the module itself: still pure, and the speech
+  // table plus the collision note are written where the contract lives.
+  const mirror300Src = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "settingsmirror.ts"), "utf8");
+  const mirror300Code = mirror300Src
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  check(
+    "P2-300: purity — settingsmirror.ts still imports no node:fs, node:http, node:child_process or fetch",
+    !/^import\b/m.test(mirror300Code) &&
+      !mirror300Code.includes("node:fs") &&
+      !mirror300Code.includes("node:http") &&
+      !mirror300Code.includes("node:child_process") &&
+      !mirror300Code.includes("fetch") &&
+      !mirror300Src.includes("require("),
+  );
+  check(
+    "P2-300: the module documents the speech table and the voiceState collision",
+    mirror300Src.includes('const TTS_STATES: readonly string[] = ["ready", "missing-tool"];') &&
+      mirror300Src.includes("speech (tts):") &&
+      mirror300Src.includes("NOT voiceState") &&
+      mirror300Src.includes("ttsState?: string") &&
+      mirror300Src.includes("ttsMessage?: string"),
+  );
+}
+
+// --- P2-308: feedhash — feed-declared sha512 vs published bytes --------------
+{
+  const DIGEST = createHash("sha512").update("installer bytes").digest("base64");
+  const OTHER = createHash("sha512").update("other bytes").digest("base64");
+  const EXE = "OpenCode Remote Setup 0.3.0.exe";
+  const ymlText = (digest: string, size: unknown): string =>
+    `version: 0.3.0\nfiles:\n  - url: ${EXE}\n    sha512: ${digest}\n    size: ${size}\npath: '${EXE}'\nsha512: ${digest}\nreleaseDate: '2026-09-01'\n`;
+
+  // parseLatestYmlEntries — the narrow electron-builder latest.yml reader.
+  const parsed = parseLatestYmlEntries(ymlText(DIGEST, 74374398));
+  check(
+    "P2-308: parseLatestYmlEntries reads the files: block into one entry carrying digest and size",
+    parsed.length === 1 && parsed[0].fileName === EXE && parsed[0].sha512 === DIGEST && parsed[0].size === 74374398,
+    JSON.stringify(parsed),
+  );
+  check(
+    "P2-308: parseLatestYmlEntries — empty and shape-drifted texts yield zero entries (itself a fail-closed problem)",
+    parseLatestYmlEntries("").length === 0 && parseLatestYmlEntries("not: a: feed").length === 0,
+  );
+  check(
+    "P2-308: parseLatestYmlEntries keeps a non-numeric size non-numeric so the confrontation refuses it",
+    parseLatestYmlEntries(ymlText(DIGEST, "abc"))[0].size === "abc",
+  );
+  check(
+    "P2-308: parseLatestYmlEntries survives CRLF feeds",
+    parseLatestYmlEntries(ymlText(DIGEST, 12).replace(/\n/g, "\r\n"))[0].size === 12,
+  );
+
+  // The closed problem table — one static phrase per cause.
+  const green = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: a declared entry matching the measurement yields zero problems (the all-green case)",
+    green.length === 0,
+    JSON.stringify(green),
+  );
+
+  const noFile = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: "Ghost.exe", sha512: DIGEST, size: 10 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 10 }],
+  );
+  check(
+    "P2-308: a declared entry without a corresponding measured file is a problem",
+    noFile.length === 1 && noFile[0].includes("no corresponding published file"),
+    JSON.stringify(noFile),
+  );
+
+  const divergedDigest = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: OTHER, size: 74374398 }],
+  );
+  check(
+    "P2-308: a divergent digest is a problem",
+    divergedDigest.length === 1 && divergedDigest[0].includes("digests diverge"),
+    JSON.stringify(divergedDigest),
+  );
+
+  const divergedSize = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 1 }],
+  );
+  check(
+    "P2-308: a divergent byte size is a problem",
+    divergedSize.length === 1 && divergedSize[0].includes("byte size") && divergedSize[0].includes("74374398"),
+    JSON.stringify(divergedSize),
+  );
+
+  const absentDigest = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: an absent digest is a problem (fail-closed)",
+    absentDigest.length === 1 && absentDigest[0].includes("base64 format"),
+    JSON.stringify(absentDigest),
+  );
+
+  const malformedDigest = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: "not-base64!", size: 74374398 }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: a digest outside the base64 format is a problem, never compared",
+    malformedDigest.length === 1 && malformedDigest[0].includes("base64 format"),
+    JSON.stringify(malformedDigest),
+  );
+
+  const absentSize = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: an absent byte size is a problem (fail-closed)",
+    absentSize.length === 1 && absentSize[0].includes("numeric format"),
+    JSON.stringify(absentSize),
+  );
+
+  const nonNumericSize = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: "74374398" }] }],
+    [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+  );
+  check(
+    "P2-308: a non-numeric byte size is a problem even when the bytes match",
+    nonNumericSize.length === 1 && nonNumericSize[0].includes("numeric format"),
+    JSON.stringify(nonNumericSize),
+  );
+
+  const emptyFeed = feedHashProblems([{ label: "drifted.yml", entries: [] }], [{ fileName: EXE, sha512: DIGEST, size: 1 }]);
+  check(
+    "P2-308: a feed that declares no entries is a problem",
+    emptyFeed.length === 1 && emptyFeed[0].includes("declares no entries") && emptyFeed[0].includes("drifted.yml"),
+    JSON.stringify(emptyFeed),
+  );
+
+  const unmeasurable = feedHashProblems(
+    [{ label: "latest.yml", entries: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }] }],
+    [{ fileName: EXE, sha512: null, size: null }],
+  );
+  check(
+    "P2-308: an unmeasurable published file refuses on both fields (fail-closed)",
+    unmeasurable.length === 2 &&
+      unmeasurable[0].includes("no sha512 was measured") &&
+      unmeasurable[1].includes("no byte size was measured"),
+    JSON.stringify(unmeasurable),
+  );
+
+  // P2-146 lesson: every problem prints at once — no short-circuit between
+  // feeds, entries or the two compared fields.
+  const allFeeds = [
+    { label: "empty.yml", entries: [] },
+    { label: "latest.yml", entries: [{ fileName: "Ghost.exe", sha512: DIGEST, size: 1 }, { fileName: EXE, sha512: OTHER, size: 2 }] },
+  ];
+  const allMeasured = [{ fileName: EXE, sha512: DIGEST, size: 74374398 }];
+  const all = feedHashProblems(allFeeds, allMeasured);
+  check(
+    "P2-308: every problem is reported at once (empty feed, missing file, divergent digest, divergent size)",
+    all.length === 4,
+    JSON.stringify(all),
+  );
+  const twiceA = feedHashProblems(allFeeds, allMeasured);
+  const twiceB = feedHashProblems(allFeeds, allMeasured);
+  check(
+    "P2-308: the same input yields an identical problem list in two calls (determinism)",
+    JSON.stringify(twiceA) === JSON.stringify(twiceB) && twiceA.length === 4,
+  );
+  check(
+    "P2-308: no problem text contains an absolute path",
+    all.every((p) => !p.startsWith("/") && !p.includes("/Users/") && !p.includes("/home/") && !p.includes("C:\\")),
+  );
+
+  // feedHashParity — the wiring assertion over parsed workflow text.
+  const consistencyStepText =
+    "      - run: |\n          npx --yes tsx@4.23.12 scripts/feed-consistency.ts v0.3.0 feeds/update-mac.json";
+  const hashStepText = (over: { shell?: string; timeout?: number; run?: string } = {}): string => {
+    const lines = [
+      "      - run: |",
+      `          ${over.run ?? "npx --yes tsx@4.23.12 scripts/feedhash.ts < feedhash-input.json"}`,
+    ];
+    if (over.shell !== undefined) lines.push(`        shell: ${over.shell}`);
+    if (over.timeout !== undefined) lines.push(`        timeout-minutes: ${over.timeout}`);
+    return lines.join("\n");
+  };
+  const wfText = (steps: string[]): string =>
+    ["name: release", "on: push", "jobs:", "  release-feeds:", "    runs-on: ubuntu-latest", "    steps:", ...steps].join("\n") + "\n";
+
+  const missing = feedHashParity(parseWorkflowJobs(wfText([consistencyStepText])));
+  check(
+    "P2-308: feedHashParity — a job that checks feed names but never confronts digests yields the problem",
+    missing.length === 1 && missing[0].includes("release-feeds") && missing[0].includes("feedhash.ts"),
+    missing.join(" | "),
+  );
+  check(
+    "P2-308: feedHashParity — a job without the consistency step is never flagged",
+    feedHashParity(parseWorkflowJobs("jobs:\n  other:\n    steps:\n      - run: echo hi\n")).length === 0,
+  );
+  const before = feedHashParity(
+    parseWorkflowJobs(wfText([hashStepText({ shell: "bash", timeout: 15 }), consistencyStepText])),
+  );
+  check(
+    "P2-308: feedHashParity — a feedhash step before the consistency step yields the position problem",
+    before.length === 1 && before[0].includes("after the feed-consistency step"),
+    before.join(" | "),
+  );
+  const duplicated = feedHashParity(
+    parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "bash", timeout: 15 }), hashStepText({ shell: "bash", timeout: 15, run: "npx tsx scripts/feedhash.ts < b.json" })])),
+  );
+  check(
+    "P2-308: feedHashParity — two feedhash steps yield the uniqueness problem",
+    duplicated.length === 1 && duplicated[0].includes("more than once"),
+    duplicated.join(" | "),
+  );
+  const noShell = feedHashParity(parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "pwsh", timeout: 15 })])));
+  check(
+    "P2-308: feedHashParity — a feedhash step without shell: bash yields the shell problem",
+    noShell.length === 1 && noShell[0].includes("shell: bash"),
+    noShell.join(" | "),
+  );
+  const noTimeout = feedHashParity(parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "bash" })])));
+  check(
+    "P2-308: feedHashParity — a feedhash step without its own timeout-minutes yields the timeout problem",
+    noTimeout.length === 1 && noTimeout[0].includes("timeout-minutes"),
+    noTimeout.join(" | "),
+  );
+  const happyParity = feedHashParity(
+    parseWorkflowJobs(wfText([consistencyStepText, hashStepText({ shell: "bash", timeout: 15 })])),
+  );
+  check(
+    "P2-308: feedHashParity — a consistency step followed by one bash+timeout feedhash step yields zero problems",
+    happyParity.length === 0,
+    happyParity.join(" | "),
+  );
+
+  // Real-repo assertion: the actual release.yml carries the new step in the
+  // right position with the right hygiene, and the P2-179 draft contract is
+  // untouched. No release is executed — the gate only reads the YAML.
+  const releaseYml = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "release.yml"), "utf8");
+  const jobs = parseWorkflowJobs(releaseYml);
+  const feedJobs = jobs.filter((j) => j.steps.some((s) => /feed-consistency\.ts/.test(s.run)));
+  check(
+    "P2-308: the real release.yml has exactly one job carrying the feed-consistency step (release-feeds)",
+    feedJobs.length === 1 && feedJobs[0].name === "release-feeds",
+    JSON.stringify(feedJobs.map((j) => j.name)),
+  );
+  const realParity = feedHashParity(jobs);
+  check("P2-308: real release.yml — zero feed-hash parity problems", realParity.length === 0, realParity.join(" | "));
+  const feedJob = feedJobs[0];
+  const consistencyAt = feedJob.steps.findIndex((s) => /feed-consistency\.ts/.test(s.run));
+  const hashSteps = feedJob.steps.filter((s) => /feedhash\.ts/.test(s.run));
+  const hashRun = hashSteps.length === 1 ? hashSteps[0].run : "";
+  check(
+    "P2-308: real release.yml — exactly one feedhash step, after the consistency step, shell: bash, own timeout",
+    hashSteps.length === 1 &&
+      feedJob.steps.indexOf(hashSteps[0]) > consistencyAt &&
+      hashSteps[0].shell === "bash" &&
+      typeof hashSteps[0].timeoutMinutes === "number" &&
+      (hashSteps[0].timeoutMinutes ?? 0) > 0,
+    JSON.stringify(feedJob.steps.map((s) => ({ n: s.name, shell: s.shell, t: s.timeoutMinutes }))),
+  );
+  check(
+    "P2-308: real release.yml — the feedhash step downloads the release artifacts and measures sha512 base64 + size with node:crypto",
+    hashRun.includes("gh release download") &&
+      hashRun.includes('createHash("sha512")') &&
+      hashRun.includes('digest("base64")') &&
+      hashRun.includes("scripts/feedhash.ts"),
+    hashRun,
+  );
+  check(
+    "P2-308: real release.yml — release-publish still needs release-feeds (P2-179 draft contract)",
+    releaseYml.includes("needs: [release-verify, release-feeds]"),
+  );
+  const feedhashSrc = readFileSync(join(import.meta.dirname, "..", "scripts", "feedhash.ts"), "utf8");
+  check(
+    "P2-308: purity — feedhash.ts uses no node:fs, no node:child_process, no node:net/http, no require and no fetch",
+    !feedhashSrc.includes("node:fs") &&
+      !feedhashSrc.includes("node:child_process") &&
+      !feedhashSrc.includes("node:net") &&
+      !feedhashSrc.includes("node:http") &&
+      !feedhashSrc.includes("require(") &&
+      !/fetch\s*\(/.test(feedhashSrc),
+  );
+
+  // CLI round trip — the exact invocation shape the workflow step uses.
+  const repoRoot = join(import.meta.dirname, "..");
+  const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const feedhashScript = join(repoRoot, "scripts", "feedhash.ts");
+  const runCli = (input: string): { code: number; out: string } => {
+    try {
+      const out = execFileSync(process.execPath, [tsxEntry, feedhashScript], { input, encoding: "utf8" });
+      return { code: 0, out };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: Buffer; stderr?: Buffer };
+      return { code: e.status ?? -1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    }
+  };
+  const cliOk = runCli(
+    JSON.stringify({
+      feeds: [{ label: "latest.yml", yml: ymlText(DIGEST, 74374398) }],
+      measured: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+    }),
+  );
+  check(
+    "P2-308: cli exits 0 printing OK when the declared digest matches the published bytes",
+    cliOk.code === 0 && cliOk.out.includes("feedhash: OK"),
+    cliOk.out,
+  );
+  const cliBad = runCli(
+    JSON.stringify({
+      feeds: [{ label: "latest.yml", yml: ymlText(OTHER, 74374398) }],
+      measured: [{ fileName: EXE, sha512: DIGEST, size: 74374398 }],
+    }),
+  );
+  check(
+    "P2-308: cli exits 1 printing the divergent-digest problem (fail-closed)",
+    cliBad.code === 1 && cliBad.out.includes("feedhash: FAIL") && cliBad.out.includes("digests diverge"),
+    cliBad.out,
+  );
+  const cliGarbage = runCli("not json");
+  check(
+    "P2-308: cli refuses non-JSON stdin (fail-closed)",
+    cliGarbage.code === 1 && cliGarbage.out.includes("invalid JSON on stdin"),
+    cliGarbage.out,
+  );
+}
+
+// --- P2-322: job-level timeouts — pure verifier + collector + real gate -----
+
+{
+  const root = join(import.meta.dirname, "..");
+  const minutes = (n: number): JobTimeoutDeclaration => ({ kind: "minutes", minutes: n });
+  const factsOf = (list: Array<[string, JobTimeoutDeclaration]>): JobTimeoutFacts[] =>
+    list.map(([job, timeout]) => ({ file: "ci.yml", job, timeout }));
+
+  // Verifier table: each cause with its own input, no short-circuit.
+  check("P2-322: an empty job list yields zero problems", jobTimeoutProblems([]).length === 0);
+  check(
+    "P2-322: jobs with positive-integer timeouts within the ceiling (boundaries included) yield zero problems",
+    jobTimeoutProblems(factsOf([["a", minutes(1)], ["b", minutes(JOB_TIMEOUT_CEILING_MINUTES)]])).length === 0,
+  );
+  const absent = jobTimeoutProblems(factsOf([["verify", { kind: "absent" }]]));
+  check(
+    "P2-322: a job without a declared timeout yields exactly one problem naming the job and the 360-minute default",
+    absent.length === 1 && absent[0]?.includes('"verify"') && absent[0]?.includes("no job-level timeout-minutes") && absent[0]?.includes("360"),
+  );
+  const zero = jobTimeoutProblems(factsOf([["z", minutes(0)]]));
+  const negative = jobTimeoutProblems(factsOf([["n", minutes(-5)]]));
+  const fractional = jobTimeoutProblems(factsOf([["f", minutes(2.5)]]));
+  const nonNumeric = jobTimeoutProblems(factsOf([["s", { kind: "invalid", raw: "forever" }]]));
+  check(
+    "P2-322: zero, negative, fractional and non-numeric timeouts all yield the not-a-positive-integer cause",
+    zero.length === 1 &&
+      negative.length === 1 &&
+      fractional.length === 1 &&
+      nonNumeric.length === 1 &&
+      [zero[0], negative[0], fractional[0], nonNumeric[0]].every((p) => p?.includes("not a positive integer")),
+  );
+  const above = jobTimeoutProblems(factsOf([["h", minutes(JOB_TIMEOUT_CEILING_MINUTES + 1)]]));
+  check(
+    "P2-322: a timeout above the documented ceiling yields exactly one problem citing the ceiling",
+    above.length === 1 && above[0]?.includes(String(JOB_TIMEOUT_CEILING_MINUTES)),
+  );
+  const multiCause = jobTimeoutProblems(
+    factsOf([
+      ["a", minutes(5)],
+      ["b", { kind: "absent" }],
+      ["c", minutes(5)],
+      ["h", minutes(JOB_TIMEOUT_CEILING_MINUTES + 1)],
+    ]),
+  );
+  check(
+    "P2-322: no short-circuit — every cause is reported in one run, in input order",
+    multiCause.length === 2 && multiCause[0]?.includes('"b"') && multiCause[1]?.includes('"h"'),
+  );
+  const unreadable = jobTimeoutProblems([
+    { file: "ci.yml", job: "(unreadable)", timeout: { kind: "unreadable", reason: "file missing or unreadable" } },
+  ]);
+  check(
+    "P2-322: a failed read is fail-closed — its own problem, never a silent approval",
+    unreadable.length === 1 && unreadable[0]?.includes("unreadable") && unreadable[0]?.includes("fail closed"),
+  );
+  const deterministic = factsOf([["b", { kind: "absent" }], ["h", minutes(JOB_TIMEOUT_CEILING_MINUTES + 1)]]);
+  check(
+    "P2-322: the same input in two calls returns an identical problem list",
+    JSON.stringify(jobTimeoutProblems(deterministic)) === JSON.stringify(jobTimeoutProblems(deterministic)) &&
+      jobTimeoutProblems(deterministic).length === 2,
+  );
+
+  // Collector normalization table: valid, zero, negative, non-numeric, absent.
+  check(
+    "P2-322: the collector normalizes valid, zero, negative, non-numeric and absent declarations",
+    (() => {
+      const yml = [
+        "name: T",
+        "jobs:",
+        "  ok:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: 30",
+        "    steps:",
+        "      - run: echo ok",
+        "        timeout-minutes: 5",
+        "  zero:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: 0",
+        "    steps:",
+        "      - run: echo zero",
+        "  neg:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: -5",
+        "    steps:",
+        "      - run: echo neg",
+        "  word:",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: forever",
+        "    steps:",
+        "      - run: echo word",
+        "  none:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: echo none",
+      ].join("\n");
+      const entries = collectJobTimeouts(yml, "t.yml");
+      const byJob = new Map(entries.map((e) => [e.job, e.timeout]));
+      const ok = byJob.get("ok");
+      const zeroDecl = byJob.get("zero");
+      const negDecl = byJob.get("neg");
+      const wordDecl = byJob.get("word");
+      const noneDecl = byJob.get("none");
+      return (
+        entries.length === 5 &&
+        ok?.kind === "minutes" &&
+        ok.minutes === 30 &&
+        zeroDecl?.kind === "minutes" &&
+        zeroDecl.minutes === 0 &&
+        negDecl?.kind === "invalid" &&
+        negDecl.raw === "-5" &&
+        wordDecl?.kind === "invalid" &&
+        wordDecl.raw === "forever" &&
+        noneDecl?.kind === "absent" &&
+        // the step-level timeout of the ok job never leaks into the job level
+        jobTimeoutProblems(entries).length === 4
+      );
+    })(),
+  );
+  check(
+    "P2-322: normalizeTimeoutDeclaration maps digit strings to minutes and everything else to invalid",
+    normalizeTimeoutDeclaration(" 45 ").kind === "minutes" &&
+      normalizeTimeoutDeclaration(" 45 ").minutes === 45 &&
+      normalizeTimeoutDeclaration("2.5").kind === "invalid" &&
+      normalizeTimeoutDeclaration("${{ env.T }}").kind === "invalid",
+  );
+  check(
+    "P2-322: the collector fails closed on text that is not a workflow",
+    (() => {
+      const entries = collectJobTimeouts("not: a workflow\n", "fake.yml");
+      return entries.length === 1 && entries[0]?.timeout.kind === "unreadable" && jobTimeoutProblems(entries).length === 1;
+    })(),
+  );
+
+  // Real-repo fail-closed assertions: every job of BOTH real workflows
+  // declares a positive-integer timeout within the ceiling.
+  const ciText = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const releaseText = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  const realEntries = [...collectJobTimeouts(ciText, "ci.yml"), ...collectJobTimeouts(releaseText, "release.yml")];
+  check("P2-322: the real workflows expose exactly thirteen jobs to the gate", realEntries.length === 13);
+  check(
+    "P2-322: real ci.yml + release.yml through the gate — zero problems (every job declares its timeout)",
+    jobTimeoutProblems(realEntries).length === 0,
+  );
+  check(
+    "P2-322: every real job timeout is a whole number of minutes from 1 to the ceiling",
+    realEntries.every(
+      (e) =>
+        e.timeout.kind === "minutes" &&
+        Number.isInteger(e.timeout.minutes) &&
+        e.timeout.minutes >= 1 &&
+        e.timeout.minutes <= JOB_TIMEOUT_CEILING_MINUTES,
+    ),
+  );
+
+  // The gate step: unique, beside the permissions and action-pins gates,
+  // bash shell and own timeout (P2-245/P2-255 lessons), wired through
+  // package.json.
+  const verifyJob = ciText.slice(0, ciText.indexOf("\n  scope:"));
+  const gateName = "- name: Job timeouts gate";
+  const gateAt = verifyJob.indexOf(gateName);
+  const gateEnd = verifyJob.indexOf("- name:", gateAt + 10);
+  const gateBlock = gateAt >= 0 && gateEnd > gateAt ? verifyJob.slice(gateAt, gateEnd) : "";
+  const permsAt = verifyJob.indexOf("- name: Workflow permissions gate");
+  const pinsAt = verifyJob.indexOf("- name: Action pins gate");
+  check("P2-322: the job-timeouts step exists exactly once in ci.yml", ciText.split(gateName).length === 2);
+  check(
+    "P2-322: the step sits beside the permissions and action-pins gates (after both, inside the verify job)",
+    permsAt > -1 && pinsAt > -1 && gateAt > permsAt && gateAt > pinsAt,
+  );
+  check(
+    "P2-322: the step declares shell bash and its own timeout-minutes",
+    gateBlock.includes("shell: bash") && gateBlock.includes("timeout-minutes:"),
+  );
+  check(
+    "P2-322: the step runs the script via the package.json entry",
+    gateBlock.includes("npm run check:job-timeouts") &&
+      (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts[
+        "check:job-timeouts"
+      ] === "tsx scripts/check-job-timeouts.ts",
+  );
+
+  // Purity: the verifier module imports no file system, no process access
+  // and no network vocabulary at all.
+  const verifierSrc = readFileSync(join(root, "scripts", "jobtimeouts.ts"), "utf8");
+  check(
+    "P2-322: jobtimeouts.ts is pure — no node:fs, no node:process, no fetch anywhere in the source",
+    !/node:(fs|process|child_process)/.test(verifierSrc) && !verifierSrc.includes("fetch("),
+  );
+}
+
+// --- P2-323: ask dialog descriptors (askdialog.ts) + fail-closed call sites ---
+{
+  // stub translator: proves every label resolves through the injected
+  // dictionary — nothing is born hardcoded in the module or the JSX
+  const fakeDict: Record<string, string> = {
+    askRenameTitle: "[rename-title]",
+    askRenameBody: "[rename-body]",
+    rename: "[rename]",
+    askDeleteTitle: "[delete-title]",
+    deleteConfirm: "[delete-body]",
+    delete: "[delete]",
+    askRewindTitle: "[rewind-title]",
+    rewindConfirm: "[rewind-body]",
+    askRewindConfirm: "[rewind-confirm]",
+    askCancel: "[cancel]",
+    renamePrompt: "[input-label]",
+  };
+  const t = (key: string) => fakeDict[key] ?? key;
+
+  // --- the acceptance table: one case per intent plus the hostile edges ------
+  const rename = buildAskDialog("rename", t, "Old title");
+  check("ask: rename → neutral tone", rename.tone === "neutral");
+  check("ask: rename → shows the input field", rename.withInput === true);
+  check("ask: rename → input starts on the current title", rename.initialInput === "Old title");
+  check("ask: rename → title/body/labels resolve through the dictionary", rename.title === "[rename-title]" && rename.body === "[rename-body]" && rename.confirmLabel === "[rename]" && rename.cancelLabel === "[cancel]" && rename.inputLabel === "[input-label]");
+
+  const del = buildAskDialog("delete", t);
+  check("ask: delete → destructive tone", del.tone === "destructive");
+  check("ask: delete → no input field", del.withInput === false);
+  check("ask: delete → body is the delete question, confirm is Delete", del.body === "[delete-body]" && del.confirmLabel === "[delete]" && del.title === "[delete-title]");
+
+  const rewind = buildAskDialog("rewind", t);
+  check("ask: rewind → destructive tone without input", rewind.tone === "destructive" && rewind.withInput === false);
+  check("ask: rewind → body is the rewind question", rewind.body === "[rewind-body]" && rewind.confirmLabel === "[rewind-confirm]" && rewind.title === "[rewind-title]");
+
+  // unknown intent: fail-closed — it throws, it never invents a descriptor
+  let threw = false;
+  try {
+    buildAskDialog("archive", t);
+  } catch {
+    threw = true;
+  }
+  check("ask: unknown intent is refused (fail-closed throw)", threw);
+  threw = false;
+  try {
+    buildAskDialog(undefined, t);
+  } catch {
+    threw = true;
+  }
+  check("ask: non-string intent is refused (fail-closed throw)", threw);
+
+  // missing / hostile current titles never break the descriptor
+  check("ask: rename with absent title starts empty", buildAskDialog("rename", t).initialInput === "");
+  check("ask: rename with a whitespace title keeps it verbatim (confirm stays disabled)", buildAskDialog("rename", t, "   ").initialInput === "   ");
+  check("ask: rename with a non-string title starts empty", buildAskDialog("rename", t, 42).initialInput === "");
+
+  // --- canConfirmAskValue table ----------------------------------------------
+  const confirmTable: Array<{ name: string; value: unknown; current?: unknown; want: boolean }> = [
+    { name: "a fresh title confirms", value: "New name", current: "Old", want: true },
+    { name: "empty value is refused", value: "", current: "Old", want: false },
+    { name: "whitespace-only value is refused", value: "   ", current: "Old", want: false },
+    { name: "a value identical to the current title is refused", value: "Old", current: "Old", want: false },
+    { name: "identical after trimming is refused", value: "  Old  ", current: "Old", want: false },
+    { name: "absent current title: any non-empty value confirms", value: "First", want: true },
+    { name: "numbers are refused (non-textual input)", value: 42, current: "Old", want: false },
+    { name: "null is refused", value: null, want: false },
+    { name: "objects are refused", value: { title: "Old" }, current: "Old", want: false },
+    { name: "arrays are refused", value: ["Old"], current: "Old", want: false },
+  ];
+  for (const tc of confirmTable) {
+    check(`ask: canConfirm — ${tc.name}`, canConfirmAskValue(tc.value, tc.current) === tc.want);
+  }
+
+  // --- purity: same input, two calls, identical result ------------------------
+  const first = JSON.stringify(buildAskDialog("rename", t, "Sync"));
+  check("ask: same input always yields the identical descriptor", first === JSON.stringify(buildAskDialog("rename", t, "Sync")));
+  check("ask: canConfirm is deterministic", canConfirmAskValue("Sync", "Old") === canConfirmAskValue("Sync", "Old"));
+
+  // --- fail-closed source scan over the real apps/web/src tree ---------------
+  // No window.prompt / window.confirm may survive anywhere: the desktop shell
+  // never implemented prompt (rename died silently) and confirm ignores the
+  // UI language and the theme.
+  const root = join(import.meta.dirname, "..");
+  const webRoot = join(root, "apps", "web", "src");
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(p);
+      } else if (/\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+        const src = readFileSync(p, "utf8");
+        if (/window\.(prompt|confirm)\s*\(/.test(src)) offenders.push(p);
+      }
+    }
+  };
+  walk(webRoot);
+  // round-2 review: check() takes exactly two args — name the offenders on a
+  // separate failure-only line so a future regression still points at the file
+  if (offenders.length > 0) console.error(`ask offenders: ${offenders.join(", ")}`);
+  check("ask: zero window.prompt/window.confirm left in apps/web/src", offenders.length === 0);
+  check("ask: the three call sites render the shared dialog", (() => {
+    const sessions = readFileSync(join(webRoot, "components", "SessionsView.tsx"), "utf8");
+    const chat = readFileSync(join(webRoot, "components", "ChatView.tsx"), "utf8");
+    return sessions.includes("<AskDialog") && chat.includes("<AskDialog") && sessions.includes("buildAskDialog") && chat.includes("buildAskDialog");
+  })());
+}
+
+// --- P3-329: the stuck QR wait names its dependency and offers the manual path
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const welcome = read(join("components", "WelcomeView.tsx"));
+  const app = read("App.tsx");
+  const css = read("index.css");
+
+  // the new copy resolves in BOTH locales — no raw-key fallback on the stuck screen
+  const qrKeys = ["welcomeQrWaitHint", "welcomeQrErrorHint", "welcomeQrManual"];
+  check(
+    "P3-329: QR wait/error copy resolves per locale",
+    (["en", "pt"] as const).every((lang) =>
+      qrKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+
+  // the wait branch carries the dependency hint right under "generating"
+  const waitAt = welcome.indexOf('t("welcomeQrWait")');
+  const waitHintAt = welcome.indexOf('t("welcomeQrWaitHint")');
+  check("P3-329: the wait state names the local-agent dependency", waitAt !== -1 && waitHintAt > waitAt);
+
+  // the error branch explains why and offers the labeled manual escape next
+  // to the retry — conditional on the App-provided wiring, never a dead button
+  const errAt = welcome.indexOf('t("welcomeQrError")');
+  const errHintAt = welcome.indexOf('t("welcomeQrErrorHint")');
+  const retryAt = welcome.indexOf('className="welcome-qr-retry"');
+  const manualAt = welcome.indexOf('className="welcome-qr-manual"');
+  check(
+    "P3-329: the error branch explains the dependency and pairs retry with the manual escape",
+    errAt !== -1 && errHintAt > errAt && retryAt > errHintAt && manualAt > retryAt && manualAt < welcome.indexOf('t("welcomeQrWaitHint")'),
+  );
+  check(
+    "P3-329: the manual button renders only when the escape is wired",
+    welcome.includes("{onPairManually && (") && welcome.includes("onClick={onPairManually}"),
+  );
+
+  // App wires the escape: finish the wizard, land on the manual ceremony, and
+  // explicit manual intent keeps the paste form visible (localMode forced off)
+  const wiringAt = app.indexOf("onPairManually={() => {");
+  const finishAt = app.indexOf("finishWelcome();", wiringAt);
+  const setManualAt = app.indexOf("setPairManual(true);", wiringAt);
+  check(
+    "P3-329: the wizard escape finishes onboarding and opens the manual ceremony",
+    wiringAt !== -1 && finishAt > wiringAt && setManualAt > finishAt,
+  );
+  check(
+    "P3-329: pairManual intent forces localMode off (paste form never swallowed)",
+    app.includes('localMode={pairManual ? false : pairingState?.mode === "local"}'),
+  );
+
+  // styling stays on the quiet bordered vocabulary — the manual button shares
+  // the retry rule instead of growing a second visual grammar
+  check(
+    "P3-329: hint + actions styled, manual button shares the retry rule",
+    css.includes(".welcome-qr-hint") && css.includes(".welcome-qr-actions") && css.includes(".welcome-qr-manual {"),
+  );
+}
+
+
+// ── eval r3: doctorDist + mergeReadiness (operator landing P1-060) ──────
 // --- eval r3: merge readiness — GitHub's verdict is read BEFORE the merge is armed --
 {
   const run = (name: string, status: string, conclusion: string | null) => ({ __typename: "CheckRun", name, status, conclusion, workflowName: "CI" });

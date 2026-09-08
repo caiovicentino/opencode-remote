@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, lstatSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -37,9 +37,20 @@ import type {
 import { log } from "./log.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
+import { pushSubscriptionVerdict, redactPushEndpoint } from "./pushsubs.js";
+import { identityVerdict, quarantineName } from "./identityfile.js";
+import {
+  backupContentVerdict,
+  backupName,
+  backupWritePlan,
+  IDENTITY_BACKUP_RESTORED_LOG,
+  identityRecoveryPlan,
+} from "./identitybackup.js";
 import { appendAudit, readAuditTail } from "./auditlog.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
-import { handleBrowse } from "./browse.js";
+import { handleBrowse, probeBrowse } from "./browse.js";
+import { browseReadiness, type BrowseVerdict } from "./browsecap.js";
+import { settingsMirror } from "./settingsmirror.js";
 import {
   avgDoneDuration,
   buildCards,
@@ -53,22 +64,52 @@ import {
   validateTakeoverDirectory,
   validateTakeoverSessionId,
 } from "./pilotforensic.js";
-import { detectWhisper, transcribeAudio, type WhisperTool } from "./whisper.js";
+import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whisper.js";
+import { sttVerdict } from "./voicecap.js";
+import { ttsVerdict } from "./ttscap.js";
+import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
+import { MIN_OPENCODE_VERSION, versionVerdict, type OpencodeVersionVerdict } from "./opencodever.js";
+import { parseReadinessKnobs, readinessRefreshPlan } from "./readiness.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
 import { loadRoutines, saveRoutines, type Routine } from "./routines.js";
+import { appendRoutineHistory, recordRoutineTrigger } from "./routinehistory.js";
 import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, readArtifact, sessionTitleMap } from "./artifacts.js";
+import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
+import { parseUploadRetention, uploadRetentionPlan, type UploadEntry as UploadFile } from "./uploadretention.js";
+import { clipRetentionPlan, parseClipRetention, type ClipGroup } from "./clipretention.js";
+import { diskVerdict, type DiskVerdict } from "./diskguard.js";
+import { docConvertProbe, docConvertVerdict, type DocConvertVerdict } from "./doccap.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
-import { createShutdown, stopAccepting } from "./shutdown.js";
+import { createShutdown, isSidecarStopMessage, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
+import { relayDialVerdict, type RelayDialKind } from "./relaydialerror.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
+import { normalizeProxyEnv, relayProxyVerdict, type RelayProxyVerdict } from "./relayproxy.js";
+import { createRelayTunnelConnect } from "./relaytunnel.js";
 import { bodyLimit, isBodyLimitError, readLimitedBody, type BodyLimitError } from "./bodylimit.js";
 import { pairWindow, bootstrapDecision } from "./pairwindow.js";
+import { leaseVerdict, parseRunLease, RUN_LEASE_KILL_MESSAGE } from "./routinelease.js";
+import {
+  routineDue,
+  ROUTINE_DUE_DELAY_WINDOW_MIN,
+  ROUTINE_DUE_EXHAUSTED_MESSAGE,
+  ROUTINE_DUE_MAX_ATTEMPTS,
+} from "./routinedue.js";
+import { queueView } from "./backlogview.js";
 import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
+// P2-268: derived, read-only staleness verdicts for the devices routes —
+// classification only; this import never writes the allowlist.
+import {
+  DEVICE_STALE_LONG_WINDOW_MS,
+  DEVICE_STALE_SHORT_WINDOW_MS,
+  deviceStaleVerdict,
+  type StaleVerdictReport,
+} from "./devicestale.js";
 import {
   admitNewUpload,
   chunkIndexProblem,
@@ -76,6 +117,13 @@ import {
   expiredKeys,
   stagedOverLimit,
 } from "./chunkstore.js";
+// P2-314: download-start ceilings — pure admission verdict + entries-ceiling
+// eviction, same hygiene as chunkstore.ts (all I/O stays in this file).
+import {
+  downloadCapLimits,
+  downloadVerdict,
+  evictOldestKeys,
+} from "./downloadcap.js";
 import {
   classifyUpstream,
   UPSTREAM_PROBE_TIMEOUT_MS,
@@ -114,6 +162,16 @@ const RELAY_URL = process.env.RELAY_URL ?? "ws://127.0.0.1:8787";
 // unaffected because it does not ride the relay.
 const relayUrl = parseRelayUrl(RELAY_URL);
 const relayDisabled = relayUrl.problems.length > 0;
+// P2-303: the machine's proxy verdict for the relay dial, computed exactly
+// once at boot from the documented proxy variables (HTTPS_PROXY, HTTP_PROXY,
+// ALL_PROXY, NO_PROXY and the daemon's own OCR_RELAY_PROXY — the desktop
+// shell injects the owner's fixed choice there). "direct" keeps today's
+// one-argument dial byte-for-byte; "tunnel" dials through an HTTP CONNECT
+// tunnel built by relaytunnel.ts. The verdict's reason is static pt-BR copy;
+// the proxy address never reaches the log or the API surface.
+const relayProxy: RelayProxyVerdict = relayProxyVerdict(normalizeProxyEnv(process.env), RELAY_URL);
+const relayTunnelConnect =
+  relayProxy.state === "tunnel" ? createRelayTunnelConnect(relayProxy, relayUrl.secure) : null;
 // P2-180: the JSON body ceiling is resolved exactly once at boot. Fail-closed
 // like the RELAY_URL preflight above: an invalid OCR_MAX_BODY_BYTES never
 // falls back to the default — main() logs one line per problem and exits 1
@@ -122,11 +180,18 @@ const bodyLimitResolution = bodyLimit(process.env);
 // P2-181: the chunk-staging ceilings are resolved exactly once at boot too —
 // same fail-closed contract: any problem means exit 1 with no listener.
 const chunkLimits = chunkStoreLimits(process.env);
+// P2-314: the download ceilings are resolved exactly once at boot — same
+// fail-closed contract: any problem means exit 1 with no listener.
+const downloadCaps = downloadCapLimits(process.env);
 // P2-190: the bootstrap pairing window is resolved exactly once at boot —
 // same fail-closed contract: an invalid OCR_PAIR_WINDOW_MS never falls back
 // to the default; main() logs one line per problem and exits 1 with no
 // listener.
 const pairWindowCfg = pairWindow(process.env);
+// P2-236: the routine run lease is resolved exactly once at boot — same
+// fail-closed contract: an invalid OCR_RUN_LEASE_MS never falls back to the
+// default; main() logs one line per problem and exits 1 with no listener.
+const runLease = parseRunLease(process.env);
 const OPENCODE_URL = process.env.OPENCODE_URL ?? "http://127.0.0.1:4096";
 const OPENCODE_USER = process.env.OPENCODE_SERVER_USERNAME ?? "opencode";
 const OPENCODE_PASS = process.env.OPENCODE_SERVER_PASSWORD ?? "";
@@ -187,7 +252,9 @@ function saveAllowlist(clients: PairedClient[]) {
   raw.clients = clients;
   // P2-165: atomic + 0600-from-creation (tmp + rename) — a crash mid-write
   // used to truncate daemon.json and lose every pairing.
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
+  persistIdentityBackup(serialized);
 }
 
 function assertPrivateMode(file: string) {
@@ -195,6 +262,41 @@ function assertPrivateMode(file: string) {
   if (mode !== 0o600) {
     chmodSync(file, 0o600);
     log("warn", "state file permissions tightened to 0600", { file, previousMode: mode.toString(8) });
+  }
+}
+
+// P2-254: automatic backup copy of the identity file. Written through the
+// same atomic 0600 write as the main file, only as a side effect of a
+// successful persistence (no timers, no periodic scheduling), at most once
+// per minimum interval. Failure is strictly log-only: it never brings the
+// daemon down and never invalidates the main write it follows.
+const IDENTITY_BACKUP_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+// One single source for the backup path: every consumer derives it from
+// STATE_DIR here, so boot and persistence can never drift apart.
+function identityBackupPath(): string {
+  return join(STATE_DIR, backupName(basename(STATE_FILE)));
+}
+
+function persistIdentityBackup(serialized: string) {
+  try {
+    const backupPath = identityBackupPath();
+    let backupExists = false;
+    let lastBackupAt: number | null = null;
+    try {
+      lastBackupAt = statSync(backupPath).mtimeMs;
+      backupExists = true;
+    } catch {}
+    const plan = backupWritePlan({
+      contentUsable: backupContentVerdict(serialized).plan === "use",
+      backupExists,
+      lastBackupAt,
+      now: Date.now(),
+      minIntervalMs: IDENTITY_BACKUP_MIN_INTERVAL_MS,
+    });
+    if (plan.decision === "write") writeStateAtomic(backupPath, serialized);
+  } catch {
+    log("warn", "identity backup copy skipped: write failed");
   }
 }
 
@@ -214,9 +316,104 @@ function audit(event: string, data?: Record<string, unknown>) {
 async function loadIdentity(): Promise<DaemonIdentity> {
   const dir = STATE_DIR;
   mkdirSync(dir, { recursive: true });
-  let raw: Partial<IdentityFile> = existsSync(STATE_FILE)
-    ? (JSON.parse(readFileSync(STATE_FILE, "utf8")) as Partial<IdentityFile>)
-    : {};
+  // P2-234: the identity file is read through the pure verdict in
+  // identityfile.ts. An unreadable daemon.json (truncated pre-P2-165 write,
+  // full disk, failed manual edit) used to crash right here with a raw
+  // SyntaxError and the machine vanished from the phone without a word.
+  let exists = true;
+  let content: string | null = null;
+  let readFailure: string | null = null;
+  try {
+    content = readFileSync(STATE_FILE, "utf8");
+  } catch (err) {
+    // A missing file is the long-standing first-run path, bit for bit; any
+    // other filesystem failure refuses the boot with the file untouched.
+    const code = (err as NodeJS.ErrnoException)?.code ?? "";
+    if (code === "ENOENT") exists = false;
+    else readFailure = code || "EUNKNOWN";
+  }
+  const verdict = identityVerdict(exists, content, readFailure);
+
+  // P2-254: an illegible identity file may be recoverable from the automatic
+  // backup copy. Only a content refusal (the quarantine mark) is ever
+  // recoverable — identityRecoveryPlan owns the rule order: a usable main
+  // wins, a read failure never restores, a missing file stays a first run.
+  let restoredContent: string | null = null;
+  if (verdict.quarantine) {
+    const backupPath = identityBackupPath();
+    let backupContent: string | null = null;
+    let backupExists = false;
+    try {
+      backupContent = readFileSync(backupPath, "utf8");
+      backupExists = true;
+    } catch {
+      backupExists = existsSync(backupPath);
+    }
+    const recovery = identityRecoveryPlan(
+      verdict,
+      backupExists,
+      backupContentVerdict(backupContent),
+    );
+    if (recovery === "restore-from-backup" && backupContent !== null) {
+      // Preserve the illegible file beside the original first (the P2-234
+      // quarantine path — nothing is ever deleted); only then put the copy
+      // in place through the same atomic 0600 write. If the preservation
+      // itself fails the bytes stay put and the boot refuses as before.
+      let preserved: string | null = null;
+      try {
+        const qfile = join(dir, quarantineName(basename(STATE_FILE), new Date()));
+        renameSync(STATE_FILE, qfile);
+        chmodSync(qfile, 0o600);
+        preserved = qfile;
+      } catch {}
+      let restored = false;
+      if (preserved !== null) {
+        try {
+          writeStateAtomic(STATE_FILE, backupContent);
+          restored = true;
+        } catch {
+          // The restore write itself failed (a full disk — the exact
+          // scenario this task exists for). Never die with the main file
+          // missing while a good backup survives: put the preserved
+          // illegible bytes back over the main path and fall through to
+          // the refuse branch below (exit 78, backup copy intact).
+          try {
+            renameSync(preserved, STATE_FILE);
+          } catch {}
+        }
+      }
+      if (restored) {
+        log("info", IDENTITY_BACKUP_RESTORED_LOG);
+        audit("identity.restored-from-backup");
+        content = backupContent;
+        restoredContent = backupContent;
+      }
+    }
+  }
+
+  if (verdict.plan === "refuse" && restoredContent === null) {
+    // Rule-order contract (identityfile.ts header): a filesystem read
+    // failure NEVER quarantines — the file stays exactly where it is. For
+    // unreadable content, preserve it beside the original (0600, never
+    // deleted) so the owner can restore the pairings.
+    let quarantined = false;
+    if (verdict.quarantine) {
+      try {
+        const qfile = join(dir, quarantineName(basename(STATE_FILE), new Date()));
+        renameSync(STATE_FILE, qfile);
+        chmodSync(qfile, 0o600);
+        quarantined = true;
+      } catch {}
+    }
+    log("error", verdict.message, { quarantined });
+    audit("identity.unreadable", { quarantined });
+    // Documented exit code 78 (EX_CONFIG): the identity is never recreated
+    // behind the owner's back in this run — the next run either finds the
+    // file quarantined (first run) or fails the same read again.
+    process.exit(78);
+  }
+  let raw: Partial<IdentityFile> =
+    restoredContent !== null || verdict.plan === "use" ? (JSON.parse(content!) as Partial<IdentityFile>) : {};
 
   if (!raw.ecdhPub || !raw.ecdhPriv) {
     // v1 -> v2 migration (or first run)
@@ -232,8 +429,10 @@ async function loadIdentity(): Promise<DaemonIdentity> {
   }
 
   // P2-165: atomic write — the identity must survive a power loss mid-write.
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
   assertPrivateMode(STATE_FILE);
+  persistIdentityBackup(serialized);
 
   const identity = await importPrivateIdentity(raw.ecdhPub!, fromB64(raw.ecdhPriv!));
   return {
@@ -264,9 +463,117 @@ let appSettings: AppSettings;
 
 // local whisper transcription (optional; scripts/setup-whisper.sh installs it)
 let whisperTool: WhisperTool | null = null;
+// P2-201: raw detection facts kept beside the usable tool — a host with the
+// whisper binary but no model still has a toolType, and the capability status
+// must say "model missing" instead of pretending nothing exists.
+let sttToolType: string | null = null;
+let sttModelPresent = false;
+
+/**
+ * P2-201: speech-to-text capability verdict for the status route and the 501
+ * body. OCR_STT_BLOCK=1 is a documented test hatch (same spirit as the
+ * desktop camera block): it forces a missing-binary verdict so the disabled
+ * mic UI can be evidenced deterministically on hosts that DO have whisper.
+ */
+function sttStatus(): { available: boolean; state: string; message: string } {
+  const verdict = process.env.OCR_STT_BLOCK === "1" ? sttVerdict(null, false) : sttVerdict(sttToolType, sttModelPresent);
+  return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
+
+// P2-210: last summary observed from the provider catalog — fed ONLY by
+// fetches that already happen (the context ruler's on-miss refresh and the
+// /provider passthrough). The readiness route never fetches on its own: it
+// reads this summary, so "no usable provider" surfaces before the first
+// message instead of as a raw upstream error after it.
+let modelCatalogSummary: ProviderSummary[] | null = null;
+let modelCatalogFailed = false;
+
+/** Record an observation of the already-fetched provider catalog. */
+function noteProviderCatalog(catalog: unknown, ok: boolean) {
+  modelCatalogFailed = !ok;
+  if (ok) {
+    modelCatalogSummary = providerSummary(catalog as Parameters<typeof providerWindows.refresh>[0]);
+  }
+}
+
+/**
+ * P2-210: model-readiness verdict for the status route. OCR_MODEL_BLOCK=1 is
+ * a documented test hatch (same spirit as OCR_STT_BLOCK): it forces the
+ * no-provider verdict so the composer hint can be evidenced deterministically
+ * on hosts that DO have credentials.
+ */
+function modelStatus(): { available: boolean; state: string; message: string } {
+  const verdict =
+    process.env.OCR_MODEL_BLOCK === "1"
+      ? modelReadyVerdict([])
+      : modelReadyVerdict(modelCatalogSummary, modelCatalogFailed);
+  return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
+
+// P2-231: document→PDF conversion readiness, probed EXACTLY ONCE at boot on
+// the same readiness hook as whisper/edge-tts — never per request, never
+// periodic (the single probe call site lives inside main()). The verdict is
+// announced in /api/health BEFORE the user sends a document, instead of the
+// old raw English terminal error mid-conversation.
+let docConvert: DocConvertVerdict = docConvertVerdict(process.platform, {
+  soffice: false,
+  textutil: false,
+  cupsfilter: false,
+});
+
+/** One probe over the known install locations from doccap.ts. Synchronous on
+ * purpose (a handful of existsSync calls — it cannot delay boot); any probe
+ * failure degrades to the unavailable verdict with a single log line instead
+ * of an exception. */
+function probeDocConvert(): void {
+  try {
+    docConvert = docConvertVerdict(process.platform, docConvertProbe(process.platform, existsSync));
+  } catch (err) {
+    docConvert = docConvertVerdict(process.platform, { soffice: false, textutil: false, cupsfilter: false });
+    log("warn", "doc conversion probe failed — advertising unavailable", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// P2-284: browse readiness, judged by the pure browsecap.ts verdict from the
+// normalized probe of browse.ts. Probed EXACTLY ONCE at boot on the same
+// readiness hook — never per request, never periodic — and announced in
+// /api/health BEFORE the user asks the agent to open a site, instead of the
+// old raw English error with an install command mid-conversation.
+let browseCap: BrowseVerdict = browseReadiness(null);
+
+/** One async probe (resolves the playwright library, checks the executable on
+ * disk); never throws — a probe that cannot run degrades to the unknown
+ * verdict with a single log line instead of an exception. */
+async function probeBrowseCap(): Promise<void> {
+  try {
+    browseCap = browseReadiness(await probeBrowse(existsSync));
+  } catch (err) {
+    browseCap = browseReadiness(null);
+    log("warn", "browse probe failed — advertising unknown", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 // local TTS replies (optional; edge-tts CLI) — P2-125 voice mode
 let edgeTtsBin: string | null = null;
 const TTS_PT_VOICE = process.env.OCR_TTS_VOICE;
+
+/**
+ * P2-298: spoken-reply capability verdict for the status route and the 501
+ * body, judged by the pure ttscap.ts verdict from the resolved tool path.
+ * OCR_TTS_BLOCK=1 is a documented test hatch (same spirit as OCR_STT_BLOCK):
+ * it forces the missing-tool verdict so the unavailable state can be
+ * evidenced deterministically on hosts that DO have edge-tts.
+ */
+function ttsStatus(): { available: boolean; state: string; message: string } {
+  const verdict =
+    process.env.OCR_TTS_BLOCK === "1"
+      ? ttsVerdict(null, "posix")
+      : ttsVerdict(edgeTtsBin, process.platform === "win32" ? "windows" : "posix");
+  return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
 
 interface UploadEntry {
   parts: string[];
@@ -364,7 +671,9 @@ function writeSettings(s: AppSettings) {
   raw.name = s.name;
   raw.notify = s.notify;
   raw.autoMode = s.autoMode;
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
+  persistIdentityBackup(serialized);
 }
 
 // --- file delivery: which paths the phone may download ----------------------
@@ -475,6 +784,19 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
       }
     }
     const routine: Routine = { id: randomUUID(), name, prompt, hour, minute, mode, days, intervalMinutes };
+    // P2-286: a routine created (or recreated) after its time already passed
+    // today must not fire 30 seconds later. The current local day is marked
+    // as fulfilled with the SAME lastRun mark the sweep writes — no new
+    // field, no migration — so the next execution is the next occurrence,
+    // never the creation instant. Interval mode is intentionally untouched
+    // (its pacing starts from its own lastFiredAt marker).
+    if (mode !== "interval") {
+      const created = new Date();
+      const scheduledToday = mode !== "days" || (days ?? []).includes(created.getDay());
+      if (scheduledToday && created.getHours() * 60 + created.getMinutes() >= hour * 60 + minute) {
+        routine.lastRun = created.toLocaleDateString("sv");
+      }
+    }
     routines.push(routine);
     saveRoutines(routines);
     return { id: req.id, status: 200, body: { routine } };
@@ -520,10 +842,17 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
               headers: authHeader ? { authorization: authHeader } : {},
             });
             if (pres.ok) {
-              providerWindows.refresh((await pres.json()) as Parameters<typeof providerWindows.refresh>[0]);
+              const catalog = (await pres.json()) as Parameters<typeof providerWindows.refresh>[0];
+              providerWindows.refresh(catalog);
+              // P2-210: same catalog, already fetched — record the readiness
+              // summary without a new request or a freshness-policy change.
+              noteProviderCatalog(catalog, true);
               window = providerWindows.lookup(providerID, modelID);
+            } else {
+              noteProviderCatalog(null, false);
             }
           } catch {
+            noteProviderCatalog(null, false);
             // provider catalog is optional — without it there is no gauge
           }
         }
@@ -621,10 +950,39 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     } catch {
       return { id: req.id, status: 404, body: { error: "file not found" } };
     }
-    const id = randomUUID();
-    downloads.set(id, { path: abs, size, at: Date.now() });
+    // P2-314: the ceilings are consulted BEFORE any identifier exists — a
+    // refusal must leave no registration behind, and a download already in
+    // progress is never evicted by a newcomer's arrival (the newcomer is the
+    // one refused). The verdict messages are static pt-BR copy: no path, no
+    // file name, no measured size ever leaves the daemon.
+    // P2-314 round 3 (review): the 30-minute sweep runs BEFORE admission —
+    // the same order as the upload staging route ("swept ... before admitting
+    // new work"). With the sweep only after a successful insert, eight
+    // aged-out registrations would count as live forever and answer 429 to
+    // every new start: the prune was unreachable in exactly the state it
+    // exists for.
     for (const [k, v] of downloads) {
       if (Date.now() - v.at > 30 * 60_000) downloads.delete(k);
+    }
+    const verdict = downloadVerdict(size, downloads.size, downloadCaps.maxBytes, downloadCaps.maxOpenDownloads);
+    if (!verdict.allow) {
+      log("warn", "download start refused", { reason: verdict.reason });
+      return {
+        id: req.id,
+        status: verdict.reason === "file-above-cap" ? 413 : 429,
+        body: { error: verdict.message },
+      };
+    }
+    const id = randomUUID();
+    downloads.set(id, { path: abs, size, at: Date.now() });
+    // P2-314: hard entries ceiling on top of the age prune — if the map ever
+    // holds more than the documented number of open downloads, the oldest
+    // registrations go first.
+    for (const k of evictOldestKeys(
+      Array.from(downloads, ([key, v]) => ({ key, at: v.at })),
+      downloadCaps.maxOpenDownloads,
+    )) {
+      downloads.delete(k);
     }
     metrics.inc("ocr_downloads_total");
     return { id: req.id, status: 200, body: { id, size, chunks: Math.max(1, Math.ceil(size / 500_000)) } };
@@ -645,7 +1003,26 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { data: buf.subarray(0, read).toString("base64") } };
   }
   if (req.path === "/__ocr/devices" && req.method === "GET") {
-    return { id: req.id, status: 200, body: { devices: readAllowlist() } };
+    // P2-268: additive staleness verdict per device (spread keeps every
+    // pre-existing field byte-for-byte, verdict/phrase appended last). Read
+    // only — no allowlist write, no new route, no timer.
+    const now = Date.now();
+    return {
+      id: req.id,
+      status: 200,
+      body: {
+        devices: readAllowlist().map((client) => ({
+          ...client,
+          ...deviceStaleVerdict(
+            client.lastSeenAt,
+            client.addedAt,
+            now,
+            DEVICE_STALE_SHORT_WINDOW_MS,
+            DEVICE_STALE_LONG_WINDOW_MS,
+          ),
+        })),
+      },
+    };
   }
   if (req.path === "/__ocr/audit" && req.method === "GET") {
     try {
@@ -672,7 +1049,80 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     return { id: req.id, status: 200, body: { ok: true } };
   }
   if (req.path === "/__ocr/settings" && req.method === "GET") {
-    return { id: req.id, status: 200, body: { ...readSettings(), version: VERSION } };
+    // P2-213: additive mirror of the health opencode.version* verdict on the
+    // existing settings read — the only daemon→app channel the Settings
+    // machine section can reach without a new route (the desktop bridge
+    // forwards only the known health fields, apps/desktop stays untouched).
+    // P2-215: same channel logic for the disk verdict (`disk`, additive).
+    // P2-250: lazy version re-probe right before the verdict is answered —
+    // an opencode updated after boot is picked up here (at most once per
+    // interval) instead of needing a daemon restart.
+    maybeReprobeOpencodeVersion();
+    // P2-288: the doc-conversion and browse verdicts ride this channel too —
+    // both re-probed lazily at this same point under the same readiness.ts
+    // policy (OCR_READINESS_MIN_MS / OCR_READINESS_DISABLE), so installing
+    // LibreOffice or the Playwright browser is picked up without a restart.
+    // No new route, no new request, no new poll, no new timer.
+    maybeReprobeDocConvert();
+    await maybeReprobeBrowse();
+    // P2-296: the voice verdict rides this channel too — re-probed lazily at
+    // this same point under the same readiness policy, so installing whisper
+    // or its model is picked up without a restart. No new route, no new
+    // request, no new poll, no new timer.
+    await maybeReprobeTranscription();
+    // P2-300: the spoken-reply verdict rides this channel too — re-probed
+    // lazily at this same point under the same readiness policy, so installing
+    // edge-tts after boot is picked up without a restart. No new route, no
+    // new request, no new poll, no new timer. The OCR_TTS_BLOCK=1 hatch keeps
+    // forcing the missing-tool verdict for these fields as well.
+    maybeReprobeTts();
+    const stt = sttStatus();
+    // P2-300: the same hatch-aware spoken-reply verdict the tts-status route
+    // serves.
+    const tts = ttsStatus();
+    return {
+      id: req.id,
+      status: 200,
+      body: {
+        ...readSettings(),
+        version: VERSION,
+        opencodeVersion: opencodeVersion,
+        disk: diskStatus(),
+        // P2-288: additive mirror of the /api/health verdicts — same names,
+        // same values. The pure settingsmirror.ts decides which fields are
+        // safe to carry; every existing field keeps its exact name and order.
+        // P2-292: the relay and agent verdicts ride this channel too — the
+        // relay object exactly as the health route answers it (url included);
+        // the pure mirror strips the address deterministically, so only
+        // ok/reason and binaryFound/binarySource can ever reach the response.
+        ...settingsMirror({
+          docConvertState: docConvert.state,
+          docConvertMessage: docConvert.message,
+          browseState: browseCap.state,
+          browseMessage: browseCap.message,
+          relay: {
+            url: redactRelayUrl(RELAY_URL),
+            ok: !relayDisabled,
+            reason: relayDisabled ? relayUrl.problems.join(" ") : null,
+          },
+          opencode: {
+            binaryFound: binaryPick.path !== null,
+            binarySource: binaryPick.source,
+          },
+          // P2-296: the voice pair joins the mirror — the same hatch-aware
+          // sttStatus() the stt-status route answers; the pure mirror decides
+          // what rides, appended after the existing entries (never reordered).
+          voiceState: stt.state,
+          voiceMessage: stt.message,
+          // P2-300: the spoken-reply pair joins the mirror — appended after
+          // the existing entries (never reordered). The identifier is
+          // ttsState, NOT voiceState: voiceState is the voice-TRANSCRIPTION
+          // pair since P2-296 (collision documented so nobody repeats it).
+          ttsState: tts.state,
+          ttsMessage: tts.message,
+        }),
+      },
+    };
   }
   if (req.path === "/__ocr/settings" && req.method === "PATCH") {
     const b = req.body as { name?: string; notify?: Partial<NotifySettings>; autoMode?: boolean };
@@ -818,12 +1268,16 @@ end tell`;
     const { id } = req.body as { id?: string };
     const entry = id ? uploadChunks.get(id) : undefined;
     uploadChunks.delete(id ?? "");
-    if (!entry || !whisperTool) {
-      return {
-        id: req.id,
-        status: 501,
-        body: { error: "transcription unavailable; run scripts/setup-whisper.sh on the host" },
-      };
+    if (!entry) {
+      return { id: req.id, status: 501, body: { error: "transcription upload not found" } };
+    }
+    if (!whisperTool) {
+      // P2-201: the actionable capability phrase (pt-BR, no script paths) from
+      // the same verdict the status route serves — never the raw English hint.
+      // P2-250: lazy re-probe right before the refusal — a whisper installed
+      // after boot is picked up here instead of needing a daemon restart.
+      await maybeReprobeTranscription();
+      return { id: req.id, status: 501, body: { error: sttStatus().message } };
     }
     try {
       const parts = entry.parts.filter(Boolean);
@@ -842,7 +1296,26 @@ end tell`;
   // answer to mp3. The client speaks at most a couple of sentences — the full
   // text stays in the chat.
   if (req.path === "/__ocr/voice/tts-status" && req.method === "GET") {
-    return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES, langs: SPEECH_LANGS } };
+    // P2-298: the verdict (state + actionable pt-BR phrase) rides additively;
+    // available/voice/voices/langs stay exactly as they were. P2-250: lazy
+    // re-probe before the verdict is served — edge-tts installed after boot
+    // is picked up here instead of needing a daemon restart.
+    maybeReprobeTts();
+    const tts = ttsStatus();
+    return { id: req.id, status: 200, body: { available: !!edgeTtsBin, voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES, langs: SPEECH_LANGS, state: tts.state, message: tts.message } };
+  }
+  // P2-201: speech-to-text capability status, mirroring the tts-status shape
+  // (available boolean + verdict state and actionable pt-BR message). Same
+  // auth, same tunnel — no new network surface.
+  if (req.path === "/__ocr/voice/stt-status" && req.method === "GET") {
+    return { id: req.id, status: 200, body: sttStatus() };
+  }
+  // P2-210: model-readiness status, mirroring the stt-status route shape
+  // (available boolean + verdict state and actionable pt-BR message). Same
+  // auth, same tunnel — no new network surface. Reads ONLY the already-cached
+  // catalog summary (see noteProviderCatalog); it never fires its own fetch.
+  if (req.path === "/__ocr/model/status" && req.method === "GET") {
+    return { id: req.id, status: 200, body: modelStatus() };
   }
   if (req.path === "/__ocr/voice/tts" && req.method === "POST") {
     const { text, lang } = req.body as { text?: string; lang?: string };
@@ -850,7 +1323,12 @@ end tell`;
       return { id: req.id, status: 400, body: { error: "text required (1..2000 chars)" } };
     }
     if (!edgeTtsBin) {
-      return { id: req.id, status: 501, body: { error: "voice replies unavailable; install edge-tts on the host" } };
+      // P2-298: the actionable capability phrase (pt-BR, no tool names or
+      // paths) from the same verdict the status route serves — never the raw
+      // English install instruction. P2-250: lazy re-probe right before the
+      // refusal, same as the transcription route.
+      maybeReprobeTts();
+      return { id: req.id, status: 501, body: { error: ttsStatus().message } };
     }
     try {
       const t0 = Date.now();
@@ -947,14 +1425,21 @@ end tell`;
     }
   }
   if (req.path === "/__ocr/push-subscription" && req.method === "POST") {
-    const sub = req.body as PushSub;
-    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+    // P2-272: admission rules (shape, https-only, size and list ceilings) live
+    // in the pure pushsubs verdict — a push endpoint is a bearer credential,
+    // so everything fails closed.
+    const subs = loadSubscriptions();
+    const v = pushSubscriptionVerdict(req.body, subs);
+    if (v.verdict === "recusar") {
       return { id: req.id, status: 400, body: { error: "invalid subscription" } };
     }
-    const subs = loadSubscriptions();
-    const existing = subs.findIndex((s) => s.endpoint === sub.endpoint);
-    if (existing >= 0) subs[existing] = sub;
-    else subs.push(sub);
+    const sub = req.body as PushSub;
+    if (v.verdict === "substituir") {
+      const existing = subs.findIndex((s) => s.endpoint === sub.endpoint);
+      subs[existing] = sub;
+    } else {
+      subs.push(sub);
+    }
     saveSubscriptions(subs);
     return { id: req.id, status: 200, body: { ok: true } };
   }
@@ -1050,7 +1535,13 @@ end tell`;
           name?: string;
           models?: Record<string, { id?: string; name?: string }>;
         }[];
+        connected?: unknown;
       };
+      // P2-210: the client's own /provider fetch (model selector) already
+      // delivered the raw catalog — record the readiness summary BEFORE it is
+      // slimmed away (no new request; this is what makes the verdict available
+      // on the home screen before the first message).
+      noteProviderCatalog(j, true);
       if (j?.all) {
         body = {
           all: j.all.map((p) => ({
@@ -1062,6 +1553,10 @@ end tell`;
           })),
         };
       }
+    } else if (!res.ok && req.method === "GET" && req.path === "/provider") {
+      // P2-210: the catalog fetch the client already made failed — an honest
+      // unknown until the next successful observation.
+      noteProviderCatalog(null, false);
     }
     return { id: req.id, status: res.status, body };
   } catch (err) {
@@ -1120,12 +1615,20 @@ function loadSubscriptions(): PushSub[] {
   }
 }
 
+// P2-272: same atomic tmp+rename write (created 0600) as daemon.json (P2-165)
+// — a power loss mid-write used to wipe every phone's subscription. The
+// existing 404/410 removal below is untouched: no subscription is ever
+// dropped for any other reason.
 function saveSubscriptions(subs: PushSub[]) {
-  writeFileSync(subscriptionsFile(), JSON.stringify(subs, null, 2));
-  chmodSync(subscriptionsFile(), 0o600);
+  writeStateAtomic(subscriptionsFile(), JSON.stringify(subs, null, 2));
 }
 
 interface PushAttempt {
+  /**
+   * P2-272: carries the SHORT REDACTED LABEL (pushsubs.redactPushEndpoint),
+   * never the raw endpoint — a push endpoint is a bearer credential, so the
+   * diagnostics/status surfaces describe state without handing it out.
+   */
   endpoint: string;
   ok: boolean;
   status?: number;
@@ -1143,13 +1646,18 @@ async function pushToSubscribers(title: string, body: string, data?: unknown) {
         TTL: 3600,
         urgency: "high",
       });
-      results.push({ endpoint: sub.endpoint, ok: true });
+      results.push({ endpoint: redactPushEndpoint(sub.endpoint), ok: true });
     } catch (err) {
       const status = (err as { statusCode?: number }).statusCode;
       const message = (err as Error).message;
-      results.push({ endpoint: sub.endpoint, ok: false, status, error: message });
+      results.push({ endpoint: redactPushEndpoint(sub.endpoint), ok: false, status, error: message });
       if (status === 404 || status === 410) dead.push(sub.endpoint);
-      else log("warn", "push delivery failed", { error: message });
+      // P2-272: no log line ever prints the whole endpoint — the label only.
+      else
+        log("warn", "push delivery failed", {
+          endpoint: redactPushEndpoint(sub.endpoint),
+          error: message.split(sub.endpoint).join(redactPushEndpoint(sub.endpoint)),
+        });
     }
   }
   if (dead.length) saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
@@ -1163,10 +1671,10 @@ async function pushDiagnostics() {
   for (const sub of subs) {
     try {
       await webpush.sendNotification(sub, JSON.stringify({ title: "opencode-remote", body: "Test notification — push works 🎉" }), { TTL: 300 });
-      res.push({ endpoint: sub.endpoint, ok: true });
+      res.push({ endpoint: redactPushEndpoint(sub.endpoint), ok: true });
     } catch (err) {
       res.push({
-        endpoint: sub.endpoint,
+        endpoint: redactPushEndpoint(sub.endpoint),
         ok: false,
         status: (err as { statusCode?: number }).statusCode,
         error: (err as Error).message,
@@ -1222,7 +1730,46 @@ function registerArtifactSession(info: { id?: string; directory?: string } | nul
 let routines = loadRoutines();
 const pendingRuns = new Map<string, string>(); // sessionID -> routineID
 
+// P2-286: per-day fire-attempt counters, in memory on purpose — no new field
+// in the routines file and no migration. A restart losing the counter can
+// only grant extra retries up to the same documented ceiling (the counter is
+// keyed by the local day, so a new day always starts from zero).
+const fireAttempts = new Map<string, { day: string; attempts: number }>();
+
+function fireAttemptsToday(routineId: string, today: string): number {
+  const entry = fireAttempts.get(routineId);
+  return entry && entry.day === today ? entry.attempts : 0;
+}
+
+function bumpFireAttempt(routineId: string, today: string): number {
+  const entry = fireAttempts.get(routineId);
+  const attempts = entry && entry.day === today ? entry.attempts + 1 : 1;
+  fireAttempts.set(routineId, { day: today, attempts });
+  return attempts;
+}
+
+// P2-316: exactly one history record per routine trigger, persisted on the
+// routine through the same routines-file write. recordRoutineTrigger is the
+// privacy gate — only the four documented fields (instant, duration,
+// outcome, session id) ever reach the record: no prompt text, no agent
+// reply, no path, no user data. The append is capped, oldest discarded.
+function recordRoutineTriggerResult(
+  r: Routine,
+  outcome: "completed" | "failed" | "skipped",
+  startedAtMs: number | undefined,
+  sessionId?: string,
+) {
+  const record = recordRoutineTrigger({
+    outcome,
+    startedAtMs: startedAtMs ?? Date.now(),
+    endedAtMs: Date.now(),
+    sessionId,
+  });
+  if (record) r.history = appendRoutineHistory(r.history, record);
+}
+
 async function fireRoutine(r: Routine) {
+  const firedAt = Date.now();
   try {
     const headers = { "content-type": "application/json", ...(authHeader ? { authorization: authHeader } : {}) };
     const created = (await (
@@ -1235,6 +1782,9 @@ async function fireRoutine(r: Routine) {
     if (!created.id) throw new Error("session create failed");
     registerArtifactSession(created);
     r.lastSessionID = created.id;
+    // P2-236: stamp the run start where the in-flight marker is written, for
+    // every mode (daily, days, interval) — the lease counts from here.
+    r.runStartedAt = Date.now();
     saveRoutines(routines);
     pendingRuns.set(created.id, r.id);
     // P1-068: routine sessions get the artifacts protocol too (their fetches
@@ -1253,10 +1803,37 @@ async function fireRoutine(r: Routine) {
     });
     log("info", "routine fired", { routine: r.name, session: created.id });
   } catch (err) {
-    r.lastRun = undefined;
-    r.lastFiredAt = undefined;
-    saveRoutines(routines);
-    log("warn", "routine fire failed", { routine: r.name, error: (err as Error).message });
+    // P2-316: the trigger that failed is a fact the history keeps — exactly
+    // one record, outcome "failed", with the created session id when the
+    // failure happened after the session exists (r.lastSessionID is only
+    // ever set by this in-flight run — the sweep skips in-flight routines).
+    recordRoutineTriggerResult(r, "failed", firedAt, r.lastSessionID);
+    // P2-286: daily/days routines still retry within the day, but the retries
+    // are capped — the old path cleared the day mark unconditionally, so a
+    // failing routine retried every sweep until midnight, silently spending
+    // agent sessions. Once the documented ceiling is reached the day is
+    // closed with the error state and the short static phrase the routine
+    // already stores in lastError. No new timer, route or request. Interval
+    // mode keeps its exact previous behavior on purpose (P2-286 scope).
+    const today = new Date().toLocaleDateString("sv");
+    let attempt: number | undefined;
+    if ((r.mode ?? "daily") === "interval") {
+      r.lastRun = undefined;
+      r.lastFiredAt = undefined;
+      saveRoutines(routines);
+    } else {
+      attempt = bumpFireAttempt(r.id, today);
+      if (attempt >= ROUTINE_DUE_MAX_ATTEMPTS) {
+        r.lastRun = today;
+        r.lastStatus = "error";
+        r.lastError = ROUTINE_DUE_EXHAUSTED_MESSAGE;
+        fireAttempts.delete(r.id);
+      } else {
+        r.lastRun = undefined; // bounded retry at the next sweep
+      }
+      saveRoutines(routines);
+    }
+    log("warn", "routine fire failed", { routine: r.name, attempt, error: (err as Error).message });
   }
 }
 
@@ -1287,6 +1864,9 @@ async function completeRoutine(routineId: string, sessionID: string) {
     r.lastSessionID = undefined;
     r.lastStatus = "ok";
     r.lastError = undefined;
+    // P2-316: the trigger that fired resolves here — exactly one record with
+    // the real run duration (fire → completion) and the session it created.
+    recordRoutineTriggerResult(r, "completed", r.runStartedAt, sessionID);
     saveRoutines(routines);
     void pushToSubscribers(`⏰ ${r.name} pronto`, "Rotina concluída — toque para ver/salvar o arquivo", {
       url: "#/files",
@@ -1296,6 +1876,9 @@ async function completeRoutine(routineId: string, sessionID: string) {
     r.lastSessionID = undefined;
     r.lastStatus = "error";
     r.lastError = (err as Error).message.slice(0, 200);
+    // P2-316: a run that never produced a result is a failed trigger — the
+    // error text stays out of the history by design (privacy contract).
+    recordRoutineTriggerResult(r, "failed", r.runStartedAt, sessionID);
     saveRoutines(routines);
     void pushToSubscribers(
       `⏰ ${r.name} falhou`,
@@ -1313,17 +1896,64 @@ async function failRoutine(routineId: string, sessionID: string, why: string) {
   r.lastSessionID = undefined;
   r.lastStatus = "error";
   r.lastError = why.slice(0, 200);
+  // P2-316: the agent-side failure resolves the trigger too — one "failed"
+  // record, still free of the error text (privacy contract).
+  recordRoutineTriggerResult(r, "failed", r.runStartedAt, sessionID);
   saveRoutines(routines);
   void pushToSubscribers(`⏰ ${r.name} falhou`, `Erro do agent: ${why.slice(0, 120)}`, { url: "#/" });
   log("warn", "routine run errored", { routine: r.name, why });
 }
 
+// P2-236: a run whose session event never arrived (daemon restart mid-run,
+// opencode closed, lost session) would hold the in-flight marker forever and
+// silently kill the routine. The release mirrors the existing failure path:
+// marker cleared, routine marked as errored with the static lease phrase,
+// persisted through the same write path, ONE warn line without session ids
+// and at most ONE notification per released routine. The routine itself is
+// never deleted; the next sweep makes it eligible again, so it fires
+// normally at its next scheduled time.
+function releaseStuckRun(r: Routine) {
+  // P2-316: the released run is a failed trigger — capture the facts before
+  // the markers are cleared so the history record stays truthful.
+  const stuckSessionId = r.lastSessionID;
+  const stuckStartedAt = r.runStartedAt;
+  if (r.lastSessionID) pendingRuns.delete(r.lastSessionID);
+  r.lastSessionID = undefined;
+  r.runStartedAt = undefined;
+  r.lastStatus = "error";
+  r.lastError = RUN_LEASE_KILL_MESSAGE;
+  recordRoutineTriggerResult(r, "failed", stuckStartedAt, stuckSessionId);
+  saveRoutines(routines);
+  void pushToSubscribers(`⏰ ${r.name} falhou`, RUN_LEASE_KILL_MESSAGE, { url: "#/" });
+  log("warn", RUN_LEASE_KILL_MESSAGE, { routine: r.name });
+}
+
 function checkRoutines() {
   const now = new Date();
   const today = now.toLocaleDateString("sv"); // local YYYY-MM-DD
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const dow = now.getDay();
+  const nowMs = now.getTime();
+  // P2-236: consult the run lease inside the same periodic sweep — no new
+  // timer, no per-request probing, no boot delay. A stuck run (marker left
+  // behind by a restart or a lost session event) is stamped on first
+  // observation and released once the lease is exceeded; everything else is
+  // untouched.
+  const leasePlans = new Map(
+    leaseVerdict(
+      nowMs,
+      runLease.leaseMs,
+      routines.map((r) => ({ id: r.id, inFlight: Boolean(r.lastSessionID), startedAt: r.runStartedAt })),
+    ).map((v) => [v.id, v.plan]),
+  );
   for (const r of routines) {
+    const leasePlan = leasePlans.get(r.id) ?? "none";
+    if (leasePlan === "kill") {
+      releaseStuckRun(r);
+      continue;
+    }
+    if (leasePlan === "stamp") {
+      r.runStartedAt = nowMs; // lease starts counting from the first observation
+      saveRoutines(routines);
+    }
     if (r.lastSessionID) continue; // a run is already in flight
     const mode = r.mode ?? "daily";
     if (mode === "interval") {
@@ -1334,17 +1964,57 @@ function checkRoutines() {
       void fireRoutine(r);
       continue;
     }
-    if (r.lastRun === today) continue;
-    if (mode === "days" && !(r.days ?? []).includes(dow)) continue;
-    if (nowMin < r.hour * 60 + r.minute) continue;
-    r.lastRun = today;
-    saveRoutines(routines);
-    void fireRoutine(r);
+    // P2-286: the fire decision lives in the pure routinedue.ts module (same
+    // pattern as the run lease above) — the sweep only executes the verdict.
+    // Rules, in order: invalid input refuses and never fires; already
+    // fulfilled today waits; a weekday outside the list waits; before the
+    // scheduled time waits; past the documented delay window closes the day
+    // without firing; the day's retry ceiling closes the day; only what
+    // remains fires.
+    const verdict = routineDue(
+      nowMs,
+      {
+        hour: r.hour,
+        minute: r.minute,
+        mode,
+        days: r.days,
+        lastRun: r.lastRun,
+        attemptsToday: fireAttemptsToday(r.id, today),
+      },
+      ROUTINE_DUE_DELAY_WINDOW_MIN,
+    );
+    if (verdict.plan === "fire") {
+      r.lastRun = today;
+      saveRoutines(routines);
+      void fireRoutine(r);
+    } else if (verdict.plan === "close-day") {
+      const exhausted = verdict.reason === "attempts-exhausted";
+      if (r.lastRun !== today) {
+        r.lastRun = today;
+        // P2-316: the day was closed without a fire (machine off past the
+        // delay window, or the retry ceiling reached) — today's scheduled run
+        // was skipped. One record, at most once per day: after the day mark
+        // is set the sweep waits instead of re-recording the same skip.
+        recordRoutineTriggerResult(r, "skipped", nowMs);
+      }
+      if (exhausted) {
+        r.lastStatus = "error";
+        r.lastError = ROUTINE_DUE_EXHAUSTED_MESSAGE;
+        fireAttempts.delete(r.id);
+      }
+      saveRoutines(routines);
+      if (exhausted) {
+        log("warn", "routine day closed after repeated fire failures", { routine: r.name });
+      }
+    }
+    // wait / refuse: nothing to do this sweep
   }
 }
 
-// retry pending routine completions after a restart
-for (const r of loadRoutines()) {
+// retry pending routine completions after a restart (P2-256: the same list
+// already loaded above — one read, one verdict and at most one refusal log
+// per boot, and never a second look at a file the first load quarantined)
+for (const r of routines) {
   if (r.lastSessionID) pendingRuns.set(r.lastSessionID, r.id);
 }
 setInterval(checkRoutines, 30_000);
@@ -1390,6 +2060,13 @@ if (typeof __dirname === "undefined") {
 metrics.describe(
   "ocr_artifact_events_total",
   "session.artifact events emitted for agent-written artifacts",
+  "counter",
+);
+
+// P2-228: uploads retention sweep counter help (counter self-registers on inc).
+metrics.describe(
+  "ocr_upload_retention_deleted_total",
+  "files deleted by the uploads retention sweep",
   "counter",
 );
 
@@ -1441,6 +2118,153 @@ function refreshOpencodeBinary(force = false): void {
       return false;
     }
   });
+}
+
+// P2-213: opencode version readiness. Probed EXACTLY ONCE at boot, on the
+// already-resolved binary — never per request, never periodic, no retries.
+// The whole spawn is capped at VERSION_PROBE_TIMEOUT_MS and stdout is
+// truncated to VERSION_PROBE_MAX_BYTES before the verdict; spawn errors,
+// stderr output and timeouts all land in the neutral unknown.
+const VERSION_PROBE_TIMEOUT_MS = 3_000;
+const VERSION_PROBE_MAX_BYTES = 200;
+
+let opencodeVersion: OpencodeVersionVerdict = versionVerdict(null, MIN_OPENCODE_VERSION);
+
+/** One fire-and-forget `--version` probe against the resolved binary. The
+ * callback only ever sets the module state above — boot never awaits it. */
+function probeOpencodeVersion(binPath: string): void {
+  execFile(binPath, ["--version"], { timeout: VERSION_PROBE_TIMEOUT_MS }, (err, stdout, stderr) => {
+    const raw = typeof stdout === "string" ? stdout.slice(0, VERSION_PROBE_MAX_BYTES) : "";
+    opencodeVersion =
+      !err && !stderr && raw ? versionVerdict(raw, MIN_OPENCODE_VERSION) : versionVerdict(null, MIN_OPENCODE_VERSION);
+    log("info", "opencode version probed", { state: opencodeVersion.state });
+  });
+}
+
+// P2-250: lazy capability re-probing. The boot probes above stay EXACTLY as
+// they are (once per capability, no new timer); what is new is that the
+// cached verdicts can now be refreshed lazily, at the point of use and at
+// most once per capability per interval, guided by the pure planner in
+// readiness.ts. The lay user who installs LibreOffice, installs whisper or
+// updates opencode AFTER the first boot stops receiving the same polite
+// refusal forever (docs/VISION.md stage 3). The knobs are fail-closed:
+// main() exits when parseReadinessKnobs reported any problem.
+const readinessKnobs = parseReadinessKnobs(process.env);
+
+/** Per-capability probe bookkeeping: when the cached verdict was established
+ * and whether a probe is currently running (never duplicated). */
+const readinessState: Record<"transcription" | "tts" | "doc-convert" | "opencode-version" | "browse", { probedAt: number; inFlight: boolean }> = {
+  transcription: { probedAt: 0, inFlight: false },
+  tts: { probedAt: 0, inFlight: false },
+  "doc-convert": { probedAt: 0, inFlight: false },
+  "opencode-version": { probedAt: 0, inFlight: false },
+  browse: { probedAt: 0, inFlight: false },
+};
+
+/** ISO instant of the last probe of a capability, for the health payload. */
+function readinessCheckedAt(probedAt: number): string | null {
+  return probedAt > 0 ? new Date(probedAt).toISOString() : null;
+}
+
+/** Lazy transcription re-probe: reuses detectWhisperDetail() as-is. Ready
+ * never re-probes (happy path costs zero); a missing capability re-probes at
+ * most once per interval, right before the route answers with the refusal. */
+async function maybeReprobeTranscription(): Promise<void> {
+  const st = readinessState.transcription;
+  const ready = whisperTool !== null && sttToolType !== null && sttModelPresent;
+  const plan = readinessRefreshPlan(ready, st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    const detected = await detectWhisperDetail();
+    whisperTool = detected.tool;
+    sttToolType = detected.toolType;
+    sttModelPresent = detected.modelPresent;
+  } catch {
+    // a re-probe that cannot run teaches nothing new — keep the cached verdict
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "transcription", state: sttStatus().state });
+  }
+}
+
+/** Lazy spoken-reply re-probe: reuses detectEdgeTts() as-is. Ready never
+ * re-probes (happy path costs zero); a missing capability re-probes at most
+ * once per interval, right before the refusal or the status verdict is
+ * served — an edge-tts installed after boot is picked up without a restart.
+ * The documented OCR_TTS_BLOCK=1 hatch keeps its forced verdict (the cached
+ * module state is never overwritten while it is on). */
+function maybeReprobeTts(): void {
+  if (process.env.OCR_TTS_BLOCK === "1") return;
+  const st = readinessState.tts;
+  const plan = readinessRefreshPlan(edgeTtsBin !== null, st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    edgeTtsBin = detectEdgeTts();
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "tts", state: ttsStatus().state });
+  }
+}
+
+/** Lazy document-conversion re-probe: reuses probeDocConvert() as-is. Only a
+ * "complete" verdict counts as ready — a partial one (native macOS pipeline)
+ * must still be able to flip to complete once LibreOffice is installed. */
+function maybeReprobeDocConvert(): void {
+  const st = readinessState["doc-convert"];
+  const plan = readinessRefreshPlan(docConvert.state === "complete", st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    probeDocConvert();
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "doc-convert", state: docConvert.state });
+  }
+}
+
+/** Lazy opencode-version re-probe: reuses the existing binary refresh and
+ * version-spawn helpers as-is, fire-and-forget — the probe callback already
+ * logs the resulting state ("opencode version probed"). The dispatch stamps
+ * probedAt immediately; the 3 s probe cap is far below the minimum interval,
+ * so no in-flight duplication is possible. The documented OCR_OPENCODE_OLD=1
+ * test hatch keeps its forced verdict (never re-probed away). */
+function maybeReprobeOpencodeVersion(): void {
+  if (process.env.OCR_OPENCODE_OLD === "1") return;
+  const st = readinessState["opencode-version"];
+  const plan = readinessRefreshPlan(opencodeVersion.state === "ok", st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.probedAt = Date.now();
+  refreshOpencodeBinary(true);
+  if (binaryPick.path !== null) probeOpencodeVersion(binaryPick.path);
+}
+
+/** Lazy browse re-probe: reuses probeBrowseCap() as-is. "ready" is the only
+ * verdict that proves the capability works; "disabled" can never flip inside
+ * a running process (the kill switch is read from the environment the daemon
+ * booted with), so both count as ready for the re-probe plan — installing the
+ * playwright browser flips "no-browser" to "ready" without a restart. */
+async function maybeReprobeBrowse(): Promise<void> {
+  const st = readinessState.browse;
+  const ready = browseCap.state === "ready" || browseCap.state === "disabled";
+  const plan = readinessRefreshPlan(ready, st.probedAt, Date.now(), st.inFlight, readinessKnobs);
+  if (readinessKnobs.disabled || plan.action !== "redo") return;
+  st.inFlight = true;
+  try {
+    await probeBrowseCap();
+  } finally {
+    st.inFlight = false;
+    st.probedAt = Date.now();
+    // one line per re-done probe: capability name + resulting state only
+    log("info", "readiness re-probe", { capability: "browse", state: browseCap.state });
+  }
 }
 
 /** Record a finished probe: refreshes the /api/health detail and the legacy
@@ -1519,7 +2343,15 @@ const CHUNK_BODY = 600_000;
 const MAX_CHUNKS = 512; // ~300MB ceiling on a single response
 
 async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
-  metrics.inc(env.type === "event" ? "ocr_event_frames_total" : "ocr_res_frames_total");
+  // RT-341: heartbeats get their own counter so pong volume never pollutes
+  // the response count.
+  metrics.inc(
+    env.type === "event"
+      ? "ocr_event_frames_total"
+      : env.type === "pong"
+        ? "ocr_pong_frames_total"
+        : "ocr_res_frames_total",
+  );
   const seq = ++session.sendSeq;
   let payload: string;
   try {
@@ -1587,6 +2419,249 @@ const artifactWatcher = new ArtifactWatcher(ARTIFACTS_ROOT, (a) => {
   });
 });
 artifactWatcher.start();
+
+// --- P2-215: disk-space readiness -------------------------------------------
+// The volume hosting the state dir also carries everything else the daemon
+// writes (artifacts, upload staging, audit log, state file) and a full volume
+// turns every write into a raw error mid-conversation. One reading at boot,
+// then on the SAME interval the P2-207 janitor sweep below already uses —
+// never per request, no new periodic timer, no retry: a failed reading lands
+// in the neutral unknown and the next scheduled sweep cycle reads again.
+// Fire-and-forget async statfs: boot is never blocked or delayed.
+
+let diskSpace: DiskVerdict = diskVerdict(null, null);
+
+function refreshDiskState(): void {
+  statfs(STATE_DIR, (err, stats) => {
+    if (err) {
+      diskSpace = diskVerdict(null, null);
+      log("warn", "disk space probe failed", { error: err.message });
+      return;
+    }
+    diskSpace = diskVerdict(stats.bavail * stats.bsize, stats.blocks * stats.bsize);
+    log("info", "disk space probed", { state: diskSpace.state });
+  });
+}
+
+/**
+ * P2-215: disk verdict for /api/health and the settings mirror. OCR_DISK_FULL=1
+ * is a documented test hatch (same spirit as OCR_OPENCODE_OLD/OCR_MODEL_BLOCK):
+ * it forces the critical verdict so the Settings disk line can be evidenced
+ * deterministically on hosts with plenty of free space.
+ */
+function diskStatus(): DiskVerdict {
+  if (process.env.OCR_DISK_FULL === "1") return diskVerdict(0, 1);
+  return diskSpace;
+}
+
+// --- P2-207: artifact retention janitor -------------------------------------
+// The artifacts root grows forever otherwise: every conversation that produced
+// a report/spreadsheet/pdf keeps its bytes on the user's disk. The janitor
+// sweeps ONLY this root — never uploads/ (user-requested download material),
+// never clips/ and never any other state dir — once at boot and then every
+// RETENTION_INTERVAL_MS. Set OCR_ARTIFACT_RETENTION=off to disable entirely.
+
+function dirFacts(dir: string): { bytes: number; mtime: number } {
+  let bytes = 0;
+  let mtime = 0;
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const child = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      const nested = dirFacts(child);
+      bytes += nested.bytes;
+      mtime = Math.max(mtime, nested.mtime);
+    } else {
+      const st = statSync(child);
+      bytes += st.size;
+      mtime = Math.max(mtime, st.mtimeMs);
+    }
+  }
+  return { bytes, mtime };
+}
+
+function scanRetentionEntries(): RetentionEntry[] {
+  const entries: RetentionEntry[] = [];
+  for (const ent of readdirSync(ARTIFACTS_ROOT, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue; // session dirs are the deletion unit
+    const dir = join(ARTIFACTS_ROOT, ent.name);
+    const facts = dirFacts(dir);
+    entries.push({ path: dir, bytes: facts.bytes, mtime: facts.mtime });
+  }
+  return entries;
+}
+
+function sweepArtifactRetention(): void {
+  try {
+    // the ONLY root the janitor ever scans or deletes under is ARTIFACTS_ROOT
+    const plan = retentionPlan(ARTIFACTS_ROOT, scanRetentionEntries(), Date.now());
+    for (const path of plan.paths) {
+      rmSync(path, { recursive: true, force: true });
+    }
+    log("info", "artifact retention sweep", { deleted: plan.paths.length, bytes: plan.bytes });
+    metrics.inc("ocr_artifact_retention_deleted_total", plan.paths.length);
+  } catch (err) {
+    // a filesystem error aborts this cycle only — no immediate retry; the
+    // next scheduled sweep picks it up
+    log("warn", "artifact retention sweep failed", { error: (err as Error).message });
+  }
+}
+
+// --- P2-228: uploads retention -----------------------------------------------
+// ~/.opencode-remote/uploads/ is where videos and documents sent from the
+// phone land and where files generated for download are written — the only
+// state dir without a ceiling until now. The sweep reads ONLY UPLOADS_ROOT
+// (flat regular files; no subdirectories, no hidden files, symlinks never
+// followed) and NEVER touches the artifacts root, clips/, the chunk-staging
+// area, the state file, the audit log or anything outside UPLOADS_ROOT —
+// the prohibition is written in uploadretention.ts's header and pinned by
+// the real-source assertions in scripts/unit.test.ts.
+
+const UPLOADS_ROOT = join(STATE_DIR, "uploads");
+
+function scanUploadEntries(): UploadFile[] {
+  const entries: UploadFile[] = [];
+  for (const ent of readdirSync(UPLOADS_ROOT, { withFileTypes: true })) {
+    if (!ent.isFile()) continue; // regular files only; dirs and symlinks are ignored
+    if (ent.name.startsWith(".")) continue; // hidden files are ignored
+    const path = join(UPLOADS_ROOT, ent.name);
+    let st;
+    try {
+      st = statSync(path);
+    } catch {
+      continue; // vanished between readdir and stat — skip, never plan it
+    }
+    entries.push({ path, bytes: st.size, mtime: st.mtimeMs });
+  }
+  return entries;
+}
+
+function sweepUploadRetention(): void {
+  try {
+    // the ONLY root this sweep ever scans or deletes under is UPLOADS_ROOT
+    const plan = uploadRetentionPlan(scanUploadEntries(), Date.now(), uploadRetention.thresholds);
+    for (const path of plan.paths) {
+      rmSync(path, { force: true });
+    }
+    // one log line per sweep, count and bytes only — never a file name
+    log("info", "upload retention sweep", { deleted: plan.paths.length, bytes: plan.bytes });
+    metrics.inc("ocr_upload_retention_deleted_total", plan.paths.length);
+  } catch (err) {
+    // a filesystem error aborts this cycle only — one log line, no immediate
+    // retry; the next scheduled sweep picks it up
+    log("warn", "upload retention sweep failed", { error: (err as Error).message });
+  }
+}
+
+// --- P2-248: clips retention ---------------------------------------------------
+// ~/.opencode-remote/clips/ is where tools/clip.mjs writes the heaviest files
+// the product produces — rendered vertical clips plus the extracted
+// transcription audio — one folder per source video with loose work files at
+// the root, and nothing ever cleaned it. The sweep reads ONLY the immediate
+// children of CLIPS_ROOT (a group = one source-video folder or one loose work
+// file), never follows a symbolic link (lstat + isSymbolicLink skips only),
+// never walks above the root and NEVER touches the uploads root, the
+// artifacts root, the chunk-staging area, the state file, the audit log or
+// anything outside CLIPS_ROOT — deletion removes whole groups and never the
+// root itself. The prohibition is written in clipretention.ts's header and
+// pinned by the real-source assertions in scripts/unit.test.ts.
+
+const CLIPS_ROOT = join(STATE_DIR, "clips");
+
+/** Recursive size/latest-mtime of one group dir; symlinks are never followed. */
+function clipGroupFacts(dir: string): { bytes: number; mtime: number } {
+  let bytes = 0;
+  let mtime = 0;
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    if (ent.isSymbolicLink()) continue; // symlinks are never followed
+    const child = join(dir, ent.name);
+    if (ent.isDirectory()) {
+      const nested = clipGroupFacts(child);
+      bytes += nested.bytes;
+      mtime = Math.max(mtime, nested.mtime);
+    } else {
+      const st = lstatSync(child);
+      bytes += st.size;
+      mtime = Math.max(mtime, st.mtimeMs);
+    }
+  }
+  return { bytes, mtime };
+}
+
+function scanClipGroups(): ClipGroup[] {
+  const groups: ClipGroup[] = [];
+  for (const ent of readdirSync(CLIPS_ROOT, { withFileTypes: true })) {
+    if (ent.isSymbolicLink()) continue; // symlinks are never followed
+    if (ent.name.startsWith(".")) continue; // hidden entries are ignored
+    const path = join(CLIPS_ROOT, ent.name);
+    try {
+      if (ent.isDirectory()) {
+        const facts = clipGroupFacts(path);
+        groups.push({ path, bytes: facts.bytes, mtime: facts.mtime });
+      } else if (ent.isFile()) {
+        const st = lstatSync(path);
+        groups.push({ path, bytes: st.size, mtime: st.mtimeMs });
+      }
+    } catch {
+      continue; // vanished between readdir and stat — skip, never plan it
+    }
+  }
+  return groups;
+}
+
+function sweepClipRetention(): void {
+  try {
+    // the ONLY root this sweep ever scans or deletes under is CLIPS_ROOT
+    const plan = clipRetentionPlan(scanClipGroups(), Date.now(), clipRetention.thresholds);
+    for (const path of plan.paths) {
+      rmSync(path, { recursive: true, force: true }); // whole group, never the root
+    }
+    // one log line per sweep, count and bytes only — never a file or folder
+    // name: those come from the user's video titles (P2-182)
+    log("info", "clip retention sweep", { deleted: plan.paths.length, bytes: plan.bytes });
+    metrics.inc("ocr_clip_retention_deleted_total", plan.paths.length);
+  } catch (err) {
+    // a filesystem error aborts this cycle only — one log line, no immediate
+    // retry; the next scheduled sweep picks it up
+    log("warn", "clip retention sweep failed", { error: (err as Error).message });
+  }
+}
+
+// P2-215: the disk reading fires once at boot (unconditionally — the verdict
+// must exist even with the janitor disabled) and then rides the SAME
+// RETENTION_INTERVAL_MS interval the sweep already uses; no new timer exists.
+// P2-228: the uploads janitor shares this exact hook and interval — ONE timer
+// drives both sweeps, each honoring its own kill switch, so no new periodic
+// timer exists here either. An invalid OCR_UPLOAD_RETENTION_* keeps the sweep
+// off: main() exits fail-closed before any listener opens.
+// P2-248: the clips janitor shares the same hook and interval too — still one
+// timer, three janitors, each with its own kill switch and fail-closed parse.
+refreshDiskState();
+const artifactsSweepOn = !retentionDisabled(process.env);
+const uploadRetention = parseUploadRetention(process.env);
+const uploadsSweepOn = uploadRetention.problems.length === 0 && !uploadRetention.disabled;
+const clipRetention = parseClipRetention(process.env);
+const clipsSweepOn = clipRetention.problems.length === 0 && !clipRetention.disabled;
+if (artifactsSweepOn || uploadsSweepOn || clipsSweepOn) {
+  if (artifactsSweepOn) sweepArtifactRetention();
+  if (uploadsSweepOn) {
+    // first sweep is fire-and-forget one tick after boot: boot is never
+    // blocked or delayed by the uploads scan
+    const bootSweep = setTimeout(sweepUploadRetention, 0);
+    bootSweep.unref?.();
+  }
+  if (clipsSweepOn) {
+    // same fire-and-forget boot tick: boot is never delayed by the clips scan
+    const clipBootSweep = setTimeout(sweepClipRetention, 0);
+    clipBootSweep.unref?.();
+  }
+  const retentionTimer = setInterval(() => {
+    refreshDiskState();
+    if (artifactsSweepOn) sweepArtifactRetention();
+    if (uploadsSweepOn) sweepUploadRetention();
+    if (clipsSweepOn) sweepClipRetention();
+  }, RETENTION_INTERVAL_MS);
+  retentionTimer.unref?.();
+}
 
 const autoApproved = new Map<string, number>();
 
@@ -1902,14 +2977,21 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       // heartbeating (otherwise broadcast() silently stops delivering while
       // the client stays "paired" and never reconnects).
       if (known) known.lastSeen = Date.now();
-      const reply = known ? { type: "pong" } : { type: "reconnect" };
-      ws.send(
-        JSON.stringify({
-          room: daemon.room,
-          from: daemon.room,
-          payload: b64(Buffer.from(JSON.stringify(reply))),
-        } satisfies RelayFrame),
-      );
+      // RT-341: with a live session the pong is SEALED — a clear pong would
+      // let any room member forge liveness. Without a session there is no
+      // key to seal with, so the reconnect hint stays clear; the client
+      // treats it as an unauthenticated hint and verifies it (never obeys).
+      if (known) {
+        await sealAndSend(known, { type: "pong" });
+      } else {
+        ws.send(
+          JSON.stringify({
+            room: daemon.room,
+            from: daemon.room,
+            payload: b64(Buffer.from(JSON.stringify({ type: "reconnect" }))),
+          } satisfies RelayFrame),
+        );
+      }
       return;
     }
     if (maybeControl?.type === "hello" && maybeControl.hello) {
@@ -2026,6 +3108,16 @@ const relayRetry = createRelayRetry();
 // /api/health's relayRetry object as lastClose — code + kind only; the raw
 // close reason never reaches the API surface.
 let relayLastClose: { code: number | null; kind: RelayCloseKind } | null = null;
+// P2-260: verdict of the most recent relay dial failure, surfaced additively
+// inside /api/health's relayRetry object as lastDial — kind + static pt-BR
+// hint only; the raw Node message (it embeds the relay host and port) never
+// reaches the log or the API surface.
+let relayLastDial: { kind: RelayDialKind; hint: string } | null = null;
+// P2-260: floor of the dial failure in flight. A dial error never produces a
+// close code (ws emits a generic 1006 close right after the error), so the
+// close handler consumes this with the same max(jittered, floor) rule
+// effectiveRetryDelayMs applies to close floors — no new timer.
+let relayPendingDialFloorMs = 0;
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
 // P2-161: the port the loopback API server actually bound (set in main()).
@@ -2050,17 +3142,34 @@ const { shutdown, isShuttingDown } = createShutdown({
 });
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
+// P2-315: the desktop shell's stop request arrives over the spawn IPC channel
+// (a local socketpair/named pipe — no port, no network listener). Windows has
+// no real signals, so this is what makes the shell's quit graceful there:
+// accepted messages run the SAME drain path as SIGTERM; unknown messages are
+// ignored without noise (verdict: pure isSidecarStopMessage in shutdown.ts).
+process.on("message", (raw: unknown) => {
+  if (!isSidecarStopMessage(raw)) return;
+  void shutdown("SIGTERM");
+});
 
 function connectRelay() {
   // P2-139: an invalid RELAY_URL never opens a socket. The reason is logged
   // once at boot instead of repeating on every retry; nothing here schedules
   // a reconnect, so the backoff loop never starts.
   if (relayDisabled) return;
-  const ws = new WebSocket(RELAY_URL);
+  // P2-303: in tunnel mode the socket comes from an HTTP CONNECT tunnel
+  // through the machine's proxy (errors flow through the same ws `error`
+  // event, so relaydialerror.ts keeps triaging them); in direct mode the
+  // dial is exactly the one-argument call it has always been.
+  const ws = relayTunnelConnect
+    ? new WebSocket(RELAY_URL, { createConnection: relayTunnelConnect })
+    : new WebSocket(RELAY_URL);
   relaySocket = ws;
 
     ws.on("open", () => {
       relayRetry.reset();
+      // P2-260: a successful dial invalidates any stale dial-failure floor.
+      relayPendingDialFloorMs = 0;
       log("info", "connected to relay", { relay: redactRelayUrl(RELAY_URL), room: daemon.room });
     metrics.gauge("ocr_relay_connected", 1);
     metrics.inc("ocr_relay_connects_total");
@@ -2076,7 +3185,16 @@ function connectRelay() {
     // curve as an abrupt network drop. The kind's floor only ever lengthens
     // the wait; transient keeps the P2-129 jittered schedule untouched.
     const verdict = classifyRelayClose(code, Buffer.isBuffer(reason) ? reason.toString("utf-8") : "");
-    const retryInMs = effectiveRetryDelayMs(relayRetry.schedule(), verdict);
+    // P2-260: a dial failure (unresolved name, refused, timeout, bad relay
+    // certificate) never produces a close code — the close that follows the
+    // error is the generic 1006. The pending dial verdict floors the same
+    // wait via the same max(jittered, floor) rule the close verdict uses; a
+    // transient drop keeps the P2-129 jittered schedule untouched.
+    const retryInMs = Math.max(
+      effectiveRetryDelayMs(relayRetry.schedule(), verdict),
+      relayPendingDialFloorMs,
+    );
+    relayPendingDialFloorMs = 0;
     relayLastClose = { code: typeof code === "number" ? code : null, kind: verdict.kind };
     metrics.inc("ocr_relay_retries_total");
     log("warn", "relay connection lost; retrying", {
@@ -2095,7 +3213,18 @@ function connectRelay() {
     setTimeout(connectRelay, retryInMs);
   });
 
-  ws.on("error", (err) => log("error", "relay error", { error: err.message }));
+  ws.on("error", (err) => {
+    // P2-260: triage the failure instead of logging the raw Node message —
+    // the message embeds the relay host and port, and the sidecar log ships
+    // in support requests (P2-163). Only the kind + static pt-BR hint are
+    // recorded; unknown input stays transient (floor 0), so the wait only
+    // ever lengthens for a known permanent cause.
+    const errCode = (err as NodeJS.ErrnoException).code;
+    const verdict = relayDialVerdict(typeof errCode === "string" ? errCode : null, err.message);
+    relayPendingDialFloorMs = verdict.floorMs;
+    relayLastDial = { kind: verdict.kind, hint: verdict.hint };
+    log("error", "relay dial failed", { kind: verdict.kind, hint: verdict.hint });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2204,7 +3333,9 @@ function apiToken(): string {
   if (raw.apiToken) return raw.apiToken;
   const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
   raw.apiToken = token;
-  writeStateAtomic(STATE_FILE, JSON.stringify(raw, null, 2));
+  const serialized = JSON.stringify(raw, null, 2);
+  writeStateAtomic(STATE_FILE, serialized);
+  persistIdentityBackup(serialized);
   log("info", "api token generated (see apiToken in daemon.json)");
   return token;
 }
@@ -2420,9 +3551,21 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       if (pairingUri !== null) pairWindowOpenedAt = Date.now();
       res.end(JSON.stringify({ uri: pairingUri }));
     } else {
-      let devices: PairedClient[] = [];
+      // P2-268: same additive verdict as the E2E /__ocr/devices route (the
+      // two stay identical); strictly read-only.
+      let devices: Array<PairedClient & StaleVerdictReport> = [];
       try {
-        devices = readAllowlist();
+        const now = Date.now();
+        devices = readAllowlist().map((client) => ({
+          ...client,
+          ...deviceStaleVerdict(
+            client.lastSeenAt,
+            client.addedAt,
+            now,
+            DEVICE_STALE_SHORT_WINDOW_MS,
+            DEVICE_STALE_LONG_WINDOW_MS,
+          ),
+        }));
       } catch {
         // state file missing/unreadable: report an empty allowlist rather than
         // letting the exception escape into an unhandled rejection
@@ -2457,6 +3600,34 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // P2-129: additive relayRetry — attempt number + pending delay while the
       // daemon is scheduling its next relay dial, null when connected.
       const relayConnected = metrics.get("ocr_relay_connected") === 1;
+      // P2-215: additive disk verdict for the volume hosting the state dir —
+      // state + short pt-BR phrase only; no absolute path and no raw byte
+      // count of the volume ever reach the payload.
+      const disk = diskStatus();
+      // P2-250: lazy re-probes when the health route is consulted — doc
+      // conversion and the opencode version verdicts are answered here, so
+      // they are the two refreshed (at most once per interval each; reuse
+      // answers immediately, never delayed).
+      maybeReprobeDocConvert();
+      maybeReprobeOpencodeVersion();
+      // P2-284: the browse verdict is answered here too — same lazy policy.
+      await maybeReprobeBrowse();
+      // P2-296: the voice verdict is answered here too — same lazy policy
+      // (at most once per OCR_READINESS_MIN_MS, honoring OCR_READINESS_DISABLE),
+      // so installing whisper or its model is picked up without a restart.
+      await maybeReprobeTranscription();
+      // P2-300: the spoken-reply verdict is answered here too — same lazy
+      // policy (at most once per OCR_READINESS_MIN_MS, honoring
+      // OCR_READINESS_DISABLE, no new periodic timer), so installing edge-tts
+      // after boot is picked up without a restart. The documented
+      // OCR_TTS_BLOCK=1 hatch keeps forcing the missing-tool verdict.
+      maybeReprobeTts();
+      // The same hatch-aware verdict the stt-status route serves (the
+      // documented OCR_STT_BLOCK=1 hatch forces these fields as well).
+      const stt = sttStatus();
+      // P2-300: the same hatch-aware spoken-reply verdict the tts-status route
+      // serves (OCR_TTS_BLOCK=1 forces these fields as well).
+      const tts = ttsStatus();
       send(200, {
         healthy: true,
         version: VERSION,
@@ -2471,21 +3642,43 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           ...opencodeDetail,
           binaryFound: binaryPick.path !== null,
           binarySource: binaryPick.source,
+          // P2-213: additive version-readiness verdict — probed once at boot
+          // (state + short pt-BR phrase). No absolute path and no raw probe
+          // output ever reach the payload.
+          versionState: opencodeVersion.state,
+          versionMessage: opencodeVersion.message,
+          // P2-250: additive — when the version verdict was last probed, so a
+          // screen can say when that was checked. null until the first probe.
+          versionCheckedAt: readinessCheckedAt(readinessState["opencode-version"].probedAt),
         },
         relayConnected,
         // P2-156: additive lastClose inside relayRetry — the close code and
         // triage kind of the most recent relay close (null until the first
         // close happens). No raw reason, URL or room id is ever exposed.
+        // P2-260: additive lastDial in the same surface — kind + static
+        // pt-BR hint of the most recent relay dial failure (null until the
+        // first dial error), so the machine's owner can see WHY the relay is
+        // unreachable; the raw Node message never reaches the payload.
         relayRetry: relayConnected
           ? null
-          : { ...relayRetry.snapshot(), lastClose: relayLastClose },
+          : { ...relayRetry.snapshot(), lastClose: relayLastClose, lastDial: relayLastDial },
         // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
         // and relayRetry above keep their exact shape. Userinfo (if any) is
-        // redacted before the URL reaches the API surface.
+        // redacted before the URL reaches the API surface. P2-303 adds the
+        // machine-proxy verdict of the relay dial inside this same block:
+        // relayProxyState is "direct" (today's path) or "tunnel" (HTTP
+        // CONNECT through the machine's proxy) and relayProxyReason is a
+        // static pt-BR phrase authored by relayproxy.ts — the proxy address
+        // never rides. P2-311 adds the additive sibling relayProxyAuth with
+        // exactly two values, "none" and "basic" — presence only; the proxy
+        // credential's secret never rides this surface.
         relay: {
           url: redactRelayUrl(RELAY_URL),
           ok: !relayDisabled,
           reason: relayDisabled ? relayUrl.problems.join(" ") : null,
+          relayProxyState: relayProxy.state,
+          relayProxyReason: relayProxy.reason,
+          relayProxyAuth: relayProxy.auth,
         },
         // P2-190: additive bootstrap pairing-window verdict — true while a
         // virgin daemon (empty allowlist) would still auto-pair the first
@@ -2493,6 +3686,48 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // opened) reads as closed. No existing field is removed or renamed.
         pairingWindowOpen:
           bootstrapDecision(0, pairWindowOpenedAt, Date.now(), pairWindowCfg.windowMs) === "allow",
+        // P2-215: additive disk-space verdict (see disk above) — existing
+        // fields keep their exact shape.
+        diskState: disk.state,
+        diskMessage: disk.message,
+        // P2-231: additive document→PDF conversion readiness — probed once at
+        // boot (state + short pt-BR phrase + covered extensions). No absolute
+        // path, URL scheme or raw probe output ever reaches the payload, and
+        // no existing field is removed or renamed.
+        docConvertState: docConvert.state,
+        docConvertMessage: docConvert.message,
+        docConvertExts: docConvert.exts,
+        // P2-250: additive — when the doc-conversion verdict was last probed
+        // (ISO instant, null before the first probe). Existing fields keep
+        // their exact shape for the consumers P2-232 introduced.
+        docConvertCheckedAt: readinessCheckedAt(readinessState["doc-convert"].probedAt),
+        // P2-284: additive browse-readiness verdict — probed once at boot,
+        // lazily re-probed at this route. No path, port, address, env var or
+        // raw error tail ever reaches the payload, and no existing field is
+        // removed, renamed or repositioned.
+        browseState: browseCap.state,
+        browseMessage: browseCap.message,
+        browseCheckedAt: readinessCheckedAt(readinessState.browse.probedAt),
+        // P2-296: additive voice-transcription readiness — same grammar as
+        // the doc-conversion pair: state + short pt-BR phrase + last-probe
+        // instant (null before the first probe). No absolute path, model
+        // file, install script, port, address, env var or secret ever
+        // reaches the payload, and no existing field is removed, renamed or
+        // repositioned.
+        voiceState: stt.state,
+        voiceMessage: stt.message,
+        voiceCheckedAt: readinessCheckedAt(readinessState.transcription.probedAt),
+        // P2-300: additive spoken-reply readiness — same grammar as the
+        // doc-conversion triple (state + short pt-BR phrase + last-probe
+        // instant, null before the first probe). The identifier is ttsState,
+        // deliberately NOT voiceState: voiceState is the voice-TRANSCRIPTION
+        // pair since P2-296, and this comment records the collision so nobody
+        // repeats it (P2-297 lesson). Appended after the existing fields —
+        // none is renamed, removed or repositioned. No phrase ever carries a
+        // path, tool or script name, port, address, env var or secret.
+        ttsState: tts.state,
+        ttsMessage: tts.message,
+        ttsCheckedAt: readinessCheckedAt(readinessState.tts.probedAt),
       });
       return true;
     }
@@ -2531,30 +3766,26 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           .split("\n")
           .filter((l) => l.startsWith("- [x]"))
           .map((l) => {
-            const m = l.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
+            // same id grammar as backlogview.parseTaskLine: P0-P9 + red-team RT-
+            const m = l.match(/\(([P\d][\w.-]*|RT-\d+)\)\s*\[.*?\]\s*([^—]+)/);
             return { id: m?.[1] ?? "?", title: (m?.[2] ?? l).trim() };
           });
       } catch {}
       send(200, { done });
       return true;
     }
-    // GET /api/pilot-ready — pending queue from BACKLOG.md (## Ready + ## Blocked)
+    // GET /api/pilot-ready — pending queue from BACKLOG.md (## Ready + ## Blocked).
+    // P2-240: the queue comes from the pure backlogview module, which stops each
+    // section at the next heading — unmarked lines in ## Done (or any later
+    // section) no longer leak into both lists. Body shape is unchanged.
     if (seg[1] === "pilot-ready") {
       let ready: { id: string; title: string; area: string }[] = [];
       let blocked: { id: string; title: string; area: string }[] = [];
       try {
         const md = readFileSync(new URL("../../../BACKLOG.md", import.meta.url), "utf8");
-        const parse = (chunk: string) =>
-          chunk
-            .split("\n")
-            .filter((l) => l.startsWith("- [ ]"))
-            .map((l) => {
-              const m = l.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
-              const area = (l.match(/\(area:\s*(\w+)\)/)?.[1] ?? "").toLowerCase();
-              return { id: m?.[1] ?? "?", title: (m?.[2] ?? l).trim(), area };
-            });
-        ready = parse(md.split("\n## Ready\n")[1] ?? md.split("## Ready\n")[1] ?? "");
-        blocked = parse(md.split("\n## Blocked\n")[1] ?? "");
+        const view = queueView(md);
+        ready = view.ready;
+        blocked = view.blocked;
       } catch {}
       send(200, { ready, blocked });
       return true;
@@ -2762,7 +3993,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (seg[1] === "pilot-forensic" && req.method === "GET") {
       if (seg[2] === "timeline") {
         const task = url.searchParams.get("task") ?? "";
-        if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+        if (!/^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(task)) {
           send(400, { error: "task required" });
           return true;
         }
@@ -2829,7 +4060,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         return true;
       }
       const task = body.task ?? "";
-      if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+      if (!/^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(task)) {
         send(400, { error: "task required" });
         return true;
       }
@@ -2984,10 +4215,45 @@ async function main() {
     process.exit(1);
     return;
   }
+  // P2-314: same fail-closed contract for the download ceilings — an invalid
+  // OCR_DOWNLOAD_MAX_MB never falls back to the default silently.
+  if (downloadCaps.problems.length > 0) {
+    for (const problem of downloadCaps.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
   // P2-190: same fail-closed contract for the bootstrap pairing window — an
   // invalid OCR_PAIR_WINDOW_MS never falls back to the default silently.
   if (pairWindowCfg.problems.length > 0) {
     for (const problem of pairWindowCfg.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-228: same fail-closed contract for the uploads retention thresholds —
+  // an invalid OCR_UPLOAD_RETENTION_* never falls back to the default silently.
+  if (uploadRetention.problems.length > 0) {
+    for (const problem of uploadRetention.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-248: same fail-closed contract for the clips retention thresholds —
+  // an invalid OCR_CLIP_RETENTION_* never falls back to the default silently.
+  if (clipRetention.problems.length > 0) {
+    for (const problem of clipRetention.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-236: same fail-closed contract for the routine run lease — an invalid
+  // OCR_RUN_LEASE_MS never falls back to the default silently.
+  if (runLease.problems.length > 0) {
+    for (const problem of runLease.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P2-250: same fail-closed contract for the lazy re-probe knobs — an
+  // invalid OCR_READINESS_* never falls back to the default silently.
+  if (readinessKnobs.problems.length > 0) {
+    for (const problem of readinessKnobs.problems) log("error", problem);
     process.exit(1);
     return;
   }
@@ -3005,13 +4271,32 @@ async function main() {
   appSettings = readSettings();
   machineName = appSettings.name || MACHINE_NAME;
 
-  whisperTool = await detectWhisper();
+  const whisperDetected = await detectWhisperDetail();
+  whisperTool = whisperDetected.tool;
+  sttToolType = whisperDetected.toolType;
+  sttModelPresent = whisperDetected.modelPresent;
   if (whisperTool) log("info", "voice transcription available", { kind: whisperTool.kind });
-  else log("info", "voice transcription unavailable (optional feature)");
+  else log("info", "voice transcription unavailable (optional feature)", { state: sttStatus().state });
 
   edgeTtsBin = detectEdgeTts();
   if (edgeTtsBin) log("info", "voice replies available", { voice: resolveVoice("pt-BR", TTS_PT_VOICE).voice, voices: TTS_VOICES });
   else log("info", "voice replies unavailable (edge-tts not found; optional feature)");
+
+  // P2-231: same readiness hook as the capabilities above — one probe, in
+  // memory, before any server answers; boot never blocks on it.
+  probeDocConvert();
+
+  // P2-284: browse capability joins the same hook — one probe before any
+  // server answers. Async (resolves the playwright library) but cheap, and it
+  // never throws; it never installs, downloads or launches a browser.
+  await probeBrowseCap();
+
+  // P2-250: stamp the boot instants of the cached verdicts — the lazy
+  // re-probes count their interval from here. No additional boot probe.
+  readinessState.transcription.probedAt = Date.now();
+  readinessState.tts.probedAt = Date.now();
+  readinessState["doc-convert"].probedAt = Date.now();
+  readinessState.browse.probedAt = Date.now();
 
   log("info", "daemon starting (protocol v2)", {
     machine: machineName,
@@ -3043,6 +4328,19 @@ async function main() {
   // P2-149: resolve the opencode binary once up front so even the boot verdict
   // distinguishes "server stopped" from "server never installed".
   refreshOpencodeBinary(true);
+  // P2-213: version readiness — the documented OCR_OPENCODE_OLD=1 test hatch
+  // forces too-old for deterministic visual evidence; otherwise probe once,
+  // only when a binary was resolved, on the path already picked above.
+  // Fire-and-forget: the probe never blocks or delays boot, has no retry and
+  // no periodic re-probe — the verdict describes the binary that booted.
+  if (process.env.OCR_OPENCODE_OLD === "1") {
+    opencodeVersion = versionVerdict("v0.0.1", MIN_OPENCODE_VERSION);
+  } else if (binaryPick.path !== null) {
+    probeOpencodeVersion(binaryPick.path);
+  }
+  // P2-250: the version verdict above (probe, hatch or no-binary) is the
+  // cached boot verdict — the lazy re-probe interval counts from here.
+  readinessState["opencode-version"].probedAt = Date.now();
   const signal = AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(new URL("/global/health", OPENCODE_URL), {

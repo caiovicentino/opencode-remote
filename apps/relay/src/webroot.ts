@@ -199,6 +199,132 @@ export function cacheControlFor(filePath: string): string {
 }
 
 /**
+ * Boot-time ceiling for the entry-document read index.ts performs before
+ * applying `indexAssetPlan`/`assetIntegrityPlan` (P2-225): a larger file is
+ * a problem, never an unbounded read. 512 KiB is two orders of magnitude
+ * above a real vite entry document.
+ */
+export const WEB_INDEX_MAX_BYTES = 512 * 1024;
+
+/**
+ * Classification the injected readability probe reports per asset in
+ * `assetIntegrityPlan` — same shape as the `DirProbe` of `webRootPlan`.
+ */
+export type AssetProbe = "ok" | "missing" | "unreadable";
+
+/**
+ * Extract the local asset paths an entry document references (P2-225).
+ *
+ * Simple text scan — no HTML parser, no new dependency. The rules, exactly:
+ * - the `src` attribute of every `<script>` tag is collected;
+ * - the `href` attribute of every `<link>` tag whose rel token is
+ *   `stylesheet` or `modulepreload` is collected — other link kinds
+ *   (icons, manifests, preconnects) are not assets the boot must verify;
+ * - attribute values in single or double quotes are recognized (unquoted
+ *   values are not — the bundler never emits them);
+ * - a reference is ignored when it carries an explicit scheme (`https:…`,
+ *   `data:…`, …), starts with `//` (protocol-relative) or is a pure anchor
+ *   (`#…`) — none of them names a local file next to the document;
+ * - the result preserves the order of appearance in the text and carries no
+ *   duplicates (the first occurrence wins).
+ *
+ * The relay stays blind here: the scan sees only the public entry document
+ * of the static route — no plaintext, no key material, no room ids and no
+ * user addresses ever flow through this function.
+ */
+export function indexAssetPlan(html: string): string[] {
+  const assets: string[] = [];
+  const seen = new Set<string>();
+  const consider = (ref: string | undefined) => {
+    if (!ref || ref.startsWith("#") || ref.startsWith("//")) return;
+    // explicit scheme (https:, data:, mailto:, …) — never a local file
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(ref)) return;
+    if (!seen.has(ref)) {
+      seen.add(ref);
+      assets.push(ref);
+    }
+  };
+  for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {
+    consider(tagAttr(tag, "src"));
+  }
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = (tagAttr(tag, "rel") ?? "").toLowerCase().split(/\s+/);
+    if (rel.includes("stylesheet") || rel.includes("modulepreload")) {
+      consider(tagAttr(tag, "href"));
+    }
+  }
+  return assets;
+}
+
+/**
+ * Boot-time integrity for the assets an entry document references (P2-225).
+ *
+ * Takes the `indexAssetPlan` list, the resolved web root and a readability
+ * probe injected by the caller (pure module: no fs here) and returns one
+ * problem per cause in the same `problems` format `webRootPlan` uses —
+ * missing asset, unreadable asset, reference the static route's own
+ * rigidity would never serve (`resolveWebPath`: traversal, dotfiles,
+ * backslashes, encoding tricks, extension outside the allowlist, anything
+ * that escapes the root) and a probe that throws — always in the order the
+ * references appear in the document. A non-empty return must refuse the
+ * boot before any listener opens: an index.html that answers 200 while its
+ * bundle answers 404 is a permanent white screen for the stage-4 user with
+ * no diagnostic anywhere.
+ *
+ * A reference is matched as a pathname against the root: root-absolute
+ * (`/assets/x.js`) as-is, and document-relative (`./assets/x.js`,
+ * `assets/x.js`) normalized to the pathname the browser requests after
+ * resolving it against the root-served document — the same request the
+ * static route answers. Then the very same rigidity `resolveWebPath` applies
+ * to any request applies here; anything that would answer 404 at request
+ * time is a boot problem now.
+ *
+ * The relay stays blind here too: references are public static asset names
+ * from the entry document — no plaintext, no key material, no room ids and
+ * no user addresses ever flow through this function.
+ */
+export function assetIntegrityPlan(
+  assets: string[],
+  root: string,
+  probe: (abs: string) => AssetProbe,
+): string[] {
+  const problems: string[] = [];
+  for (const ref of assets) {
+    const relative = ref.startsWith("./") ? ref.slice(2) : ref;
+    const target = resolveWebPath(root, relative.startsWith("/") ? relative : `/${relative}`);
+    if (!target) {
+      problems.push(
+        `index.html references an asset the static route would never serve (${ref}): ` +
+          "refusing to boot with an incomplete bundle (fail-closed)",
+      );
+      continue;
+    }
+    let state: AssetProbe;
+    try {
+      state = probe(target);
+    } catch {
+      problems.push(
+        `index.html references an asset whose readability probe failed (${ref}): ` +
+          "refusing to boot with an unverifiable bundle (fail-closed)",
+      );
+      continue;
+    }
+    if (state === "missing") {
+      problems.push(
+        `index.html references an asset that is missing from RELAY_WEB_DIR (${ref}): ` +
+          "refusing to boot with an incomplete bundle (fail-closed)",
+      );
+    } else if (state === "unreadable") {
+      problems.push(
+        `index.html references an asset the relay cannot read (${ref}): ` +
+          "refusing to boot with an unusable bundle (fail-closed)",
+      );
+    }
+  }
+  return problems;
+}
+
+/**
  * Shared request-path gate: null unless the pathname is a rooted, decoded,
  * dot-free list of plain filename segments. One decodeURIComponent per raw
  * segment (the "single decode" of the task): a segment whose decode turns
@@ -223,6 +349,16 @@ function safeSegments(pathname: string): string[] | null {
     cleaned.push(seg);
   }
   return cleaned;
+}
+
+/**
+ * Value of one `name="…"` / `name='…'` attribute inside a single tag's text
+ * (`indexAssetPlan`'s scanner). Requires a whitespace before the name so
+ * `data-src` is never read as `src`; only quoted values are recognized.
+ */
+function tagAttr(tag: string, name: string): string | undefined {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(tag);
+  return m ? m[1] ?? m[2] : undefined;
 }
 
 /** Final backstop: the (canonicalized) target must live inside the root. */

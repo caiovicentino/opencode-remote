@@ -137,6 +137,19 @@ um PDF de volta, rode `node tools/doc2pdf.mjs <arquivo>` (padrão: arquivos em
 macOS (textutil+cupsfilter) p/ doc/docx/rtf/html/csv. A saída imprime `[file: <abs path>]`;
 repita essa linha na resposta pro card de download aparecer no chat.
 
+O que a máquina precisa (P2-231): com LibreOffice instalado a conversão é
+completa (todos os formatos, fidelidade preservada) — o conversor é descoberto
+pelo PATH e pelos caminhos padrão de instalação (app bundle no macOS;
+`C:\Program Files\LibreOffice\program\soffice.exe` no Windows). Sem LibreOffice
+no macOS resta o fallback nativo (textutil+cupsfilter), só p/ doc/docx/rtf/html/csv
+e sem preservar formatação. Sem nenhum conversor, a ferramenta responde com
+uma frase curta em português pedindo a instalação do LibreOffice — nunca um
+erro cru em inglês — e o arquivo original continua intacto. A prontidão da
+conversão também viaja em `/api/health` (`docConvertState` /
+`docConvertMessage` / `docConvertExts`), sondada no boot e revalidada
+preguiçosamente no ponto de uso (P2-250, no máximo uma vez por
+`OCR_READINESS_MIN_MS` por capacidade; `OCR_READINESS_DISABLE=off` desliga).
+
 ## Artifacts (documentos renderizáveis)
 
 Quando o resultado for um documento (html, md, csv, pdf…), escreva-o em
@@ -269,4 +282,25 @@ P2-117 adicionou os beats da tela Scan-QR: boot camera-blocked
 (`OCR_DESKTOP_CAMERA_BLOCK=1`) prova o estado indisponível com CTA de colar
 código e boot com câmera fake (`OCR_DESKTOP_MEDIA_FAKE=1`, switches
 `--use-fake-device-for-media-stream` no harness) prova preview ativo em 390px
-e feed morto → "NO SIGNAL" → indisponível.
+e feed morto → "NO SIGNAL" → indisponível. P2-312 reaproveita o mesmo hatch
+pro veredito de microfone: o IPC `app:micAccess` (módulo puro
+`apps/desktop/src/micaccess.ts`, lido a cada pedido, nunca no boot) responde
+`denied` quando o hatch está ligado, e o ChatView troca o conselho de iOS pela
+frase estática em português do veredito com a ação "Abrir ajustes do sistema"
+— o alvo do painel (macOS `x-apple.systempreferences:` / Windows
+`ms-settings:`) abre pelo mesmo portão de link externo de `extlink.ts`, que
+agora admite esses dois esquemas inertes de ajustes do sistema. P2-319 estende
+o mesmo veredito pra câmera do scanner de pareamento: o IPC `app:camAccess`
+(módulo puro `apps/desktop/src/camaccess.ts`, mesma leitura a cada pedido)
+substitui a frase estática de permissão negada pela frase acionável do
+veredito com a ação "Abrir ajustes do sistema" quando a ponte do shell está
+presente — no telefone a frase do dicionário segue intacta. P2-321 fecha a
+cega de supervisionamento que sobrava: um daemon que trava VIVO (porta ligada,
+event loop preso) nunca sai, então o handler de saída nunca dispara respawn —
+depois do primeiro boot saudável o próprio filho passa a ser sondado
+(`healthOnce`, mesmo endpoint loopback, zero porta/rota/ouvinte novo) e o
+veredito puro de `sidecarwedge.ts` (observe/degraded/restart/give-up, teto de
+1 recuperação consecutiva, contador zerado na primeira sonda saudável) manda
+parar via `sidecarstop`/respawn existentes; o veredito viaja no campo aditivo
+`sidecarWedge` do `ocr:pairing-state` e no desktop.log (o hatch
+`OCR_DAEMON_WEDGE_PROBE_MS` encurta o intervalo em teste).
