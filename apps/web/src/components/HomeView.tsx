@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpResponse } from "@ocr/protocol";
 import { useT, getLang } from "../lib/i18n";
-import { greetingKey, homeIdeas, type HomeIdeaIcon } from "../lib/home";
+import { markSendOnOpen } from "../lib/drafts";
+import { greetingKey, homeIdeas, timeGreetingKey, type HomeIdeaIcon } from "../lib/home";
 import { composerSelectorLabel } from "../lib/composer";
 import { useModelSelector } from "../lib/models";
 import { transcribeBlob, useSttStatus } from "../lib/transcribe";
@@ -13,6 +14,7 @@ import {
   IconBookOpen,
   IconChevronDown,
   IconFileText,
+  IconMark,
   IconMic,
   IconWrench,
   type IconProps,
@@ -33,15 +35,21 @@ type Props = {
   creating: boolean;
   /** start a session with `prompt` pre-filled; resolves to an error message */
   onStart: (prompt: string) => Promise<string | null>;
+  /** "desktop" (P2-123 living home with ideas) | "mobile" (Bug 2 PWA home:
+   * time-of-day greeting + mark, bottom-anchored composer, nothing else) */
+  variant?: "desktop" | "mobile";
 };
 
 type RecState = "idle" | "rec" | "busy";
 
 /** P2-123: the living home (desktop empty state) — Claude-Desktop-style
  * serif greeting, a central composer with the model selector and three
- * clickable ideas. Every string comes from the dict. */
-export default function HomeView({ machineName, request, voice, creating, onStart }: Props) {
+ * clickable ideas. Every string comes from the dict. Bug 2 adds the mobile
+ * variant: the same composer, anchored to the bottom, under a centered
+ * greeting — no ideas, no cards. */
+export default function HomeView({ machineName, request, voice, creating, onStart, variant = "desktop" }: Props) {
   const t = useT();
+  const mobile = variant === "mobile";
   const [input, setInput] = useState("");
   const [error, setError] = useState(""); // dict copy only — never raw bodies
   const { models, model, pickModel } = useModelSelector(request);
@@ -78,10 +86,14 @@ export default function HomeView({ machineName, request, voice, creating, onStar
     };
   }, [modelMenu]);
 
-  async function start(prompt: string) {
+  // EVAL4-B: `autoSend` is true only for the composer submit (arrow / Enter):
+  // the new chat then sends the text on open (lib/drafts.ts takeSendOnOpen).
+  // Ideas stay edit-first (P2-123).
+  async function start(prompt: string, autoSend = false) {
     const text = prompt.trim();
     if (!text || creating) return;
     setError("");
+    if (autoSend) markSendOnOpen(text);
     const err = await onStart(text);
     if (err) setError(t("homeStartError")); // input stays — never lose the text
   }
@@ -116,18 +128,20 @@ export default function HomeView({ machineName, request, voice, creating, onStar
     setRecState("idle");
   }
 
-  const ideas = homeIdeas(getLang());
+  const ideas = mobile ? [] : homeIdeas(getLang());
+  const name = machineName.trim();
+  const greeting = mobile
+    ? t(timeGreetingKey(new Date().getHours(), name !== ""), { name: name.toLowerCase() })
+    : t(greetingKey(machineName), { name: machineName.toLowerCase() });
 
   return (
-    <div className="home">
+    <div className={mobile ? "home home-mobile" : "home"}>
       <div className="home-col">
         <div className="home-head">
           <div className="desk-greet-mark" aria-hidden>
-            ✻
+            <IconMark size={mobile ? 32 : 26} />
           </div>
-          <h2 className="home-greeting">
-            {t(greetingKey(machineName), { name: machineName.toLowerCase() })}
-          </h2>
+          <h2 className="home-greeting">{greeting}</h2>
         </div>
 
         <div className="home-composer">
@@ -147,7 +161,7 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  void start(input);
+                  void start(input, true);
                 }
               }}
             />
@@ -163,7 +177,7 @@ export default function HomeView({ machineName, request, voice, creating, onStar
                 >
                   <span className="composer-model-label">
                     {composerSelectorLabel(
-                      "",
+                      mobile ? t("agentOption") : "",
                       model ? model.split("/")[1] ?? model : t("defaultModel"),
                     )}
                   </span>
@@ -211,7 +225,7 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               </button>
               <button
                 className="primary composer-send"
-                onClick={() => void start(input)}
+                onClick={() => void start(input, true)}
                 disabled={creating || !input.trim()}
                 aria-label={t("send")}
                 title={t("send")}
@@ -232,27 +246,29 @@ export default function HomeView({ machineName, request, voice, creating, onStar
           )}
         </div>
 
-        <div className="home-ideas">
-          <h3 className="home-ideas-title">{t("homeIdeasTitle")}</h3>
-          {ideas.map((idea) => {
-            const Icon = IDEA_ICONS[idea.icon];
-            return (
-              <button
-                key={idea.id}
-                className="home-idea"
-                data-idea={idea.id}
-                data-prompt={idea.prompt}
-                disabled={creating}
-                onClick={() => void start(idea.prompt)}
-              >
-                <span className="home-idea-icon" aria-hidden>
-                  <Icon size={16} />
-                </span>
-                <span className="home-idea-label">{idea.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        {ideas.length > 0 && (
+          <div className="home-ideas">
+            <h3 className="home-ideas-title">{t("homeIdeasTitle")}</h3>
+            {ideas.map((idea) => {
+              const Icon = IDEA_ICONS[idea.icon];
+              return (
+                <button
+                  key={idea.id}
+                  className="home-idea"
+                  data-idea={idea.id}
+                  data-prompt={idea.prompt}
+                  disabled={creating}
+                  onClick={() => void start(idea.prompt)}
+                >
+                  <span className="home-idea-icon" aria-hidden>
+                    <Icon size={16} />
+                  </span>
+                  <span className="home-idea-label">{idea.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -529,6 +529,24 @@ export const dict = {
     camUnavailable: "camera unavailable",
     // desktop home screen (P2-123): greeting, central composer and the ideas
     // section. {name} is the lowercased machine name.
+    // Bug 1: expired-session card (stale keys after a daemon restart/rekey)
+    reauthTitle: "Connection expired",
+    reauthBody:
+      "This device's keys no longer match the machine. Pair again to continue: the identity stored on this device will be reset and the pairing flow starts over.",
+    reauthAction: "Pair again",
+    // Bug 1: per-device hint on the desktop "Phone" pane (24h auth-failure window)
+    pairDeviceKeyExpired: "key expired, pair again",
+    // PWA shell (Bug 2): drawer navigation + time-of-day home greeting
+    drawerOpen: "Open menu",
+    drawerClose: "Close menu",
+    drawerRecents: "Recents",
+    rowMenu: "More actions",
+    homeMorning: "Good morning, {name}",
+    homeAfternoon: "Good afternoon, {name}",
+    homeEvening: "Good evening, {name}",
+    homeMorningAnon: "Good morning",
+    homeAfternoonAnon: "Good afternoon",
+    homeEveningAnon: "Good evening",
     homeGreeting: "Back in action, {name}",
     homeGreetingAnon: "Back in action",
     homePlaceholder: "How can I help you today?",
@@ -667,6 +685,66 @@ export const dict = {
     deviceFallback: "device",
     revoke: "Revoke",
     securityLog: "Security log",
+    // ── EVAL4-B (fable r4, product track) ──────────────────────────────
+    // in-chat reconnect banner: stale copy after 45 s (attempt counter alone
+    // says nothing about what to do)
+    connBannerStale: "No answer from the machine for {m} min — check that the app is open on the computer.",
+    // 410 recovery in the composer (text + in-memory attachments restored)
+    errAttachmentExpiredKept: "The machine no longer had the attachment — it is back in the composer, tap send again.",
+    errAttachmentExpiredLost: "The machine no longer had the attachment and it is gone from this device too — attach it again and send.",
+    errUpstreamGone: "The machine answered 410 (resource gone) — try again.",
+    // Artifacts pane / viewer (was hardcoded English on the phone)
+    artifactsTitle: "Artifacts",
+    artifactsRefresh: "Refresh",
+    artifactsEmpty: "No artifacts yet. Ask the agent to produce a document (html, md, csv, pdf) and it will show up here.",
+    artifactLargeFile: "Large file — showing the first 500 KB. Use Save to get it whole.",
+    // Mission Control on the phone (sealed tunnel fallback)
+    missionPhoneIntro: "Read-only view of the fleet from your phone. To set or change the mission, ask for it in any conversation — the agent writes the spec.",
+    missionPhoneAsk: "Define a mission in the chat",
+    missionPhoneClear: "Clear mission",
+    missionPhoneClearConfirm: "Tap again to confirm — the fleet goes back to self-improvement.",
+    missionNone: "No mission set — the fleet is in self-improvement mode.",
+    missionLoadFailed: "Could not read the fleet records — the machine did not answer.",
+    // ── EVAL4-A (fable r4, product track) ──────────────────────────────
+    // F1: pairing-screen errors with a next step (lib/pairerror.ts kinds)
+    pairErrRejected: "This device isn't authorized on that machine.",
+    pairErrRejectedHint:
+      "On the computer, open Phone → pairing and scan the new QR code. If this device was removed there, it has to be paired again.",
+    pairErrTimeout: "No answer from the machine.",
+    pairErrTimeoutHint:
+      "Check that the app is open on the computer and that both devices are online, then try again.",
+    pairErrClosed: "Couldn't reach the relay.",
+    pairErrClosedHint: "The network may be blocking the connection — try another Wi-Fi or mobile data, then retry.",
+    pairErrGate: "Unlock cancelled.",
+    pairErrGateHint: "Face ID / fingerprint is required to use this device's key. Try again.",
+    pairErrVersion: "This pairing code is from a different app version.",
+    pairErrVersionHint: "Update the app on the computer and on this phone, then scan the QR code again.",
+    // F2: the "device removed" card (daemon answered not-allowed on a live session)
+    revokedTitle: "This device was removed",
+    revokedBody:
+      "{name} no longer recognizes this phone — it was removed from the paired devices, or the pairing was reset. To use it again, open the pairing screen on the computer and scan the new QR code.",
+    // F6: expired card — primary action forgets only this machine; the full
+    // identity reset is the secondary, explained action
+    reauthBodyMachine:
+      "This phone's keys no longer match {name} — usually after the app on the computer was reinstalled or reset. Open the pairing screen on the computer and scan the new QR code.",
+    reauthKeepsOthers: "Other paired machines are kept.",
+    reauthReset: "Reset this device",
+    reauthResetHint: "Removes this phone's key and every paired machine. Only if pairing again keeps failing.",
+    // F4: connection strip outside the chat (mobile shell)
+    connStripTrying: "Reconnecting to {name}… attempt {n}",
+    connStripStale: "No answer from {name} for {m} min.",
+    connStripStaleHint: "Check that the app is open on the computer. If it was reinstalled or reset, pair again.",
+    connRetryNow: "Try now",
+    // F1: MachinePicker copy that was hardcoded English
+    machineActive: "active",
+    pairNewMachine: "+ Pair new machine",
+    machineFallbackName: "machine",
+    // F1: the phone read the desktop's intro ("pairs with the daemon on this
+    // machine automatically") — on a phone there is no daemon on this machine
+    pairIntroPhone:
+      "Open OpenCode Remote on your computer, show the pairing QR code and scan it here — or paste the pairing code.",
+    // F1b: stored pairing, machine unreachable → countdown into the auto-retry
+    pairAutoRetry: "Trying again in {s} s…",
   },
   pt: {
     search: "Buscar conversas…",
@@ -687,7 +765,7 @@ export const dict = {
     newShort: "+ Novo",
     navConversations: "Conversas",
     navArtifacts: "Artifacts",
-    navBrowser: "Browser",
+    navBrowser: "Navegador", // EVAL4-B: idem
     navFiles: "Arquivos",
     navPhone: "Celular",
     navMission: "Mission Control",
@@ -1115,6 +1193,24 @@ export const dict = {
       "A câmera foi interrompida. Toque em Escanear de novo — o iOS às vezes aborta a primeira tentativa.",
     camUnavailable: "câmera indisponível",
     // home do desktop (P2-123): greeting, composer central e seção de ideias.
+    // Bug 1: cartão de sessão expirada (chaves antigas após reinício/rekey do daemon)
+    reauthTitle: "Conexão expirada",
+    reauthBody:
+      "As chaves deste aparelho não batem mais com a máquina. Pareie novamente para continuar: a identidade guardada neste aparelho será apagada e o pareamento recomeça do zero.",
+    reauthAction: "Parear novamente",
+    // Bug 1: dica por aparelho no painel "Celular" do desktop (janela de 24h)
+    pairDeviceKeyExpired: "chave expirada — pareie de novo",
+    // Shell do PWA (Bug 2): navegação em gaveta + saudação por hora do dia
+    drawerOpen: "Abrir menu",
+    drawerClose: "Fechar menu",
+    drawerRecents: "Recentes",
+    rowMenu: "Mais ações",
+    homeMorning: "Bom dia, {name}",
+    homeAfternoon: "Boa tarde, {name}",
+    homeEvening: "Boa noite, {name}",
+    homeMorningAnon: "Bom dia",
+    homeAfternoonAnon: "Boa tarde",
+    homeEveningAnon: "Boa noite",
     homeGreeting: "De volta à ação, {name}",
     homeGreetingAnon: "De volta à ação",
     homePlaceholder: "Como posso ajudar você hoje?",
@@ -1253,5 +1349,60 @@ export const dict = {
     deviceFallback: "dispositivo",
     revoke: "Revogar",
     securityLog: "Registro de segurança",
+    // ── EVAL4-B (fable r4, trilha produto) ─────────────────────────────
+    connBannerStale: "Sem resposta da máquina há {m} min — confira se o app está aberto no computador.",
+    errAttachmentExpiredKept: "A máquina não tinha mais o anexo — ele voltou pro composer, é só enviar de novo.",
+    errAttachmentExpiredLost: "A máquina não tinha mais o anexo e ele também não está mais neste aparelho — anexe de novo e envie.",
+    errUpstreamGone: "A máquina respondeu 410 (recurso expirado) — tente de novo.",
+    artifactsTitle: "Artifacts", // product term kept in pt (see openArtifact)
+    artifactsRefresh: "Atualizar",
+    artifactsEmpty: "Nenhum artefato ainda. Peça ao agente um documento (html, md, csv, pdf) e ele aparece aqui.",
+    artifactLargeFile: "Arquivo grande — mostrando os primeiros 500 KB. Use Salvar pra ter o arquivo inteiro.",
+    missionPhoneIntro: "Visão somente leitura da frota pelo celular. Pra definir ou mudar a missão, peça em qualquer conversa — o agente escreve a especificação.",
+    missionPhoneAsk: "Definir uma missão no chat",
+    missionPhoneClear: "Limpar missão",
+    missionPhoneClearConfirm: "Toque de novo pra confirmar — a frota volta ao modo de auto-melhoria.",
+    missionNone: "Nenhuma missão definida — a frota está em modo de auto-melhoria.",
+    missionLoadFailed: "Não deu pra ler os registros da frota — a máquina não respondeu.",
+    // ── EVAL4-A (fable r4, trilha produto) ─────────────────────────────
+    // F1: erros da tela de pareamento com próximo passo (lib/pairerror.ts)
+    pairErrRejected: "Este aparelho não está autorizado nessa máquina.",
+    pairErrRejectedHint:
+      "No computador, abra Celular → pareamento e escaneie o novo QR code. Se este aparelho foi removido lá, é preciso parear de novo.",
+    pairErrTimeout: "A máquina não respondeu.",
+    pairErrTimeoutHint:
+      "Confira se o app está aberto no computador e se os dois aparelhos estão online, depois tente de novo.",
+    pairErrClosed: "Não foi possível alcançar o relay.",
+    pairErrClosedHint: "A rede pode estar bloqueando a conexão — tente outro Wi-Fi ou os dados móveis e repita.",
+    pairErrGate: "Desbloqueio cancelado.",
+    pairErrGateHint: "Face ID / digital é obrigatório para usar a chave deste aparelho. Tente de novo.",
+    pairErrVersion: "Este código de pareamento é de outra versão do app.",
+    pairErrVersionHint: "Atualize o app no computador e neste celular, depois escaneie o QR code de novo.",
+    // F2: cartão "aparelho removido" (daemon respondeu not-allowed numa sessão viva)
+    revokedTitle: "Este aparelho foi removido",
+    revokedBody:
+      "{name} não reconhece mais este celular — ele foi removido dos aparelhos pareados ou o pareamento foi redefinido. Para voltar a usar, abra a tela de pareamento no computador e escaneie o novo QR code.",
+    // F6: cartão de expiração — ação primária esquece só esta máquina; a
+    // redefinição completa da identidade é a ação secundária, explicada
+    reauthBodyMachine:
+      "As chaves deste celular não batem mais com {name} — normalmente depois que o app do computador foi reinstalado ou redefinido. Abra a tela de pareamento no computador e escaneie o novo QR code.",
+    reauthKeepsOthers: "As outras máquinas pareadas são mantidas.",
+    reauthReset: "Redefinir este aparelho",
+    reauthResetHint: "Apaga a chave deste celular e todas as máquinas pareadas. Só se parear de novo continuar falhando.",
+    // F4: faixa de conexão fora do chat (shell mobile)
+    connStripTrying: "Reconectando a {name}… tentativa {n}",
+    connStripStale: "Sem resposta de {name} há {m} min.",
+    connStripStaleHint: "Confira se o app está aberto no computador. Se ele foi reinstalado ou redefinido, pareie de novo.",
+    connRetryNow: "Tentar agora",
+    // F1: textos do MachinePicker que estavam fixos em inglês
+    machineActive: "ativa",
+    pairNewMachine: "+ Parear nova máquina",
+    machineFallbackName: "máquina",
+    // F1: o celular lia a introdução do desktop ("se conecta sozinho ao daemon
+    // desta máquina") — no celular não existe daemon nesta máquina
+    pairIntroPhone:
+      "Abra o OpenCode Remote no computador, mostre o QR code de pareamento e escaneie aqui — ou cole o código de pareamento.",
+    // F1b: pareamento guardado, máquina fora de alcance → contagem até a nova tentativa
+    pairAutoRetry: "Tentando de novo em {s} s…",
   },
 } satisfies Record<Lang, Record<string, string>>;

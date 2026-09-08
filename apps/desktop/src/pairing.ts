@@ -23,8 +23,10 @@ export interface PairingState {
   qrDataUrl: string | null;
   /** Total allowlist size (fresh read from the daemon). */
   devices: number;
-  /** P1-056: labels of the paired clients — the "Celular" pane lists them. */
-  deviceList?: { label: string; addedAt?: string }[];
+  /** P1-056: labels of the paired clients — the "Celular" pane lists them.
+   * Bug 1: `keyExpired` (additive) — the daemon saw frames from this device
+   * fail auth in the last 24h; the pane shows the "pair again" hint. */
+  deviceList?: { label: string; addedAt?: string; keyExpired?: boolean }[];
   /** True when at least one non-host device is paired (typically the phone). */
   phonePaired: boolean;
   /** P2-017: sidecar respawn budget exhausted — the daemon is not coming

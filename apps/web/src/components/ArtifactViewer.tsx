@@ -3,6 +3,7 @@ import { ArtifactTooLarge, b64ToBlob, fetchArtifact, fmtBytes, saveBlob, type Ar
 import { parseMarkdown, type Inline, type MdBlock } from "../lib/md";
 import { parseCsv } from "../lib/csv";
 import type { OcrRequest } from "../lib/files";
+import { useT } from "../lib/i18n";
 
 interface ViewState {
   loading: boolean;
@@ -144,6 +145,7 @@ export default function ArtifactViewer({
   /** P3-087: true while the exit animation plays (parent keeps us mounted) */
   closing?: boolean;
 }) {
+  const t = useT(); // EVAL4-B: header/back/save copy from the dict
   const [state, setState] = useState<ViewState>({ loading: true });
   const viewRef = useRef<ViewState>({ loading: true });
   viewRef.current = state;
@@ -199,7 +201,7 @@ export default function ArtifactViewer({
         borderBottom: "1px solid var(--border)",
       }}
     >
-      <button onClick={onClose} aria-label="Close">
+      <button onClick={onClose} aria-label={t("back")}>
         ←
       </button>
       <span
@@ -218,7 +220,7 @@ export default function ArtifactViewer({
          honest header hides the action instead of writing an empty file */}
       {!state.tooLarge && (
         <button className="primary" onClick={save}>
-          Save
+          {t("save")}
         </button>
       )}
     </div>
@@ -232,7 +234,7 @@ export default function ArtifactViewer({
         <>
           {state.truncated && (
             <p className="muted" style={{ margin: "0 0 8px" }}>
-              Large file — showing the first 500 KB. Use Save to get it whole.
+              {t("artifactLargeFile")}
             </p>
           )}
           {meta.kind === "html" && (

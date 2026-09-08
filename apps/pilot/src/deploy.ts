@@ -114,6 +114,30 @@ export function headDrifted(bootHead: string | undefined, headNow: string | unde
 }
 
 /**
+ * P3-351 (eval r4): the drift probe and the deploy disagreed on 2026-09-08 —
+ * deploy() of 21c47b0 decided "deployed without pilot-infra changes — fleet
+ * keeps running" (18:33:31) and 16 minutes later the P1-056 drift probe forced
+ * "head drift persisted while busy — draining slots" (18:49:05) for the SAME
+ * head, holding new picks for the rest of the evening. Both mechanisms now
+ * share one criterion: a HEAD move only counts as drift when the range
+ * touches apps/pilot (the code the running process actually has in memory —
+ * daemon/web/relay were restarted by the deploy itself, pilot.json is
+ * hot-reloaded by refreshFleet). Pure over the diff probe result; a FAILED
+ * probe (unreadable range, git error) counts as drifted — fail-closed, the
+ * pre-P3-351 behavior — and never flaps because bootHead changes on reload.
+ */
+export const PILOT_INFRA_PATHSPEC = "apps/pilot";
+
+export function pilotInfraDiffCmd(from: string, to: string): string {
+  return `git diff --name-only ${from} ${to} -- ${PILOT_INFRA_PATHSPEC}`;
+}
+
+export function pilotInfraDrifted(probe: { ok: boolean; output: string }): boolean {
+  if (!probe.ok) return true;
+  return probe.output.trim().length > 0;
+}
+
+/**
  * P3-101 (round 2): the self-heal exit decision as a pure seam — the process
  * may only exit for a HEAD drift at a FULLY idle moment (no slot running a
  * pipeline, no deploy in flight). A refactor that drops either idle gate

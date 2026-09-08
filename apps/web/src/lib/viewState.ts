@@ -4,7 +4,9 @@
 // opening a pane destroy the open chat. Pure and dependency-free so
 // scripts/unit.test.ts can exercise it directly.
 
-export type Slot = "chat" | "artifacts" | "browser" | "files" | "settings" | "share" | "mission";
+/** "chats" (PWA shell, Bug 2): the conversations list as a drawer destination —
+ * on mobile the empty stack is the home (greeting + composer), not the list. */
+export type Slot = "chat" | "chats" | "artifacts" | "browser" | "files" | "settings" | "share" | "mission";
 
 /** Slots rendered in the desktop right-hand pane (everything but the chat). */
 export const PANE_SLOTS: readonly Slot[] = ["artifacts", "browser", "files", "settings", "share", "mission"];
