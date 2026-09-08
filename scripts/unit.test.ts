@@ -10764,6 +10764,25 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-332: the local-mode pairing screen shows the live auto-connect -------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  check(
+    "P3-332: PairingView renders the live auto-connect card (status + phase) in local mode",
+    src.includes('className="pair-auto"') && src.includes('role="status"') &&
+      src.includes("autoConnectLooking") && src.includes("localConnecting"),
+  );
+  check(
+    "P3-332: the auto-connect card replaces the ceremony and wires retry to onRetry",
+    /ceremony = !localMode/.test(src) && src.includes('className="pair-auto-retry" onClick={onRetry}'),
+  );
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    check(`p3-332 i18n ${lang}: autoConnectLooking names the local daemon`, /daemon/i.test(d.autoConnectLooking));
+    check(`p3-332 i18n ${lang}: autoConnect hints explain the unattended attempt`, !!d.autoConnectBusyHint && !!d.autoConnectIdleHint);
+  }
+}
+
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {
