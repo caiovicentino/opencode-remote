@@ -31454,7 +31454,10 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     }
   };
   walk(webRoot);
-  check("ask: zero window.prompt/window.confirm left in apps/web/src", offenders.length === 0, offenders.join(", "));
+  // round-2 review: check() takes exactly two args — name the offenders on a
+  // separate failure-only line so a future regression still points at the file
+  if (offenders.length > 0) console.error(`ask offenders: ${offenders.join(", ")}`);
+  check("ask: zero window.prompt/window.confirm left in apps/web/src", offenders.length === 0);
   check("ask: the three call sites render the shared dialog", (() => {
     const sessions = readFileSync(join(webRoot, "components", "SessionsView.tsx"), "utf8");
     const chat = readFileSync(join(webRoot, "components", "ChatView.tsx"), "utf8");

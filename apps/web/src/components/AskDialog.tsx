@@ -26,16 +26,35 @@ export default function AskDialog({ descriptor, currentTitle, onConfirm, onClose
   // delete/rewind carry no field: the value is fixed and always confirmable
   const canConfirm = withInput ? canConfirmAskValue(value, currentTitle) : true;
 
+  // `onClose` is an inline arrow at every call site — read it through a ref so
+  // the open-time effects never re-run when a parent re-render (a streamed
+  // token, a background list refresh) hands in a fresh identity.
+  const onCloseRef = useRef(onClose);
   useEffect(() => {
-    const trigger = document.activeElement as HTMLElement | null;
-    if (withInput) inputRef.current?.focus();
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  // Capture the opener and aim the initial focus exactly once per open —
+  // re-running this mid-dialog would yank the caret out of the field and
+  // replace the captured opener with the dialog's own (unmounting) field.
+  const openerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    openerRef.current = document.activeElement as HTMLElement | null;
+    const field = inputRef.current;
+    if (field) field.focus();
     else cardRef.current?.querySelector<HTMLButtonElement>(".ask-confirm")?.focus();
+  }, []);
+
+  // Esc closes through the ref; the unmount-only cleanup returns focus to the
+  // element that opened the dialog.
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      const trigger = openerRef.current;
       if (trigger) {
         trigger.focus();
         // Hover-revealed openers (row action buttons) are display:none while
@@ -46,7 +65,7 @@ export default function AskDialog({ descriptor, currentTitle, onConfirm, onClose
         }
       }
     };
-  }, [withInput, onClose]);
+  }, []);
 
   function submit() {
     if (!canConfirm) return;
@@ -55,8 +74,10 @@ export default function AskDialog({ descriptor, currentTitle, onConfirm, onClose
 
   function trapTab(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.key !== "Tab") return;
+    // a disabled confirm is unfocusable — leaving it in the cycle would let
+    // Tab from cancel escape the modal instead of wrapping
     const nodes = cardRef.current?.querySelectorAll<HTMLElement>(
-      "button, input, [tabindex]:not([tabindex='-1'])",
+      "button:not(:disabled), input, [tabindex]:not([tabindex='-1'])",
     );
     if (!nodes || nodes.length === 0) return;
     const first = nodes[0]!;
