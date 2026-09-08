@@ -2231,9 +2231,12 @@ export async function awaitMergeReadiness(io: PrMergeIo, prNumber: number, polls
     }
     last = mergeReadiness(snap);
     if (expectSha) {
+      // fail-closed: a snapshot WITHOUT headRefOid cannot prove the head moved
+      // either — it stays pending (honest infra timeout on budget exhaustion,
+      // free retry) instead of arming a merge on an unverified head
       const headRaw = (snap as { headRefOid?: unknown }).headRefOid;
       const head = typeof headRaw === "string" ? headRaw : "";
-      if (head && head !== expectSha) {
+      if (!head || head !== expectSha) {
         last = { verdict: "pending", detail: "PR head not yet updated" };
         continue;
       }
@@ -2255,15 +2258,17 @@ export function readinessInfraKind(ready: MergeReadiness): InfraFailureKind {
  * P3-341: one automatic conflict-repair pass on the task branch — thin runner
  * over the pure `repairPlan`, all I/O here. Closed ordered plan: fetch →
  * `git merge --no-edit origin/main` → on conflict, read every unmerged path
+ * (NUL-delimited `-z` output — never newline-split, never shell-parsed)
  * through the io sinks → `repairPlan` decides. Escalate ⇒ `git merge --abort`
- * (branch intact, nothing pushed); resolve ⇒ write the union, `git add`,
- * `git commit --no-edit`, `git push -q --force-with-lease` (metapush
- * precedent — never a plain `--force`, never a push to main) and report the
- * new HEAD. A clean merge (main just moved) also pushes and reports the new
- * HEAD. Runs at most once per mergePrForTask call; any `failed` outcome leaves
- * the retry to the next cycle.
+ * (branch intact, nothing pushed); resolve ⇒ write the union, `git add` with
+ * single-quoted paths (JSON.stringify is NOT shell quoting), `git commit
+ * --no-edit`, `git push -q --force-with-lease` (metapush precedent — never a
+ * plain `--force`, never a push to main) and report the new HEAD. A clean
+ * merge (main just moved) also pushes and reports the new HEAD. Runs at most
+ * once per mergePrForTask call; any `failed` outcome leaves the retry to the
+ * next cycle.
  */
-export async function repairConflictedBranch(io: PrMergeIo, args: { branch: string; taskId: string }): Promise<RepairOutcome> {
+export async function repairConflictedBranch(io: PrMergeIo, args: { branch: string }): Promise<RepairOutcome> {
   const fetched = io.exec("git fetch -q origin");
   if (!fetched.ok) return { status: "failed", detail: `git fetch failed: ${ghTail(fetched.output)}` };
   const merge = io.exec("git merge --no-edit origin/main");
@@ -2275,15 +2280,14 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
     if (!push.ok) return { status: "failed", detail: `push after clean merge failed: ${ghTail(push.output)}` };
     return { status: "clean", sha };
   }
-  const diff = io.exec("git diff --name-only --diff-filter=U");
+  const diff = io.exec("git diff -z --name-only --diff-filter=U");
   if (!diff.ok) {
     io.exec("git merge --abort");
     return { status: "failed", detail: `git diff failed on conflicted branch: ${ghTail(diff.output)}` };
   }
-  const paths = diff.output
-    .split("\n")
-    .map((p) => p.trim())
-    .filter(Boolean);
+  // -z: entries are NUL-terminated and C-quoting is suppressed — filenames
+  // with spaces, quotes, $() or newlines survive verbatim into the sinks
+  const paths = diff.output.split("\0").filter((p) => p.length > 0);
   const files: { path: string; content: string }[] = [];
   const unreadable: string[] = [];
   for (const p of paths) {
@@ -2314,7 +2318,7 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
     io.exec("git merge --abort");
     return { status: "failed", detail: "conflict repair could not write the resolved file(s)" };
   }
-  const add = io.exec(`git add -- ${plan.files.map((f) => JSON.stringify(f.path)).join(" ")}`);
+  const add = io.exec(`git add -- ${plan.files.map((f) => shQuote(f.path)).join(" ")}`);
   if (!add.ok) {
     io.exec("git merge --abort");
     return { status: "failed", detail: `git add failed during repair: ${ghTail(add.output)}` };
@@ -2397,7 +2401,7 @@ export async function mergePrForTask(
   let effective = ready;
   let expectedSha = args.pushedSha;
   if (ready.verdict === "skip" && ready.infra === "conflict" && io.readFile && io.writeFile) {
-    const repair = await repairConflictedBranch(io, { branch: args.branch, taskId: args.branch.replace(/^pilot\//, "") });
+    const repair = await repairConflictedBranch(io, { branch: args.branch });
     if (repair.status === "repaired" || repair.status === "clean") {
       expectedSha = repair.sha;
       console.log(
@@ -2409,7 +2413,7 @@ export async function mergePrForTask(
         }),
       );
       effective = await awaitMergeReadiness(io, prNumber, PR_READINESS_POLLS, expectedSha);
-    } else {
+    } else if (repair.status === "escalate") {
       console.log(
         JSON.stringify({
           ts: nowLocalISO(),
@@ -2419,6 +2423,18 @@ export async function mergePrForTask(
         }),
       );
       return { ok: false, infra: "conflict", detail: `PR #${prNumber} ${CONFLICT_OPERATOR_MARKER}: ${repair.detail}` };
+    } else {
+      // transient repair failure (fetch/push/commit noise) — NOT an operator
+      // escalation: honest infra kind, free retry next cycle, marker reserved
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "warn",
+          msg: "conflict repair failed transiently — retrying next cycle",
+          data: { pr: prNumber, branch: args.branch, status: repair.status, detail: repair.detail.slice(0, 300) },
+        }),
+      );
+      return { ok: false, infra: "network", detail: `PR #${prNumber} conflict repair failed (retry next cycle): ${repair.detail}` };
     }
   }
   if (effective.verdict !== "merge") {
@@ -2477,6 +2493,15 @@ function wsRepoPath(ws: string, rel: string): string | null {
   if (!rel || rel.startsWith("/") || rel.includes("\\")) return null;
   if (rel.split("/").some((part) => part === ".." || part === "")) return null;
   return join(ws, rel);
+}
+
+/** P3-341: single-quote shell escaping for git path arguments — the safe
+ * quoting for `spawnSync(shell: true)`: every character inside single quotes
+ * is literal, including `$`, backticks and double quotes; a literal `'` is
+ * spelled `'\''`. JSON.stringify is NOT shell quoting (it leaves `$()` and
+ * backticks active inside double quotes). */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 /**

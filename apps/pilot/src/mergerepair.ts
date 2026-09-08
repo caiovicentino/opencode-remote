@@ -29,8 +29,9 @@ export type Segment = string | { ours: string[]; theirs: string[] };
 /**
  * Parse a file carrying git conflict markers into segments. Markers are
  * recognized at line start (`<<<<<<<`/`|||||||`/`>>>>>>>` possibly with a
- * label; the `=======` separator is matched exactly so setext-style
- * underlines in docs never masquerade as one). Nested markers, a missing or
+ * label; the `=======` separator is matched exactly, so a longer setext
+ * underline in a doc passes through — a bare 7-char `=======` outside a
+ * block is an orphan and fails the parse). Nested markers, a missing or
  * out-of-order marker ⇒ null — the caller escalates, never throws.
  */
 export function parseConflictedFile(content: string): Segment[] | null {
@@ -77,6 +78,29 @@ export function parseConflictedFile(content: string): Segment[] | null {
 
 const COMMENT_PREFIXES = ["//", "/*", "*", "*/", "#"];
 
+/** Linter/typechecker suppression directives: unioning one back into a code
+ * hunk could mask a real error on a head that lands without a fresh
+ * deterministic gate — such hunks are never auto-resolved (P3-341 r2). */
+const SUPPRESSION_DIRECTIVES = [
+  "@ts-ignore",
+  "@ts-expect-error",
+  "@ts-nocheck",
+  "@ts-check",
+  "eslint-disable",
+  "biome-ignore",
+  "noqa",
+  "prettier-ignore",
+  "stylelint-disable",
+  "deno-lint-ignore",
+];
+
+function hasSuppressionDirective(lines: string[]): boolean {
+  return lines.some((l) => {
+    const t = l.trim();
+    return SUPPRESSION_DIRECTIVES.some((d) => t.includes(d));
+  });
+}
+
 /** True only when every line on BOTH sides is blank or a comment in the
  * languages this repo's hunks realistically carry (C-like, block-continuation,
  * shell/yaml/python). One real code line ⇒ false. */
@@ -93,15 +117,20 @@ export type ResolveResult = { ok: true; content: string } | { ok: false; reason:
 
 /**
  * Resolve one conflicted file: docs union every hunk (ours then theirs, no
- * separator, one copy when identical); code unions only comment-only hunks.
- * Protected paths, malformed markers and semantic code hunks refuse with a
- * reason.
+ * separator, one copy when identical); code unions only comment-only hunks
+ * free of suppression directives. Protected paths, marker-free content
+ * (binary, delete/modify), malformed markers and semantic code hunks refuse
+ * with a reason.
  */
 export function resolveConflictedFile(path: string, content: string): ResolveResult {
   const cls = classifyConflictPath(path);
   if (cls === "protected") return { ok: false, reason: "protected path" };
   const segments = parseConflictedFile(content);
   if (!segments) return { ok: false, reason: "malformed conflict markers" };
+  // a conflicted file always carries at least one block — a marker-free
+  // working-tree file is binary or delete/modify (git checked out the ours
+  // side verbatim) and must never be "resolved" to ours silently
+  if (!segments.some((s) => typeof s !== "string")) return { ok: false, reason: "no conflict markers" };
   const out: string[] = [];
   for (const seg of segments) {
     if (typeof seg === "string") {
@@ -109,8 +138,11 @@ export function resolveConflictedFile(path: string, content: string): ResolveRes
       continue;
     }
     const identical = seg.ours.join("\n") === seg.theirs.join("\n");
-    if (!identical && cls === "code" && !isCommentOnlyHunk(seg)) {
-      return { ok: false, reason: "code hunk changes semantics" };
+    if (!identical && cls === "code") {
+      if (!isCommentOnlyHunk(seg)) return { ok: false, reason: "code hunk changes semantics" };
+      if (hasSuppressionDirective(seg.ours) || hasSuppressionDirective(seg.theirs)) {
+        return { ok: false, reason: "suppression directive in code hunk" };
+      }
     }
     if (identical) out.push(...seg.ours);
     else out.push(...seg.ours, ...seg.theirs);

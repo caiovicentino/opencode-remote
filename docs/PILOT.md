@@ -964,11 +964,19 @@ sozinho: conflitos em `*.md` (união determinística ours-depois-theirs, cópia
 `needs operator` no detail do evento, do log e do `notifySupervisor`; nesse caso
 nada é empurrado — `git merge --abort`, branch intacta): path protegido
 (`deploy/`, `scripts/invariants.ts`, `.github/`, `BACKLOG.md`), hunk de código
-com semântica, marcador malformado, arquivo ilegível (conflito delete/modify) e
-conflito misto (um `.md` trivial + um `.ts` semântico escala **tudo**). O push do
-head reparado usa `--force-with-lease` (mesmo precedente do `metapush`) e o
-re-probe de confirmação só considera verde o veredito calculado sobre o head
-**novo** (`headRefOid` entra no poll quando o sha esperado é informado) — nada de
+com semântica, hunk de comentário carregando **diretiva de supressão**
+(`@ts-ignore`, `eslint-disable`, `noqa`… — a união podia mascarar erro real num
+head que não re-roda a bateria), marcador malformado, arquivo ilegível ou sem
+marcador de conflito (binário, delete/modify) e conflito misto (um `.md` trivial
++ um `.ts` semântico escala **tudo**). Falha transitória de git durante o reparo
+(fetch/push/commit) é infra de rede com retry grátis no ciclo seguinte — o
+marcador fica reservado pra escalada real. Os paths em conflito chegam do
+`git diff -z` (delimitados por NUL, imunes a nome com espaço/quote/`$()`) e vão
+escapados entre aspas simples pro `git add` — nada interpretado pelo shell. O
+push do head reparado usa `--force-with-lease` (mesmo precedente do
+`metapush`) e o re-probe de confirmação só considera verde o veredito calculado
+sobre o head **novo** (`headRefOid` entra no poll quando o sha esperado é
+informado, fail-closed: snapshot sem `headRefOid` fica `pending`) — nada de
 merge com CI herdado do head velho. Reparo roda no máximo uma vez por chamada:
 um segundo `CONFLICTING` depois do push cai no skip infra normal, e conflito de
 código com semântica continua sendo trabalho de builder round novo via

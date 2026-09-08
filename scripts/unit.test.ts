@@ -8722,7 +8722,7 @@ check(
 
   // Fake gh+git surface: readiness probe 1 reports CONFLICTING; every later
   // probe (and the confirmation poll) sees the repaired head newSha.
-  const mkRepairIo = (opts: { conflictedPath: string; conflictedContent: string; mergeConflict: boolean }) => {
+  const mkRepairIo = (opts: { conflictedPath: string; conflictedContent: string; mergeConflict: boolean; pushFails?: boolean }) => {
     const calls: string[] = [];
     const written: Record<string, string> = {};
     let probe = 0;
@@ -8740,8 +8740,9 @@ check(
         if (cmd.startsWith("gh pr view")) return { ok: true, output: JSON.stringify({ state: "MERGED", headRefOid: newSha, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }) };
         if (cmd.startsWith("git ")) {
           if (cmd.startsWith("git merge --no-edit")) return opts.mergeConflict ? { ok: false, output: "Auto-merging x\nCONFLICT (content): Merge conflict in " + opts.conflictedPath } : { ok: true, output: "Merge made by the 'ort' strategy." };
-          if (cmd.startsWith("git diff --name-only")) return { ok: true, output: `${opts.conflictedPath}\n` };
+          if (cmd.startsWith("git diff -z --name-only")) return { ok: true, output: `${opts.conflictedPath}\0` };
           if (cmd.startsWith("git rev-parse HEAD")) return { ok: true, output: `${newSha}\n` };
+          if (cmd.startsWith("git push")) return opts.pushFails ? { ok: false, output: "lease rejected: peer push" } : { ok: true, output: "" };
           return { ok: true, output: "" };
         }
         return { ok: false, output: `unexpected exec: ${cmd}` };
@@ -8778,7 +8779,23 @@ check(
   const moved = mkRepairIo({ conflictedPath: "README.md", conflictedContent: docsConflict, mergeConflict: false });
   const movedOut = await mergePrForTask(moved.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
   check("P3-341: clean merge repair reports the new head and still lands the PR", movedOut.ok === true);
-  check("P3-341: clean merge repair skips the conflict listing", !moved.calls.some((c) => c.startsWith("git diff --name-only")) && !moved.calls.some((c) => c.startsWith("git merge --abort")) && moved.calls.includes("git push -q --force-with-lease origin pilot/P3-341"));
+  check("P3-341: clean merge repair skips the conflict listing", !moved.calls.some((c) => c.startsWith("git diff -z --name-only")) && !moved.calls.some((c) => c.startsWith("git merge --abort")) && moved.calls.includes("git push -q --force-with-lease origin pilot/P3-341"));
+
+  // 3b) shell-safe handling of conflicted paths (r2: spawnSync runs shell:true)
+  const injected = mkRepairIo({ conflictedPath: "x$(id).md", conflictedContent: docsConflict, mergeConflict: true });
+  const injectedOut = await mergePrForTask(injected.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: conflicted path with shell metachars is single-quoted for git add", injectedOut.ok === true && injected.calls.includes("git add -- 'x$(id).md'"));
+  const spaced = mkRepairIo({ conflictedPath: "my docs/README (pt).md", conflictedContent: docsConflict, mergeConflict: true });
+  const spacedOut = await mergePrForTask(spaced.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: paths with spaces/quotes/parens survive diff -z and quoting", spacedOut.ok === true && spaced.calls.includes("git add -- 'my docs/README (pt).md'") && (spaced.written["my docs/README (pt).md"] ?? "").includes("Main paragraph."));
+  const apos = mkRepairIo({ conflictedPath: "it's.md", conflictedContent: docsConflict, mergeConflict: true });
+  const aposOut = await mergePrForTask(apos.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: a literal quote in a path is escaped as '\\''", aposOut.ok === true && apos.calls.includes(`git add -- 'it'\\''s.md'`));
+
+  // 3c) transient repair failure (push noise) ⇒ infra network, marker reserved
+  const pushDead = mkRepairIo({ conflictedPath: "README.md", conflictedContent: docsConflict, mergeConflict: true, pushFails: true });
+  const pushDeadOut = await mergePrForTask(pushDead.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: transient repair failure is infra network, never the operator marker", pushDeadOut.ok === false && pushDeadOut.infra === "network" && !pushDeadOut.detail.includes(CONFLICT_OPERATOR_MARKER) && pushDeadOut.detail.includes("retry next cycle"));
 
   // 4) io without repair sinks ⇒ byte-for-byte the pre-P3-341 behavior
   const retroCalls: string[] = [];
@@ -8815,6 +8832,8 @@ check(
   check("P3-341: expectSha adds headRefOid to the readiness query", diverged.calls.length > 0 && diverged.calls.every((c) => c.endsWith(",headRefOid")));
   const aligned = snapIo(() => ({ ...greenSnap, headRefOid: sha }));
   check("P3-341: expectSha + matching head ⇒ normal green verdict", (await awaitMergeReadiness(aligned.io, 7, 3, sha)).verdict === "merge");
+  const noHead = snapIo(() => ({ ...greenSnap }));
+  check("P3-341: expectSha + snapshot without headRefOid ⇒ pending (fail-closed)", (await awaitMergeReadiness(noHead.io, 7, 3, sha)).verdict === "pending");
   const legacy = snapIo(() => ({ ...greenSnap, headRefOid: other }));
   const legacyOut = await awaitMergeReadiness(legacy.io, 7, 3);
   check("P3-341: no expectSha ⇒ unchanged command and verdict", legacyOut.verdict === "merge" && legacy.calls.every((c) => !c.includes("headRefOid")));
@@ -8851,6 +8870,11 @@ check(
     const r = resolveConflictedFile("apps/pilot/src/pipeline.ts", codeConflict);
     return !r.ok && r.reason === "code hunk changes semantics";
   })());
+  const markerFree = resolveConflictedFile("docs/X.md", "plain text, no markers");
+  check("P3-341: marker-free conflicted file (binary/delete-modify) refuses to resolve", !resolveConflictedFile("assets/logo.png", "binary ours bytes").ok && !markerFree.ok && markerFree.reason === "no conflict markers");
+  const directive = resolveConflictedFile("apps/pilot/src/pipeline.ts", "<<<<<<< HEAD\n// keep\n=======\n// eslint-disable-next-line no-explicit-any\n>>>>>>> origin/main\n");
+  const tsIgnore = resolveConflictedFile("apps/pilot/src/pipeline.ts", "<<<<<<< HEAD\n// @ts-ignore\n=======\n// eslint-disable no-explicit-any\n>>>>>>> origin/main\n");
+  check("P3-341: suppression directive in a code hunk refuses to union", !directive.ok && directive.reason === "suppression directive in code hunk" && !tsIgnore.ok && tsIgnore.reason === "suppression directive in code hunk");
   const mixed = repairPlan([
     { path: "README.md", content: "hello\n=======\nworld\n" },
     { path: "apps/pilot/src/pipeline.ts", content: codeConflict },
@@ -8875,6 +8899,9 @@ check(
   check("P3-341: P2-058 verified-merge guard untouched", pipelineSrc.includes("isTaskMergeSha(ws, postMergeHead, t.id)") && pipelineSrc.includes("recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id"));
   check("P3-341: repair runner pinned to force-with-lease (never plain --force, never main)", pipelineSrc.includes("git push -q --force-with-lease origin ${args.branch}") && !pipelineSrc.includes("git push -q --force origin"));
   check("P3-341: repairConflictedBranch is wired into mergePrForTask", pipelineSrc.includes("await repairConflictedBranch(io, { branch: args.branch") && pipelineSrc.includes("CONFLICT_OPERATOR_MARKER}: ${repair.detail}"));
+  check("P3-341: git add paths are single-quote escaped, never JSON.stringify'd", pipelineSrc.includes("shQuote(f.path)") && !pipelineSrc.includes("JSON.stringify(f.path)"));
+  check("P3-341: unmerged paths read via NUL-delimited -z diff, never line-split", pipelineSrc.includes("git diff -z --name-only --diff-filter=U") && pipelineSrc.includes('split("\\0")') && !pipelineSrc.includes("git diff --name-only --diff-filter=U"));
+  check("P3-341: the expectSha head pin is fail-closed", pipelineSrc.includes("if (!head || head !== expectSha)"));
 }
 
 
