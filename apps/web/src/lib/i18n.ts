@@ -119,6 +119,13 @@ export const dict = {
     rewindBtn: "back to here",
     rewindConfirm:
       "Take the conversation back to this point? Everything after it is undone — including code changes. You can redo later.",
+    // P2-323: the shared in-app confirmation dialog (rename / delete / rewind)
+    askRenameTitle: "Rename conversation",
+    askRenameBody: "Pick a new name for this conversation.",
+    askDeleteTitle: "Delete conversation",
+    askRewindTitle: "Rewind to this point",
+    askRewindConfirm: "Rewind",
+    askCancel: "Cancel",
     rewound: "Conversation rewound",
     unrevert: "Redo (undo the rewind)",
     unreverted: "Back to the present",
@@ -681,6 +688,13 @@ export const dict = {
     rewindBtn: "Voltar pra cá",
     rewindConfirm:
       "Voltar a conversa pra este ponto? Tudo o que veio depois é desfeito — inclusive as mudanças no código. Dá pra refazer depois.",
+    // P2-323: diálogo compartilhado de confirmação (renomear / apagar / voltar)
+    askRenameTitle: "Renomear conversa",
+    askRenameBody: "Escolha um novo nome para esta conversa.",
+    askDeleteTitle: "Apagar conversa",
+    askRewindTitle: "Voltar a este ponto",
+    askRewindConfirm: "Voltar",
+    askCancel: "Cancelar",
     rewound: "Conversa voltou pra trás",
     unrevert: "Refazer (desfazer o voltar)",
     unreverted: "De volta pro presente",

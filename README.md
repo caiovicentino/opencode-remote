@@ -1459,6 +1459,13 @@ fixed **account footer** at the bottom showing the machine avatar/initial,
 name and connection mode ("Local · this machine" / "Remote · paired"). The
 footer opens the machine picker, the same overlay as the mobile header.
 
+**Rename works on desktop (P2-323)**: renaming a conversation no longer dies
+silently in the desktop app — the pencil action opens a calm in-app dialog
+(prefilled field, Enter confirms, Esc cancels, focus returns to the row) that
+also covers the delete and rewind confirmations, replacing the last native
+`window.prompt`/`window.confirm` calls: boxes the Electron shell never
+implemented and that ignored the UI language and the theme.
+
 **Degraded first boot (P2-112)**: when the local daemon is unreachable on
 first launch, the app no longer dead-ends on the pairing screen. A calm status
 card — "Connecting for the first time…" for a daemon this machine has never

@@ -1251,6 +1251,13 @@ fixo embaixo com avatar/inicial da máquina, nome e modo de conexão ("Local ·
 esta máquina" / "Remoto · pareado"). O footer abre o seletor de máquina, o
 mesmo overlay do header mobile.
 
+**Renomear funciona no desktop (P2-323)**: renomear conversa não morre mais
+em silêncio no app desktop — o lápis abre um diálogo calmo dentro do app
+(campo pré-preenchido, Enter confirma, Esc cancela, o foco volta pra linha)
+que também cobre as confirmações de apagar e rebobinar, no lugar das últimas
+caixas nativas `window.prompt`/`window.confirm`: o shell Electron nunca
+implementou o prompt e as caixas ignoravam o idioma e o tema.
+
 **Auto-preview (P1-072)**: quando o agent sobe um site local (http.server,
 vite, dev server…) e menciona `http://localhost:<porta>` na resposta, o pane
 Browser abre sozinho ao lado do chat apontando pra URL, renderizado como um

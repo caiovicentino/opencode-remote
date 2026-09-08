@@ -12,6 +12,8 @@ import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 
+import { buildAskDialog, canConfirmAskValue } from "../apps/web/src/lib/askdialog";
+
 import {
   SW_SWAP_MESSAGE,
   SW_UPDATE_MIN_INTERVAL_MS,
@@ -31353,6 +31355,111 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     "P2-322: jobtimeouts.ts is pure — no node:fs, no node:process, no fetch anywhere in the source",
     !/node:(fs|process|child_process)/.test(verifierSrc) && !verifierSrc.includes("fetch("),
   );
+}
+
+// --- P2-323: ask dialog descriptors (askdialog.ts) + fail-closed call sites ---
+{
+  // stub translator: proves every label resolves through the injected
+  // dictionary — nothing is born hardcoded in the module or the JSX
+  const fakeDict: Record<string, string> = {
+    askRenameTitle: "[rename-title]",
+    askRenameBody: "[rename-body]",
+    rename: "[rename]",
+    askDeleteTitle: "[delete-title]",
+    deleteConfirm: "[delete-body]",
+    delete: "[delete]",
+    askRewindTitle: "[rewind-title]",
+    rewindConfirm: "[rewind-body]",
+    askRewindConfirm: "[rewind-confirm]",
+    askCancel: "[cancel]",
+    renamePrompt: "[input-label]",
+  };
+  const t = (key: string) => fakeDict[key] ?? key;
+
+  // --- the acceptance table: one case per intent plus the hostile edges ------
+  const rename = buildAskDialog("rename", t, "Old title");
+  check("ask: rename → neutral tone", rename.tone === "neutral");
+  check("ask: rename → shows the input field", rename.withInput === true);
+  check("ask: rename → input starts on the current title", rename.initialInput === "Old title");
+  check("ask: rename → title/body/labels resolve through the dictionary", rename.title === "[rename-title]" && rename.body === "[rename-body]" && rename.confirmLabel === "[rename]" && rename.cancelLabel === "[cancel]" && rename.inputLabel === "[input-label]");
+
+  const del = buildAskDialog("delete", t);
+  check("ask: delete → destructive tone", del.tone === "destructive");
+  check("ask: delete → no input field", del.withInput === false);
+  check("ask: delete → body is the delete question, confirm is Delete", del.body === "[delete-body]" && del.confirmLabel === "[delete]" && del.title === "[delete-title]");
+
+  const rewind = buildAskDialog("rewind", t);
+  check("ask: rewind → destructive tone without input", rewind.tone === "destructive" && rewind.withInput === false);
+  check("ask: rewind → body is the rewind question", rewind.body === "[rewind-body]" && rewind.confirmLabel === "[rewind-confirm]" && rewind.title === "[rewind-title]");
+
+  // unknown intent: fail-closed — it throws, it never invents a descriptor
+  let threw = false;
+  try {
+    buildAskDialog("archive", t);
+  } catch {
+    threw = true;
+  }
+  check("ask: unknown intent is refused (fail-closed throw)", threw);
+  threw = false;
+  try {
+    buildAskDialog(undefined, t);
+  } catch {
+    threw = true;
+  }
+  check("ask: non-string intent is refused (fail-closed throw)", threw);
+
+  // missing / hostile current titles never break the descriptor
+  check("ask: rename with absent title starts empty", buildAskDialog("rename", t).initialInput === "");
+  check("ask: rename with a whitespace title keeps it verbatim (confirm stays disabled)", buildAskDialog("rename", t, "   ").initialInput === "   ");
+  check("ask: rename with a non-string title starts empty", buildAskDialog("rename", t, 42).initialInput === "");
+
+  // --- canConfirmAskValue table ----------------------------------------------
+  const confirmTable: Array<{ name: string; value: unknown; current?: unknown; want: boolean }> = [
+    { name: "a fresh title confirms", value: "New name", current: "Old", want: true },
+    { name: "empty value is refused", value: "", current: "Old", want: false },
+    { name: "whitespace-only value is refused", value: "   ", current: "Old", want: false },
+    { name: "a value identical to the current title is refused", value: "Old", current: "Old", want: false },
+    { name: "identical after trimming is refused", value: "  Old  ", current: "Old", want: false },
+    { name: "absent current title: any non-empty value confirms", value: "First", want: true },
+    { name: "numbers are refused (non-textual input)", value: 42, current: "Old", want: false },
+    { name: "null is refused", value: null, want: false },
+    { name: "objects are refused", value: { title: "Old" }, current: "Old", want: false },
+    { name: "arrays are refused", value: ["Old"], current: "Old", want: false },
+  ];
+  for (const tc of confirmTable) {
+    check(`ask: canConfirm — ${tc.name}`, canConfirmAskValue(tc.value, tc.current) === tc.want);
+  }
+
+  // --- purity: same input, two calls, identical result ------------------------
+  const first = JSON.stringify(buildAskDialog("rename", t, "Sync"));
+  check("ask: same input always yields the identical descriptor", first === JSON.stringify(buildAskDialog("rename", t, "Sync")));
+  check("ask: canConfirm is deterministic", canConfirmAskValue("Sync", "Old") === canConfirmAskValue("Sync", "Old"));
+
+  // --- fail-closed source scan over the real apps/web/src tree ---------------
+  // No window.prompt / window.confirm may survive anywhere: the desktop shell
+  // never implemented prompt (rename died silently) and confirm ignores the
+  // UI language and the theme.
+  const root = join(import.meta.dirname, "..");
+  const webRoot = join(root, "apps", "web", "src");
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(p);
+      } else if (/\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+        const src = readFileSync(p, "utf8");
+        if (/window\.(prompt|confirm)\s*\(/.test(src)) offenders.push(p);
+      }
+    }
+  };
+  walk(webRoot);
+  check("ask: zero window.prompt/window.confirm left in apps/web/src", offenders.length === 0, offenders.join(", "));
+  check("ask: the three call sites render the shared dialog", (() => {
+    const sessions = readFileSync(join(webRoot, "components", "SessionsView.tsx"), "utf8");
+    const chat = readFileSync(join(webRoot, "components", "ChatView.tsx"), "utf8");
+    return sessions.includes("<AskDialog") && chat.includes("<AskDialog") && sessions.includes("buildAskDialog") && chat.includes("buildAskDialog");
+  })());
 }
 
 if (failures > 0) {
