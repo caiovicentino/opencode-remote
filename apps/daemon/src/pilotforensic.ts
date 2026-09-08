@@ -104,9 +104,10 @@ function dataBool(d: unknown, key: string): boolean | undefined {
   return undefined;
 }
 
-function dataTask(d: unknown): string | undefined {
+/** Task-id guard for forensic payloads: P0-P9 work plus red-team RT- ids. */
+export function dataTask(d: unknown): string | undefined {
   const t = dataStr(d, "task");
-  return t && /^[P\d][\w.-]{1,24}$/.test(t) ? t : undefined;
+  return t && /^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(t) ? t : undefined;
 }
 
 function clip(s: string, max = 400): string {

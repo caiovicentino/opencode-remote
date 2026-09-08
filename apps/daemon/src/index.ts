@@ -2343,7 +2343,15 @@ const CHUNK_BODY = 600_000;
 const MAX_CHUNKS = 512; // ~300MB ceiling on a single response
 
 async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
-  metrics.inc(env.type === "event" ? "ocr_event_frames_total" : "ocr_res_frames_total");
+  // RT-341: heartbeats get their own counter so pong volume never pollutes
+  // the response count.
+  metrics.inc(
+    env.type === "event"
+      ? "ocr_event_frames_total"
+      : env.type === "pong"
+        ? "ocr_pong_frames_total"
+        : "ocr_res_frames_total",
+  );
   const seq = ++session.sendSeq;
   let payload: string;
   try {
@@ -2969,14 +2977,21 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       // heartbeating (otherwise broadcast() silently stops delivering while
       // the client stays "paired" and never reconnects).
       if (known) known.lastSeen = Date.now();
-      const reply = known ? { type: "pong" } : { type: "reconnect" };
-      ws.send(
-        JSON.stringify({
-          room: daemon.room,
-          from: daemon.room,
-          payload: b64(Buffer.from(JSON.stringify(reply))),
-        } satisfies RelayFrame),
-      );
+      // RT-341: with a live session the pong is SEALED — a clear pong would
+      // let any room member forge liveness. Without a session there is no
+      // key to seal with, so the reconnect hint stays clear; the client
+      // treats it as an unauthenticated hint and verifies it (never obeys).
+      if (known) {
+        await sealAndSend(known, { type: "pong" });
+      } else {
+        ws.send(
+          JSON.stringify({
+            room: daemon.room,
+            from: daemon.room,
+            payload: b64(Buffer.from(JSON.stringify({ type: "reconnect" }))),
+          } satisfies RelayFrame),
+        );
+      }
       return;
     }
     if (maybeControl?.type === "hello" && maybeControl.hello) {
@@ -3751,7 +3766,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           .split("\n")
           .filter((l) => l.startsWith("- [x]"))
           .map((l) => {
-            const m = l.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
+            // same id grammar as backlogview.parseTaskLine: P0-P9 + red-team RT-
+            const m = l.match(/\(([P\d][\w.-]*|RT-\d+)\)\s*\[.*?\]\s*([^—]+)/);
             return { id: m?.[1] ?? "?", title: (m?.[2] ?? l).trim() };
           });
       } catch {}
@@ -3977,7 +3993,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (seg[1] === "pilot-forensic" && req.method === "GET") {
       if (seg[2] === "timeline") {
         const task = url.searchParams.get("task") ?? "";
-        if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+        if (!/^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(task)) {
           send(400, { error: "task required" });
           return true;
         }
@@ -4044,7 +4060,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         return true;
       }
       const task = body.task ?? "";
-      if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+      if (!/^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(task)) {
         send(400, { error: "task required" });
         return true;
       }
