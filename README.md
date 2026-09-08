@@ -1504,7 +1504,10 @@ ever part of the displayed copy.
 **Benchmark pairing journey (P2-106)**: the manual pairing screen is a narrow
 (~420px), vertically centered column with a one-sentence intro and two titled
 sections — **Connect to another machine** (scan/paste, this device as client)
-and **Pair a phone with this machine** (host entry). An invalid pairing code
+and **Pair a phone with this machine** (host entry). The host entry (also in
+Settings) reads as a button: a trailing chevron and a hover that lifts the
+background, border and chevron together (P3-335) — it is the only host-pairing
+action, so it must be discoverable at a glance. An invalid pairing code
 renders a styled error block with an inline helper showing the expected
 `opencode-remote://pair?…` format (announced to screen readers), and on the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only

@@ -1967,12 +1967,14 @@ button.desk-new:hover:not(:disabled) {
 
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet bordered row
    that turns the QR ceremony back on — from the unpaired screen or Settings.
-   Same visual language as .card, no decoration. */
+   Same visual language as .card. P3-335: it is the only host-pairing action,
+   so it reads as a button — trailing chevron on the right and a hover that
+   lifts background, border and chevron together. */
 .pair-remote-entry {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
   text-align: left;
   width: 100%;
   padding: 10px 12px;
@@ -1982,17 +1984,38 @@ button.desk-new:hover:not(:disabled) {
   color: inherit;
   cursor: pointer;
   font: inherit;
+  transition: background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }
 .pair-remote-entry:hover {
   background: var(--surface);
+  border-color: var(--border-strong);
 }
 .pair-remote-entry:disabled {
   opacity: 0.6;
   cursor: default;
 }
+.pair-remote-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
 .pair-remote-entry .muted {
   font-size: 0.75rem;
   font-weight: 400;
+}
+.pair-remote-chevron {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+.pair-remote-entry:hover .pair-remote-chevron {
+  transform: translateX(2px);
+  color: var(--accent);
 }
 
 /* first-run pairing overlay (desktop shell, P2-007) */
