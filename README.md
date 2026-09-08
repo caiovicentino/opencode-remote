@@ -1482,7 +1482,11 @@ the phone-pairing invitation with an explicit "do this later". It opens with
 the product identity (P3-340) — the accent glyph above the serif "OpenCode
 Remote" wordmark, the same mark language as the P2-123 home greeting. The
 pairing step asks only once (P3-337): the card heading is the single title,
-and the inline section beneath it carries just the live QR/status. The first
+and the inline section beneath it carries just the live QR/status. While the
+QR is being minted that section shows a shimmer skeleton instead of a bare
+text line, and if it has not landed after 20s the wait resolves to an inline
+error with a retry (P3-333) — "Do this later" stays the calm exit either way.
+The first
 two steps carry a global "Skip" in the top meta row; the final step has a
 single, in-context way out — "Do this later" (or "Done" once paired) — so one
 action never shows two differently-labeled exits (P3-338). Finishing or

@@ -1471,6 +1471,58 @@ button.desk-new:hover:not(:disabled) {
   margin: 0 auto;
 }
 .welcome-pair .pair-section[data-pair-wait="true"] { min-height: 120px; }
+/* P3-333: QR wait state — shimmer skeleton sized exactly like the real QR
+   (no layout jump when it lands) plus the calm "generating" caption. Uses
+   the shared .skel shimmer; prefers-reduced-motion freezes it to a static
+   block via the global media rule. */
+.welcome-qr-wait {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+.welcome-qr-skel {
+  width: min(220px, 60vw);
+  aspect-ratio: 1;
+}
+.welcome-qr-wait .muted {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+/* P3-333: timeout error — same quiet vocabulary as the P2-112 degraded card
+   (bordered surface block, no red, no banner), with the retry as the one
+   action; "do this later" above stays the calm exit. */
+.welcome-qr-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.welcome-qr-error-title {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+.welcome-qr-retry {
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+.welcome-qr-retry:hover {
+  border-color: var(--fg);
+}
 
 .welcome-step {
   display: flex;
