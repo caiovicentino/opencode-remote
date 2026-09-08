@@ -2975,6 +2975,15 @@ button.desk-new:hover:not(:disabled) {
   animation: screen-in var(--motion-fast) var(--ease-out);
 }
 
+/* P3-328: the gate hint is a transient status toast, same layer intent as the
+   pairing overlay (fixed, full-screen, z-index 200) — it must stay perceivable
+   when that overlay is up (QR/phone ceremony auto-shows while unpaired), so
+   it rides above it and below the paired-phase modals (artifact backdrop,
+   1000). */
+.pair-gate-hint {
+  z-index: 210;
+}
+
 /* ── side-by-side artifact preview (P2-062): chat left, artifact right ── */
 /* row wrapper around the chat column; the preview pane and divider join it
    while an artifact is open on a wide (≥ 900px) viewport */

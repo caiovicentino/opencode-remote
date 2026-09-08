@@ -734,14 +734,25 @@ try {
   run("P1-046: go-pane-artifacts click dispatches", ["menu-click", "go-pane-artifacts"], 15_000);
   // P3-328: the dropped pane action must now be perceivable on the gate
   // screen — probe right after the click, inside the 4s toast window.
-  const gateHint = run("P3-328: pair-first hint after pane click", ["ipc", "document.querySelector('.pair-gate-hint')?.textContent ?? ''"], 15_000);
-  if (gateHint.ok) {
-    check(
-      "P3-328: dropped pane action surfaces the pair-first hint (en|pt)",
-      /Pair with your machine first|Pareie com sua máquina primeiro/.test(gateHint.stdout),
-      gateHint.stdout,
-    );
-  }
+  // Unconditional on purpose (r2 review): a harness hiccup here must FAIL,
+  // never silently skip this task's core regression guard. The probe returns
+  // z-index + a real hit-test at the toast's center — textContent alone
+  // passes even when the toast is painted behind the pairing overlay.
+  const gateHint = run(
+    "P3-328: pair-first hint probe after pane click",
+    ["ipc", `(() => { const el = document.querySelector('.pair-gate-hint'); if (!el) return ''; const r = el.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return 'z=' + getComputedStyle(el).zIndex + '|top=' + (top === el || el.contains(top) ? 'self' : String(top?.className ?? top?.tagName)) + '|' + (el.textContent ?? ''); })()`],
+    15_000,
+  );
+  check(
+    "P3-328: dropped pane action surfaces the pair-first hint (en|pt)",
+    gateHint.ok && /Pair with your machine first|Pareie com sua máquina primeiro/.test(gateHint.stdout),
+    gateHint.stdout,
+  );
+  check(
+    "P3-328 r2: hint stacks above the pairing overlay and wins the hit-test",
+    gateHint.ok && Number(/z=(\d+)\|top=self/.exec(gateHint.stdout)?.[1]) > 200,
+    gateHint.stdout,
+  );
 
   // --- P3-053: dock unread badge bridge ----------------------------------------
   // The paired chat UI can't render hermetically (see the P1-051 note above),

@@ -6370,6 +6370,16 @@ check(
     "P3-328: gate hint auto-clears after 4s and never re-shows a stale trigger",
     hintSource.includes("setTimeout(() => setVisible(false), 4_000)") && hintSource.includes("useRef(trigger)"),
   );
+  // r2 review: the hint must stack ABOVE the pairing overlay (z-index 200) —
+  // behind it, a Go-menu press during the QR ceremony stays invisible even
+  // though the element is in the DOM.
+  const cssSource = readFileSync(new URL("../apps/web/src/index.css", import.meta.url), "utf8");
+  const hintZ = Number(/pair-gate-hint\s*\{[^}]*z-index:\s*(\d+)/.exec(cssSource)?.[1]);
+  const overlayZ = Number(/pair-overlay\s*\{[^}]*z-index:\s*(\d+)/.exec(cssSource)?.[1]);
+  check(
+    "P3-328 r2: .pair-gate-hint z-index stacks above the pairing overlay",
+    Number.isFinite(hintZ) && Number.isFinite(overlayZ) && hintZ > overlayZ,
+  );
 }
 
 
