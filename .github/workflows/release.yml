@@ -365,14 +365,26 @@ jobs:
       # window) and fail BEFORE the upload below — same shape as the P2-204
       # mac boot smoke. Playwright missing fails closed (exit 1). shell: bash
       # (P2-126/P2-164 lessons): pwsh does not expand globs.
+      # P3-343: the boot also saves a screenshot of the real window
+      # (best-effort, never flips the verdict), uploaded as a run artifact.
       - name: Smoke-boot the packaged app
         timeout-minutes: 10
         shell: bash
+        env:
+          OCR_PACKAGED_BOOT_SHOT: ${{ runner.temp }}/packaged-boot-win.png
         run: |
           DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
           [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
           echo "packaged-boot: booting $DIR"
           node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
+      - name: Upload packaged boot screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packaged-boot-win
+          path: ${{ runner.temp }}/packaged-boot-win.png
+          if-no-files-found: ignore
 
       # P2-251: same daemon-sidecar smoke the mac job runs — the boot smoke
       # above never spawns the sidecar, so the packaged resources/daemon/

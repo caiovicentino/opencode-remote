@@ -63,3 +63,21 @@ export function candidatePaths(packagePath, platform) {
 
   return [];
 }
+
+/**
+ * P3-343: whether one scanned directory entry counts as the packaged app's
+ * runnable binary. Platform comes in explicitly so the rule stays testable
+ * from any host. On win32 the exec mode bits are worthless — libuv never sets
+ * them in st_mode (fs__stat_assign_statbuf only applies _S_IREAD/_S_IWRITE,
+ * see the "Todo: st_mode should probably always be 0666" note in
+ * libuv/src/win/fs.c), which is exactly why the desktop-package-win smoke
+ * reported binary-missing while the .exe sat right there — so the only
+ * reliable signal is the .exe suffix, case-insensitive (the same rule
+ * dist-smoke.mjs already applies). Everywhere else the Unix exec bits decide
+ * and a .exe suffix alone is never enough.
+ */
+export function isExecutableEntry(name, mode, platform) {
+  if (typeof name !== "string" || name === "") return false;
+  if (platform === "win32") return name.toLowerCase().endsWith(EXEC_SUFFIX);
+  return typeof mode === "number" && (mode & 0o111) !== 0;
+}

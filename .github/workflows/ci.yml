@@ -307,15 +307,28 @@ jobs:
       # P2-242: same parity for Windows — boot the real win-unpacked bundle
       # in the PR, reusing the release boot script and its hermetic contract
       # unchanged. shell: bash (P2-126/P2-164 lessons) with its own timeout;
-      # nothing is uploaded, signed or published.
+      # nothing is signed or published.
+      # P3-343: the boot leaves visual proof — the script saves a screenshot
+      # of the real window (best-effort, never flips the verdict) and the step
+      # right below uploads it as a run artifact.
       - name: Smoke-boot the packaged app
         shell: bash
         timeout-minutes: 10
+        env:
+          OCR_PACKAGED_BOOT_SHOT: ${{ runner.temp }}/packaged-boot-win.png
         run: |
           DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
           [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
           echo "packaged-boot: booting $DIR"
           node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
+      - name: Upload packaged boot screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packaged-boot-win
+          path: ${{ runner.temp }}/packaged-boot-win.png
+          if-no-files-found: ignore
 
       # P2-253: same daemon-sidecar smoke the release win job runs — the
       # packaged resources/daemon/index.js boots via the package's own

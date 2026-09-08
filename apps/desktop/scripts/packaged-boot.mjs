@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bootVerdict, CANARY } from "./packaged-boot-verdict.mjs";
-import { candidatePaths } from "./packaged-boot-layout.mjs";
+import { candidatePaths, isExecutableEntry } from "./packaged-boot-layout.mjs";
 
 const BOOT_TIMEOUT_MS = 120_000;
 const LOAD_TIMEOUT_MS = 45_000;
@@ -70,7 +70,8 @@ export function resolveExecutable(appPath) {
   }
   for (const name of entries) {
     const path = join(scanDir, name);
-    if (isFile(path) && statSync(path).mode & 0o111) return path;
+    if (!isFile(path)) continue;
+    if (isExecutableEntry(name, statSync(path).mode, process.platform)) return path;
   }
   return null;
 }
@@ -142,6 +143,23 @@ async function closeApp(electronApp) {
   clearTimeout(killer);
 }
 
+/**
+ * P3-343: save the booted window as visual proof when OCR_PACKAGED_BOOT_SHOT
+ * points at a file (the packaging CI sets it and uploads the PNG as a run
+ * artifact). Strictly fail-open and best-effort: a missing or failed shot is
+ * logged, never flips the verdict — the boot verdict above is the gate.
+ */
+async function captureBootShot(page, verdict) {
+  const shotPath = process.env.OCR_PACKAGED_BOOT_SHOT;
+  if (!page || !shotPath) return;
+  try {
+    await page.screenshot({ path: shotPath, timeout: CLOSE_DEADLINE_MS });
+    console.log(`packaged-boot: boot shot (${verdict.ok ? "ok" : verdict.reason}) — ${shotPath}`);
+  } catch (err) {
+    console.log(`packaged-boot: boot shot unavailable: ${String(err?.message ?? err).split("\n")[0]}`);
+  }
+}
+
 async function main() {
   const raw = process.argv[2];
   if (!raw) {
@@ -182,6 +200,7 @@ async function main() {
   }, BOOT_TIMEOUT_MS);
 
   let electronApp = null;
+  let bootedPage = null;
   // Launch the PACKAGED binary itself (not the electron npm package): the
   // bundle carries its own runtime, asar and extraResources.
   const facts = { executableFound: true, loadFinished: false, rootEmpty: true, canarySeen: false, consoleErrors: [] };
@@ -213,6 +232,7 @@ async function main() {
     };
     electronApp.on("window", collect);
     const page = await electronApp.firstWindow({ timeout: LOAD_TIMEOUT_MS });
+    bootedPage = page;
     collect(page); // no-op when the window event already collected it
 
     try {
@@ -240,12 +260,16 @@ async function main() {
       }
     }
 
-    finish(bootVerdict(facts), appPath, facts.consoleErrors);
+    const verdict = bootVerdict(facts);
+    await captureBootShot(bootedPage, verdict);
+    finish(verdict, appPath, facts.consoleErrors);
   } catch (err) {
     // Launch died (binary found but the process never produced a window —
     // e.g. main throwing at boot or an entitlement killing it): load-failed.
     console.error(`packaged-boot: launch/load error: ${String(err?.message ?? err).split("\n")[0]}`);
-    finish(bootVerdict(facts), appPath, facts.consoleErrors);
+    const verdict = bootVerdict(facts);
+    await captureBootShot(bootedPage, verdict);
+    finish(verdict, appPath, facts.consoleErrors);
   } finally {
     await closeApp(electronApp);
   }

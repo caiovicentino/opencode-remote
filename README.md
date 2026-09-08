@@ -746,6 +746,10 @@ Run the boot smoke locally against an already-built package too:
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
 
+Set `OCR_PACKAGED_BOOT_SHOT=<path>` to also save a screenshot of the booted
+window (best-effort, never changes the verdict) — the Windows packaging jobs
+do this and upload the PNG as a run artifact (P3-343).
+
 Since P2-251 both packaging jobs also execute the sidecar the boot smoke
 deliberately never spawns (`Smoke the packaged daemon sidecar` step, right
 after the boot smoke): the packaged `resources/daemon/index.js` is run with the

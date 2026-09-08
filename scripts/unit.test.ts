@@ -932,7 +932,7 @@ import {
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
-import { candidatePaths } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
+import { candidatePaths, isExecutableEntry } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
 import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
 import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
 
@@ -20185,6 +20185,82 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-343: win32 binary detection (run 34275463862) + boot screenshot -------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const layoutSrc = src(["apps", "desktop", "scripts", "packaged-boot-layout.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  // The regression behind desktop-package-win run 34275463862: libuv on
+  // Windows never sets the exec mode bits in st_mode, so the fallback scan
+  // saw only .pak/.dll/dat files and reported binary-missing while the real
+  // "OpenCode Remote.exe" sat in win-unpacked. The suffix is the only
+  // reliable win32 signal — mode bits must be irrelevant there.
+  check(
+    "P3-343: win32 accepts the packaged .exe regardless of (worthless) mode bits",
+    isExecutableEntry("OpenCode Remote.exe", 0o100644, "win32") === true &&
+      isExecutableEntry("OpenCode Remote.exe", 0, "win32") === true,
+  );
+  check(
+    "P3-343: win32 suffix match is case-insensitive and refuses non-.exe entries",
+    isExecutableEntry("OpenCode Remote.EXE", 0, "win32") === true &&
+      isExecutableEntry("libEGL.dll", 0o100777, "win32") === false &&
+      isExecutableEntry("resources", 0o100777, "win32") === false,
+  );
+  check(
+    "P3-343: off-win32 the exec mode bits decide and a .exe suffix alone never wins",
+    isExecutableEntry("electron", 0o100755, "darwin") === true &&
+      isExecutableEntry("electron", 0o100644, "darwin") === false &&
+      isExecutableEntry("app.exe", 0, "darwin") === false &&
+      isExecutableEntry("app.exe", 0o100755, "linux") === true,
+  );
+  check(
+    "P3-343: garbage inputs fail closed",
+    isExecutableEntry("", 0o100777, "win32") === false &&
+      isExecutableEntry(null as unknown as string, 0o100777, "win32") === false &&
+      isExecutableEntry("x.exe", null as unknown as number, "darwin") === false,
+  );
+
+  check(
+    "P3-343: packaged-boot-layout.mjs stays pure (no node: fs/os/path/net/http imports)",
+    !/node:(fs|os|path|net|http)/.test(layoutSrc.replace(/\/\/.*$/gm, "")),
+  );
+  check(
+    "P3-343: resolveExecutable classifies every fallback entry through isExecutableEntry",
+    bootSrc.includes("isExecutableEntry(name, statSync(path).mode, process.platform)"),
+  );
+  check(
+    "P3-343: the boot shot is opt-in via OCR_PACKAGED_BOOT_SHOT and strictly fail-open",
+    bootSrc.includes("OCR_PACKAGED_BOOT_SHOT") && bootSrc.includes("boot shot unavailable"),
+  );
+
+  // real-repo assertion: both Windows packaging jobs save the shot from the
+  // boot step and upload it as a run artifact right after it
+  const winJobs: Array<[string, string, string, string]> = [
+    ["ci.yml", "desktop-package-win", "verify-win"],
+    ["release.yml", "desktop-win", "release-verify"],
+  ];
+  for (const [file, jobKey, nextJobKey] of winJobs) {
+    const text = src([".github", "workflows", file]);
+    const jobAt = text.indexOf(`\n  ${jobKey}:`);
+    const jobEnd = text.indexOf(`\n  ${nextJobKey}:`, jobAt);
+    const job = jobAt > -1 && jobEnd > jobAt ? text.slice(jobAt, jobEnd) : "";
+    const bootAt = job.indexOf("Smoke-boot the packaged app");
+    const upAt = job.indexOf("Upload packaged boot screenshot", bootAt);
+    const stepEnd = upAt > -1 ? job.indexOf("\n      - name:", upAt) : -1;
+    const slice = bootAt > -1 && upAt > bootAt ? job.slice(bootAt, stepEnd) : "";
+    check(
+      `P3-343: ${file} ${jobKey} shoots the boot and uploads it as a run artifact`,
+      slice.includes("OCR_PACKAGED_BOOT_SHOT") &&
+        slice.includes("packaged-boot-win.png") &&
+        slice.includes("if: always()") &&
+        slice.includes("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02") &&
+        slice.includes("if-no-files-found: ignore"),
+    );
+  }
+}
+
 // --- P2-207: artifact retention janitor (artifactretention.ts) ----------------
 
 {
@@ -22173,11 +22249,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     pkgAt > -1 && smokeAt > pkgAt,
   );
   check(
-    "P2-219: no step of the new job uploads artifacts or publishes anything",
-    !win.includes("actions/upload-artifact") &&
-      !win.includes("gh release") &&
+    "P2-219: the job still never publishes — the only upload is the P3-343 boot-screenshot artifact (run-scoped evidence, never a release asset)",
+    !win.includes("gh release") &&
       !win.includes("upload-artifact:") &&
-      !win.includes("ghr"),
+      !win.includes("ghr") &&
+      win.split("actions/upload-artifact").length - 1 === 1 &&
+      win.includes("Upload packaged boot screenshot") &&
+      win.includes("if-no-files-found: ignore"),
   );
   check(
     "P2-219: every run step of the new job declares shell: bash (P2-126 lesson)",
