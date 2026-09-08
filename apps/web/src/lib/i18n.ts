@@ -426,6 +426,9 @@ export const dict = {
     // shape of a well-formed pairing URI so the fix is obvious.
     invalidCodeHint:
       "Expected format: opencode-remote://pair?v=2&relay=… — copy the whole code, exactly as the other machine shows it.",
+    // P3-328: Go-menu pane actions stay enabled at the pairing gate — pressing
+    // one now surfaces this hint instead of silently doing nothing.
+    pairFirstHint: "Pair with your machine first — the panes unlock once connected.",
     // chat composer + header (P2-049)
     send: "Send",
     messagePlaceholder: "Message the agent…",
@@ -1012,6 +1015,9 @@ export const dict = {
     // esperado pra correção ser óbvia.
     invalidCodeHint:
       "Formato esperado: opencode-remote://pair?v=2&relay=… — copie o código inteiro, exatamente como a outra máquina mostra.",
+    // P3-328: ações de painel do menu Go ficam habilitadas no portão de
+    // pareamento — apertar uma agora mostra este aviso em vez de não fazer nada.
+    pairFirstHint: "Pareie com sua máquina primeiro — os painéis ficam disponíveis depois de conectar.",
     // chat composer + header (P2-049)
     send: "Enviar",
     messagePlaceholder: "Mensagem pro agente…",
