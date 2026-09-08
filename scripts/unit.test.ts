@@ -350,7 +350,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
-import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -12170,6 +12170,73 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
     }),
   ));
+}
+
+// --- P2-324: wedged-daemon verdict on the calm card (pure renderer mapping) ----
+
+{
+  // Table: every documented sidecarwedge.ts state plus the fail-closed
+  // shapes. The renderer only speaks when the shell is watching (degraded),
+  // reviving (restart) or has suspended the automatic restart (give-up) —
+  // the plain "observe" state must stay silent.
+  const wedge = (state: string, message = "mensagem estática do classificador"): SidecarWedgeHealth => ({ state, message });
+  const wedgeCases: Array<[string, SidecarWedgeHealth, string | null, string | null]> = [
+    ["observe stays silent (plain watching is not a warning)", wedge("observe"), null, null],
+    ["degraded maps to the degraded notice", wedge("degraded"), "sidecarWedgeDegradedTitle", "sidecarWedgeDegradedAction"],
+    ["restart maps to the restart notice", wedge("restart"), "sidecarWedgeRestartTitle", "sidecarWedgeRestartAction"],
+    ["give-up maps to the give-up notice", wedge("give-up"), "sidecarWedgeGiveUpTitle", "sidecarWedgeGiveUpAction"],
+    ["unknown state is discarded", wedge("wedge"), null, null],
+    ["empty state is discarded", wedge(""), null, null],
+    ["empty message is discarded", { state: "restart", message: "" }, null, null],
+    ["non-textual message is discarded", { state: "restart", message: 42 }, null, null],
+  ];
+  for (const [name, input, titleKey, actionKey] of wedgeCases) {
+    check(`P2-324: ${name}`, (() => {
+      const n = sidecarWedgeNotice(input);
+      if (titleKey === null || actionKey === null) return n === null;
+      return !!n && n.titleKey === titleKey && n.actionKey === actionKey;
+    })());
+  }
+  check("P2-324: absent input never warns", sidecarWedgeNotice(null) === null && sidecarWedgeNotice(undefined) === null);
+  check("P2-324: non-object values never warn", sidecarWedgeNotice(42) === null && sidecarWedgeNotice("restart") === null && sidecarWedgeNotice(["restart"]) === null);
+  check("P2-324: missing message field is discarded", sidecarWedgeNotice({ state: "restart" }) === null);
+  check("P2-324: same input yields the exact same notice on every call (pure)", (() => {
+    const input = wedge("restart");
+    const a = sidecarWedgeNotice(input);
+    const b = sidecarWedgeNotice(input);
+    return a !== null && b !== null && a.titleKey === b.titleKey && a.actionKey === b.actionKey;
+  })());
+
+  // Copy parity: every key resolves in both locales (no raw-key leak), same
+  // hygiene bar as the P2-140 exit copy — calm sentences, no markup, no emoji.
+  const wedgeKeys = [
+    "sidecarWedgeDegradedTitle", "sidecarWedgeDegradedAction",
+    "sidecarWedgeRestartTitle", "sidecarWedgeRestartAction",
+    "sidecarWedgeGiveUpTitle", "sidecarWedgeGiveUpAction",
+  ];
+  check(
+    "P2-324: wedge copy resolves per locale (en + pt) and never leaks the raw key",
+    (["en", "pt"] as const).every((lang) =>
+      wedgeKeys.every((k) => {
+        const s = translate(lang, k);
+        return !!s && s !== k && dict[lang][k] === s;
+      }),
+    ),
+  );
+  check("P2-324: wedge copy carries no markup, paths or emoji", wedgeKeys.every((k) =>
+    (["en", "pt"] as const).every((lang) => {
+      const s = dict[lang][k];
+      return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
+    }),
+  ));
+
+  // Module hygiene (same bar as sidecarwedge.ts): the wedge mapping is pure —
+  // no React, no fetch, no window access, and DegradedView renders the verdict
+  // band through i18n keys only (no copy born hardcoded in JSX).
+  const degradedSource = readFileSync(new URL("../apps/web/src/lib/degraded.ts", import.meta.url), "utf8");
+  check("P2-324: degraded.ts stays pure (no React, no fetch, no window)", !degradedSource.includes("react") && !degradedSource.includes("fetch(") && !degradedSource.includes("window"));
+  const degradedViewSource = readFileSync(new URL("../apps/web/src/components/DegradedView.tsx", import.meta.url), "utf8");
+  check("P2-324: the verdict band renders through t() keys, never JSX literals", degradedViewSource.includes("verdictBand.titleKey") && degradedViewSource.includes("verdictBand.actionKey") && degradedViewSource.includes("sidecarExit ?? sidecarWedge"));
 }
 
 // --- P2-315: sidecar stop planner (pure, no electron/node:fs) -----------------

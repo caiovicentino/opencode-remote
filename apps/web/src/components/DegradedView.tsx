@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
-import type { DegradedKind, SidecarExitNotice, UpstreamNotice } from "../lib/degraded";
+import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
 
 interface Props {
@@ -19,6 +19,11 @@ interface Props {
   /** P2-140: why the local daemon died (exit classifier verdict), rendered
    * INSIDE this calm card — never a second banner (P2-108 rule). */
   sidecarExit?: SidecarExitNotice | null;
+  /** P2-324: the local daemon wedged alive (wedge probe verdict), rendered in
+   * the SAME calm band as the exit notice below. Precedence is documented:
+   * when both verdicts exist at once the exit notice wins — a daemon that
+   * actually died is the stronger story than one being revived. */
+  sidecarWedge?: SidecarWedgeNotice | null;
 }
 
 /** P2-112: first-boot degraded journey (desktop shell). With the local daemon
@@ -28,7 +33,7 @@ interface Props {
  * "daemon fell" for a daemon the machine never met), a visible auto-retry
  * line with the attempt counter, a reconnect action with real feedback, the
  * purely-local data that keeps working, and manual pairing one click away. */
-export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit }: Props) {
+export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
 
@@ -44,6 +49,10 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   // The visible auto-retry line: honest per state — the shell keeps probing
   // every few seconds unless the respawn budget is exhausted (kind "down").
   const autoRetry = !busy && kind !== "down";
+  // P2-324: one calm band for both shell verdicts — the exit notice wins when
+  // both exist (a dead daemon is the stronger story than a wedged one being
+  // revived). Same classes, same tone, no new clickable target.
+  const verdictBand = sidecarExit ?? sidecarWedge;
 
   return (
     <div className="screen degraded" data-degraded-kind={busy ? "connecting" : kind}>
@@ -57,10 +66,10 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
           <p className="muted">{hint}</p>
         </div>
       </div>
-      {sidecarExit && (
+      {verdictBand && (
         <div className="degraded-exit" role="note">
-          <p className="degraded-exit-title">{t(sidecarExit.titleKey)}</p>
-          <p className="degraded-exit-action">{t(sidecarExit.actionKey)}</p>
+          <p className="degraded-exit-title">{t(verdictBand.titleKey)}</p>
+          <p className="degraded-exit-action">{t(verdictBand.actionKey)}</p>
         </div>
       )}
       {upstream && (

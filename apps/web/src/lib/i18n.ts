@@ -320,6 +320,16 @@ export const dict = {
       "Reopen the app — it reconnects by itself; if this keeps happening, close other heavy programs.",
     sidecarUnknownTitle: "The daemon exited unexpectedly",
     sidecarUnknownAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
+    // P2-324: the local daemon is alive but stopped answering — the shell is
+    // watching (degraded), restarting it (restart) or suspended the automatic
+    // restart (give-up). Same calm band as the exit copy above; observe stays
+    // silent. No paths, tokens or secrets in copy.
+    sidecarWedgeDegradedTitle: "The local engine is slow to answer",
+    sidecarWedgeDegradedAction: "The app is watching it closely — nothing to do for now.",
+    sidecarWedgeRestartTitle: "The local engine stopped answering",
+    sidecarWedgeRestartAction: "The app is restarting it automatically — nothing to do for now.",
+    sidecarWedgeGiveUpTitle: "The local engine keeps not answering",
+    sidecarWedgeGiveUpAction: "The automatic restart is paused — reopen the app to try again.",
     // P2-148: first-run welcome — three steps, shown once; steps 1–2 carry a
     // global skip, the final step exits via the in-context "do this later".
     // Calm, plain sentences; step 2 reuses the degraded-journey copy.
@@ -895,6 +905,16 @@ export const dict = {
     sidecarKilledAction: "Reabra o app — ele reconecta sozinho; se repetir, feche outros programas pesados.",
     sidecarUnknownTitle: "O daemon saiu de forma inesperada",
     sidecarUnknownAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
+    // P2-324: o daemon local vive mas parou de responder — o shell está
+    // observando de perto (degraded), reiniciando (restart) ou suspendeu o
+    // reinício automático (give-up). Mesma faixa calma do aviso de saída;
+    // observe fica em silêncio. Sem caminhos nem segredos no texto.
+    sidecarWedgeDegradedTitle: "O motor local está lento para responder",
+    sidecarWedgeDegradedAction: "O app segue observando de perto — nada para fazer por enquanto.",
+    sidecarWedgeRestartTitle: "O motor local parou de responder",
+    sidecarWedgeRestartAction: "O app está reanimando o daemon local automaticamente — nada para fazer por enquanto.",
+    sidecarWedgeGiveUpTitle: "O motor local segue sem responder",
+    sidecarWedgeGiveUpAction: "O reinício automático está suspenso — reabra o app para tentar de novo.",
     // P2-148: boas-vindas de primeira execução — três passos, mostrados uma
     // vez; passos 1–2 têm o atalho global, o passo final sai pelo
     // "Fazer isso depois" do próprio cartão. Frases simples e calmas; o passo

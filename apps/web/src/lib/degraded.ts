@@ -150,3 +150,43 @@ export function sidecarExitNotice(exit: SidecarExitHealth | null | undefined): S
       return null;
   }
 }
+
+/** P2-324: tolerant view of the shell's `sidecarWedge` object (the desktop's
+ * wedged-daemon probe verdict, apps/desktop/src/sidecarwedge.ts). Fields are
+ * validated, never trusted — absent while the daemon keeps answering. */
+export interface SidecarWedgeHealth {
+  state?: unknown;
+  message?: unknown;
+}
+
+/** One wedge warning: i18n keys for headline + suggested action, so the copy
+ * goes through useT (pt-BR + en) and never includes paths, tokens or secrets
+ * — the classifier's static message stays in the desktop log. Rendered ONLY
+ * inside the degraded calm card, in the same band as the exit warning
+ * (P2-108 single-surface rule). */
+export interface SidecarWedgeNotice {
+  titleKey: string;
+  actionKey: string;
+}
+
+/** Map the P2-321 wedge state to a user-facing warning. Returns null for an
+ * absent/malformed object, the plain "observe" state (nothing to say), any
+ * state outside the closed set and a non-textual/empty message — silence is
+ * always safe. Only the states where the shell is actively watching or
+ * recovering (degraded | restart | give-up) produce a notice. */
+export function sidecarWedgeNotice(wedge: SidecarWedgeHealth | null | undefined): SidecarWedgeNotice | null {
+  if (typeof wedge !== "object" || wedge === null || Array.isArray(wedge)) return null;
+  const state = typeof wedge.state === "string" ? wedge.state : "";
+  const message = typeof wedge.message === "string" ? wedge.message : "";
+  if (!message) return null;
+  switch (state) {
+    case "degraded":
+      return { titleKey: "sidecarWedgeDegradedTitle", actionKey: "sidecarWedgeDegradedAction" };
+    case "restart":
+      return { titleKey: "sidecarWedgeRestartTitle", actionKey: "sidecarWedgeRestartAction" };
+    case "give-up":
+      return { titleKey: "sidecarWedgeGiveUpTitle", actionKey: "sidecarWedgeGiveUpAction" };
+    default:
+      return null;
+  }
+}

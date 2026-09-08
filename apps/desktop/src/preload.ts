@@ -60,6 +60,13 @@ export interface PairingState {
    * static reason/hint), set only on the daemon-down states. Optional and
    * additive: absent before the first unintentional exit. */
   sidecarExit?: { kind: string; reason: string; hint: string };
+  /** P2-324: wedged-daemon probe verdict (apps/desktop/src/sidecarwedge.ts) —
+   * the shell's own sidecar child alive but not answering health probes.
+   * Optional and additive: absent while the daemon answers. state is one of
+   * observe | degraded | restart | give-up; message is a static pt-BR phrase
+   * with no path, port, identifier or secret. Same tolerant shape as the
+   * sidecarExit field above — no new channel, no new IPC. */
+  sidecarWedge?: { state: string; message: string };
   /** P2-189: step one of the pairing journey — the address the phone opens,
    * derived from the relay address unless stored. Optional and additive so a
    * legacy shell payload still renders every existing surface. qrDataUrl is
