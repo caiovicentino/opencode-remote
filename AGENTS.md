@@ -222,7 +222,7 @@ Desktop app: para interagir com o app Electron real use o harness
 `tools/desktop.mjs` (`open/see/click/type/shot/ipc/close`, mesma DX do
 browse.mjs) — launch hermético, sem daemon de produção. Quando o diff toca
 `apps/desktop/` ou `apps/web/`, o gate roda `npm run test:desktop-flow` (fluxo
-de interação real, <240s — P1-070 adicionou o bloco "local boot" com daemon
+de interação real, <420s — P1-070 adicionou o bloco "local boot" com daemon
 hermético real; P1-080 adicionou o repro de overflow do chat: bolha com diff
 longo em janela estreita, nada pode sair do viewport; P1-089 adicionou o beat
 queue→flush→reentrada com segundo boot hermético contra um fake de opencode:
@@ -269,6 +269,10 @@ recebe code/signal/cauda de stderr, veredito port-busy/entry-missing/
 runtime-error/killed/unknown via `sidecarExit` no `ocr:pairing-state`,
 copy acionável sem caminhos nem segredos; o harness honra um
 `OCR_DAEMON_ENTRY` real apontado pro script fake que morre com EADDRINUSE);
+P3-328 adicionou o beat do aviso no portão de pareamento: o clique real num
+item de painel do menu Go (go-pane-artifacts) com o app não pareado agora
+mostra o toast "Pareie com sua máquina primeiro…" (`.pair-gate-hint`, acima
+do `.pair-overlay`) no próprio portão, em vez de a ação sumir sem feedback;
 use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app

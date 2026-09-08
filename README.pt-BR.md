@@ -354,6 +354,10 @@ remoto, zero confiança**.
   responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
   funcionando, dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
   pareamento manual a um clique
+- **Motor local travado vivo (P2-324)** — enquanto o shell observa um daemon que
+  parou de responder e o reanima sozinho, o mesmo cartão calmo avisa o que está
+  acontecendo ("reanimando automaticamente — nada para fazer por agora"; ou "reinício
+  automático suspenso" com o orçamento gasto), na mesma faixa e tom do aviso de saída
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
@@ -735,8 +739,16 @@ tamanho de `scripts/bundle-budget.ts` (P2-162): o payload somado de
 ficar sob os tetos, ou o job falha antes de empacotar qualquer coisa — uma
 dependência gorda não vira mais um download lento em silêncio. Meça localmente
 após o build com `npx tsx scripts/bundle-budget.ts`; suba um teto de propósito,
-atualizando `BUNDLE_BUDGETS` com a justificativa na mensagem do
-commit.
+atualizando `BUNDLE_BUDGETS` com a justificativa na mensagem do commit. Os
+artefatos distribuíveis têm orçamento próprio (`scripts/artifactbudget.ts`,
+P2-325): na release, os jobs de empacotamento rodam `npm run
+check:artifact-size -- --expect dmg,zip` (mac) / `-- --expect exe` (Windows)
+depois de empacotar e antes do upload — DMG, zip Squirrel.Mac de cada
+arquitetura ou instalador NSIS acima do teto documentado de 180 MB, ou um tipo
+esperado que não apareceu, abortam a release (fail-closed com diretório de
+empacotamento ausente ou vazio); os jobs de empacotamento do ci.yml rodam o
+mesmo coletor como guarda permanente. Suba um teto de propósito, atualizando
+`ARTIFACT_BUDGETS` com a justificativa na mensagem do commit.
 
 **O que cada release precisa ter** (P2-153): o tarball de fonte
 (`opencode-remote-<tag>.tar.gz`) do job `release`; o lado macOS do

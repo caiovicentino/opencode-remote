@@ -102,6 +102,11 @@ import {
 } from "./routinedue.js";
 import { queueView } from "./backlogview.js";
 import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
+import {
+  noteRejectWarn,
+  pubFingerprint,
+  rejectLogDecision,
+} from "./clientfp.js";
 // P2-268: derived, read-only staleness verdicts for the devices routes —
 // classification only; this import never writes the allowlist.
 import {
@@ -1055,11 +1060,16 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     for (const [from, s] of sessions) {
       if (s.pub === pub) {
         sessions.delete(from);
-        s.socket.close();
+        // P3-344: only a LOCAL socket belongs to exactly one client — the
+        // relay socket is shared with every paired client and closing it
+        // here used to drop all other devices along with the revoked one.
+        // On the relay the logical session dying above is enough: frames
+        // from this `from` no longer find a session and are ignored.
+        if (s.local === true || localSockets.has(s.socket)) s.socket.close();
       }
     }
-    log("info", "device revoked via app", { pub: pub.slice(0, 16) });
-    audit("client.revoked", { pub: pub.slice(0, 16) });
+    log("info", "device revoked via app", { fp: pubFingerprint(pub) });
+    audit("client.revoked", { fp: pubFingerprint(pub) });
     return { id: req.id, status: 200, body: { ok: true } };
   }
   if (req.path === "/__ocr/settings" && req.method === "GET") {
@@ -1815,6 +1825,11 @@ function attributeAuthFailure(pub: string | null): "known-stale" | "unknown" {
   }
 }
 
+// P3-344: fingerprint → last warn emission (Date.now()). In-memory by design:
+// after a restart the worst case is one extra warn per still-reconnecting
+// zombie. Bounded by noteRejectWarn (64 entries, oldest evicted).
+const rejectWarnAt = new Map<string, number>();
+
 // P1-068: sessions created by the daemon (E2E tunnel, /api, routines) whose
 // turns must carry the artifacts protocol. In-memory by design: after a
 // restart only newly created sessions are injected (documented behavior).
@@ -2443,7 +2458,7 @@ setInterval(() => {
     if (s.lastSeen < cutoff) {
       sessions.delete(from);
       metrics.gauge("ocr_sessions_active", sessions.size);
-      audit("client.session.expired", { pub: s.pub.slice(0, 16), local: s.local === true });
+      audit("client.session.expired", { fp: pubFingerprint(s.pub), local: s.local === true });
     }
   }
 }, 300_000);
@@ -3158,11 +3173,11 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         ? "allow"
         : bootstrapDecision(allowlist.length, pairWindowOpenedAt, Date.now(), pairWindowCfg.windowMs);
       if (decision === "reject-expired") {
-        audit("client.bootstrap-expired", { pub: accepted.clientPub.slice(0, 16) });
+        audit("client.bootstrap-expired", { fp: pubFingerprint(accepted.clientPub) });
         log(
           "warn",
           "bootstrap pairing window closed: reopen the pairing screen in the desktop app or restart the daemon",
-          { pub: accepted.clientPub.slice(0, 16) },
+          { fp: pubFingerprint(accepted.clientPub) },
         );
       }
       if (decision === "allow" && !client) {
@@ -3178,14 +3193,26 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         };
         allowlist.push(client);
         saveAllowlist(allowlist);
-        audit("client.paired", { pub: accepted.clientPub.slice(0, 16), bootstrap: true });
-        log("info", "bootstrap client persisted", { pub: accepted.clientPub.slice(0, 16) });
+        audit("client.paired", { fp: pubFingerprint(accepted.clientPub), bootstrap: true });
+        log("info", "bootstrap client persisted", { fp: pubFingerprint(accepted.clientPub) });
       }
       if (!client) {
-        audit("client.rejected", { pub: accepted.clientPub.slice(0, 16) });
-        log("warn", "client rejected: not in allowlist", {
-          pub: accepted.clientPub.slice(0, 16),
-        });
+        // P3-344: a rejection must NEVER close `ws` — it is the single relay
+        // socket shared with every paired client (one zombie PWA tab with a
+        // revoked identity reconnecting every ~8s used to tear the whole
+        // session down in a loop). The rejected pub is simply dropped after
+        // it gets its sealed reject feedback: no session state is touched,
+        // and a paired session with the same `frame.from` stays intact.
+        metrics.inc("ocr_client_rejected_total");
+        const rejectedFp = pubFingerprint(accepted.clientPub);
+        // P3-344: warn + audit are throttled per fingerprint (60s) so the
+        // zombie's reconnect loop cannot rotate the ~1 MB audit.log away;
+        // every rejection still ticks the metrics counter above.
+        if (rejectLogDecision(rejectWarnAt.get(rejectedFp), Date.now()) === "warn") {
+          audit("client.rejected", { fp: rejectedFp });
+          log("warn", "client rejected: not in allowlist", { fp: rejectedFp });
+          noteRejectWarn(rejectWarnAt, rejectedFp, Date.now());
+        }
         const reject = await rejectPayload(accepted.sessionKey, "not-allowed");
         ws.send(
           JSON.stringify({
@@ -3194,7 +3221,6 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
             payload: b64(Buffer.from(JSON.stringify(reject))),
           } satisfies RelayFrame),
         );
-        setTimeout(() => ws.close(), 500);
         return;
       }
 
@@ -3216,10 +3242,10 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         local: localSockets.has(ws),
       });
       log("info", "client paired", {
-        pub: accepted.clientPub.slice(0, 16),
+        fp: pubFingerprint(accepted.clientPub),
         activeSessions: sessions.size,
       });
-      audit("client.connected", { pub: accepted.clientPub.slice(0, 16) });
+      audit("client.connected", { fp: pubFingerprint(accepted.clientPub) });
       metrics.inc("ocr_handshakes_total");
       metrics.gauge("ocr_sessions_active", sessions.size);
       const confirm = await acceptPayload(accepted.sessionKey, { transcribe: !!whisperTool });

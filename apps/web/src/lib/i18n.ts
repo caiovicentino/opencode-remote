@@ -320,6 +320,16 @@ export const dict = {
       "Reopen the app — it reconnects by itself; if this keeps happening, close other heavy programs.",
     sidecarUnknownTitle: "The daemon exited unexpectedly",
     sidecarUnknownAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
+    // P2-324: the local daemon is alive but stopped answering — the shell is
+    // watching (degraded), restarting it (restart) or suspended the automatic
+    // restart (give-up). Same calm band as the exit copy above; observe stays
+    // silent. No paths, tokens or secrets in copy.
+    sidecarWedgeDegradedTitle: "The local engine is slow to answer",
+    sidecarWedgeDegradedAction: "The app is watching it closely — nothing to do for now.",
+    sidecarWedgeRestartTitle: "The local engine stopped answering",
+    sidecarWedgeRestartAction: "The app is restarting it automatically — nothing to do for now.",
+    sidecarWedgeGiveUpTitle: "The local engine keeps not answering",
+    sidecarWedgeGiveUpAction: "The automatic restart is paused — reopen the app to try again.",
     // P2-148: first-run welcome — three steps, shown once; steps 1–2 carry a
     // global skip, the final step exits via the in-context "do this later".
     // Calm, plain sentences; step 2 reuses the degraded-journey copy.
@@ -408,12 +418,17 @@ export const dict = {
     "scanErr_generic": "Camera unavailable.",
     orScan: "— or scan the QR —",
     pairBtn: "Pair",
+    // P3-331: quiet return link from the manual pairing escape hatch.
+    pairBack: "Back",
     connecting: "Connecting…",
     invalidCode: "Invalid pairing code",
     // P2-106: inline recovery helper under the invalid-code error — shows the
     // shape of a well-formed pairing URI so the fix is obvious.
     invalidCodeHint:
       "Expected format: opencode-remote://pair?v=2&relay=… — copy the whole code, exactly as the other machine shows it.",
+    // P3-328: Go-menu pane actions stay enabled at the pairing gate — pressing
+    // one now surfaces this hint instead of silently doing nothing.
+    pairFirstHint: "Pair with your machine first — the panes unlock once connected.",
     // chat composer + header (P2-049)
     send: "Send",
     messagePlaceholder: "Message the agent…",
@@ -971,6 +986,16 @@ export const dict = {
     sidecarKilledAction: "Reabra o app — ele reconecta sozinho; se repetir, feche outros programas pesados.",
     sidecarUnknownTitle: "O daemon saiu de forma inesperada",
     sidecarUnknownAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
+    // P2-324: o daemon local vive mas parou de responder — o shell está
+    // observando de perto (degraded), reiniciando (restart) ou suspendeu o
+    // reinício automático (give-up). Mesma faixa calma do aviso de saída;
+    // observe fica em silêncio. Sem caminhos nem segredos no texto.
+    sidecarWedgeDegradedTitle: "O motor local está lento para responder",
+    sidecarWedgeDegradedAction: "O app segue observando de perto — nada para fazer por enquanto.",
+    sidecarWedgeRestartTitle: "O motor local parou de responder",
+    sidecarWedgeRestartAction: "O app está reanimando o daemon local automaticamente — nada para fazer por enquanto.",
+    sidecarWedgeGiveUpTitle: "O motor local segue sem responder",
+    sidecarWedgeGiveUpAction: "O reinício automático está suspenso — reabra o app para tentar de novo.",
     // P2-148: boas-vindas de primeira execução — três passos, mostrados uma
     // vez; passos 1–2 têm o atalho global, o passo final sai pelo
     // "Fazer isso depois" do próprio cartão. Frases simples e calmas; o passo
@@ -1060,12 +1085,17 @@ export const dict = {
     "scanErr_generic": "Câmera indisponível.",
     orScan: "— ou escaneie o QR —",
     pairBtn: "Parear",
+    // P3-331: link calmo de volta a partir do pareamento manual.
+    pairBack: "Voltar",
     connecting: "Conectando…",
     invalidCode: "Código de pareamento inválido",
     // P2-106: helper inline sob o erro de código inválido — mostra o formato
     // esperado pra correção ser óbvia.
     invalidCodeHint:
       "Formato esperado: opencode-remote://pair?v=2&relay=… — copie o código inteiro, exatamente como a outra máquina mostra.",
+    // P3-328: ações de painel do menu Go ficam habilitadas no portão de
+    // pareamento — apertar uma agora mostra este aviso em vez de não fazer nada.
+    pairFirstHint: "Pareie com sua máquina primeiro — os painéis ficam disponíveis depois de conectar.",
     // chat composer + header (P2-049)
     send: "Enviar",
     messagePlaceholder: "Mensagem pro agente…",

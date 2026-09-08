@@ -197,6 +197,18 @@ jobs:
       - name: Smoke-check the packaged bundle (installer checks skipped)
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
 
+      # P2-325: fail-closed guard on the packaging output — a missing or
+      # empty dir fails, and any DMG/Squirrel zip/NSIS file that appears here
+      # must sit under its documented ceiling (scripts/artifactbudget.ts).
+      # The --dir targets below produce no installers: the ceilings on the
+      # real distributables are enforced by release.yml's desktop-dmg and
+      # desktop-win jobs, which pass --expect after packaging. shell: bash
+      # (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Check artifact sizes
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:artifact-size
+
       # P2-242: dist-smoke only INSPECTS the bundle; a regression that only
       # shows up at runtime — main throwing at boot, an asar missing an asset
       # the renderer asks for, a blank window — used to surface only on
@@ -282,18 +294,41 @@ jobs:
         timeout-minutes: 10
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
 
+      # P2-325: same fail-closed guard as the mac job — the --dir target
+      # produces no installers (the NSIS exe is size-gated with --expect by
+      # release.yml's desktop-win), but a missing or empty packaging output
+      # fails here and any known-type artifact must respect its ceiling.
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Check artifact sizes
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:artifact-size
+
       # P2-242: same parity for Windows — boot the real win-unpacked bundle
       # in the PR, reusing the release boot script and its hermetic contract
       # unchanged. shell: bash (P2-126/P2-164 lessons) with its own timeout;
-      # nothing is uploaded, signed or published.
+      # nothing is signed or published.
+      # P3-343: the boot leaves visual proof — the script saves a screenshot
+      # of the real window (best-effort, never flips the verdict) and the step
+      # right below uploads it as a run artifact.
       - name: Smoke-boot the packaged app
         shell: bash
         timeout-minutes: 10
+        env:
+          OCR_PACKAGED_BOOT_SHOT: ${{ runner.temp }}/packaged-boot-win.png
         run: |
           DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
           [ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }
           echo "packaged-boot: booting $DIR"
           node apps/desktop/scripts/packaged-boot.mjs "$DIR"
+
+      - name: Upload packaged boot screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: packaged-boot-win
+          path: ${{ runner.temp }}/packaged-boot-win.png
+          if-no-files-found: ignore
 
       # P2-253: same daemon-sidecar smoke the release win job runs — the
       # packaged resources/daemon/index.js boots via the package's own

@@ -39,6 +39,7 @@ import SidebarAccount from "./components/SidebarAccount";
 import ChatView, { type MicAccessVerdict } from "./components/ChatView";
 import { type CameraAccessVerdict } from "./components/QrScanner";
 import HomeView from "./components/HomeView";
+import GateHint from "./components/GateHint";
 import { setDraft } from "./lib/drafts";
 import SettingsView, {
   applyTheme,
@@ -61,7 +62,7 @@ import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
-import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
+import { autoConnectAllowed, degradedKind, nextShellLocal, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import { WELCOME_DONE, WELCOME_KEY, shouldShowWelcome } from "./lib/welcome";
 import {
   INSTALL_HINT_DISMISSED_KEY,
@@ -113,6 +114,9 @@ interface PairingState {
   opencode?: UpstreamHealth;
   /** P2-140: why the local daemon died (desktop shell only). */
   sidecarExit?: SidecarExitHealth;
+  /** P2-324: wedged-daemon probe verdict (desktop shell only, additive) —
+   * absent while the daemon answers; observe renders nothing. */
+  sidecarWedge?: { state: string; message: string };
   /** P2-189: step one — the address the phone opens (desktop shell only). */
   webApp?: WebAppInfo;
   /** P2-193: the combined pair link — app address + credential in the
@@ -248,6 +252,11 @@ export default function App() {
   // navigation direction drives the slide-in animation of the next screen
   const [navDir, setNavDir] = useState<"fwd" | "back">("fwd");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // P3-328: Go-menu actions stay enabled at the pairing gate but have no
+  // target yet — pressing one bumps this trigger so the <GateHint> toast
+  // explains why (the timer lives in the component; p2-220 keeps timers out
+  // of App).
+  const [gateHintTick, setGateHintTick] = useState(0);
   const appRootRef = useRef<HTMLDivElement>(null);
   const swipe = useRef({ x: 0, y: 0, dx: 0, active: false });
   const [unread, setUnread] = useState<Record<string, number>>(() => {
@@ -273,6 +282,18 @@ export default function App() {
   // P1-056: the "Celular" nav item is an EXPLICIT pairing request — it must
   // open the QR even if the user once dismissed the boot-time overlay.
   const [phonePairing, setPhonePairing] = useState(false);
+  // P3-331: once the shell bridge reports a local daemon the verdict is sticky
+  // for the session (nextShellLocal) — poll gaps and degraded pushes must not
+  // resurrect the "connect to another machine" ceremony on a local machine.
+  const [shellLocal, setShellLocal] = useState(false);
+  // P3-331: single landing path for every shell pairing-state delivery (pull,
+  // push, auto-pair prefetch) so the sticky verdict can never miss one.
+  function observePairingState(s: PairingState | null) {
+    pairingStateRef.current = s;
+    setPairingState(s);
+    setShellLocal((cur) => nextShellLocal(cur, s));
+  }
+  const localMode = shellLocal && pairingState?.mode !== "remote";
   // P1-070: tryAutoPair reads the latest pairing state synchronously (the
   // effect ref below would still be null on the very first mount run).
   const pairingStateRef = useRef<PairingState | null>(null);
@@ -358,16 +379,10 @@ export default function App() {
     if (!bridge?.getPairingState) return;
     let alive = true;
     bridge.getPairingState().then((s) => {
-      if (alive) {
-        pairingStateRef.current = s;
-        setPairingState(s);
-      }
+      if (alive) observePairingState(s);
     }).catch(() => {});
     const un = bridge.onPairingState?.((s) => {
-      if (alive) {
-        pairingStateRef.current = s;
-        setPairingState(s);
-      }
+      if (alive) observePairingState(s);
     });
     return () => {
       alive = false;
@@ -622,7 +637,7 @@ export default function App() {
         let state = pairingStateRef.current;
         if (!state && bridge.getPairingState) {
           state = (await bridge.getPairingState().catch(() => null)) ?? null;
-          pairingStateRef.current = state;
+          observePairingState(state);
         }
         if (state?.mode === "local" && bridge.getLocalLink) {
           const pairing = localPairing(await bridge.getLocalLink());
@@ -668,17 +683,35 @@ export default function App() {
   // P1-070: a pairing state that lands (or degrades) with mode="local" also
   // re-runs the auto-pair — the mount-time run may have raced ahead of the
   // shell's first poll and found no state to decide on.
+  // P3-331: the decision lives in the pure autoConnectAllowed — a failed
+  // AUTO-connect (phase "error") now retries too, once the daemon answers
+  // again, so a slow first boot can never dead-end behind the manual wall;
+  // a manual paste mid-edit (pairManual/addingMachine) is never yanked.
   const sawOutageRef = useRef(false);
+  // Round 2 (review): error-phase re-arms ride the 3s pairing-state poll —
+  // a half-up daemon would be connect-hammered forever. A time backoff (never
+  // a hard cap) keeps the recovery loop alive without the burst.
+  const lastAutoRetryRef = useRef(0);
   useEffect(() => {
     if (pairingState?.reconnecting || pairingState?.daemonDown) {
       sawOutageRef.current = true;
       return;
     }
-    if (phase === "unpaired" && !loadState() && (pairingState?.mode === "local" || sawOutageRef.current)) {
+    if (
+      autoConnectAllowed(phase, {
+        localMode,
+        sawOutage: sawOutageRef.current,
+        pairManual,
+        addingMachine,
+        hasStoredPairing: !!loadState(),
+      })
+    ) {
+      if (phase === "error" && Date.now() - lastAutoRetryRef.current < 15_000) return;
+      lastAutoRetryRef.current = Date.now();
       sawOutageRef.current = false;
       tryAutoPair();
     }
-  }, [pairingState, phase]);
+  }, [pairingState, phase, localMode, pairManual, addingMachine]);
 
   // Web Share Target (Android/desktop Chrome): shared content arrives as query params
   useEffect(() => {
@@ -821,7 +854,11 @@ export default function App() {
   // absent so actions never fire twice inside Electron.
   useEffect(() => {
     function runMenuAction(id: string) {
-      if (phase !== "paired") return; // no client yet — nothing to open
+      if (phase !== "paired") {
+        // P3-328: no client yet — nothing to open, but never silent.
+        setGateHintTick((n) => n + 1);
+        return;
+      }
       if (id === "newChat") {
         void createSession();
         return;
@@ -946,6 +983,9 @@ export default function App() {
   // P2-140: why the local daemon died — null unless the shell attached an
   // exit verdict. Rendered ONLY inside the degraded calm card (P2-108 rule).
   const sidecarExit = sidecarExitNotice(pairingState?.sidecarExit);
+  // P2-324: the daemon wedged alive — null unless the shell attached a wedge
+  // verdict. Same calm card, below the exit notice in precedence (exit wins).
+  const sidecarWedge = sidecarWedgeNotice(pairingState?.sidecarWedge);
   // P1-071: the Settings help section is reachable from the first-boot calm
   // card too — the stub request no-ops every fetch while no client exists.
   const [helpOpen, setHelpOpen] = useState(false);
@@ -995,6 +1035,12 @@ export default function App() {
     );
   }
 
+  // P3-328: dropped Go-menu action on ANY gate screen (welcome, add machine,
+  // help, pairing/degraded) — the GateHint toast says why nothing opened.
+  const gateHintNode = <GateHint trigger={gateHintTick} />;
+
+
+
   // P2-148: first-run onboarding — a single full-screen surface with no
   // banners and no pairing overlay (P2-108 single-surface rule). It covers
   // every phase: the local daemon may finish auto-connecting in the
@@ -1002,6 +1048,7 @@ export default function App() {
   if (showWelcome) {
     return (
       <div className="pair-wrap" data-phase={phase}>
+        {gateHintNode}
         <WelcomeView
           kind={kind}
           busy={phase === "connecting"}
@@ -1029,6 +1076,7 @@ export default function App() {
       <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"} data-phase={phase}>
         {banner}
         {pairingOverlay}
+        {gateHintNode}
         <PairingView
           phase="unpaired"
           error={error}
@@ -1062,6 +1110,7 @@ export default function App() {
     // The stub request makes every settings fetch a quiet no-op.
     return (
       <div className="pair-wrap" data-phase={phase}>
+      {gateHintNode}
       <SettingsView
         request={() => Promise.resolve({ status: 0, body: {} })}
         onBack={() => setHelpOpen(false)}
@@ -1097,6 +1146,7 @@ export default function App() {
       >
         {degraded ? mismatchBanner : banner}
         {pairingOverlay}
+        {gateHintNode}
         {degraded ? (
           <DegradedView
             kind={kind}
@@ -1107,6 +1157,7 @@ export default function App() {
             upstream={upstream}
             onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
             sidecarExit={sidecarExit}
+            sidecarWedge={sidecarWedge}
           />
         ) : (
           <PairingView
@@ -1126,19 +1177,31 @@ export default function App() {
               void connect(pairing, true);
             }}
             onRetry={() => {
+              // Round 2 (review): a stored pairing reconnects verbatim — the
+              // PWA has no auto-pair to re-arm (tryAutoPair is a no-op without
+              // the shell bridge), so Retry must never lose this path.
               // P3-332: with no stored pairing the retry re-arms the auto-pair
               // (local link / deep link) — the live card's only way forward.
-              setPhase("unpaired");
-              tryAutoPair();
+              const stored = loadState();
+              if (stored) void connect(stored.pairing, false);
+              else {
+                setPhase("unpaired");
+                tryAutoPair();
+              }
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+            // Round 2 (review): the degraded journey's "pair manually" escape
+            // must always show the paste/scan ceremony — the sticky localMode
+            // alone would render the auto-connect card with no way to type a
+            // remote code (the P3-332 dead-end class, one screen later).
             // P3-329: reaching this screen through pairManual IS explicit
             // manual intent (wizard escape or degraded escape) — the local
             // auto-connect mode must never swallow the paste/scan ceremony
             // (same rule as "add machine", P3-332).
-            localMode={pairManual ? false : pairingState?.mode === "local"}
+            localMode={localMode && !pairManual}
             preferPaste={!!desktopBridge()}
             getCamAccess={desktopBridge()?.getCamAccess}
+            onBack={pairManual ? () => setPairManual(false) : undefined}
           />
         )}
       </div>
@@ -1349,7 +1412,7 @@ export default function App() {
             </div>
             <div className="desk-side-scroll">{sessionsNode}</div>
             <SidebarAccount
-              localMode={pairingState?.mode === "local"}
+              localMode={localMode}
               machineName={machineName}
               connStatus={connStatus}
               machines={machines}

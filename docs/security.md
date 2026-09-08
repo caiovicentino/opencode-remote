@@ -50,12 +50,21 @@ identity servers, no accounts.
 7. **Least-privilege file delivery.** Downloads are restricted to explicit
    roots (`~/.opencode-remote/uploads`, Desktop, Downloads, Documents, repo
    cwd) and resolved against real paths before serving.
-8. **Audit trail.** Pairing, rejection, connection, revocation and expiry
-   events land in `~/.opencode-remote/audit.log` and surface in
-   Settings → Security log. The file is created 0600 and capped at ~1 MB:
-   once it reaches the cap it rotates to `audit.log.1` (one previous file
-   kept, ever), and the Security log reads across both files so rotation
-   never wipes the visible history.
+ 8. **Audit trail.** Pairing, rejection, connection, revocation and expiry
+    events land in `~/.opencode-remote/audit.log` and surface in
+    Settings → Security log. The file is created 0600 and capped at ~1 MB:
+    once it reaches the cap it rotates to `audit.log.1` (one previous file
+    kept, ever), and the Security log reads across both files so rotation
+    never wipes the visible history. Clients are identified by a stable
+    fingerprint — the first 16 hex chars of the SHA-256 of the key's DER
+    bytes (`fp` field; pre-upgrade rows still render their legacy `pub`
+    suffix). The `client rejected` warn + audit pair is throttled to one
+    emission per fingerprint per 60s (the metrics counter ticks on every
+    rejection), so a zombie client reconnecting in a loop cannot rotate the
+    audit history away. A rejection or a revocation NEVER closes the shared
+    relay socket — the rejected pub is dropped silently (its session state,
+    if any, is untouched) and revoking a device only closes that device's
+    own local socket; every other paired client stays connected.
 9. **Local direct mode (P1-061).** The desktop shell reads the `apiToken`
    from the 0600 state file in the (privileged) main process and hands it to
    the sandboxed renderer so it can dial the daemon's loopback WS
@@ -222,7 +231,21 @@ identity servers, no accounts.
     timeout, one that is not a positive integer, one above the ceiling — or
     when a workflow file is missing, unreadable or unparseable (fail closed).
 
-21. **One aggregate status context — `ci-gate` (P3-352, eval r4).** The
+21. **Distributable artifact sizes (P2-325).** The release.yml packaging
+    jobs run `npm run check:artifact-size` after packaging and before the
+    upload (`scripts/check-artifact-size.ts`, verdict in the pure
+    `scripts/artifactbudget.ts`): desktop-dmg demands `--expect dmg,zip` and
+    desktop-win `--expect exe`, so every DMG, Squirrel.Mac zip and NSIS
+    installer must exist and stay under the documented **180 MB** per-type
+    ceiling; a size that is missing, zero, negative or not a number fails
+    closed, as does a missing, unreadable or empty packaging output — raise
+    a ceiling only on purpose, bumping `ARTIFACT_BUDGETS` with the
+    justification in the commit message. The ci.yml packaging jobs (dir
+    targets only, no installers) run the same collector as a standing
+    fail-closed guard on the packaging output.
+
+
+22. **One aggregate status context — `ci-gate` (P3-352, eval r4).** The
     branch protection of `main` required **no** status check
     (`required_status_checks.contexts: []`), and "green" could only be
     reconstructed from six per-job contexts, four of them scope-gated and
@@ -238,12 +261,6 @@ identity servers, no accounts.
     job of the file and is declared last, so a new job cannot bypass it.
     It is the single context to require on `main` (operator action, one
     time, after the job has reported at least once):
-
-        gh api -X PATCH repos/caiovicentino/opencode-remote/branches/main/protection/required_status_checks \
-          --input - <<< '{"strict":false,"contexts":["ci-gate"]}'
-
-    From then on `gh pr merge --auto` only queues until `ci-gate` is green,
-    and the pilot's readiness poll (P3-346) has one stable name to wait for.
 
 ## Key rotation
 

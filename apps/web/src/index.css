@@ -2448,6 +2448,21 @@ button.desk-new:hover:not(:disabled) {
   border-color: var(--danger);
   background: transparent;
 }
+/* P3-331: quiet return from the manual pairing escape hatch to the calm
+   degraded card — same underlined-link language as .degraded-manual. */
+.pair-back {
+  align-self: center;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.pair-back:hover {
+  color: var(--text);
+}
 
 /* ── P2-112: first-boot degraded journey ─────────────────────────────────────
    Desktop shell, daemon unreachable: one calm status card (never a dead-end
@@ -2756,6 +2771,15 @@ button.desk-new:hover:not(:disabled) {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-overlay);
   animation: screen-in var(--motion-fast) var(--ease-out);
+}
+
+/* P3-328: the gate hint is a transient status toast, same layer intent as the
+   pairing overlay (fixed, full-screen, z-index 200) — it must stay perceivable
+   when that overlay is up (QR/phone ceremony auto-shows while unpaired), so
+   it rides above it and below the paired-phase modals (artifact backdrop,
+   1000). */
+.pair-gate-hint {
+  z-index: 210;
 }
 
 /* ── side-by-side artifact preview (P2-062): chat left, artifact right ── */

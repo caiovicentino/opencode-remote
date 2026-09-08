@@ -753,6 +753,10 @@ Run the boot smoke locally against an already-built package too:
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/win-unpacked"
 
+Set `OCR_PACKAGED_BOOT_SHOT=<path>` to also save a screenshot of the booted
+window (best-effort, never changes the verdict) — the Windows packaging jobs
+do this and upload the PNG as a run artifact (P3-343).
+
 Since P2-251 both packaging jobs also execute the sidecar the boot smoke
 deliberately never spawns (`Smoke the packaged daemon sidecar` step, right
 after the boot smoke): the packaged `resources/daemon/index.js` is run with the
@@ -797,7 +801,15 @@ sidecar bundle must stay under their ceilings or the job fails before anything
 is packaged — a fat dependency can no longer turn into a silent slow download.
 Measure locally after a build with `npx tsx scripts/bundle-budget.ts`; raise a
 ceiling only on purpose, bumping `BUNDLE_BUDGETS` with the justification in the
-commit message.
+commit message. The distributable artifacts get their own budgets
+(`scripts/artifactbudget.ts`, P2-325): at release time the packaging jobs run
+`npm run check:artifact-size -- --expect dmg,zip` (mac) / `-- --expect exe`
+(Windows) after packaging and before upload, so a DMG, a per-arch Squirrel.Mac
+zip or an NSIS installer above its documented 180 MB ceiling — or an expected
+type missing from the packaging output — aborts the release (fail-closed on a
+missing or empty packaging output); the ci.yml packaging jobs run the same
+collector as a standing guard. Raise a ceiling only on purpose, bumping
+`ARTIFACT_BUDGETS` with the justification in the commit message.
 
 **What each release must carry** (P2-153): the source tarball
 (`opencode-remote-<tag>.tar.gz`) from the `release` job; the macOS side from
@@ -1485,6 +1497,34 @@ wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered
 above the vertically centered card stack, so the post-wizard screen reads as
 the same intentional ceremony instead of a flush-left column floating in dead
 space at desktop sizes.
+
+**Local first boot never shows the pairing wall (P3-331)**: once the desktop
+shell proves the daemon on this machine (local mode), the verdict is sticky
+for the whole session — poll gaps and degraded states no longer resurrect the
+full "connect to another machine" ceremony on a machine that pairs by itself.
+The manual escape hatch gains a quiet "Back" link to the calm status card, and
+a first boot whose auto-connect failed now retries by itself as soon as the
+daemon answers again (on a 15s backoff, not a busy loop), landing straight on
+the home/chat surface instead of dead-ending behind the manual pairing wall.
+Asking to pair manually from the calm card always shows the paste/scan form —
+the sticky local mode never hides it — and Retry on a failed connect
+reconnects a stored pairing verbatim before re-arming the auto-connect.
+
+**Menu actions explain themselves at the gate (P3-328)**: the Go menu's pane
+items (⌘1–6) stay enabled while the pairing gate is up — the shell has no
+reliable mirror of the renderer's connection phase to disable them with — but
+pressing one is no longer a silent no-op. Every dropped action (panes, new
+chat, command palette) surfaces a transient toast on the gate screen itself —
+"Pair with your machine first — the panes unlock once connected." — in the
+app's language, auto-clearing after 4s and never blocking the pairing
+ceremony.
+
+**When the local engine wedges alive, the same calm card says the app is on
+it (P2-324)**: while the shell watches a daemon that stopped answering and
+reanimates it automatically, the card shows a quiet "restarting it
+automatically — nothing to do for now" line (and an honest "automatic
+restart is paused" if the recovery budget is spent), in the same band and
+tone as the exit notice.
 
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state

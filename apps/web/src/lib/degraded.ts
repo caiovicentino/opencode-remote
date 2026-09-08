@@ -37,6 +37,36 @@ export function degradedKind(state: DegradedState | null, everSeen: boolean): De
   return "none";
 }
 
+/** P3-331: the shell's local verdict is STICKY for the whole session. A poll
+ * gap (state null) or a degraded push (daemon down) must never resurrect the
+ * "connect to another machine" ceremony on a machine the shell already proved
+ * local — only an explicit remote-pairing request (mode "remote") unsets it. */
+export function nextShellLocal(current: boolean, state: DegradedState | null): boolean {
+  if (state?.mode === "local") return true;
+  if (state?.mode === "remote") return false;
+  return current;
+}
+
+/** P3-331: when may the renderer (re-)run the local auto-connect? The mount
+ * run and the P1-053 recovery watcher share this decision. "unpaired" keeps
+ * the legacy arms (local verdict or a past outage — the manual pairing wall
+ * dissolving on daemon recovery included); "error" is new and guarded: a
+ * failed manual paste (pairManual/addingMachine) is never yanked mid-edit,
+ * only the failed AUTO-connect retries once the daemon answers again. */
+export function autoConnectAllowed(
+  phase: "unpaired" | "connecting" | "paired" | "error",
+  opts: { localMode: boolean; sawOutage: boolean; pairManual: boolean; addingMachine: boolean; hasStoredPairing: boolean },
+): boolean {
+  if (phase === "paired" || phase === "connecting") return false;
+  if (opts.hasStoredPairing) return false;
+  // Round 2 (review): an explicit manual request — the degraded journey's
+  // "pair manually" escape or the add-machine screen — must never be yanked
+  // by the auto-connect loop on the next 3s poll (P3-332's dead-end class).
+  if (opts.pairManual || opts.addingMachine) return false;
+  if (phase === "unpaired") return opts.localMode || opts.sawOutage;
+  return opts.localMode;
+}
+
 /** P2-138: tolerant view of the daemon's /api/health `opencode` object (the
  * P2-135 classifier verdict). Fields are validated, never trusted — a legacy
  * daemon omits the object entirely. */
@@ -116,6 +146,46 @@ export function sidecarExitNotice(exit: SidecarExitHealth | null | undefined): S
       return { titleKey: "sidecarKilledTitle", actionKey: "sidecarKilledAction" };
     case "unknown":
       return { titleKey: "sidecarUnknownTitle", actionKey: "sidecarUnknownAction" };
+    default:
+      return null;
+  }
+}
+
+/** P2-324: tolerant view of the shell's `sidecarWedge` object (the desktop's
+ * wedged-daemon probe verdict, apps/desktop/src/sidecarwedge.ts). Fields are
+ * validated, never trusted — absent while the daemon keeps answering. */
+export interface SidecarWedgeHealth {
+  state?: unknown;
+  message?: unknown;
+}
+
+/** One wedge warning: i18n keys for headline + suggested action, so the copy
+ * goes through useT (pt-BR + en) and never includes paths, tokens or secrets
+ * — the classifier's static message stays in the desktop log. Rendered ONLY
+ * inside the degraded calm card, in the same band as the exit warning
+ * (P2-108 single-surface rule). */
+export interface SidecarWedgeNotice {
+  titleKey: string;
+  actionKey: string;
+}
+
+/** Map the P2-321 wedge state to a user-facing warning. Returns null for an
+ * absent/malformed object, the plain "observe" state (nothing to say), any
+ * state outside the closed set and a non-textual/empty message — silence is
+ * always safe. Only the states where the shell is actively watching or
+ * recovering (degraded | restart | give-up) produce a notice. */
+export function sidecarWedgeNotice(wedge: SidecarWedgeHealth | null | undefined): SidecarWedgeNotice | null {
+  if (typeof wedge !== "object" || wedge === null || Array.isArray(wedge)) return null;
+  const state = typeof wedge.state === "string" ? wedge.state : "";
+  const message = typeof wedge.message === "string" ? wedge.message : "";
+  if (!message) return null;
+  switch (state) {
+    case "degraded":
+      return { titleKey: "sidecarWedgeDegradedTitle", actionKey: "sidecarWedgeDegradedAction" };
+    case "restart":
+      return { titleKey: "sidecarWedgeRestartTitle", actionKey: "sidecarWedgeRestartAction" };
+    case "give-up":
+      return { titleKey: "sidecarWedgeGiveUpTitle", actionKey: "sidecarWedgeGiveUpAction" };
     default:
       return null;
   }

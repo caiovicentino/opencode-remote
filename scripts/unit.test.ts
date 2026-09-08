@@ -25,9 +25,10 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
   delete process.env[k];
 }
 
-import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
+import { b64, fromB64, newIdentity, seal, openSealed, seqAad } from "@ocr/protocol";
 
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
+import { classifyConflictPath, isCommentOnlyHunk, parseConflictedFile, repairPlan, resolveConflictedFile } from "../apps/pilot/src/mergerepair";
 
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 
@@ -296,6 +297,12 @@ import {
   DEVICE_STALE_SHORT_WINDOW_MS,
   deviceStaleVerdict,
 } from "../apps/daemon/src/devicestale";
+import {
+  noteRejectWarn,
+  pubFingerprint,
+  rejectLogDecision,
+  REJECT_WARN_INTERVAL_MS,
+} from "../apps/daemon/src/clientfp";
 
 import {
   admitNewUpload,
@@ -350,7 +357,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
-import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -935,7 +942,7 @@ import {
 import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblems } from "../apps/desktop/scripts/dist-smoke.mjs";
 
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
-import { candidatePaths } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
+import { candidatePaths, isExecutableEntry } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
 import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
 import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
 
@@ -6356,6 +6363,46 @@ check(
 }
 
 
+// --- P3-328: pair-first hint replaces the silent drop at the pairing gate -------
+// The Go-menu pane items stay enabled while unpaired (the shell has no
+// reliable renderer-phase mirror to disable them with); the renderer must
+// therefore surface WHY nothing happens. The i18n keys above prove the copy
+// resolves per locale; these checks prove the wiring is really on the
+// dropped-action path and on every gate surface.
+{
+  const appSource = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const hintSource = readFileSync(new URL("../apps/web/src/components/GateHint.tsx", import.meta.url), "utf8");
+  const dropAt = appSource.indexOf('if (phase !== "paired") {');
+  const tickAt = appSource.indexOf("setGateHintTick((n) => n + 1)");
+  check(
+    "P3-328: unpaired menu actions route to the gate hint (no silent drop)",
+    dropAt > -1 && tickAt > dropAt &&
+      hintSource.includes('className="ocr-toast pair-gate-hint"') &&
+      hintSource.includes('t("pairFirstHint")'),
+  );
+  check(
+    "P3-328: the hint renders on every gate surface (welcome, add machine, help, pairing/degraded)",
+    (appSource.match(/\{gateHintNode\}/g) ?? []).length >= 4,
+  );
+  // The toast must auto-clear and a stale trigger must never re-show after a
+  // remount (pair → disconnect → gate would otherwise toast with no action).
+  check(
+    "P3-328: gate hint auto-clears after 4s and never re-shows a stale trigger",
+    hintSource.includes("setTimeout(() => setVisible(false), 4_000)") && hintSource.includes("useRef(trigger)"),
+  );
+  // r2 review: the hint must stack ABOVE the pairing overlay (z-index 200) —
+  // behind it, a Go-menu press during the QR ceremony stays invisible even
+  // though the element is in the DOM.
+  const cssSource = readFileSync(new URL("../apps/web/src/index.css", import.meta.url), "utf8");
+  const hintZ = Number(/pair-gate-hint\s*\{[^}]*z-index:\s*(\d+)/.exec(cssSource)?.[1]);
+  const overlayZ = Number(/pair-overlay\s*\{[^}]*z-index:\s*(\d+)/.exec(cssSource)?.[1]);
+  check(
+    "P3-328 r2: .pair-gate-hint z-index stacks above the pairing overlay",
+    Number.isFinite(hintZ) && Number.isFinite(overlayZ) && hintZ > overlayZ,
+  );
+}
+
+
 // --- P2-276: shell language (apps/desktop/src/shelllang.ts) ---------------------
 {
   const en = shellLabels("en");
@@ -8725,6 +8772,198 @@ check(
 }
 
 
+// --- P3-341: CONFLICTING PR gets ONE automatic repair (docs/comment-only unions); semantic conflicts escalate ----
+{
+  const sha = "c".repeat(40);
+  const newSha = "e".repeat(40);
+  const docsConflict = "# Title\n<<<<<<< HEAD\nBranch paragraph.\n=======\nMain paragraph.\n>>>>>>> main\n";
+  const codeConflict = "<<<<<<< HEAD\nconst a = branch();\n=======\nconst a = main();\n>>>>>>> origin/main\n";
+
+  // Fake gh+git surface: readiness probe 1 reports CONFLICTING; every later
+  // probe (and the confirmation poll) sees the repaired head newSha.
+  const mkRepairIo = (opts: { conflictedPath: string; conflictedContent: string; mergeConflict: boolean; pushFails?: boolean }) => {
+    const calls: string[] = [];
+    const written: Record<string, string> = {};
+    let probe = 0;
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        if (cmd.startsWith("gh pr create")) return { ok: false, output: "a pull request for head pilot/P3-341 already exists" };
+        if (cmd.startsWith("gh pr list")) return { ok: true, output: "77\n" };
+        if (cmd.startsWith("gh pr merge")) return { ok: false, output: "gh: failed to arm auto-merge" };
+        if (cmd.includes("statusCheckRollup")) {
+          probe++;
+          if (probe === 1) return { ok: true, output: JSON.stringify({ state: "OPEN", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [] }) };
+          return { ok: true, output: JSON.stringify({ state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [], headRefOid: newSha }) };
+        }
+        if (cmd.startsWith("gh pr view")) return { ok: true, output: JSON.stringify({ state: "MERGED", headRefOid: newSha, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }) };
+        if (cmd.startsWith("git ")) {
+          if (cmd.startsWith("git merge --no-edit")) return opts.mergeConflict ? { ok: false, output: "Auto-merging x\nCONFLICT (content): Merge conflict in " + opts.conflictedPath } : { ok: true, output: "Merge made by the 'ort' strategy." };
+          if (cmd.startsWith("git diff -z --name-only")) return { ok: true, output: `${opts.conflictedPath}\0` };
+          if (cmd.startsWith("git rev-parse HEAD")) return { ok: true, output: `${newSha}\n` };
+          if (cmd.startsWith("git push")) return opts.pushFails ? { ok: false, output: "lease rejected: peer push" } : { ok: true, output: "" };
+          return { ok: true, output: "" };
+        }
+        return { ok: false, output: `unexpected exec: ${cmd}` };
+      },
+      sleep: () => Promise.resolve(),
+      readFile: (p) => (p === opts.conflictedPath ? opts.conflictedContent : null),
+      writeFile: (p, c) => {
+        written[p] = c;
+        return true;
+      },
+    };
+    return { io, calls, written };
+  };
+
+  // 1) docs conflict: resolved without operator intervention
+  const docs = mkRepairIo({ conflictedPath: "README.md", conflictedContent: docsConflict, mergeConflict: true });
+  const docsOut = await mergePrForTask(docs.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: docs-conflicted PR is repaired and merges without intervention", docsOut.ok === true && docsOut.detail.includes("head confirmed"));
+  check("P3-341: repair merges origin/main into the branch in the slot", docs.calls.includes("git merge --no-edit origin/main"));
+  check("P3-341: repair commits the union and force-with-lease pushes the branch", docs.calls.includes("git commit --no-edit") && docs.calls.includes("git push -q --force-with-lease origin pilot/P3-341"));
+  check("P3-341: docs repair never aborts the merge", !docs.calls.some((c) => c.includes("git merge --abort")));
+  check("P3-341: resolved README preserves BOTH sides (ours and theirs)", (docs.written["README.md"] ?? "").includes("Branch paragraph.") && (docs.written["README.md"] ?? "").includes("Main paragraph."));
+  check("P3-341: exactly one re-probe after the repair, query pinned to the new head", docs.calls.filter((c) => c.includes("statusCheckRollup")).length === 2 && docs.calls.some((c) => c === "gh pr view 77 --json state,mergeable,mergeStateStatus,statusCheckRollup,headRefOid"));
+
+  // 2) semantic code conflict: escalated, branch intact, nothing pushed
+  const code = mkRepairIo({ conflictedPath: "apps/pilot/src/pipeline.ts", conflictedContent: codeConflict, mergeConflict: true });
+  const codeOut = await mergePrForTask(code.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: semantic code conflict fails closed with infra=conflict", codeOut.ok === false && codeOut.infra === "conflict");
+  check("P3-341: escalation detail carries the operator marker and the path", codeOut.detail.includes(CONFLICT_OPERATOR_MARKER) && codeOut.detail.includes("apps/pilot/src/pipeline.ts"));
+  check("P3-341: escalation aborts the merge and pushes NOTHING", code.calls.some((c) => c.startsWith("git merge --abort")) && !code.calls.some((c) => c.startsWith("git push")));
+  check("P3-341: escalation never arms the PR merge", !code.calls.some((c) => c.startsWith("gh pr merge")));
+
+  // 3) clean merge during repair (main just moved): push + re-probe with the new sha
+  const moved = mkRepairIo({ conflictedPath: "README.md", conflictedContent: docsConflict, mergeConflict: false });
+  const movedOut = await mergePrForTask(moved.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: clean merge repair reports the new head and still lands the PR", movedOut.ok === true);
+  check("P3-341: clean merge repair skips the conflict listing", !moved.calls.some((c) => c.startsWith("git diff -z --name-only")) && !moved.calls.some((c) => c.startsWith("git merge --abort")) && moved.calls.includes("git push -q --force-with-lease origin pilot/P3-341"));
+
+  // 3b) shell-safe handling of conflicted paths (r2: spawnSync runs shell:true)
+  const injected = mkRepairIo({ conflictedPath: "x$(id).md", conflictedContent: docsConflict, mergeConflict: true });
+  const injectedOut = await mergePrForTask(injected.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: conflicted path with shell metachars is single-quoted for git add", injectedOut.ok === true && injected.calls.includes("git add -- 'x$(id).md'"));
+  const spaced = mkRepairIo({ conflictedPath: "my docs/README (pt).md", conflictedContent: docsConflict, mergeConflict: true });
+  const spacedOut = await mergePrForTask(spaced.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: paths with spaces/quotes/parens survive diff -z and quoting", spacedOut.ok === true && spaced.calls.includes("git add -- 'my docs/README (pt).md'") && (spaced.written["my docs/README (pt).md"] ?? "").includes("Main paragraph."));
+  const apos = mkRepairIo({ conflictedPath: "it's.md", conflictedContent: docsConflict, mergeConflict: true });
+  const aposOut = await mergePrForTask(apos.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: a literal quote in a path is escaped as '\\''", aposOut.ok === true && apos.calls.includes(`git add -- 'it'\\''s.md'`));
+
+  // 3c) transient repair failure (push noise) ⇒ infra network, marker reserved
+  const pushDead = mkRepairIo({ conflictedPath: "README.md", conflictedContent: docsConflict, mergeConflict: true, pushFails: true });
+  const pushDeadOut = await mergePrForTask(pushDead.io, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: transient repair failure is infra network, never the operator marker", pushDeadOut.ok === false && pushDeadOut.infra === "network" && !pushDeadOut.detail.includes(CONFLICT_OPERATOR_MARKER) && pushDeadOut.detail.includes("retry next cycle"));
+
+  // 4) io without repair sinks ⇒ byte-for-byte the pre-P3-341 behavior
+  const retroCalls: string[] = [];
+  const retroIo: PrMergeIo = {
+    exec: (cmd) => {
+      retroCalls.push(cmd);
+      if (cmd.startsWith("gh pr create")) return { ok: false, output: "a pull request for head pilot/P3-341 already exists" };
+      if (cmd.startsWith("gh pr list")) return { ok: true, output: "77\n" };
+      if (cmd.includes("statusCheckRollup")) return { ok: true, output: JSON.stringify({ state: "OPEN", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [] }) };
+      return { ok: false, output: "" };
+    },
+    sleep: () => Promise.resolve(),
+  };
+  const retroOut = await mergePrForTask(retroIo, { branch: "pilot/P3-341", title: "t", body: "b", pushedSha: sha });
+  check("P3-341: io without sinks keeps the exact pre-P3-341 conflict behavior", retroOut.ok === false && retroOut.infra === "conflict" && retroOut.detail.includes("PR #77 not merged"));
+  check("P3-341: without sinks no git command runs at all", !retroCalls.some((c) => c.startsWith("git ")));
+
+  // 5) expectSha: the re-probe never inherits a green verdict from the old head
+  const snapIo = (snap: () => unknown) => {
+    const calls: string[] = [];
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        return { ok: true, output: JSON.stringify(snap()) };
+      },
+      sleep: () => Promise.resolve(),
+    };
+    return { io, calls };
+  };
+  const other = "b".repeat(40);
+  const greenSnap = { state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [] as unknown[] };
+  const diverged = snapIo(() => ({ ...greenSnap, headRefOid: other }));
+  check("P3-341: expectSha + old head ⇒ pending for the whole budget", (await awaitMergeReadiness(diverged.io, 7, 3, sha)).verdict === "pending");
+  check("P3-341: expectSha adds headRefOid to the readiness query", diverged.calls.length > 0 && diverged.calls.every((c) => c.endsWith(",headRefOid")));
+  const aligned = snapIo(() => ({ ...greenSnap, headRefOid: sha }));
+  check("P3-341: expectSha + matching head ⇒ normal green verdict", (await awaitMergeReadiness(aligned.io, 7, 3, sha)).verdict === "merge");
+  const noHead = snapIo(() => ({ ...greenSnap }));
+  check("P3-341: expectSha + snapshot without headRefOid ⇒ pending (fail-closed)", (await awaitMergeReadiness(noHead.io, 7, 3, sha)).verdict === "pending");
+  const legacy = snapIo(() => ({ ...greenSnap, headRefOid: other }));
+  const legacyOut = await awaitMergeReadiness(legacy.io, 7, 3);
+  check("P3-341: no expectSha ⇒ unchanged command and verdict", legacyOut.verdict === "merge" && legacy.calls.every((c) => !c.includes("headRefOid")));
+
+  // 6) pure triage: classifyConflictPath
+  check("P3-341: classify docs paths", classifyConflictPath("README.md") === "docs" && classifyConflictPath("README.pt-BR.md") === "docs" && classifyConflictPath("docs/PILOT.md") === "docs" && classifyConflictPath("specs/X.md") === "docs" && classifyConflictPath("AGENTS.md") === "docs");
+  check("P3-341: classify protected paths (constitution 3 + pilot ledger)", classifyConflictPath("deploy/x.sh") === "protected" && classifyConflictPath("scripts/invariants.ts") === "protected" && classifyConflictPath(".github/workflows/ci.yml") === "protected" && classifyConflictPath("BACKLOG.md") === "protected");
+  check("P3-341: protected wins over .md; everything else is code", classifyConflictPath("deploy/NOTES.md") === "protected" && classifyConflictPath("apps/pilot/src/pipeline.ts") === "code" && classifyConflictPath("packages/protocol/src/a.ts") === "code");
+
+  // 7) pure triage: parseConflictedFile
+  const cleanSegs = parseConflictedFile("top\n<<<<<<< HEAD\nours line\n=======\ntheirs line\n>>>>>>> main\nbottom\n");
+  const mid = cleanSegs && cleanSegs.length === 4 && cleanSegs[3] === "" && typeof cleanSegs[1] !== "string" ? cleanSegs[1] : null;
+  check("P3-341: parse splits a simple conflict into passthrough + block segments", !!mid && mid.ours.join("|") === "ours line" && mid.theirs.join("|") === "theirs line");
+  const d3 = parseConflictedFile("<<<<<<< HEAD\nours\n||||||| base\nold\n=======\ntheirs\n>>>>>>> main\n");
+  const d3Mid = d3 && d3.length === 2 && d3[1] === "" && typeof d3[0] !== "string" ? d3[0] : null;
+  check("P3-341: diff3 conflict parses with the base discarded", !!d3Mid && d3Mid.ours.join("|") === "ours" && d3Mid.theirs.join("|") === "theirs");
+  check("P3-341: nested marker ⇒ null", parseConflictedFile("<<<<<<< HEAD\n<<<<<<< inner\n=======\nA\n>>>>>>> main\n") === null);
+  check("P3-341: missing >>>>>>> ⇒ null", parseConflictedFile("<<<<<<< HEAD\nA\n=======\nB\n") === null);
+  check("P3-341: orphan ======= ⇒ null", parseConflictedFile("hello\n=======\nworld\n") === null);
+  check("P3-341: >>>>>>> without ======= ⇒ null", parseConflictedFile("<<<<<<< HEAD\nA\n>>>>>>> main\n") === null);
+
+  // 8) pure triage: isCommentOnlyHunk
+  check("P3-341: comment-only hunk recognized (// * # empty)", isCommentOnlyHunk({ ours: ["// note", ""], theirs: ["* cont", "# shell", "*/"] }));
+  check("P3-341: one code line disqualifies the hunk", !isCommentOnlyHunk({ ours: ["const a = 1;"], theirs: ["// b"] }));
+
+  // 9) pure triage: resolveConflictedFile + repairPlan
+  const malformed = resolveConflictedFile("README.md", "hello\n=======\nworld\n");
+  check("P3-341: protected path and malformed markers refuse to resolve", resolveConflictedFile("BACKLOG.md", docsConflict).ok === false && !malformed.ok && malformed.reason === "malformed conflict markers");
+  const union = resolveConflictedFile("docs/X.md", docsConflict);
+  check("P3-341: docs conflict resolves to the ours-then-theirs union", union.ok && union.content === "# Title\nBranch paragraph.\nMain paragraph.\n");
+  const same = resolveConflictedFile("README.md", "a\n<<<<<<< HEAD\nsame\n=======\nsame\n>>>>>>> main\n");
+  check("P3-341: identical sides keep a single copy", same.ok && same.content === "a\nsame\n");
+  check("P3-341: semantic code hunk refuses with the explicit reason", (() => {
+    const r = resolveConflictedFile("apps/pilot/src/pipeline.ts", codeConflict);
+    return !r.ok && r.reason === "code hunk changes semantics";
+  })());
+  const markerFree = resolveConflictedFile("docs/X.md", "plain text, no markers");
+  check("P3-341: marker-free conflicted file (binary/delete-modify) refuses to resolve", !resolveConflictedFile("assets/logo.png", "binary ours bytes").ok && !markerFree.ok && markerFree.reason === "no conflict markers");
+  const directive = resolveConflictedFile("apps/pilot/src/pipeline.ts", "<<<<<<< HEAD\n// keep\n=======\n// eslint-disable-next-line no-explicit-any\n>>>>>>> origin/main\n");
+  const tsIgnore = resolveConflictedFile("apps/pilot/src/pipeline.ts", "<<<<<<< HEAD\n// @ts-ignore\n=======\n// eslint-disable no-explicit-any\n>>>>>>> origin/main\n");
+  check("P3-341: suppression directive in a code hunk refuses to union", !directive.ok && directive.reason === "suppression directive in code hunk" && !tsIgnore.ok && tsIgnore.reason === "suppression directive in code hunk");
+  const mixed = repairPlan([
+    { path: "README.md", content: "hello\n=======\nworld\n" },
+    { path: "apps/pilot/src/pipeline.ts", content: codeConflict },
+  ]);
+  check("P3-341: mixed docs+code conflict escalates BOTH paths, fixed order, no short-circuit", mixed.verdict === "escalate" && mixed.paths.length === 2 && mixed.paths[0] === "README.md" && mixed.paths[1] === "apps/pilot/src/pipeline.ts" && mixed.reason.includes("apps/pilot/src/pipeline.ts: code hunk changes semantics") && mixed.reason.indexOf("README.md") < mixed.reason.indexOf("apps/pilot"));
+  const halfResolvable = repairPlan([
+    { path: "README.md", content: docsConflict },
+    { path: "apps/pilot/src/pipeline.ts", content: codeConflict },
+  ]);
+  check("P3-341: trivial docs + semantic code escalates EVERYTHING (nothing resolves)", halfResolvable.verdict === "escalate" && halfResolvable.paths.length === 1 && halfResolvable.paths[0] === "apps/pilot/src/pipeline.ts");
+  const empty = repairPlan([]);
+  check("P3-341: empty conflict list escalates with the explicit reason", empty.verdict === "escalate" && empty.reason.includes("no conflicted paths reported"));
+  const allDocs = repairPlan([{ path: "README.md", content: docsConflict }]);
+  check("P3-341: all-docs conflict resolves every file", allDocs.verdict === "resolve" && allDocs.files.length === 1 && allDocs.files[0].path === "README.md");
+
+  // 10) source hygiene: purity + wiring pins (P2-324 lesson)
+  const repairSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "mergerepair.ts"), "utf8");
+  check("P3-341: mergerepair.ts is pure (no node builtins, require, fetch, child_process, process.)", !repairSrc.includes("node:") && !repairSrc.includes("require(") && !repairSrc.includes("fetch(") && !repairSrc.includes("child_process") && !repairSrc.includes("process."));
+  const pipelineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+  check("P3-341: confirmation poll compares the repair-aware expected sha", pipelineSrc.includes("head !== expectedSha") && pipelineSrc.includes("head === expectedSha"));
+  check("P3-341: the pushedSha-only head comparison is gone", !pipelineSrc.includes("head !== args.pushedSha") && !pipelineSrc.includes("head === args.pushedSha"));
+  check("P3-341: P2-058 verified-merge guard untouched", pipelineSrc.includes("isTaskMergeSha(ws, postMergeHead, t.id)") && pipelineSrc.includes("recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id"));
+  check("P3-341: repair runner pinned to force-with-lease (never plain --force, never main)", pipelineSrc.includes("git push -q --force-with-lease origin ${args.branch}") && !pipelineSrc.includes("git push -q --force origin"));
+  check("P3-341: repairConflictedBranch is wired into mergePrForTask", pipelineSrc.includes("await repairConflictedBranch(io, { branch: args.branch") && pipelineSrc.includes("CONFLICT_OPERATOR_MARKER}: ${repair.detail}"));
+  check("P3-341: git add paths are single-quote escaped, never JSON.stringify'd", pipelineSrc.includes("shQuote(f.path)") && !pipelineSrc.includes("JSON.stringify(f.path)"));
+  check("P3-341: unmerged paths read via NUL-delimited -z diff, never line-split", pipelineSrc.includes("git diff -z --name-only --diff-filter=U") && pipelineSrc.includes('split("\\0")') && !pipelineSrc.includes("git diff --name-only --diff-filter=U"));
+  check("P3-341: the expectSha head pin is fail-closed", pipelineSrc.includes("if (!head || head !== expectSha)"));
+}
+
+
 // --- P2-045 dashboard v2: honest counters + diagnostics aggregations --------------
 {
   const dir = mkdtempSync(join(tmpdir(), "pilot-metrics-"));
@@ -9870,6 +10109,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "scanPairingTitle", "scanPointCamera", "scanBackManual",
     "camDenied", "camNotFound", "camBusy", "camInterrupted", "camUnavailable",
     "homeGreeting", "homeGreetingAnon", "homePlaceholder", "homeIdeasTitle", "homeStartError",
+    "pairFirstHint",
   ];
   const resolved = (lang: "en" | "pt") => connKeys.map((k) => translate(lang, k));
   check(
@@ -9883,7 +10123,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       translate("pt", "reconnectNow") === "Reconectar agora" &&
       translate("pt", "scanPairingTitle").includes("Escanear") &&
       translate("pt", "scanPointCamera").includes("câmera") &&
-      translate("pt", "homePlaceholder").includes("Como posso ajudar"),
+      translate("pt", "homePlaceholder").includes("Como posso ajudar") &&
+      translate("pt", "pairFirstHint").includes("Pareie com sua máquina"),
   );
   // en: same screen, English copy — no pt leakage.
   check(
@@ -9946,12 +10187,55 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       sawHealthyDaemon({ reconnecting: true, reconnectAttempts: 3 }) === false &&
       sawHealthyDaemon(null) === false,
   );
+  // --- P3-331: sticky local verdict + guarded auto-connect (pure logic) --------
+  check(
+    "P3-331: shell local verdict is sticky across poll gaps and degraded pushes",
+    nextShellLocal(false, null) === false &&
+      nextShellLocal(false, { mode: "local" }) === true &&
+      nextShellLocal(true, null) === true &&
+      nextShellLocal(true, { daemonDown: true }) === true &&
+      nextShellLocal(true, { reconnecting: true }) === true,
+  );
+  check(
+    "P3-331: only an explicit remote request unsets the sticky local verdict",
+    nextShellLocal(true, { mode: "remote" }) === false &&
+      nextShellLocal(false, { mode: "remote" }) === false &&
+      // ...and returning to local quiet re-arms it
+      nextShellLocal(false, { mode: "local" }) === true,
+  );
+  check(
+    "P3-331: auto-connect runs on unpaired (local or past outage), never while paired/connecting",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true &&
+      autoConnectAllowed("unpaired", { localMode: false, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true &&
+      autoConnectAllowed("unpaired", { localMode: false, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("connecting", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("paired", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false,
+  );
+  check(
+    "P3-331: a stored pairing always wins — no auto-connect races the user's machine",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: true }) === false &&
+      autoConnectAllowed("error", { localMode: true, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: true }) === false,
+  );
+  check(
+    "P3-331: failed AUTO-connect retries once the daemon answers again…",
+    autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true,
+  );
+  check(
+    "P3-331: …but a manual paste mid-edit is never yanked by the recovery loop",
+    autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: true, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: false, addingMachine: true, hasStoredPairing: false }) === false,
+  );
+  check(
+    "P3-331 r2: an explicit manual request also guards the unpaired arm (no yank from the 3s poll)",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: true, pairManual: true, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("unpaired", { localMode: true, sawOutage: true, pairManual: false, addingMachine: true, hasStoredPairing: false }) === false,
+  );
   // Copy parity for the journey: every degraded title/hint key resolves in
   // both locales (same contract as the P2-118 connection screens).
   const degradedKeys = [
     "firstContactTitle", "firstContactHint", "degradedRetrying", "degradedDownHint",
     "degradedLocalTitle", "degradedLocalHint", "degradedPairManually",
-    "reconnectTrying", "reconnectStarted", "reconnectFailed",
+    "reconnectTrying", "reconnectStarted", "reconnectFailed", "pairBack",
   ];
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",
@@ -10854,6 +11138,35 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     check(`p3-332 i18n ${lang}: autoConnectLooking names the local daemon`, /daemon/i.test(d.autoConnectLooking));
     check(`p3-332 i18n ${lang}: autoConnect hints explain the unattended attempt`, !!d.autoConnectBusyHint && !!d.autoConnectIdleHint);
   }
+}
+
+// --- P3-331 round 2: the manual escape survives the sticky local verdict ------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  // The degraded branch's PairingView must force the ceremony on when the user
+  // asked for manual pairing — sticky localMode alone would render the
+  // auto-connect card with no paste/scan form (dead-end one screen later).
+  const manualAt = src.indexOf("onPairManually={() => setPairManual(true)}");
+  check(
+    "P3-331 r2: the degraded journey's manual escape forces the paste/scan ceremony",
+    manualAt !== -1 &&
+      src.slice(manualAt, manualAt + 2400).includes("localMode={localMode && !pairManual}") &&
+      src.slice(manualAt, manualAt + 2400).includes("onBack={pairManual ?"),
+  );
+  // Retry on the error block reconnects a stored pairing verbatim (the PWA has
+  // no bridge to auto-pair with) before falling back to the auto-pair re-arm.
+  const retryAt = src.indexOf("a stored pairing reconnects verbatim");
+  check(
+    "P3-331 r2: Retry reconnects a stored pairing, then re-arms the auto-pair",
+    retryAt !== -1 && src.slice(retryAt, retryAt + 700).includes("const stored = loadState();") &&
+      src.slice(retryAt, retryAt + 700).includes("void connect(stored.pairing, false)") &&
+      src.slice(retryAt, retryAt + 700).includes("tryAutoPair()"),
+  );
+  // The error-phase recovery loop retries on a 15s backoff, never on the 3s poll.
+  check(
+    "P3-331 r2: error-phase auto-retry rides a 15s backoff, not the 3s poll",
+    src.includes("lastAutoRetryRef") && src.includes('Date.now() - lastAutoRetryRef.current < 15_000'),
+  );
 }
 
 
@@ -12111,6 +12424,73 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
     }),
   ));
+}
+
+// --- P2-324: wedged-daemon verdict on the calm card (pure renderer mapping) ----
+
+{
+  // Table: every documented sidecarwedge.ts state plus the fail-closed
+  // shapes. The renderer only speaks when the shell is watching (degraded),
+  // reviving (restart) or has suspended the automatic restart (give-up) —
+  // the plain "observe" state must stay silent.
+  const wedge = (state: string, message = "mensagem estática do classificador"): SidecarWedgeHealth => ({ state, message });
+  const wedgeCases: Array<[string, SidecarWedgeHealth, string | null, string | null]> = [
+    ["observe stays silent (plain watching is not a warning)", wedge("observe"), null, null],
+    ["degraded maps to the degraded notice", wedge("degraded"), "sidecarWedgeDegradedTitle", "sidecarWedgeDegradedAction"],
+    ["restart maps to the restart notice", wedge("restart"), "sidecarWedgeRestartTitle", "sidecarWedgeRestartAction"],
+    ["give-up maps to the give-up notice", wedge("give-up"), "sidecarWedgeGiveUpTitle", "sidecarWedgeGiveUpAction"],
+    ["unknown state is discarded", wedge("wedge"), null, null],
+    ["empty state is discarded", wedge(""), null, null],
+    ["empty message is discarded", { state: "restart", message: "" }, null, null],
+    ["non-textual message is discarded", { state: "restart", message: 42 }, null, null],
+  ];
+  for (const [name, input, titleKey, actionKey] of wedgeCases) {
+    check(`P2-324: ${name}`, (() => {
+      const n = sidecarWedgeNotice(input);
+      if (titleKey === null || actionKey === null) return n === null;
+      return !!n && n.titleKey === titleKey && n.actionKey === actionKey;
+    })());
+  }
+  check("P2-324: absent input never warns", sidecarWedgeNotice(null) === null && sidecarWedgeNotice(undefined) === null);
+  check("P2-324: non-object values never warn", sidecarWedgeNotice(42) === null && sidecarWedgeNotice("restart") === null && sidecarWedgeNotice(["restart"]) === null);
+  check("P2-324: missing message field is discarded", sidecarWedgeNotice({ state: "restart" }) === null);
+  check("P2-324: same input yields the exact same notice on every call (pure)", (() => {
+    const input = wedge("restart");
+    const a = sidecarWedgeNotice(input);
+    const b = sidecarWedgeNotice(input);
+    return a !== null && b !== null && a.titleKey === b.titleKey && a.actionKey === b.actionKey;
+  })());
+
+  // Copy parity: every key resolves in both locales (no raw-key leak), same
+  // hygiene bar as the P2-140 exit copy — calm sentences, no markup, no emoji.
+  const wedgeKeys = [
+    "sidecarWedgeDegradedTitle", "sidecarWedgeDegradedAction",
+    "sidecarWedgeRestartTitle", "sidecarWedgeRestartAction",
+    "sidecarWedgeGiveUpTitle", "sidecarWedgeGiveUpAction",
+  ];
+  check(
+    "P2-324: wedge copy resolves per locale (en + pt) and never leaks the raw key",
+    (["en", "pt"] as const).every((lang) =>
+      wedgeKeys.every((k) => {
+        const s = translate(lang, k);
+        return !!s && s !== k && dict[lang][k] === s;
+      }),
+    ),
+  );
+  check("P2-324: wedge copy carries no markup, paths or emoji", wedgeKeys.every((k) =>
+    (["en", "pt"] as const).every((lang) => {
+      const s = dict[lang][k];
+      return !s.includes("<") && !s.includes(">") && !s.includes("{") && !s.includes("}") && !s.includes("/") && !/\p{Extended_Pictographic}/u.test(s);
+    }),
+  ));
+
+  // Module hygiene (same bar as sidecarwedge.ts): the wedge mapping is pure —
+  // no React, no fetch, no window access, and DegradedView renders the verdict
+  // band through i18n keys only (no copy born hardcoded in JSX).
+  const degradedSource = readFileSync(new URL("../apps/web/src/lib/degraded.ts", import.meta.url), "utf8");
+  check("P2-324: degraded.ts stays pure (no React, no fetch, no window)", !degradedSource.includes("react") && !degradedSource.includes("fetch(") && !degradedSource.includes("window"));
+  const degradedViewSource = readFileSync(new URL("../apps/web/src/components/DegradedView.tsx", import.meta.url), "utf8");
+  check("P2-324: the verdict band renders through t() keys, never JSX literals", degradedViewSource.includes("verdictBand.titleKey") && degradedViewSource.includes("verdictBand.actionKey") && degradedViewSource.includes("sidecarExit ?? sidecarWedge"));
 }
 
 // --- P2-315: sidecar stop planner (pure, no electron/node:fs) -----------------
@@ -18940,6 +19320,71 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-344: client fingerprint + reject-log throttle (clientfp.ts) ----------
+
+{
+  const base = 1_700_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const [idA, idB] = await Promise.all([newIdentity(false), newIdentity(false)]);
+
+  // premise of the fix: the old `pub.slice(0, 16)` identifier is identical for
+  // every P-256 key (constant ASN.1 header), the sha-256 fingerprint is not
+  check(
+    "P3-344: slice(0,16) of two distinct P-256 keys collides (the bug being fixed)",
+    idA.publicKey.slice(0, 16) === idB.publicKey.slice(0, 16),
+  );
+  check(
+    "P3-344: distinct keys → distinct fingerprints, 16 lowercase hex chars",
+    pubFingerprint(idA.publicKey) !== pubFingerprint(idB.publicKey) &&
+      /^[0-9a-f]{16}$/.test(pubFingerprint(idA.publicKey)) &&
+      /^[0-9a-f]{16}$/.test(pubFingerprint(idB.publicKey)),
+  );
+  check(
+    "P3-344: same key → same fingerprint on repeated calls (stable per device)",
+    pubFingerprint(idA.publicKey) === pubFingerprint(idA.publicKey),
+  );
+  check(
+    "P3-344: invalid input (empty, null, number, garbage) → 'unknown', never throws",
+    pubFingerprint("") === "unknown" &&
+      pubFingerprint(null) === "unknown" &&
+      pubFingerprint(undefined) === "unknown" &&
+      pubFingerprint(123) === "unknown" &&
+      pubFingerprint("!!!") === "unknown",
+  );
+
+  // rejectLogDecision — fixed rule order: (a) missing → warn, (b) future →
+  // silent, (c) at/after the interval → warn, (d) fresh → silent
+  check(
+    "P3-344: rejectLogDecision missing/non-numeric lastWarnAt → warn (first sighting)",
+    rejectLogDecision(undefined, base) === "warn" && rejectLogDecision(Number.NaN, base) === "warn",
+  );
+  check(
+    "P3-344: rejectLogDecision lastWarnAt in the future (clock moved back) → silent",
+    rejectLogDecision(base + 1, base) === "silent" &&
+      rejectLogDecision(base + REJECT_WARN_INTERVAL_MS * 10, base) === "silent",
+  );
+  check(
+    "P3-344: rejectLogDecision at/after the interval → warn",
+    rejectLogDecision(base - REJECT_WARN_INTERVAL_MS, base + REJECT_WARN_INTERVAL_MS) === "warn" &&
+      rejectLogDecision(base - REJECT_WARN_INTERVAL_MS - 1, base) === "warn",
+  );
+  check(
+    "P3-344: rejectLogDecision fresh warn → silent (no zombie log flood)",
+    rejectLogDecision(base, base + REJECT_WARN_INTERVAL_MS - 1) === "silent" &&
+      rejectLogDecision(base, base) === "silent",
+  );
+
+  // noteRejectWarn — bounded map
+  {
+    const state = new Map<string, number>();
+    for (let i = 0; i < 200; i++) noteRejectWarn(state, `fp${i}`, base + i);
+    check("P3-344: noteRejectWarn keeps the map bounded at 64 after 200 pubs", state.size === 64);
+    check(
+      "P3-344: noteRejectWarn evicts the OLDEST entries (newest survive)",
+      !state.has("fp0") && !state.has("fp135") && state.has("fp136") && state.has("fp199"),
+    );
+  }
+}
+
 // --- P2-268: stale-device classifier (devicestale.ts) ------------------------
 
 {
@@ -20016,6 +20461,82 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-208: the desktop-win boot smoke resolves the win-unpacked dir and runs packaged-boot.mjs",
     stepSlice.includes("win-unpacked") && stepSlice.includes("node apps/desktop/scripts/packaged-boot.mjs"),
   );
+}
+
+// --- P3-343: win32 binary detection (run 34275463862) + boot screenshot -------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const layoutSrc = src(["apps", "desktop", "scripts", "packaged-boot-layout.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  // The regression behind desktop-package-win run 34275463862: libuv on
+  // Windows never sets the exec mode bits in st_mode, so the fallback scan
+  // saw only .pak/.dll/dat files and reported binary-missing while the real
+  // "OpenCode Remote.exe" sat in win-unpacked. The suffix is the only
+  // reliable win32 signal — mode bits must be irrelevant there.
+  check(
+    "P3-343: win32 accepts the packaged .exe regardless of (worthless) mode bits",
+    isExecutableEntry("OpenCode Remote.exe", 0o100644, "win32") === true &&
+      isExecutableEntry("OpenCode Remote.exe", 0, "win32") === true,
+  );
+  check(
+    "P3-343: win32 suffix match is case-insensitive and refuses non-.exe entries",
+    isExecutableEntry("OpenCode Remote.EXE", 0, "win32") === true &&
+      isExecutableEntry("libEGL.dll", 0o100777, "win32") === false &&
+      isExecutableEntry("resources", 0o100777, "win32") === false,
+  );
+  check(
+    "P3-343: off-win32 the exec mode bits decide and a .exe suffix alone never wins",
+    isExecutableEntry("electron", 0o100755, "darwin") === true &&
+      isExecutableEntry("electron", 0o100644, "darwin") === false &&
+      isExecutableEntry("app.exe", 0, "darwin") === false &&
+      isExecutableEntry("app.exe", 0o100755, "linux") === true,
+  );
+  check(
+    "P3-343: garbage inputs fail closed",
+    isExecutableEntry("", 0o100777, "win32") === false &&
+      isExecutableEntry(null as unknown as string, 0o100777, "win32") === false &&
+      isExecutableEntry("x.exe", null as unknown as number, "darwin") === false,
+  );
+
+  check(
+    "P3-343: packaged-boot-layout.mjs stays pure (no node: fs/os/path/net/http imports)",
+    !/node:(fs|os|path|net|http)/.test(layoutSrc.replace(/\/\/.*$/gm, "")),
+  );
+  check(
+    "P3-343: resolveExecutable classifies every fallback entry through isExecutableEntry",
+    bootSrc.includes("isExecutableEntry(name, statSync(path).mode, process.platform)"),
+  );
+  check(
+    "P3-343: the boot shot is opt-in via OCR_PACKAGED_BOOT_SHOT and strictly fail-open",
+    bootSrc.includes("OCR_PACKAGED_BOOT_SHOT") && bootSrc.includes("boot shot unavailable"),
+  );
+
+  // real-repo assertion: both Windows packaging jobs save the shot from the
+  // boot step and upload it as a run artifact right after it
+  const winJobs: Array<[string, string, string, string]> = [
+    ["ci.yml", "desktop-package-win", "verify-win"],
+    ["release.yml", "desktop-win", "release-verify"],
+  ];
+  for (const [file, jobKey, nextJobKey] of winJobs) {
+    const text = src([".github", "workflows", file]);
+    const jobAt = text.indexOf(`\n  ${jobKey}:`);
+    const jobEnd = text.indexOf(`\n  ${nextJobKey}:`, jobAt);
+    const job = jobAt > -1 && jobEnd > jobAt ? text.slice(jobAt, jobEnd) : "";
+    const bootAt = job.indexOf("Smoke-boot the packaged app");
+    const upAt = job.indexOf("Upload packaged boot screenshot", bootAt);
+    const stepEnd = upAt > -1 ? job.indexOf("\n      - name:", upAt) : -1;
+    const slice = bootAt > -1 && upAt > bootAt ? job.slice(bootAt, stepEnd) : "";
+    check(
+      `P3-343: ${file} ${jobKey} shoots the boot and uploads it as a run artifact`,
+      slice.includes("OCR_PACKAGED_BOOT_SHOT") &&
+        slice.includes("packaged-boot-win.png") &&
+        slice.includes("if: always()") &&
+        slice.includes("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02") &&
+        slice.includes("if-no-files-found: ignore"),
+    );
+  }
 }
 
 // --- P2-207: artifact retention janitor (artifactretention.ts) ----------------
@@ -22006,11 +22527,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     pkgAt > -1 && smokeAt > pkgAt,
   );
   check(
-    "P2-219: no step of the new job uploads artifacts or publishes anything",
-    !win.includes("actions/upload-artifact") &&
-      !win.includes("gh release") &&
+    "P2-219: the job still never publishes — the only upload is the P3-343 boot-screenshot artifact (run-scoped evidence, never a release asset)",
+    !win.includes("gh release") &&
       !win.includes("upload-artifact:") &&
-      !win.includes("ghr"),
+      !win.includes("ghr") &&
+      win.split("actions/upload-artifact").length - 1 === 1 &&
+      win.includes("Upload packaged boot screenshot") &&
+      win.includes("if-no-files-found: ignore"),
   );
   check(
     "P2-219: every run step of the new job declares shell: bash (P2-126 lesson)",
@@ -31801,7 +32324,9 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   );
   check(
     "P3-329: pairManual intent forces localMode off (paste form never swallowed)",
-    app.includes('localMode={pairManual ? false : pairingState?.mode === "local"}'),
+    // P3-331 merged: localMode is now the sticky shell verdict, and pairManual
+    // forces it off — same rule, one expression (apps/web/src/App.tsx).
+    app.includes("localMode={localMode && !pairManual}"),
   );
 
   // styling stays on the quiet bordered vocabulary — the manual button shares

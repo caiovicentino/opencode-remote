@@ -57,6 +57,7 @@ export interface PortableExclusion {
  */
 export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "artifact-auto.test.ts", cause: "symlink" },
+  { file: "artifactbudget.test.ts", cause: "long-lived-child" },
   { file: "chunk.test.ts", cause: "long-lived-child" },
   { file: "context-checkpoint.test.ts", cause: "network-port" },
   { file: "desktop-crash.test.ts", cause: "electron" },
@@ -74,6 +75,7 @@ export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "pwa-watch.test.ts", cause: "long-lived-child" },
   { file: "push.test.ts", cause: "network-port" },
   { file: "reconnect.test.ts", cause: "long-lived-child" },
+  { file: "reject-isolation.test.ts", cause: "long-lived-child" },
   { file: "relay-healthz.test.ts", cause: "network-port" },
   { file: "relay-ipcap.test.ts", cause: "long-lived-child" },
   { file: "relay-liveness.test.ts", cause: "long-lived-child" },
