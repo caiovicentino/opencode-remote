@@ -728,9 +728,20 @@ try {
     if (res.ok) check(`P1-046: ${id} carries a shell-vocabulary label`, labels.some((l) => res.stdout.includes(l)));
   }
   // Real click on the menu item: runs the main-process handler that
-  // broadcasts ocr:menu-action to every window (renderer ignores it while
-  // unpaired — the call must not throw).
+  // broadcasts ocr:menu-action to every window. The renderer has no pane
+  // target while unpaired — since P3-328 it surfaces the pair-first hint
+  // instead of silently ignoring the action (the call must still not throw).
   run("P1-046: go-pane-artifacts click dispatches", ["menu-click", "go-pane-artifacts"], 15_000);
+  // P3-328: the dropped pane action must now be perceivable on the gate
+  // screen — probe right after the click, inside the 4s toast window.
+  const gateHint = run("P3-328: pair-first hint after pane click", ["ipc", "document.querySelector('.pair-gate-hint')?.textContent ?? ''"], 15_000);
+  if (gateHint.ok) {
+    check(
+      "P3-328: dropped pane action surfaces the pair-first hint (en|pt)",
+      /Pair with your machine first|Pareie com sua máquina primeiro/.test(gateHint.stdout),
+      gateHint.stdout,
+    );
+  }
 
   // --- P3-053: dock unread badge bridge ----------------------------------------
   // The paired chat UI can't render hermetically (see the P1-051 note above),

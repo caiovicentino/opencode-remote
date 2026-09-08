@@ -31,6 +31,7 @@ import SidebarAccount from "./components/SidebarAccount";
 import ChatView, { type MicAccessVerdict } from "./components/ChatView";
 import { type CameraAccessVerdict } from "./components/QrScanner";
 import HomeView from "./components/HomeView";
+import GateHint from "./components/GateHint";
 import { setDraft } from "./lib/drafts";
 import SettingsView, {
   applyTheme,
@@ -250,6 +251,11 @@ export default function App() {
   // navigation direction drives the slide-in animation of the next screen
   const [navDir, setNavDir] = useState<"fwd" | "back">("fwd");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // P3-328: Go-menu actions stay enabled at the pairing gate but have no
+  // target yet — pressing one bumps this trigger so the <GateHint> toast
+  // explains why (the timer lives in the component; p2-220 keeps timers out
+  // of App).
+  const [gateHintTick, setGateHintTick] = useState(0);
   const appRootRef = useRef<HTMLDivElement>(null);
   const swipe = useRef({ x: 0, y: 0, dx: 0, active: false });
   const [unread, setUnread] = useState<Record<string, number>>(() => {
@@ -764,7 +770,11 @@ export default function App() {
   // absent so actions never fire twice inside Electron.
   useEffect(() => {
     function runMenuAction(id: string) {
-      if (phase !== "paired") return; // no client yet — nothing to open
+      if (phase !== "paired") {
+        // P3-328: no client yet — nothing to open, but never silent.
+        setGateHintTick((n) => n + 1);
+        return;
+      }
       if (id === "newChat") {
         void createSession();
         return;
@@ -922,6 +932,11 @@ export default function App() {
       mismatchBanner
     );
 
+  // P3-328: dropped Go-menu action on ANY gate screen (welcome, add machine,
+  // help, pairing/degraded) — the GateHint toast says why nothing opened.
+  const gateHintNode = <GateHint trigger={gateHintTick} />;
+
+
   // P2-148: first-run onboarding — a single full-screen surface with no
   // banners and no pairing overlay (P2-108 single-surface rule). It covers
   // every phase: the local daemon may finish auto-connecting in the
@@ -929,6 +944,7 @@ export default function App() {
   if (showWelcome) {
     return (
       <div className="pair-wrap" data-phase={phase}>
+        {gateHintNode}
         <WelcomeView
           kind={kind}
           busy={phase === "connecting"}
@@ -956,6 +972,7 @@ export default function App() {
       <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"} data-phase={phase}>
         {banner}
         {pairingOverlay}
+        {gateHintNode}
         <PairingView
           phase="unpaired"
           error={error}
@@ -988,6 +1005,7 @@ export default function App() {
     // The stub request makes every settings fetch a quiet no-op.
     return (
       <div className="pair-wrap" data-phase={phase}>
+      {gateHintNode}
       <SettingsView
         request={() => Promise.resolve({ status: 0, body: {} })}
         onBack={() => setHelpOpen(false)}
@@ -1023,6 +1041,7 @@ export default function App() {
       >
         {degraded ? mismatchBanner : banner}
         {pairingOverlay}
+        {gateHintNode}
         {degraded ? (
           <DegradedView
             kind={kind}

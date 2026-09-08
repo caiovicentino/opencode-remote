@@ -269,6 +269,10 @@ recebe code/signal/cauda de stderr, veredito port-busy/entry-missing/
 runtime-error/killed/unknown via `sidecarExit` no `ocr:pairing-state`,
 copy acionável sem caminhos nem segredos; o harness honra um
 `OCR_DAEMON_ENTRY` real apontado pro script fake que morre com EADDRINUSE);
+P3-328 adicionou o beat do aviso no portão de pareamento: o clique real num
+item de painel do menu Go (go-pane-artifacts) com o app não pareado agora
+mostra o toast "Pareie com sua máquina primeiro…" (`.pair-gate-hint`) no
+próprio portão, em vez de a ação sumir sem feedback);
 use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app

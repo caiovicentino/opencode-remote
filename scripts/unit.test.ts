@@ -6343,6 +6343,36 @@ check(
 }
 
 
+// --- P3-328: pair-first hint replaces the silent drop at the pairing gate -------
+// The Go-menu pane items stay enabled while unpaired (the shell has no
+// reliable renderer-phase mirror to disable them with); the renderer must
+// therefore surface WHY nothing happens. The i18n keys above prove the copy
+// resolves per locale; these checks prove the wiring is really on the
+// dropped-action path and on every gate surface.
+{
+  const appSource = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const hintSource = readFileSync(new URL("../apps/web/src/components/GateHint.tsx", import.meta.url), "utf8");
+  const dropAt = appSource.indexOf('if (phase !== "paired") {');
+  const tickAt = appSource.indexOf("setGateHintTick((n) => n + 1)");
+  check(
+    "P3-328: unpaired menu actions route to the gate hint (no silent drop)",
+    dropAt > -1 && tickAt > dropAt &&
+      hintSource.includes('className="ocr-toast pair-gate-hint"') &&
+      hintSource.includes('t("pairFirstHint")'),
+  );
+  check(
+    "P3-328: the hint renders on every gate surface (welcome, add machine, help, pairing/degraded)",
+    (appSource.match(/\{gateHintNode\}/g) ?? []).length >= 4,
+  );
+  // The toast must auto-clear and a stale trigger must never re-show after a
+  // remount (pair → disconnect → gate would otherwise toast with no action).
+  check(
+    "P3-328: gate hint auto-clears after 4s and never re-shows a stale trigger",
+    hintSource.includes("setTimeout(() => setVisible(false), 4_000)") && hintSource.includes("useRef(trigger)"),
+  );
+}
+
+
 // --- P2-276: shell language (apps/desktop/src/shelllang.ts) ---------------------
 {
   const en = shellLabels("en");
@@ -9857,6 +9887,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "scanPairingTitle", "scanPointCamera", "scanBackManual",
     "camDenied", "camNotFound", "camBusy", "camInterrupted", "camUnavailable",
     "homeGreeting", "homeGreetingAnon", "homePlaceholder", "homeIdeasTitle", "homeStartError",
+    "pairFirstHint",
   ];
   const resolved = (lang: "en" | "pt") => connKeys.map((k) => translate(lang, k));
   check(
@@ -9870,7 +9901,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       translate("pt", "reconnectNow") === "Reconectar agora" &&
       translate("pt", "scanPairingTitle").includes("Escanear") &&
       translate("pt", "scanPointCamera").includes("câmera") &&
-      translate("pt", "homePlaceholder").includes("Como posso ajudar"),
+      translate("pt", "homePlaceholder").includes("Como posso ajudar") &&
+      translate("pt", "pairFirstHint").includes("Pareie com sua máquina"),
   );
   // en: same screen, English copy — no pt leakage.
   check(

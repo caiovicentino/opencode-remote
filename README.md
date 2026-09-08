@@ -1491,6 +1491,15 @@ Asking to pair manually from the calm card always shows the paste/scan form —
 the sticky local mode never hides it — and Retry on a failed connect
 reconnects a stored pairing verbatim before re-arming the auto-connect.
 
+**Menu actions explain themselves at the gate (P3-328)**: the Go menu's pane
+items (⌘1–6) stay enabled while the pairing gate is up — the shell has no
+reliable mirror of the renderer's connection phase to disable them with — but
+pressing one is no longer a silent no-op. Every dropped action (panes, new
+chat, command palette) surfaces a transient toast on the gate screen itself —
+"Pair with your machine first — the panes unlock once connected." — in the
+app's language, auto-clearing after 4s and never blocking the pairing
+ceremony.
+
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and
