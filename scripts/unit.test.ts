@@ -10753,6 +10753,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-334: the desktop pairing screen leads with the host section ----------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const hostAt = src.indexOf('t("pairHostTitle")');
+  const clientAt = src.indexOf('t("pairConnectTitle")');
+  check(
+    "P3-334: PairingView renders the host section before the client ceremony",
+    hostAt !== -1 && clientAt !== -1 && hostAt < clientAt,
+  );
+}
+
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {
