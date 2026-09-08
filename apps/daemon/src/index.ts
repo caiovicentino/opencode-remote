@@ -110,6 +110,18 @@ import {
   deviceStaleVerdict,
   type StaleVerdictReport,
 } from "./devicestale.js";
+// Bug 1 (silent crypto death): structured reply on auth failures + the 24h
+// "key expired" ledger the devices routes expose. Pure decisions only.
+import {
+  AUTH_FAILURE_WINDOW_MS,
+  AuthFailureLedger,
+  classifyAuthFailure,
+  keyExpiredVerdict,
+  reauthControl,
+  reauthReplyDecision,
+  REAUTH_REPLY_MIN_INTERVAL_MS,
+  type KeyExpiredReport,
+} from "./reauth.js";
 import {
   admitNewUpload,
   chunkIndexProblem,
@@ -1020,6 +1032,8 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
             DEVICE_STALE_SHORT_WINDOW_MS,
             DEVICE_STALE_LONG_WINDOW_MS,
           ),
+          // Bug 1: additive 24h "key expired" verdict (in-memory ledger).
+          ...keyExpiredVerdict(authFailures.lastFailureAt(client.pub), now, AUTH_FAILURE_WINDOW_MS),
         })),
       },
     };
@@ -1702,6 +1716,49 @@ interface ClientSession {
 }
 
 const sessions = new Map<string, ClientSession>();
+
+// Bug 1 (silent crypto death): every auth failure — a sealed frame the
+// session key cannot open, or a hello the identity cannot accept — now
+// answers the sender with a CLEAR `session-reauth-required` control frame on
+// the same socket. Clear by necessity: the keys disagree, so nothing sealed
+// here would open on the other side. The relay stays a blind pipe (it routes
+// this exactly like the existing clear `reconnect` hint) and the client
+// verifies the hint before acting (framegate.ts). Throttled per sender id so
+// a client stuck on a stale key gets one reply per interval, not one per op.
+const authFailures = new AuthFailureLedger();
+const reauthRepliedAt = new Map<string, number>();
+const REAUTH_REPLY_MAP_CAP = 512;
+
+function sendReauthRequired(ws: WebSocket, from: string, pub: string | null) {
+  const now = Date.now();
+  if (reauthReplyDecision(reauthRepliedAt.get(from), now, REAUTH_REPLY_MIN_INTERVAL_MS) === "suppress") return;
+  reauthRepliedAt.delete(from);
+  reauthRepliedAt.set(from, now);
+  while (reauthRepliedAt.size > REAUTH_REPLY_MAP_CAP) {
+    const oldest = reauthRepliedAt.keys().next().value;
+    if (oldest === undefined) break;
+    reauthRepliedAt.delete(oldest);
+  }
+  metrics.inc("ocr_reauth_required_sent_total");
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(
+    JSON.stringify({
+      room: daemon.room,
+      from: daemon.room,
+      payload: b64(Buffer.from(JSON.stringify(reauthControl(pub)))),
+    } satisfies RelayFrame),
+  );
+}
+
+/** Attribute an auth failure to the allowlist (fresh read; a missing state
+ * file counts as "unknown" — never an exception on the frame path). */
+function attributeAuthFailure(pub: string | null): "known-stale" | "unknown" {
+  try {
+    return classifyAuthFailure(readAllowlist().map((c) => c.pub), pub);
+  } catch {
+    return "unknown";
+  }
+}
 
 // P1-068: sessions created by the daemon (E2E tunnel, /api, routines) whose
 // turns must carry the artifacts protocol. In-memory by design: after a
@@ -2926,7 +2983,21 @@ async function handleSealedFrame(frame: RelayFrame, ws: WebSocket) {
     seqAad(frame.from, seq),
   );
   if (!envelope || envelope.type !== "op") {
-    log("warn", "undecryptable frame (auth failure)", { from: frame.from });
+    // Bug 1: a KNOWN session whose key no longer opens the client's frames
+    // (client rehandshaked and the hello got lost, or a rekey on either
+    // side). Dropping silently left the phone rendering its own message and
+    // hearing nothing. Record the failure for the 24h devices verdict and
+    // answer with the clear reauth control so the client can verify + recover.
+    const kind = attributeAuthFailure(session.pub);
+    authFailures.record(session.pub, Date.now());
+    metrics.inc("ocr_auth_failures_total");
+    log("warn", "undecryptable frame (auth failure)", {
+      from: frame.from,
+      pub: session.pub.slice(0, 16),
+      device: kind,
+    });
+    audit("client.auth-failed", { pub: session.pub.slice(0, 16), device: kind });
+    sendReauthRequired(ws, frame.from, session.pub);
     return;
   }
   session.lastSeq = seq;
@@ -2998,7 +3069,25 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       isControl = true;
       const accepted = await serverAccept(maybeControl.hello, daemon.identity);
       if (!accepted) {
-        log("warn", "handshake failed", { from: frame.from });
+        // Bug 1: the client's copy of the daemon identity is stale (daemon
+        // rekeyed / state file restored) or the hello is garbage. The hello
+        // carries the sender's public key in the clear, so a paired device
+        // is attributed and stamped as "key expired" for the devices routes;
+        // either way the sender gets the clear reauth control instead of an
+        // eternal "connecting" (the client-side confirm watchdog used to loop
+        // forever here with no error on screen).
+        const helloPub =
+          typeof maybeControl.hello.clientPub === "string" ? maybeControl.hello.clientPub : null;
+        const kind = attributeAuthFailure(helloPub);
+        if (helloPub && kind === "known-stale") authFailures.record(helloPub, Date.now());
+        metrics.inc("ocr_auth_failures_total");
+        log("warn", "handshake failed", {
+          from: frame.from,
+          pub: helloPub ? helloPub.slice(0, 16) : undefined,
+          device: kind,
+        });
+        audit("client.auth-failed", { pub: helloPub ? helloPub.slice(0, 16) : undefined, device: kind });
+        sendReauthRequired(ws, frame.from, kind === "known-stale" ? helloPub : null);
         return;
       }
 
@@ -3553,7 +3642,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     } else {
       // P2-268: same additive verdict as the E2E /__ocr/devices route (the
       // two stay identical); strictly read-only.
-      let devices: Array<PairedClient & StaleVerdictReport> = [];
+      let devices: Array<PairedClient & StaleVerdictReport & KeyExpiredReport> = [];
       try {
         const now = Date.now();
         devices = readAllowlist().map((client) => ({
@@ -3565,6 +3654,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
             DEVICE_STALE_SHORT_WINDOW_MS,
             DEVICE_STALE_LONG_WINDOW_MS,
           ),
+          // Bug 1: additive 24h "key expired" verdict — the desktop "Celular"
+          // pane reads it from this loopback route.
+          ...keyExpiredVerdict(authFailures.lastFailureAt(client.pub), now, AUTH_FAILURE_WINDOW_MS),
         }));
       } catch {
         // state file missing/unreadable: report an empty allowlist rather than

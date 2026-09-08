@@ -1,17 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
 import { timeAgo, sessionUpdatedTs } from "../lib/time";
 import { groupByRecency } from "../lib/recency";
 import { loadArchived, saveArchived, toggleArchived } from "../lib/archive";
 import type { EventEnvelope } from "@ocr/protocol";
-import type { Pairing } from "../lib/client";
 import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
 import { dropCachedSession } from "../lib/sessionCache";
 import { buildAskDialog, type AskIntent } from "../lib/askdialog";
-import { IconArchive, IconCheck, IconChevronDown, IconFilter, IconPencil, IconUndo, IconX } from "./icons";
+import { IconArchive, IconCheck, IconChevronDown, IconFilter, IconMore, IconPencil, IconPlus, IconUndo, IconX } from "./icons";
 import AskDialog from "./AskDialog";
-import MachinePicker from "./MachinePicker";
 
 interface Session {
   id: string;
@@ -21,15 +19,8 @@ interface Session {
 }
 
 interface Props {
-  machineName: string;
   events: EventEnvelope[];
   unread: Record<string, number>;
-  connStatus: string;
-  machines: Pairing[];
-  activeRoom?: string | null;
-  onSwitch: (p: Pairing) => void;
-  onForget: (p: Pairing) => void;
-  onAddMachine: () => void;
   request: (
     method: string,
     path: string,
@@ -37,16 +28,13 @@ interface Props {
     query?: Record<string, string>,
   ) => Promise<{ status: number; body: unknown }>;
   onOpen: (sessionId: string) => void;
-  onDisconnect: () => void;
-  onEnablePush: () => Promise<void>;
-  onOpenSettings: () => void;
-  onOpenFiles: () => void;
   tick: number;
   /** P1-046: creation lifted to App so Cmd+T/Cmd+K reuse the same path. */
   creating: boolean;
   onCreateSession: () => Promise<string | null>;
-  /** "grid" (mobile cards) | "rows" (desktop flat Claude-style list) */
-  variant?: "grid" | "rows";
+  /** "list" (Bug 2: mobile 56px rows + kebab + fixed "+ Nova conversa" pill)
+   * | "rows" (desktop flat Claude-style list) */
+  variant?: "list" | "rows";
   /** P3-084: currently open conversation — drives the sharp active row. */
   activeSession?: string | null;
   /** P2-220: one-line iOS install hint (null/absent hides the banner). */
@@ -54,6 +42,9 @@ interface Props {
   /** P2-220: persists the dismissal under its own localStorage key. */
   onDismissInstallHint?: () => void;
 }
+
+/** Long-press on a mobile row opens the same action sheet as the kebab. */
+const LONG_PRESS_MS = 500;
 
 /** P1-064: collapsed header for autonomous-pilot sessions, pinned to the end
  * of the list. Same chip vocabulary as the filter row — no extra chrome. */
@@ -106,25 +97,14 @@ function GroupHead({ group, label }: { group: string; label: string }) {
 }
 
 export default function SessionsView({
-  machineName,
   events,
   unread,
-  connStatus,
-  machines,
-  activeRoom,
-  onSwitch,
-  onForget,
-  onAddMachine,
   request,
   onOpen,
-  onDisconnect,
-  onEnablePush,
-  onOpenSettings,
-  onOpenFiles,
   tick,
   creating,
   onCreateSession,
-  variant = "grid",
+  variant = "list",
   activeSession = null,
   installHint = null,
   onDismissInstallHint,
@@ -133,13 +113,11 @@ export default function SessionsView({
   const t = useT();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [pushState, setPushState] = useState<"idle" | "enabling" | "enabled">("idle");
   const [query, setQuery] = useState("");
   const [badgeFilter, setBadgeFilter] = useState<BadgeFilter>("all");
   // P2-108: badge filters live in a menu attached to the search instead of a
   // chip row — less chrome above the list, one affordance to filter.
   const [filterOpen, setFilterOpen] = useState(false);
-  const [switching, setSwitching] = useState(false);
   const [pilotOpen, setPilotOpen] = useState(false);
   // P3-084: client-side archive (this device's localStorage, reversible)
   const [archivedIds, setArchivedIds] = useState<string[]>(() => loadArchived());
@@ -147,13 +125,18 @@ export default function SessionsView({
   // P2-323: the in-app confirmation dialog (rename/delete) replaces the
   // native window.prompt/window.confirm the desktop shell never implemented
   const [ask, setAsk] = useState<{ intent: AskIntent; id: string; current: string } | null>(null);
+  // Bug 2: per-row action sheet (kebab tap or long-press) — edit/delete left
+  // the card face; the row is one tap = open, nothing else.
+  const [sheet, setSheet] = useState<{ id: string; title?: string; archived: boolean } | null>(null);
+  const pressTimer = useRef<number | null>(null);
+  const pressFired = useRef(false);
 
   // silent restore: a device that already granted permission never re-authorizes
   useEffect(() => {
     void (async () => {
       try {
         const { restorePush } = await import("../lib/push");
-        if (await restorePush(request)) setPushState("enabled");
+        await restorePush(request);
       } catch {}
     })();
     // run once per mount
@@ -219,6 +202,13 @@ export default function SessionsView({
     const next = toggleArchived(archivedIds, id, false);
     setArchivedIds(next);
     saveArchived(next);
+  }
+
+  function clearPress() {
+    if (pressTimer.current !== null) {
+      clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
   }
 
   const filtered = applySessionFilters(sessions, unread, query, badgeFilter);
@@ -346,133 +336,109 @@ export default function SessionsView({
     );
   }
 
-  function renderCard(s: Session, archived = false) {
+  /** Bug 2: mobile list row — 56px, dot + one-line title, kebab. Tap opens;
+   * long-press or the kebab opens the action sheet (rename/archive/delete). */
+  function renderListRow(s: Session, archived = false) {
     const st = archived ? undefined : statusOf.get(s.id);
-    const when = timeAgo(s.updatedAt ?? s.time?.updated, t("justNow"));
+    const n = archived ? 0 : (unread[s.id] ?? 0);
+    const label = s.title || s.id.slice(0, 12);
+    const openSheet = () => setSheet({ id: s.id, title: s.title, archived });
     return (
       <div
         key={s.id}
-        className="card session-card"
+        className={`convo-row${!archived && s.id === activeSession ? " active" : ""}`}
         role="button"
         tabIndex={0}
-        aria-label={s.title || s.id.slice(0, 12)}
-        onClick={() => onOpen(s.id)}
+        aria-label={label}
+        aria-current={!archived && s.id === activeSession ? "true" : undefined}
+        data-session={s.id}
+        onClick={() => {
+          if (pressFired.current) {
+            pressFired.current = false;
+            return;
+          }
+          onOpen(s.id);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             onOpen(s.id);
           }
         }}
-        style={{ cursor: "pointer" }}
+        onPointerDown={(e) => {
+          if (e.pointerType === "mouse") return;
+          pressFired.current = false;
+          clearPress();
+          pressTimer.current = window.setTimeout(() => {
+            pressTimer.current = null;
+            pressFired.current = true;
+            openSheet();
+          }, LONG_PRESS_MS);
+        }}
+        onPointerUp={clearPress}
+        onPointerCancel={clearPress}
+        onPointerMove={clearPress}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          openSheet();
+        }}
       >
-        <div className="session-head">
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              flexShrink: 0,
-              background: st ? toneColor[st.tone] : "var(--status-done)",
-              opacity: st ? 1 : 0.5,
-            }}
-          />
-          <div className="session-title">{s.title || s.id.slice(0, 12)}</div>
-          {(unread[s.id] ?? 0) > 0 && <span className="unread-badge">{unread[s.id]}</span>}
-          {when && <span className="session-when">{when}</span>}
-        </div>
-        <div className="session-snippet">{st?.snippet || "\u00a0"}</div>
-        {!archived && (
-          <div className="session-meta" style={{ color: st ? toneColor[st.tone] : "var(--status-done)" }}>
-            {st?.label ?? t("ready")}
-          </div>
-        )}
-        <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-          <button className="card-rename" aria-label={t("rename")} title={t("rename")} style={{ padding: "2px 8px" }} onClick={() => renameSession(s.id, s.title)}>
-            <IconPencil size={14} />
-          </button>
-          {archived ? (
-            <button aria-label={t("restore")} title={t("restore")} style={{ padding: "2px 8px" }} onClick={() => restoreConversation(s.id)}>
-              <IconUndo size={14} />
-            </button>
-          ) : (
-            <button className="danger" aria-label={t("delete")} title={t("delete")} style={{ padding: "2px 8px" }} onClick={() => deleteSession(s.id)}>
-              <IconX size={14} />
-            </button>
-          )}
-        </div>
+        <span
+          className="convo-row-dot"
+          style={{
+            background: st ? toneColor[st.tone] : "var(--status-done)",
+            opacity: st ? 1 : 0.5,
+          }}
+          aria-hidden
+        />
+        <span className="convo-row-title">{label}</span>
+        {n > 0 && <span className="unread-badge">{n}</span>}
+        <button
+          className="convo-row-menu"
+          aria-label={t("rowMenu")}
+          title={t("rowMenu")}
+          aria-haspopup="menu"
+          onClick={(e) => {
+            e.stopPropagation();
+            openSheet();
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <IconMore size={18} />
+        </button>
       </div>
     );
   }
 
-  return (
-    <div className="screen">
-      {/* P2-124: the desktop sidebar carries its own chrome (App-level "+ New"
-          + section nav above, account footer below) — no mobile header here. */}
-      {/* P2-108: the mobile chrome is demoted to a quiet overline — machine
-          name reads as a 0.72rem label, actions stay reachable as ghost
-          icons. */}
-      {variant !== "rows" && (
-      <header className="sess-mobile-head">
-        <button
-          className="sess-machine-overline"
-          onClick={() => setSwitching(true)}
-          title={t("accountSwitch")}
-          aria-label={t("accountSwitch")}
-        >
-          <span
-            title={`connection: ${connStatus}`}
-            className={`status-dot${
-              connStatus === "paired" ? " ok" : connStatus === "connecting" ? " wait" : " err"
-            }`}
-          />
-          <span className="sess-overline">{machineName}</span>
-          <IconChevronDown size={10} aria-hidden style={{ display: "inline-block" }} />
-        </button>
-        <div className="sess-head-actions">
-          <button onClick={onOpenFiles} aria-label="Files">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M4 5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8.6L9.6 5.2A2 2 0 0 0 8.2 4.6H4Z" />
-            </svg>
-          </button>
-          <button onClick={onOpenSettings} aria-label="Settings">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 4a7.2 7.2 0 0 1-.1 1.2l2 1.6a.5.5 0 0 1 .1.7l-1.9 3.2a.5.5 0 0 1-.6.2l-2.4-1a7.6 7.6 0 0 1-2 1.2l-.4 2.5a.5.5 0 0 1-.5.4h-3.8a.5.5 0 0 1-.5-.4l-.4-2.5a7.6 7.6 0 0 1-2-1.2l-2.4 1a.5.5 0 0 1-.6-.2L1.7 15.5a.5.5 0 0 1 .1-.7l2-1.6a7.2 7.2 0 0 1 0-2.4l-2-1.6a.5.5 0 0 1-.1-.7L3.6 5.3a.5.5 0 0 1 .6-.2l2.4 1a7.6 7.6 0 0 1 2-1.2l.4-2.5a.5.5 0 0 1 .5-.4h3.8a.5.5 0 0 1 .5.4l.4 2.5a7.6 7.6 0 0 1 2 1.2l2.4-1a.5.5 0 0 1 .6.2l1.9 3.2a.5.5 0 0 1-.1.7l-2 1.6c.1.4.1.8.1 1.2Z" />
-            </svg>
-          </button>
-          <button
-            disabled={pushState !== "idle"}
-            aria-label={pushState === "enabled" ? t("pushOn") : t("pushEnable")}
-            title={pushState === "enabled" ? t("pushOn") : t("pushEnable")}
-            style={pushState === "enabled" ? { color: "var(--status-ok)", borderColor: "var(--status-ok)" } : undefined}
-            onClick={async () => {
-              setPushState("enabling");
-              try {
-                await onEnablePush();
-                setPushState("enabled");
-              } catch {
-                setPushState("idle");
-              }
-            }}
-          >
-            {pushState === "enabling" ? (
-              "…"
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2a7 7 0 0 0-7 7v4.2l-1.9 3.6A1 1 0 0 0 4 18.3h16a1 1 0 0 0 .9-1.5L19 13.2V9a7 7 0 0 0-7-7Zm-2 17a2 2 0 1 0 4 0h-4Z" />
-              </svg>
-            )}
-          </button>
-          <button className="danger" onClick={onDisconnect} aria-label={t("unpair")} title={t("unpair")}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-              <path d="M5.17 11.75l-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-              <line x1="2" y1="2" x2="22" y2="22" />
-            </svg>
-          </button>
-        </div>
-      </header>
-      )}
+  const archivedToggle = (
+    <button
+      className="chip"
+      aria-expanded={archivedOpen}
+      onClick={() => setArchivedOpen((v) => !v)}
+      style={{
+        gridColumn: "1 / -1",
+        margin: "4px 0 2px",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        width: "fit-content",
+      }}
+    >
+      <IconChevronDown
+        size={12}
+        aria-hidden
+        style={{
+          transform: archivedOpen ? "rotate(180deg)" : undefined,
+          display: "inline-block",
+          flexShrink: 0,
+        }}
+      />
+      {t("groupArchived", { n: archivedSessions.length })}
+    </button>
+  );
 
+  return (
+    <div className={variant === "list" ? "screen chats" : "screen"}>
       <div className="list">
         {/* P2-220: calm iOS install hint, in the P2-112 card vocabulary. It
             fails OPEN on purpose: normal document flow at the top of the list
@@ -538,9 +504,9 @@ export default function SessionsView({
           )}
         </div>
         {loading && (
-          <div className="session-grid">
+          <div className={variant === "list" ? "convo-rows" : "sess-rows"}>
             {[0, 1, 2, 3, 4, 5].map((i) => (
-              <div key={i} className="skel" style={{ height: 72 }} />
+              <div key={i} className="skel" style={{ height: variant === "list" ? 56 : 36 }} />
             ))}
           </div>
         )}
@@ -569,38 +535,18 @@ export default function SessionsView({
               />
             )}
             {pilotOpen && pilotSessions.map((s) => renderRow(s))}
-            {archivedSessions.length > 0 && (
-              <button
-                className="chip"
-                aria-expanded={archivedOpen}
-                onClick={() => setArchivedOpen((v) => !v)}
-                style={{
-                  gridColumn: "1 / -1",
-                  margin: "4px 0 2px",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  width: "fit-content",
-                }}
-              >
-                <IconChevronDown
-                  size={12}
-                  aria-hidden
-                  style={{
-                    transform: archivedOpen ? "rotate(180deg)" : undefined,
-                    display: "inline-block",
-                    flexShrink: 0,
-                  }}
-                />
-                {t("groupArchived", { n: archivedSessions.length })}
-              </button>
-            )}
+            {archivedSessions.length > 0 && archivedToggle}
             {archivedOpen && archivedSessions.map((s) => renderRow(s, true))}
           </div>
         )}
-        {variant !== "rows" && (
-        <div className="session-grid">
-            {userSessions.map((s) => renderCard(s))}
+        {variant === "list" && !loading && (
+          <div className="convo-rows">
+            {groups.today.length > 0 && <GroupHead group="today" label={t("groupToday")} />}
+            {groups.today.map((s) => renderListRow(s))}
+            {groups.yesterday.length > 0 && <GroupHead group="yesterday" label={t("groupYesterday")} />}
+            {groups.yesterday.map((s) => renderListRow(s))}
+            {groups.earlier.length > 0 && <GroupHead group="earlier" label={t("groupEarlier")} />}
+            {groups.earlier.map((s) => renderListRow(s))}
             {pilotSessions.length > 0 && (
               <PilotGroup
                 open={pilotOpen}
@@ -608,52 +554,98 @@ export default function SessionsView({
                 label={t("pilotGroup", { n: pilotSessions.length })}
               />
             )}
-            {pilotOpen && pilotSessions.map((s) => renderCard(s))}
-            {archivedSessions.length > 0 && (
-              <button
-                className="chip"
-                aria-expanded={archivedOpen}
-                onClick={() => setArchivedOpen((v) => !v)}
-                style={{ gridColumn: "1 / -1", width: "fit-content" }}
-              >
-                <span aria-hidden style={{ fontSize: "0.7rem", display: "inline-flex" }}>
-                  <IconChevronDown
-                    size={12}
-                    style={{ transform: archivedOpen ? "rotate(180deg)" : undefined }}
-                  />
-                </span>
-                {t("groupArchived", { n: archivedSessions.length })}
-              </button>
-            )}
-            {archivedOpen && archivedSessions.map((s) => renderCard(s, true))}
-        </div>
+            {pilotOpen && pilotSessions.map((s) => renderListRow(s))}
+            {archivedSessions.length > 0 && archivedToggle}
+            {archivedOpen && archivedSessions.map((s) => renderListRow(s, true))}
+          </div>
         )}
       </div>
 
-      <button className="primary" style={variant === "rows" ? { display: "none" } : undefined} disabled={creating} onClick={createSession}>
-        {creating ? t("creating") : t("newConversation")}
-      </button>
-
-      <details className="card">
-        <summary className="muted">{t("activity")} ({events.length})</summary>
-        <div className="events">
-          {events.slice(-30).map((e) => (
-            <div key={e.id}>
-              {e.type} · {JSON.stringify(e.properties)?.slice(0, 120)}
-            </div>
-          ))}
+      {variant === "list" && (
+        // Bug 2: ONE large full-width pill, fixed above the bottom edge of
+        // the chats list — the only primary action on this screen.
+        <div className="chats-new-wrap">
+          <button className="primary chats-new-pill" disabled={creating} onClick={createSession}>
+            <IconPlus size={18} aria-hidden />
+            <span>{creating ? t("creating") : t("newConversation").replace(/^\+\s*/, "")}</span>
+          </button>
         </div>
-      </details>
+      )}
 
-      {switching && (
-        <MachinePicker
-          machines={machines}
-          activeRoom={activeRoom}
-          onSwitch={onSwitch}
-          onForget={onForget}
-          onAddMachine={onAddMachine}
-          onClose={() => setSwitching(false)}
-        />
+      {variant === "rows" && (
+        <details className="card">
+          <summary className="muted">{t("activity")} ({events.length})</summary>
+          <div className="events">
+            {events.slice(-30).map((e) => (
+              <div key={e.id}>
+                {e.type} · {JSON.stringify(e.properties)?.slice(0, 120)}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {sheet && (
+        <>
+          <div className="sheet-scrim" onClick={() => setSheet(null)} aria-hidden />
+          <div className="sheet" role="menu" aria-label={sheet.title || sheet.id.slice(0, 12)}>
+            <div className="sheet-title">{sheet.title || sheet.id.slice(0, 12)}</div>
+            {sheet.archived ? (
+              <button
+                role="menuitem"
+                className="sheet-item"
+                onClick={() => {
+                  restoreConversation(sheet.id);
+                  setSheet(null);
+                }}
+              >
+                <IconUndo size={18} aria-hidden />
+                {t("restore")}
+              </button>
+            ) : (
+              <>
+                <button
+                  role="menuitem"
+                  className="sheet-item"
+                  data-action="rename"
+                  onClick={() => {
+                    const { id, title } = sheet;
+                    setSheet(null);
+                    renameSession(id, title);
+                  }}
+                >
+                  <IconPencil size={18} aria-hidden />
+                  {t("rename")}
+                </button>
+                <button
+                  role="menuitem"
+                  className="sheet-item"
+                  data-action="archive"
+                  onClick={() => {
+                    archiveConversation(sheet.id);
+                    setSheet(null);
+                  }}
+                >
+                  <IconArchive size={18} aria-hidden />
+                  {t("archive")}
+                </button>
+                <button
+                  role="menuitem"
+                  className="sheet-item danger"
+                  data-action="delete"
+                  onClick={() => {
+                    const { id } = sheet;
+                    setSheet(null);
+                    deleteSession(id);
+                  }}
+                >
+                  <IconX size={18} aria-hidden />
+                  {t("delete")}
+                </button>
+              </>
+            )}
+          </div>
+        </>
       )}
 
       {ask && (

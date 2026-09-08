@@ -514,6 +514,24 @@ export const dict = {
     camUnavailable: "camera unavailable",
     // desktop home screen (P2-123): greeting, central composer and the ideas
     // section. {name} is the lowercased machine name.
+    // Bug 1: expired-session card (stale keys after a daemon restart/rekey)
+    reauthTitle: "Connection expired",
+    reauthBody:
+      "This device's keys no longer match the machine. Pair again to continue: the identity stored on this device will be reset and the pairing flow starts over.",
+    reauthAction: "Pair again",
+    // Bug 1: per-device hint on the desktop "Phone" pane (24h auth-failure window)
+    pairDeviceKeyExpired: "key expired, pair again",
+    // PWA shell (Bug 2): drawer navigation + time-of-day home greeting
+    drawerOpen: "Open menu",
+    drawerClose: "Close menu",
+    drawerRecents: "Recents",
+    rowMenu: "More actions",
+    homeMorning: "Good morning, {name}",
+    homeAfternoon: "Good afternoon, {name}",
+    homeEvening: "Good evening, {name}",
+    homeMorningAnon: "Good morning",
+    homeAfternoonAnon: "Good afternoon",
+    homeEveningAnon: "Good evening",
     homeGreeting: "Back in action, {name}",
     homeGreetingAnon: "Back in action",
     homePlaceholder: "How can I help you today?",
@@ -1085,6 +1103,24 @@ export const dict = {
       "A câmera foi interrompida. Toque em Escanear de novo — o iOS às vezes aborta a primeira tentativa.",
     camUnavailable: "câmera indisponível",
     // home do desktop (P2-123): greeting, composer central e seção de ideias.
+    // Bug 1: cartão de sessão expirada (chaves antigas após reinício/rekey do daemon)
+    reauthTitle: "Conexão expirada",
+    reauthBody:
+      "As chaves deste aparelho não batem mais com a máquina. Pareie novamente para continuar: a identidade guardada neste aparelho será apagada e o pareamento recomeça do zero.",
+    reauthAction: "Parear novamente",
+    // Bug 1: dica por aparelho no painel "Celular" do desktop (janela de 24h)
+    pairDeviceKeyExpired: "chave expirada — pareie de novo",
+    // Shell do PWA (Bug 2): navegação em gaveta + saudação por hora do dia
+    drawerOpen: "Abrir menu",
+    drawerClose: "Fechar menu",
+    drawerRecents: "Recentes",
+    rowMenu: "Mais ações",
+    homeMorning: "Bom dia, {name}",
+    homeAfternoon: "Boa tarde, {name}",
+    homeEvening: "Boa noite, {name}",
+    homeMorningAnon: "Bom dia",
+    homeAfternoonAnon: "Boa tarde",
+    homeEveningAnon: "Boa noite",
     homeGreeting: "De volta à ação, {name}",
     homeGreetingAnon: "De volta à ação",
     homePlaceholder: "Como posso ajudar você hoje?",

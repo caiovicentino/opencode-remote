@@ -2357,7 +2357,7 @@ async function refreshPairingState(): Promise<void> {
   try {
     const devRes = await fetch(`${base}/__ocr/devices`, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
     if (!devRes.ok) throw new Error(`devices ${devRes.status}`);
-    const { devices } = (await devRes.json()) as { devices?: { pub: string; label?: string }[] };
+    const { devices } = (await devRes.json()) as { devices?: { pub: string; label?: string; keyExpired?: boolean }[] };
     if (!Array.isArray(devices)) throw new Error("malformed devices payload");
     // The daemon answers (adopted or sidecar) — control is back.
     observeDaemonHealth(false);
@@ -2482,7 +2482,9 @@ async function refreshPairingState(): Promise<void> {
       uri,
       qrDataUrl,
       devices: devices.length,
-      deviceList: devices.map((d) => ({ label: d.label ?? "device" })),
+      // Bug 1: the daemon's additive 24h "key expired" verdict rides along so
+      // the "Celular" pane can hint "pareie de novo" per device.
+      deviceList: devices.map((d) => ({ label: d.label ?? "device", keyExpired: d.keyExpired === true })),
       phonePaired: paired,
       appVersion,
       daemonVersion,

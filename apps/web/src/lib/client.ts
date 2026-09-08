@@ -14,6 +14,7 @@ import {
   readClearControl,
   RECONNECT_HINT_VERIFY_MS,
 } from "./framegate";
+import { IDENTITY_DB_NAME, REAUTH_ERROR, identityStorageKeys, reauthVerdict } from "./reauth";
 
 export interface Pairing {
   v: 2;
@@ -24,7 +25,10 @@ export interface Pairing {
   name?: string;
 }
 
-export type Status = "connecting" | "paired" | "rejected" | "closed";
+/** Bug 1: "expired" — the daemon refused our handshake twice in a row (stale
+ * keys after a daemon restart/rekey). Terminal: the only way out is the
+ * "pair again" wipe (wipeLocalIdentity) and a fresh pairing ceremony. */
+export type Status = "connecting" | "paired" | "rejected" | "closed" | "expired";
 
 /** P1-061: which wire the client is currently dialed on. */
 export type Transport = "local" | "relay";
@@ -63,7 +67,7 @@ interface StoredState {
   pairing: Pairing;
 }
 
-const IDB_NAME = "ocr-identity";
+const IDB_NAME = IDENTITY_DB_NAME;
 const IDB_STORE = "keys";
 
 // ---------------------------------------------------------------------------
@@ -184,6 +188,31 @@ export function saveState(pairing: Pairing) {
 /** Disconnects the active machine but keeps every pairing for later switching. */
 export function clearState() {
   setActiveRoom(null);
+}
+
+/**
+ * Bug 1: the "pair again" wipe behind the expired-session card. Removes the
+ * identity (IndexedDB: private key + WebAuthn credential id) and every
+ * pairing-bound localStorage key of THIS app (lib/reauth.ts decides which),
+ * leaving personal preferences alone. Best effort: a blocked/failed database
+ * delete still resolves so the user always lands on the pairing flow.
+ */
+export async function wipeLocalIdentity(): Promise<void> {
+  try {
+    for (const key of identityStorageKeys(Object.keys(localStorage))) localStorage.removeItem(key);
+  } catch {
+    // storage unavailable (private mode quota) — nothing to wipe there
+  }
+  await new Promise<void>((resolve) => {
+    try {
+      const req = indexedDB.deleteDatabase(IDB_NAME);
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+      req.onblocked = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
 }
 
 export function parsePairingUri(uri: string): Pairing | null {
@@ -311,6 +340,10 @@ export class OcrClient {
   private hintVerifyTimer: number | null = null;
   private verifyingHint = false;
   private lastRehandshakeAt = 0;
+  // Bug 1: consecutive hellos the daemon refused (reset on every confirm) and
+  // whether a hello went out on the current dial (a reauth before that is noise).
+  private reauthStrikes = 0;
+  private helloSent = false;
 
   private attach(ws: WebSocket) {
     const gen = ++this.gen;
@@ -390,6 +423,7 @@ export class OcrClient {
 
   private async reconnect() {
     if (this.intentionalClose || !this.pairing) return;
+    this.helloSent = false; // Bug 1: only a reauth AFTER this dial's hello counts
     try {
       const target = await this.dialTarget();
       const ws = new WebSocket(target.url);
@@ -473,9 +507,61 @@ export class OcrClient {
         payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
       }),
     );
+    this.helloSent = true;
     // same op id across replays: the daemon dedupes prompt sends by id, so a
     // replayed prompt can never reach the agent twice
     for (const [id, p] of retrying) this.replay(p, id);
+  }
+
+  /**
+   * Bug 1: terminal expiry — stop every timer and reconnect attempt and
+   * surface "expired" so the shell can show the pair-again card. Nothing is
+   * wiped here; wipeLocalIdentity() runs only on the user's button.
+   */
+  private expire() {
+    this.intentionalClose = true;
+    this.stopHeartbeat();
+    this.clearConfirmWatchdog();
+    this.clearHintVerify();
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(REAUTH_ERROR));
+    }
+    this.pending.clear();
+    try {
+      this.ws.close();
+    } catch {}
+    this.setStatus("expired");
+  }
+
+  /**
+   * RT-341 hint verification, shared by the clear `reconnect` hint and the
+   * Bug 1 reauth hint while paired: ping over the current session and only
+   * rehandshake when no sealed frame answers in time. This is the ONLY place
+   * that may call rehandshake() (pinned by scripts/unit.test.ts).
+   */
+  private verifyHint() {
+    const v = hintVerdict(
+      {
+        verifying: this.verifyingHint,
+        rehandshaking: this.rehandshaking,
+        lastRehandshakeAt: this.lastRehandshakeAt,
+      },
+      Date.now(),
+    );
+    if (v !== "verify") return;
+    this.verifyingHint = true;
+    this.sendControl({ type: "ping" });
+    this.hintVerifyTimer = window.setTimeout(() => {
+      this.hintVerifyTimer = null;
+      this.verifyingHint = false;
+      this.lastRehandshakeAt = Date.now();
+      void this.rehandshake();
+    }, RECONNECT_HINT_VERIFY_MS);
   }
 
   /** Re-run the handshake after a daemon restart and replay in-flight ops. */
@@ -535,6 +621,8 @@ export class OcrClient {
     this.status = s;
     if (s === "paired") {
       this.reconnectAttempt = 0;
+      // Bug 1: a confirmed handshake clears every refused-hello strike.
+      this.reauthStrikes = 0;
       // P1-061: a confirmed handshake proves the current transport works —
       // stay sticky on it and give local another chance after any outage.
       this.localFailures = 0;
@@ -559,7 +647,7 @@ export class OcrClient {
     }
     if (!frame.from || frame.from === this.from || !frame.payload) return;
 
-    let clearType: "ping" | "pong" | "reconnect" | null = null;
+    let clearType: ReturnType<typeof readClearControl> = null;
     try {
       clearType = readClearControl(JSON.parse(atob(frame.payload)));
     } catch {
@@ -578,23 +666,24 @@ export class OcrClient {
     // leaks, `from` is forgeable) — verify with a ping over the current
     // session and only rehandshake when no sealed frame answers in time.
     if (verdict === "hint") {
-      const v = hintVerdict(
-        {
-          verifying: this.verifyingHint,
-          rehandshaking: this.rehandshaking,
-          lastRehandshakeAt: this.lastRehandshakeAt,
-        },
-        Date.now(),
-      );
-      if (v === "verify") {
-        this.verifyingHint = true;
-        this.sendControl({ type: "ping" });
-        this.hintVerifyTimer = window.setTimeout(() => {
-          this.hintVerifyTimer = null;
-          this.verifyingHint = false;
-          this.lastRehandshakeAt = Date.now();
-          void this.rehandshake();
-        }, RECONNECT_HINT_VERIFY_MS);
+      this.verifyHint();
+      return;
+    }
+
+    // Bug 1: the daemon could not authenticate us. Paired → same verify path
+    // as the hint (a forged frame costs one ping). Connecting after our hello
+    // → the hello was refused: one fresh dial, then the expired verdict.
+    if (verdict === "reauth") {
+      const action = reauthVerdict(this.status, this.reauthStrikes, this.helloSent);
+      if (action === "verify") {
+        this.verifyHint();
+      } else if (action === "retry") {
+        this.reauthStrikes++;
+        this.helloSent = false;
+        this.forceReconnect();
+      } else if (action === "expired") {
+        this.reauthStrikes++;
+        this.expire();
       }
       return;
     }
@@ -789,6 +878,7 @@ export class OcrClient {
             payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
           }),
         );
+        client.helloSent = true;
       };
       const fail = (err: Error) => {
         clearTimeout(timeout);
@@ -810,6 +900,9 @@ export class OcrClient {
               "rejected by daemon: this client is not in the allowlist — clear it with `manage.ts revoke-all` and pair again",
             ),
           );
+        } else if (s === "expired") {
+          clearTimeout(timeout);
+          reject(new Error(REAUTH_ERROR));
         } else if (s === "closed") {
           fail(new Error("local daemon unreachable"));
         }
@@ -843,6 +936,7 @@ export class OcrClient {
             payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello }))),
           }),
         );
+        client.helloSent = true;
       };
 
       const client = new OcrClient(
@@ -868,6 +962,9 @@ export class OcrClient {
               "rejected by daemon: this client is not in the allowlist — clear it with `manage.ts revoke-all` and pair again",
             ),
           );
+        } else if (s === "expired") {
+          clearTimeout(timeout);
+          reject(new Error(REAUTH_ERROR));
         } else if (s === "closed") {
           clearTimeout(timeout);
           reject(new Error("connection closed before pairing"));

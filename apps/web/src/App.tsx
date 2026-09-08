@@ -9,9 +9,15 @@ import {
   loadPairings,
   parsePairingUri,
   getOrCreateIdentity,
+  wipeLocalIdentity,
   type Pairing,
   type Status,
 } from "./lib/client";
+import { REAUTH_ERROR } from "./lib/reauth";
+import { activeDrawerRow, hasUnreadDot, recentRows, type DrawerDest, type RecentRow } from "./lib/drawer";
+import Drawer from "./components/Drawer";
+import ReauthView from "./components/ReauthView";
+import MachinePicker from "./components/MachinePicker";
 import type { OpResponse, EventEnvelope } from "@ocr/protocol";
 import { localPairing } from "../../desktop/src/pairing";
 import { gateVerify, gateEnroll } from "./lib/gate";
@@ -64,18 +70,17 @@ import {
 import {
   IconAlert,
   IconChat,
-  IconFolder,
   IconGlobe,
   IconLayers,
+  IconMenu,
   IconPhone,
+  IconPlus,
   IconRadar,
   IconRefresh,
   IconSettings,
 } from "./components/icons";
 
 type Phase = "unpaired" | "connecting" | "paired" | "error";
-
-type TabId = "sessions" | "files" | "settings";
 
 /** P2-112: once a live daemon answered on this machine, a later outage is an
  * incident (red banner); before that, every outage is a first contact. */
@@ -89,7 +94,8 @@ interface PairingState {
   uri: string | null;
   qrDataUrl: string | null;
   devices: number;
-  deviceList?: { label: string; addedAt?: string }[];
+  /** Bug 1: `keyExpired` — frames from this device failed auth in the last 24h. */
+  deviceList?: { label: string; addedAt?: string; keyExpired?: boolean }[];
   phonePaired: boolean;
   /** P2-017: sidecar respawn budget exhausted (desktop shell only). */
   daemonDown?: boolean;
@@ -182,37 +188,6 @@ function desktopBridge(): DesktopBridge | null {
 /** Slot each Cmd+1..6 accelerator (and Go menu item) maps to. */
 const PANE_ACCELERATORS = ["chat", "artifacts", "browser", "files", "settings", "mission"] as const;
 
-function TabBar({
-  active,
-  onSelect,
-  t,
-}: {
-  active: TabId;
-  onSelect: (id: TabId) => void;
-  t: (k: string) => string;
-}) {
-  const tabs: { id: TabId; label: string; icon: ReactNode }[] = [
-    { id: "sessions", label: t("tabSessions"), icon: <IconChat size={20} /> },
-    { id: "files", label: t("tabFiles"), icon: <IconFolder size={20} /> },
-    { id: "settings", label: t("tabSettings"), icon: <IconSettings size={20} /> },
-  ];
-  return (
-    <nav className="tabbar">
-      {tabs.map((tb) => (
-        <button
-          key={tb.id}
-          className={active === tb.id ? "active" : ""}
-          onClick={() => onSelect(tb.id)}
-          aria-label={tb.label}
-        >
-          {tb.icon}
-          <span>{tb.label}</span>
-        </button>
-      ))}
-    </nav>
-  );
-}
-
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
@@ -247,6 +222,14 @@ export default function App() {
   const [connStatus, setConnStatus] = useState<Status>("connecting");
   const [machines, setMachines] = useState<Pairing[]>(() => loadPairings());
   const [addingMachine, setAddingMachine] = useState(false);
+  // Bug 1: the daemon refused our handshake twice in a row (stale keys) —
+  // the full-screen "pair again" card takes over every other surface.
+  const [expired, setExpired] = useState(false);
+  // Bug 2 (PWA shell): slide-in drawer + the machine picker it opens, and the
+  // recents it lists (fetched when the drawer opens, never polled).
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [recentSessions, setRecentSessions] = useState<{ id: string; title?: string; updatedAt?: string | number; time?: { updated?: string } }[]>([]);
   // navigation direction drives the slide-in animation of the next screen
   const [navDir, setNavDir] = useState<"fwd" | "back">("fwd");
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -419,7 +402,11 @@ export default function App() {
       const client = await OcrClient.connect(pairing, {
         getLocalLink: desktopBridge()?.getLocalLink,
       });
-      client.onStatus = (s) => setConnStatus(s);
+      client.onStatus = (s) => {
+        setConnStatus(s);
+        // Bug 1: terminal expiry of a live session (daemon rekeyed under us)
+        if (s === "expired") setExpired(true);
+      };
       // connect() resolves once already paired — the "paired" status event
       // fired before this handler existed, so sync the current state (P2-055:
       // the header dot otherwise stays yellow forever after a fresh pair)
@@ -447,9 +434,34 @@ export default function App() {
         }
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      // Bug 1: the very first dial was refused twice — same card, no raw error
+      if (message === REAUTH_ERROR) {
+        setExpired(true);
+        return;
+      }
+      setError(message);
       setPhase("error");
     }
+  }
+
+  // Bug 1: the ONE button of the expired card — wipe this device's identity
+  // (keys + pairing state, preferences kept) and land on the fresh pairing
+  // flow. In the desktop shell the auto-pair re-approves the new identity
+  // through the existing host self-approval; the PWA shows PairingView.
+  async function pairAgain() {
+    clientRef.current?.close();
+    clientRef.current = null;
+    await wipeLocalIdentity();
+    setMachines([]);
+    setEvents([]);
+    setUnread({});
+    setError("");
+    setExpired(false);
+    setConnStatus("connecting");
+    dispatchView({ type: "reset" });
+    setPhase("unpaired");
+    tryAutoPair();
   }
 
   // deep-link routing: notifications open #/session/<id>, #/files, #/artifacts
@@ -642,6 +654,24 @@ export default function App() {
       } catch {}
     })();
   }, [phase, tick]);
+
+  // Bug 2: the drawer's Recents — one fetch per open (and per tick while
+  // open), never a poll; failures leave the previous list in place.
+  useEffect(() => {
+    if (phase !== "paired" || isDesktop || !drawerOpen) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await request("GET", "/session");
+        if (alive && res.status === 200 && Array.isArray(res.body)) {
+          setRecentSessions(res.body as typeof recentSessions);
+        }
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [phase, isDesktop, drawerOpen, tick]);
 
   function disconnect() {
     clientRef.current?.close();
@@ -898,6 +928,17 @@ export default function App() {
       mismatchBanner
     );
 
+  // Bug 1: the expired-session card owns the whole screen — no banner, no
+  // overlay, no chat underneath (the session is dead; the only way forward
+  // is the button). Rendered before every other surface on purpose.
+  if (expired) {
+    return (
+      <div className="pair-wrap" data-phase={phase} data-expired>
+        <ReauthView onPairAgain={pairAgain} />
+      </div>
+    );
+  }
+
   // P2-148: first-run onboarding — a single full-screen surface with no
   // banners and no pairing overlay (P2-108 single-surface rule). It covers
   // every phase: the local daemon may finish auto-connecting in the
@@ -1118,38 +1159,18 @@ export default function App() {
   const sessionsNode = (
     <SessionsView
       request={request}
-      machineName={machineName}
       events={events}
       unread={unread}
-      connStatus={connStatus}
-      machines={machines}
-      activeRoom={getActiveRoom()}
-      onSwitch={(p) => void switchMachine(p)}
-      onForget={(p) => forgetMachine(p)}
-      onAddMachine={() => setAddingMachine(true)}
       onOpen={(id) => {
         setNavDir("fwd");
         dispatchView({ type: "openChat", sessionId: id });
       }}
-      onDisconnect={disconnect}
       installHint={installHint}
       onDismissInstallHint={dismissInstallHint}
-      onEnablePush={async () => {
-        const { enablePush } = await import("./lib/push");
-        await enablePush(request);
-      }}
-      onOpenSettings={() => {
-        setNavDir("fwd");
-        dispatchView({ type: "open", slot: "settings" });
-      }}
-      onOpenFiles={() => {
-        setNavDir("fwd");
-        dispatchView({ type: "open", slot: "files" });
-      }}
       tick={tick}
       creating={creating}
       onCreateSession={createSession}
-      variant={isDesktop ? "rows" : "grid"}
+      variant={isDesktop ? "rows" : "list"}
       activeSession={session}
     />
   );
@@ -1167,9 +1188,35 @@ export default function App() {
             ? filesNode
             : top === "mission"
               ? missionNode
-              : top === "share" && shareNode
-                ? shareNode
-                : null;
+              : top === "chats"
+                ? sessionsNode
+                : top === "share" && shareNode
+                  ? shareNode
+                  : null;
+
+  // Bug 2 (PWA shell): drawer destinations map onto the view reducer — the
+  // chats list is a slot like any pane; the empty stack is the home.
+  function navigateDrawer(dest: DrawerDest) {
+    setNavDir("fwd");
+    dispatchView({ type: "open", slot: dest });
+    if (dest === "settings") setTick((t) => t + 1);
+  }
+  const drawerActive = activeDrawerRow(top, !!session);
+  const recents: RecentRow[] = recentRows(recentSessions, unread, session);
+  const unreadDot = hasUnreadDot(unread, session);
+  // The shell bar (hamburger + title) shows on the home and the chats list;
+  // every other mobile surface keeps its own header with a back button.
+  const shellBar = !chatActive && (top === "chat" || top === "chats");
+  const homeNode = (
+    <HomeView
+      machineName={machineName}
+      request={request}
+      voice={clientRef.current?.caps?.transcribe === true}
+      creating={creating}
+      onStart={(prompt) => createSession(prompt)}
+      variant="mobile"
+    />
+  );
 
   // P1-056: Claude-Desktop-style menu — vertical, quiet, no dead entries.
   // "files" left the rail (dead weight); "phone" opens the PWA pairing
@@ -1185,7 +1232,7 @@ export default function App() {
   return (
     <div
       ref={appRootRef}
-      className={`app-root${chatActive ? "" : " has-tabbar"}${banner ? " has-daemon-down" : ""}`}
+      className={`app-root${isDesktop ? "" : " mobile"}${banner ? " has-daemon-down" : ""}`}
       data-nav={navDir}
       data-phase={phase}
       onTouchStart={isDesktop ? undefined : onTouchStart}
@@ -1291,23 +1338,72 @@ export default function App() {
         </div>
       ) : (
         <>
-          {mainContent ?? sessionsNode}
-          {!chatActive && (
-            <TabBar
-              active={top === "settings" ? "settings" : top === "files" ? "files" : "sessions"}
-              t={t}
-              onSelect={(id) => {
-                if (id === "sessions") {
-                  if (top !== "chat") {
-                    setNavDir("back");
-                    dispatchView({ type: "reset" });
-                  }
-                  return;
-                }
-                setNavDir("fwd");
-                dispatchView({ type: "replace", slot: id === "settings" ? "settings" : "files" });
-                if (id === "settings") setTick((t) => t + 1);
+          {shellBar && (
+            <header className="shell-bar">
+              <button
+                className="shell-menu"
+                onClick={() => setDrawerOpen(true)}
+                aria-label={t("drawerOpen")}
+                aria-haspopup="dialog"
+                aria-expanded={drawerOpen}
+                data-unread={unreadDot ? "1" : undefined}
+              >
+                <IconMenu size={22} />
+                {unreadDot && <span className="shell-menu-dot" aria-hidden />}
+              </button>
+              <span className="shell-title">{top === "chats" ? t("navConversations") : ""}</span>
+              {top === "chats" ? (
+                <button
+                  className="shell-action"
+                  disabled={creating}
+                  onClick={() => void createSession()}
+                  aria-label={t("newConversation").replace(/^\+\s*/, "")}
+                >
+                  <IconPlus size={22} />
+                </button>
+              ) : (
+                <span className="shell-action" aria-hidden />
+              )}
+            </header>
+          )}
+          {mainContent ?? homeNode}
+          <Drawer
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
+            active={drawerActive}
+            onNavigate={navigateDrawer}
+            recents={recents}
+            onOpenSession={(id) => {
+              setNavDir("fwd");
+              dispatchView({ type: "openChat", sessionId: id });
+            }}
+            onNewChat={() => void createSession()}
+            creating={creating}
+            machineName={machineName}
+            connStatus={connStatus}
+            onSwitchMachine={() => {
+              setDrawerOpen(false);
+              setSwitching(true);
+            }}
+            onDisconnect={() => {
+              setDrawerOpen(false);
+              disconnect();
+            }}
+          />
+          {switching && (
+            <MachinePicker
+              machines={machines}
+              activeRoom={getActiveRoom()}
+              onSwitch={(p) => {
+                setSwitching(false);
+                void switchMachine(p);
               }}
+              onForget={(p) => forgetMachine(p)}
+              onAddMachine={() => {
+                setSwitching(false);
+                setAddingMachine(true);
+              }}
+              onClose={() => setSwitching(false)}
             />
           )}
         </>
