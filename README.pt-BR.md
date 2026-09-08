@@ -357,11 +357,14 @@ remoto, zero confiança**.
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
-  parear um celular com a opção explícita de "fazer isso depois". Dá para pular a
-  qualquer momento; concluir ou pular grava a flag no localStorage do renderer (sem
-  IPC, sem tocar o processo main), então quem já usa o app — incluindo todo mundo que
-  atualizar com pareamento salvo — nunca a vê. Superfície única em tela cheia: sem
-  banners e sem overlay de pareamento (regra P2-108)
+  parear um celular com a opção explícita de "fazer isso depois". Os dois primeiros
+  passos têm o atalho global "Pular" na linha de metadados; o passo final tem uma
+  única saída, no próprio cartão — "Fazer isso depois" (ou "Pronto" depois de parear)
+  — para a mesma ação nunca mostrar duas rotas com nomes diferentes (P3-338). Concluir
+  ou pular grava a flag no localStorage do renderer (sem IPC, sem tocar o processo
+  main), então quem já usa o app — incluindo todo mundo que atualizar com pareamento
+  salvo — nunca a vê. Superfície única em tela cheia: sem banners e sem overlay de
+  pareamento (regra P2-108)
 - **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor
   de agente que ele proxyfica não está (`opencode serve` não instalado, porta errada,
   senha mudada). O `/api/health` traz o veredito classificado (`opencode.state`:
