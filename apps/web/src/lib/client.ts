@@ -8,6 +8,12 @@ import {
   type Identity,
 } from "@ocr/protocol";
 import type { OpResponse, EventEnvelope, OpRequest, ResChunk } from "@ocr/protocol";
+import {
+  classifyFrame,
+  hintVerdict,
+  readClearControl,
+  RECONNECT_HINT_VERIFY_MS,
+} from "./framegate";
 
 export interface Pairing {
   v: 2;
@@ -302,6 +308,9 @@ export class OcrClient {
   private reconnectTimer: number | null = null;
   private reconnectAttempt = 0;
   private confirmTimer: number | null = null;
+  private hintVerifyTimer: number | null = null;
+  private verifyingHint = false;
+  private lastRehandshakeAt = 0;
 
   private attach(ws: WebSocket) {
     const gen = ++this.gen;
@@ -354,6 +363,7 @@ export class OcrClient {
       clearInterval(this.hbTimer);
       this.hbTimer = null;
     }
+    this.clearHintVerify();
   }
 
   private forceReconnect() {
@@ -368,6 +378,7 @@ export class OcrClient {
   private scheduleReconnect() {
     this.stopHeartbeat();
     this.clearConfirmWatchdog();
+    this.clearHintVerify();
     if (this.reconnectTimer !== null || this.intentionalClose) return;
     this.setStatus("connecting");
     const delay = Math.min(15_000, 1000 * 2 ** this.reconnectAttempt++);
@@ -427,6 +438,22 @@ export class OcrClient {
     if (this.confirmTimer !== null) {
       clearTimeout(this.confirmTimer);
       this.confirmTimer = null;
+    }
+  }
+
+  /** RT-341: liveness moves only on authenticated (sealed) frames. */
+  private markAlive() {
+    this.lastSeen = Date.now();
+    this.awaitingPong = false;
+    this.clearHintVerify();
+  }
+
+  /** Disarm a pending reconnect-hint verification. */
+  private clearHintVerify() {
+    this.verifyingHint = false;
+    if (this.hintVerifyTimer !== null) {
+      clearTimeout(this.hintVerifyTimer);
+      this.hintVerifyTimer = null;
     }
   }
 
@@ -524,8 +551,6 @@ export class OcrClient {
   }
 
   private async onMessage(data: string) {
-    this.lastSeen = Date.now();
-    this.awaitingPong = false;
     let frame: { from?: string; seq?: number; payload?: string };
     try {
       frame = JSON.parse(data);
@@ -534,22 +559,48 @@ export class OcrClient {
     }
     if (!frame.from || frame.from === this.from || !frame.payload) return;
 
-    // daemon asks for a fresh handshake (e.g. it restarted while we stayed up)
-    if (this.status === "paired") {
-      try {
-        const ctl = JSON.parse(atob(frame.payload)) as { type?: string };
-        if (ctl?.type === "reconnect") {
+    let clearType: "ping" | "pong" | "reconnect" | null = null;
+    try {
+      clearType = readClearControl(JSON.parse(atob(frame.payload)));
+    } catch {
+      // not a clear control frame; falls through to the sealed path
+    }
+    const verdict = classifyFrame({
+      from: frame.from,
+      self: this.from,
+      room: this.room,
+      clearType,
+      status: this.status,
+    });
+    if (verdict === "ignore" || verdict === "pong-clear") return;
+
+    // RT-341: a clear `reconnect` is an unauthenticated hint (the room id
+    // leaks, `from` is forgeable) — verify with a ping over the current
+    // session and only rehandshake when no sealed frame answers in time.
+    if (verdict === "hint") {
+      const v = hintVerdict(
+        {
+          verifying: this.verifyingHint,
+          rehandshaking: this.rehandshaking,
+          lastRehandshakeAt: this.lastRehandshakeAt,
+        },
+        Date.now(),
+      );
+      if (v === "verify") {
+        this.verifyingHint = true;
+        this.sendControl({ type: "ping" });
+        this.hintVerifyTimer = window.setTimeout(() => {
+          this.hintVerifyTimer = null;
+          this.verifyingHint = false;
+          this.lastRehandshakeAt = Date.now();
           void this.rehandshake();
-          return;
-        }
-        if (ctl?.type === "pong") return;
-      } catch {
-        // not a control frame; fall through to the sealed path
+        }, RECONNECT_HINT_VERIFY_MS);
       }
+      return;
     }
 
     // first message from the daemon is the handshake confirmation
-    if (this.status !== "paired") {
+    if (verdict === "confirm") {
       try {
         const confirm = JSON.parse(atob(frame.payload)) as {
           ok?: boolean;
@@ -562,6 +613,7 @@ export class OcrClient {
             this.key,
             new TextEncoder().encode("ocr-reject"),
           );
+          if (check) this.markAlive();
           if (check?.reason === "not-allowed") this.setStatus("rejected");
         } else if (confirm.ok && confirm.confirm) {
           const check = await openSealed<{
@@ -569,6 +621,7 @@ export class OcrClient {
             caps?: { transcribe?: boolean };
           }>(confirm.confirm, this.key, new TextEncoder().encode("ocr-confirm"));
           if (check?.ok) {
+            this.markAlive();
             this.caps = check.caps ?? {};
             this.setStatus("paired");
           }
@@ -584,10 +637,12 @@ export class OcrClient {
     if (seq <= this.daemonLastSeq) return;
 
     const env = await openSealed<
-      { type: "res"; res: OpResponse } | { type: "res-chunk"; chunk: ResChunk } | { type: "event"; event: EventEnvelope }
+      { type: "res"; res: OpResponse } | { type: "res-chunk"; chunk: ResChunk } | { type: "event"; event: EventEnvelope } | { type: "pong" }
     >(frame.payload, this.key, seqAad(frame.from, seq));
     if (!env) return;
     this.daemonLastSeq = seq;
+    this.markAlive();
+    if (env.type === "pong") return;
     if (env.type === "res") {
       const p = this.pending.get(env.res.id);
       if (p) {
@@ -665,6 +720,7 @@ export class OcrClient {
     this.intentionalClose = true;
     this.stopHeartbeat();
     this.clearConfirmWatchdog();
+    this.clearHintVerify();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

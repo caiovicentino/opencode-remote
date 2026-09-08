@@ -2343,7 +2343,15 @@ const CHUNK_BODY = 600_000;
 const MAX_CHUNKS = 512; // ~300MB ceiling on a single response
 
 async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
-  metrics.inc(env.type === "event" ? "ocr_event_frames_total" : "ocr_res_frames_total");
+  // RT-341: heartbeats get their own counter so pong volume never pollutes
+  // the response count.
+  metrics.inc(
+    env.type === "event"
+      ? "ocr_event_frames_total"
+      : env.type === "pong"
+        ? "ocr_pong_frames_total"
+        : "ocr_res_frames_total",
+  );
   const seq = ++session.sendSeq;
   let payload: string;
   try {
@@ -2969,14 +2977,21 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       // heartbeating (otherwise broadcast() silently stops delivering while
       // the client stays "paired" and never reconnects).
       if (known) known.lastSeen = Date.now();
-      const reply = known ? { type: "pong" } : { type: "reconnect" };
-      ws.send(
-        JSON.stringify({
-          room: daemon.room,
-          from: daemon.room,
-          payload: b64(Buffer.from(JSON.stringify(reply))),
-        } satisfies RelayFrame),
-      );
+      // RT-341: with a live session the pong is SEALED — a clear pong would
+      // let any room member forge liveness. Without a session there is no
+      // key to seal with, so the reconnect hint stays clear; the client
+      // treats it as an unauthenticated hint and verifies it (never obeys).
+      if (known) {
+        await sealAndSend(known, { type: "pong" });
+      } else {
+        ws.send(
+          JSON.stringify({
+            room: daemon.room,
+            from: daemon.room,
+            payload: b64(Buffer.from(JSON.stringify({ type: "reconnect" }))),
+          } satisfies RelayFrame),
+        );
+      }
       return;
     }
     if (maybeControl?.type === "hello" && maybeControl.hello) {

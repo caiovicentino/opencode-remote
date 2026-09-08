@@ -15,6 +15,14 @@ import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/
 import { buildAskDialog, canConfirmAskValue } from "../apps/web/src/lib/askdialog";
 
 import {
+  classifyFrame,
+  hintVerdict,
+  readClearControl,
+  RECONNECT_HINT_VERIFY_MS,
+  REHANDSHAKE_MIN_INTERVAL_MS,
+} from "../apps/web/src/lib/framegate";
+
+import {
   SW_SWAP_MESSAGE,
   SW_UPDATE_MIN_INTERVAL_MS,
   demoForced,
@@ -1549,6 +1557,74 @@ check("webviewguard.ts is pure (no electron import)", !webviewGuardSource.includ
 check("webviewguard.ts is pure (no node builtins)", !webviewGuardSource.includes("node:fs") && !webviewGuardSource.includes("node:path") && !webviewGuardSource.includes("node:os") && !webviewGuardSource.includes("node:child_process"));
 
 check("webviewguard.ts is pure (no fetch)", !webviewGuardSource.includes("fetch("));
+
+
+
+// --- RT-341: frame gate — liveness only on sealed frames ---------------------
+
+check("framegate RECONNECT_HINT_VERIFY_MS is 1500", RECONNECT_HINT_VERIFY_MS === 1500);
+
+check("framegate REHANDSHAKE_MIN_INTERVAL_MS is 10s", REHANDSHAKE_MIN_INTERVAL_MS === 10_000);
+
+const framegateSource = readFileSync(new URL("../apps/web/src/lib/framegate.ts", import.meta.url), "utf8");
+
+check("framegate.ts is pure (no fs/fetch/WebSocket/DOM)", !/node:fs|fetch\(|WebSocket|document\./.test(framegateSource));
+
+const gateFrame = { from: "roomx", self: "client1", room: "roomx", clearType: null as string | null, status: "paired" };
+
+check("classifyFrame ignores a missing from", classifyFrame({ ...gateFrame, from: undefined }) === "ignore");
+
+check("classifyFrame ignores self-sourced frames", classifyFrame({ ...gateFrame, from: "client1" }) === "ignore");
+
+check("classifyFrame ignores frames from outside the daemon room", classifyFrame({ ...gateFrame, from: "attacker" }) === "ignore");
+
+check("classifyFrame routes a clear reconnect to hint", classifyFrame({ ...gateFrame, clearType: "reconnect" }) === "hint");
+
+check("classifyFrame routes a clear pong to pong-clear", classifyFrame({ ...gateFrame, clearType: "pong" }) === "pong-clear");
+
+check("classifyFrame defaults a paired-room frame to sealed", classifyFrame({ ...gateFrame }) === "sealed");
+
+check("classifyFrame demands confirmation before pairing", classifyFrame({ ...gateFrame, status: "connecting", clearType: "reconnect" }) === "confirm");
+
+const hintNow = 1_000_000;
+
+check("hintVerdict ignores while already verifying", hintVerdict({ verifying: true, rehandshaking: false, lastRehandshakeAt: 0 }, hintNow) === "ignore");
+
+check("hintVerdict ignores while rehandshaking", hintVerdict({ verifying: false, rehandshaking: true, lastRehandshakeAt: 0 }, hintNow) === "ignore");
+
+check("hintVerdict ignores inside the 10s flood floor", hintVerdict({ verifying: false, rehandshaking: false, lastRehandshakeAt: hintNow - 9_999 }, hintNow) === "ignore");
+
+check("hintVerdict verifies at the 10s flood floor", hintVerdict({ verifying: false, rehandshaking: false, lastRehandshakeAt: hintNow - 10_000 }, hintNow) === "verify");
+
+check("readClearControl tolerates null", readClearControl(null) === null);
+
+check("readClearControl tolerates {}", readClearControl({}) === null);
+
+check("readClearControl tolerates a wrong field type", readClearControl({ type: 42 }) === null);
+
+check("readClearControl tolerates a bare string", readClearControl("reconnect") === null);
+
+check("readClearControl reads reconnect", readClearControl({ type: "reconnect" }) === "reconnect");
+
+check("readClearControl reads pong", readClearControl({ type: "pong" }) === "pong");
+
+// Source pins on the real client.ts: liveness may only move through
+// markAlive(), and the only rehandshake() call must sit in the hint-verify
+// timer callback — never directly on a clear frame.
+const clientSource = readFileSync(new URL("../apps/web/src/lib/client.ts", import.meta.url), "utf8");
+const onMessageAt = clientSource.indexOf("private async onMessage");
+const parseAt = clientSource.indexOf("frame = JSON.parse", onMessageAt);
+const onMessageHead = clientSource.slice(onMessageAt, parseAt);
+
+check("onMessage touches no liveness state before parsing the frame", !onMessageHead.includes("lastSeen =") && !onMessageHead.includes("awaitingPong = false"));
+
+check("client.ts never compares a clear type to \"reconnect\"", !clientSource.includes('=== "reconnect"'));
+
+check("client.ts calls rehandshake() from exactly one place", (clientSource.match(/this\.rehandshake\(\)/g) ?? []).length === 1);
+
+const lastRehandshakeAt = clientSource.indexOf("lastRehandshakeAt = Date.now()");
+const rehandshakeCall = clientSource.indexOf("this.rehandshake()");
+check("the only rehandshake() call comes from the hint-verify timer callback", lastRehandshakeAt > -1 && rehandshakeCall > lastRehandshakeAt);
 
 
 

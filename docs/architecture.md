@@ -160,7 +160,12 @@ a clean reboot leaves the PWA reachable at
 4. Response sealed back with AAD(daemon room, seq); bodies >900KB travel as
    `res-chunk` frames the client reassembles byte-exact
 5. Client state machine (`connecting → paired`) drives the heartbeat: 20s
-   app-level ping/pong, forced reconnect on resume-from-background
+   app-level ping/pong, forced reconnect on resume-from-background. Liveness
+   moves only on sealed frames: the daemon answers a ping with a **sealed
+   pong**, and a clear `reconnect` from the relay room is an unauthenticated
+   hint the client verifies (one ping, 1500 ms grace) before rehandshaking —
+   hints are rate-floored at 10 000 ms so a room member can never forge
+   liveness nor force a rehandshake loop (RT-341)
 
 ## Constraints worth knowing
 

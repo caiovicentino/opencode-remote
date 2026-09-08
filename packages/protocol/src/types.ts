@@ -43,7 +43,8 @@ export interface ClientEnvelope {
 export type DaemonEnvelope =
   | { type: "res"; res: OpResponse }
   | { type: "event"; event: EventEnvelope }
-  | { type: "res-chunk"; chunk: ResChunk };
+  | { type: "res-chunk"; chunk: ResChunk }
+  | { type: "pong" };
 
 /**
  * Oversized response bodies travel split across several frames: `part` slices

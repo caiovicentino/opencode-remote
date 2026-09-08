@@ -94,6 +94,12 @@ identity servers, no accounts.
 
 - A compromised relay can DoS you (drop frames) but cannot read, alter or
   forge content.
+- A room member cannot forge liveness or force a rehandshake (RT-341): only
+  sealed frames move the client's liveness clock (the daemon's pong is sealed
+  too), and a clear `reconnect` is a verified hint — never a command. The
+  client answers it with one ping and only rehandshakes when no sealed frame
+  arrives within 1500 ms, with a 10 s floor between hint-triggered
+  rehandshakes.
 - A rogue device cannot sustain a flood through the relay: message frames are
   token-bucketed per connection (600 msgs/min, burst 1000, tunable via env)
   and the over-budget socket is dropped with close code 4029. Every frame
