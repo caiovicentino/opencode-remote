@@ -1365,7 +1365,11 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           {auditEntries.map((e, i) => (
             <div key={i} className="muted" style={{ fontSize: "0.72rem", marginBottom: 4 }}>
               {new Date(e.ts).toLocaleString()} · {e.event}
-              {e.data?.pub ? ` · …${String(e.data.pub).slice(-6)}` : ""}
+              {e.data?.fp
+                ? ` · ${String(e.data.fp)}`
+                : e.data?.pub
+                  ? ` · …${String(e.data.pub).slice(-6)}`
+                  : ""}
             </div>
           ))}
         </div>

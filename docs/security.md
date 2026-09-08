@@ -50,12 +50,21 @@ identity servers, no accounts.
 7. **Least-privilege file delivery.** Downloads are restricted to explicit
    roots (`~/.opencode-remote/uploads`, Desktop, Downloads, Documents, repo
    cwd) and resolved against real paths before serving.
-8. **Audit trail.** Pairing, rejection, connection, revocation and expiry
-   events land in `~/.opencode-remote/audit.log` and surface in
-   Settings → Security log. The file is created 0600 and capped at ~1 MB:
-   once it reaches the cap it rotates to `audit.log.1` (one previous file
-   kept, ever), and the Security log reads across both files so rotation
-   never wipes the visible history.
+ 8. **Audit trail.** Pairing, rejection, connection, revocation and expiry
+    events land in `~/.opencode-remote/audit.log` and surface in
+    Settings → Security log. The file is created 0600 and capped at ~1 MB:
+    once it reaches the cap it rotates to `audit.log.1` (one previous file
+    kept, ever), and the Security log reads across both files so rotation
+    never wipes the visible history. Clients are identified by a stable
+    fingerprint — the first 16 hex chars of the SHA-256 of the key's DER
+    bytes (`fp` field; pre-upgrade rows still render their legacy `pub`
+    suffix). The `client rejected` warn + audit pair is throttled to one
+    emission per fingerprint per 60s (the metrics counter ticks on every
+    rejection), so a zombie client reconnecting in a loop cannot rotate the
+    audit history away. A rejection or a revocation NEVER closes the shared
+    relay socket — the rejected pub is dropped silently (its session state,
+    if any, is untouched) and revoking a device only closes that device's
+    own local socket; every other paired client stays connected.
 9. **Local direct mode (P1-061).** The desktop shell reads the `apiToken`
    from the 0600 state file in the (privileged) main process and hands it to
    the sandboxed renderer so it can dial the daemon's loopback WS

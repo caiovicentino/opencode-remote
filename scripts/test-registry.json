@@ -25,6 +25,11 @@
     "reason": "same ephemeral relay+daemon e2e harness as localws.test.ts"
   },
   {
+    "file": "scripts/reject-isolation.test.ts",
+    "runner": "npm run test:e2e (manual)",
+    "reason": "same ephemeral relay+daemon e2e harness as reconnect.test.ts (P3-344)"
+  },
+  {
     "file": "scripts/desktop-flow.test.ts",
     "runner": "npm run test:desktop-flow (conditional gate step for UI diffs)",
     "reason": "needs a real Electron via the P1-051 harness; gate runs it only when the diff touches apps/desktop or apps/web"
