@@ -128,10 +128,25 @@ async function handshake() {
       } catch {
         return;
       }
-      if (typeof parsed.confirm !== "string") return;
-      clearTimeout(t);
-      ws.off("message", onMsg);
-      resolve(frame.payload!);
+    if (typeof parsed.confirm !== "string") return;
+    // the daemon's post-restart announce frames are also base64 JSON with a
+    // confirm-shaped field — only the real confirm opens with the CURRENT
+    // session key, so verify it here instead of failing one layer down
+    void (async () => {
+      try {
+        const check = await openSealed<{ ok: boolean }>(
+          parsed.confirm as string,
+          key,
+          new TextEncoder().encode("ocr-confirm"),
+        );
+        if (!check?.ok) return; // stale or foreign confirm — keep waiting
+        clearTimeout(t);
+        ws.off("message", onMsg);
+        resolve(frame.payload!);
+      } catch {
+        // unopenable frame — keep waiting
+      }
+    })();
     };
     ws.on("message", onMsg);
   });
