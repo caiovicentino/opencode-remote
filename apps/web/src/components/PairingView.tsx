@@ -89,10 +89,38 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
     </button>
   );
 
-  // P2-106: the two pairing directions read as titled sections — "pair a phone
-  // with this machine" (this device as host) and "connect to another machine"
-  // (this device as client: scan/paste). The error keeps the
-  // locale-independent .pair-error hook the desktop-flow gate asserts on.
+  const hostSection = onPairRemote && (
+    <section className="pair-section">
+      <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
+      <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
+        <span className="pair-remote-copy">
+          <b>{t("pairRemoteTitle")}</b>
+          <span className="muted">{t("pairRemoteHint")}</span>
+        </span>
+        <svg
+          className="pair-remote-chevron"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+      </button>
+    </section>
+  );
+
+  // P3-332: local mode lives or dies by its copy — the intro promises the
+  // shell connects itself, so the screen shows the attempt: a live status card
+  // (pulsing dot + phase + retry) instead of a silent idle page. The manual
+  // ceremony stays hidden (P2-112); the error block below still carries its
+  // own recovery affordance.
+  const autoState = localMode && phase !== "error";
 
   // P3-334: on the desktop the host section leads — pairing a phone is the
   // primary story on this machine, so the client ceremony reads as the
@@ -104,31 +132,23 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
         <h1 className="brand-wordmark">OpenCode Remote</h1>
       </header>
       <p className="muted pair-intro">{t("pairIntro")}</p>
-      {onPairRemote && (
-        <section className="pair-section">
-          <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
-          <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
-            <span className="pair-remote-copy">
-              <b>{t("pairRemoteTitle")}</b>
-              <span className="muted">{t("pairRemoteHint")}</span>
-            </span>
-            <svg
-              className="pair-remote-chevron"
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="m9 18 6-6-6-6" />
-            </svg>
-          </button>
-        </section>
+      {autoState && (
+        <div className="pair-auto" role="status" aria-live="polite">
+          <span className="pair-auto-dot" aria-hidden="true" />
+          <div className="pair-auto-copy">
+            <h2 className="pair-auto-title">{busy ? t("localConnecting") : t("autoConnectLooking")}</h2>
+            <p className="muted pair-auto-hint">
+              {busy ? t("autoConnectBusyHint") : t("autoConnectIdleHint")}
+            </p>
+            {!busy && (
+              <button className="pair-auto-retry" onClick={onRetry}>
+                {t("retry")}
+              </button>
+            )}
+          </div>
+        </div>
       )}
+      {hostSection}
       {ceremony && (
         <section className="pair-section">
           <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>

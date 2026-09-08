@@ -1524,6 +1524,15 @@ primary element on that screen. The brand header sits centered on the same
 axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
 as one product.
 
+**Live auto-connect state (P3-332)**: in local mode the pairing screen no
+longer sits idle while the copy promises the shell "connects by itself" — a
+calm status card shows the attempt in flight (pulsing dot, "Looking for the
+local daemon…" / "Connecting to the local daemon…", and a short hint that
+nothing needs to be typed or scanned). "Retry" re-arms the auto-pair when the
+daemon is slow to come up, the manual paste/scan ceremony stays a
+deliberate action ("Add machine" / the degraded card's "pair manually"), and
+adding a machine explicitly never gets swallowed by local mode.
+
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered

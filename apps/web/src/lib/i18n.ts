@@ -277,6 +277,10 @@ export const dict = {
     proxyOriginOwner: "Active now: your choice.",
     proxyOriginEnvironment: "Active now: the machine environment.",
     localConnecting: "Connecting to the local daemon…",
+    // P3-332: the live auto-connect card (local mode) — phase copy + hints.
+    autoConnectLooking: "Looking for the local daemon…",
+    autoConnectBusyHint: "This runs by itself — nothing to type or scan.",
+    autoConnectIdleHint: "The daemon isn't answering yet — the attempt restarts on its own.",
     // degraded first-boot journey (desktop, P2-112): a dead daemon on first
     // boot is never a dead end — calm status, visible auto-retry, minimal
     // local data, and the manual pairing screen one click away.
@@ -844,6 +848,10 @@ export const dict = {
     proxyOriginOwner: "Vale agora: escolha sua.",
     proxyOriginEnvironment: "Vale agora: ambiente da máquina.",
     localConnecting: "Conectando ao daemon local…",
+    // P3-332: cartão de auto-conexão ao vivo (modo local) — fase + avisos.
+    autoConnectLooking: "Procurando o daemon local…",
+    autoConnectBusyHint: "Isso roda sozinho — nada pra digitar ou escanear.",
+    autoConnectIdleHint: "O daemon ainda não responde — a tentativa recomeça sozinha.",
     // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
     // primeiro contato nunca vira beco sem saída — status calmo, retry
     // automático visível, dados locais mínimos e o pareamento a um clique.
