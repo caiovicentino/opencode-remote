@@ -151,7 +151,10 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // P2-150 added the taskbar-overlay badge beat (push 12 → bridge round-trip,
 // one-window aliveness probe, 1440x900 shot) inside the same budget; P2-152
 // added the close-to-tray hint beat (fresh-userData close from the renderer +
-// a second same-userData boot proving the one-shot flag), growing it to 300s.
+// a second same-userData boot proving the one-shot flag), growing it to 300s;
+// P2-323 added the rename-dialog beat (prefilled in-app dialog over the fake
+// backend's session list, identical-title refusal, focus round-trip, a real
+// PATCH on confirm and 1440/390 evidence shots) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 300_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -2639,6 +2642,105 @@ try {
                 run("P2-108: close the filter menu", ["click", ".sess-menu-scrim"], 15_000, localEnv2);
               }
             }
+
+            // --- P2-323: rename dialog replaces the dead window.prompt --------
+            // The pencil action used to call window.prompt — unimplemented in
+            // the Electron shell, so rename died silently. The in-app dialog
+            // opens prefilled, focuses the field, survives a 390px drop and
+            // its confirm reaches the backend as a real PATCH. The row actions
+            // are hover-revealed (display:none until :hover), so the open is
+            // driven through a JS click — Playwright actionability would time
+            // out on a zero-box button.
+            phase("P2-323: rename dialog over the session list");
+            const p323Top = run("P2-323: read the top row title", ["ipc", "document.querySelector('.sess-row .sess-title')?.textContent ?? ''"], 15_000, localEnv2);
+            const p323Open = run("P2-323: open the rename dialog", ["ipc", "(() => { const row = document.querySelector('.sess-row'); const b = document.querySelector('.sess-row .row-rename'); if (!row || !b) return 'MISS'; row.focus(); b.focus(); b.click(); return 'ok'; })()"], 15_000, localEnv2);
+            if (p323Open.ok) {
+              const p323Up = await waitProbe(
+                "P2-323: rename dialog rendered",
+                "!!document.querySelector('.ask-dialog')",
+                (v) => /true/.test(v),
+                localEnv2,
+              );
+              if (p323Up) {
+                const p323Pre = run("P2-323: read the dialog input", ["ipc", "document.querySelector('.ask-dialog input')?.value ?? 'MISS'"], 15_000, localEnv2);
+                if (p323Pre.ok) {
+                  let want = p323Top.stdout.trim();
+                  let got = p323Pre.stdout.trim();
+                  try {
+                    want = JSON.parse(want) as string;
+                    got = JSON.parse(got) as string;
+                  } catch {}
+                  check("P2-323: dialog input echoes the row title", want.length > 0 && got === want, `${want!} vs ${got}`);
+                }
+                const p323Focus = run("P2-323: focus is on the input", ["ipc", "document.activeElement === document.querySelector('.ask-dialog input')"], 15_000, localEnv2);
+                if (p323Focus.ok) check("P2-323: input takes focus on open", /true/.test(p323Focus.stdout), p323Focus.stdout);
+                run("P2-323: rename dialog evidence shot", ["shot", join(shotsDir, "P2-323-rename-1440.png"), "1440", "900"], 15_000, localEnv2);
+                // identical title stays refused: the confirm button is disabled
+                const p323Gate = run("P2-323: confirm with an identical title", ["ipc", "document.querySelector('.ask-dialog .ask-confirm')?.disabled ?? 'MISS'"], 15_000, localEnv2);
+                if (p323Gate.ok) check("P2-323: identical title keeps confirm disabled", /true/.test(p323Gate.stdout), p323Gate.stdout);
+                run("P2-323: close the dialog (Escape)", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))"], 15_000, localEnv2);
+                await waitProbe(
+                  "P2-323: dialog closed by Escape",
+                  "!!document.querySelector('.ask-dialog')",
+                  (v) => /false/.test(v),
+                  localEnv2,
+                );
+                const p323Back = run(
+                  "P2-323: focus after close",
+                  // the hidden pencil falls back to its focusable row
+                  ["ipc", "(() => { const el = document.activeElement; const ok = !!el && (el.classList.contains('row-rename') || !!el.querySelector('.row-rename')); return JSON.stringify({ ok, cls: el?.className ?? '' }); })()"],
+                  15_000,
+                  localEnv2,
+                );
+                if (p323Back.ok) {
+                  let back = p323Back.stdout.trim();
+                  try {
+                    back = JSON.parse(back) as string;
+                  } catch {}
+                  check("P2-323: focus returns to the opener", /"ok":true/.test(back), back);
+                }
+                // reopen and actually rename: confirm sends a real PATCH
+                run("P2-323: reopen the dialog", ["ipc", "(() => { const row = document.querySelector('.sess-row'); const b = document.querySelector('.sess-row .row-rename'); if (!row || !b) return 'MISS'; row.focus(); b.focus(); b.click(); return 'ok'; })()"], 15_000, localEnv2);
+                await waitProbe("P2-323: dialog rendered again", "!!document.querySelector('.ask-dialog')", (v) => /true/.test(v), localEnv2);
+                const p323Type = run("P2-323: type a new title", ["type", ".ask-dialog input", "Renamed by P2-323"], 15_000, localEnv2);
+                if (p323Type.ok) {
+                  run("P2-323: confirm the rename", ["click", ".ask-dialog .ask-confirm"], 15_000, localEnv2);
+                  await waitProbe("P2-323: dialog closed after confirm", "!!document.querySelector('.ask-dialog')", (v) => /false/.test(v), localEnv2);
+                  let patchSeen = false;
+                  for (let i = 0; i < 8 && !patchSeen; i++) {
+                    await new Promise((r) => setTimeout(r, 500));
+                    const hits323 = await fetch(`${fakeUrl}/__hits`)
+                      .then((r) => r.json() as Promise<{ method: string; path: string }[]>)
+                      .catch(() => [] as { method: string; path: string }[]);
+                    patchSeen = hits323.some((h) => h.method === "PATCH" && /^\/session\/.+/.test(h.path));
+                  }
+                  check("P2-323: rename PATCH reached the backend", patchSeen);
+                }
+              }
+            }
+            // phone-width evidence: the board's card action opens the same dialog
+            run("P2-323: drop to phone width", ["shot", join(shotsDir, "P2-323-390-prep.png"), "390", "844"], 15_000, localEnv2);
+            run("P2-323: leave the chat for the board", ["click", ".chat-back"], 15_000, localEnv2);
+            const p323Card = run("P2-323: open rename from a session card", ["ipc", "document.querySelector('.session-card .card-rename')?.click() ?? 'MISS'"], 15_000, localEnv2);
+            if (p323Card.ok) {
+              const p323Narrow = await waitProbe(
+                "P2-323: rename dialog rendered at 390",
+                "!!document.querySelector('.ask-dialog')",
+                (v) => /true/.test(v),
+                localEnv2,
+              );
+              if (p323Narrow) {
+                run("P2-323: rename dialog narrow evidence shot", ["shot", join(shotsDir, "P2-323-rename-390.png"), "390", "844"], 15_000, localEnv2);
+                run("P2-323: close the narrow dialog", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))"], 15_000, localEnv2);
+              } else {
+                const p323Dump = run("P2-323: board state on failure", ["ipc", "JSON.stringify({ phase: document.querySelector('.app-root')?.getAttribute('data-phase'), hash: location.hash, cards: document.querySelectorAll('.session-card').length, dialog: !!document.querySelector('.ask-dialog'), board: !!document.querySelector('.session-grid'), chat: !!document.querySelector('.messages') })"], 15_000, localEnv2);
+                if (p323Dump.ok) check("P2-323: board state dump", true, p323Dump.stdout);
+              }
+            }
+            // restore the chat surface: P3-085 expects its session on screen
+            run("P2-323: return to the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
+            await waitProbe("P2-323: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            run("P2-323: restore desktop width", ["shot", join(shotsDir, "P2-323-restore-1440.png"), "1440", "900"], 15_000, localEnv2);
           }
 
           // --- P3-085: collapsible thinking block + streaming polish -----------

@@ -3491,3 +3491,97 @@ button.desk-new:hover:not(:disabled) {
     max-height: 40%;
   }
 }
+
+/* ── P2-323: the one calm confirmation dialog (rename / delete / rewind) ──
+   Replaces the last native window.prompt/window.confirm call sites: a
+   centered card over a softened scrim, tokens only, 44px touch targets and
+   200ms ease-out motion that the global prefers-reduced-motion block zeroes. */
+.ask-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim-soft);
+  display: grid;
+  place-items: center;
+  z-index: 80;
+  padding: var(--space-4);
+  animation: ask-fade var(--motion-slow) var(--ease-out);
+}
+.ask-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-5);
+  animation: ask-rise var(--motion-slow) var(--ease-out);
+}
+.ask-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-tight);
+  font-weight: 600;
+  color: var(--text);
+}
+.ask-body {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-body);
+  color: var(--muted);
+}
+.ask-input {
+  min-height: 44px;
+  margin-bottom: var(--space-4);
+}
+.ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.ask-actions button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  font-weight: var(--font-weight-medium);
+  transition: background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+.ask-actions button:focus-visible,
+.ask-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ask-cancel {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.ask-cancel:hover {
+  background: var(--gray-hover);
+}
+.ask-confirm:not(:disabled):hover {
+  border-color: var(--border-strong);
+}
+.ask-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@keyframes ask-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ask-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

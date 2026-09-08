@@ -20,6 +20,8 @@ import { copyText } from "../lib/clipboard";
 import { copyPlan, type CopyPart } from "../lib/copymsg";
 import { useT } from "../lib/i18n";
 import { humanizeError } from "../lib/errors";
+import { buildAskDialog } from "../lib/askdialog";
+import AskDialog from "./AskDialog";
 import { getVoiceSettings } from "./SettingsView";
 import { renderBubbleText } from "./FileCard";
 import ArtifactViewer from "./ArtifactViewer";
@@ -1580,8 +1582,16 @@ export default function ChatView({
   }
 
   const [canUnrevert, setCanUnrevert] = useState(false);
+  // P2-323: rewind confirms through the shared in-app dialog — the native
+  // window.confirm box ignored the UI language and the theme
+  const [rewindAsk, setRewindAsk] = useState<string | null>(null);
   async function revertTo(messageID: string) {
-    if (!window.confirm(t("rewindConfirm"))) return;
+    setRewindAsk(messageID);
+  }
+  async function handleRewindConfirm() {
+    const messageID = rewindAsk;
+    setRewindAsk(null);
+    if (!messageID) return;
     try {
       const res = await request("POST", `/session/${sessionId}/revert`, { messageID });
       if (res.status !== 200) {
@@ -3301,6 +3311,13 @@ export default function ChatView({
           request={request}
           closing={overlayPhase === "closing"}
           onClose={() => setArtifactView(null)}
+        />
+      )}
+      {rewindAsk && (
+        <AskDialog
+          descriptor={buildAskDialog("rewind", t)}
+          onConfirm={() => void handleRewindConfirm()}
+          onClose={() => setRewindAsk(null)}
         />
       )}
     </div>
