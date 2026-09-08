@@ -10,6 +10,18 @@ export function greetingKey(machineName: string): string {
   return machineName.trim() ? "homeGreeting" : "homeGreetingAnon";
 }
 
+/**
+ * PWA home (Bug 2): time-of-day greeting key ("Boa tarde, {name}"). Morning
+ * 5–11, afternoon 12–17, evening otherwise; an hour outside 0–23 (or not an
+ * integer) falls back to the timeless greeting so the copy is never wrong,
+ * only less specific. `hasName` picks the "{name}" or the anonymous variant.
+ */
+export function timeGreetingKey(hour: number, hasName: boolean): string {
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return hasName ? "homeGreeting" : "homeGreetingAnon";
+  const part = hour >= 5 && hour <= 11 ? "Morning" : hour >= 12 && hour <= 17 ? "Afternoon" : "Evening";
+  return `home${part}${hasName ? "" : "Anon"}`;
+}
+
 export type HomeIdeaIcon = "wrench" | "book" | "file";
 
 export interface HomeIdea {

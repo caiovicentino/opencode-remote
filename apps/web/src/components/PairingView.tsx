@@ -1,10 +1,20 @@
 import { useCallback, useState } from "react";
 import QrScanner, { type CameraAccessVerdict } from "./QrScanner";
+import PairRetry from "./PairRetry";
 import { useT } from "../lib/i18n";
 
 interface Props {
   phase: "unpaired" | "connecting" | "error" | "paired";
   error: string;
+  /** EVAL4-F1: actionable next step under the error (App resolves it from
+   * lib/pairerror.ts kinds); absent for errors that carry no hint. */
+  hint?: string;
+  /** EVAL4-F1b: a stored pairing that timed out re-runs onRetry after this
+   * many ms (countdown line under the error); absent = manual retry only. */
+  autoRetryMs?: number;
+  /** P3-331: quiet return to the calm degraded card — the manual escape must
+   * never be a one-way door. Absent in flows without a surface behind it. */
+  onBack?: () => void;
   onPair: (uri: string) => void;
   onRetry: () => void;
   /** P1-070: desktop shell only — explicit "pair a remote phone" action that
@@ -19,12 +29,9 @@ interface Props {
   /** P2-319: camera-permission verdict (desktop shell only) — the scanner's
    * permission refusal becomes an actionable system-panel call to action. */
   getCamAccess?: () => Promise<CameraAccessVerdict | null>;
-  /** P3-331: quiet return to the calm degraded card — the manual escape must
-   * never be a one-way door. Absent in flows without a surface behind it. */
-  onBack?: () => void;
 }
 
-export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack }: Props) {
+export default function PairingView({ phase, error, hint, autoRetryMs, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -134,7 +141,9 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
       <header>
         <h1 className="brand-wordmark">OpenCode Remote</h1>
       </header>
-      <p className="muted pair-intro">{t("pairIntro")}</p>
+      {/* EVAL4-F1: the phone (no host section, scan-first) must not read the
+          desktop's "pairs with the daemon on this machine" promise. */}
+      <p className="muted pair-intro">{!preferPaste && !onPairRemote ? t("pairIntroPhone") : t("pairIntro")}</p>
       {autoState && (
         <div className="pair-auto" role="status" aria-live="polite">
           <span className="pair-auto-dot" aria-hidden="true" />
@@ -176,6 +185,8 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
           {error === t("invalidCode") && (
             <p className="pair-error-hint">{t("invalidCodeHint")}</p>
           )}
+          {hint && error !== t("invalidCode") && <p className="pair-error-hint">{hint}</p>}
+          {autoRetryMs !== undefined && <PairRetry ms={autoRetryMs} onRetry={onRetry} />}
           <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
         </div>
       )}

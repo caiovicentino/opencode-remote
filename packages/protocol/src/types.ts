@@ -39,6 +39,22 @@ export interface ClientEnvelope {
   req: OpRequest;
 }
 
+/**
+ * Clear (unsealed) control frame the daemon sends back when a frame from a
+ * client could not be authenticated — the session key the client seals with
+ * no longer matches the daemon's (daemon restart/rekey, lost rehandshake). By
+ * definition the daemon cannot seal anything the client would open, so this
+ * travels in the clear like the `reconnect` hint and the client treats it as
+ * an unauthenticated hint: it verifies before acting and never wipes state on
+ * its own. `deviceId` is a short public-key prefix of the allowlisted device
+ * the frame was attributed to (null when the sender is unknown) — never a
+ * full key, label or secret.
+ */
+export interface ReauthRequired {
+  type: "session-reauth-required";
+  deviceId: string | null;
+}
+
 /** Encrypted message from daemon -> PWA (opens into OpResponse or EventEnvelope). */
 export type DaemonEnvelope =
   | { type: "res"; res: OpResponse }

@@ -244,6 +244,24 @@ identity servers, no accounts.
     targets only, no installers) run the same collector as a standing
     fail-closed guard on the packaging output.
 
+
+22. **One aggregate status context — `ci-gate` (P3-352, eval r4).** The
+    branch protection of `main` required **no** status check
+    (`required_status_checks.contexts: []`), and "green" could only be
+    reconstructed from six per-job contexts, four of them scope-gated and
+    therefore absent or `SKIPPED` on most PRs — so on 2026-09-08 every
+    pilot merge landed seconds before its first check started and three of
+    four turned a check red *after* landing (#879, #884, #891). The last
+    job of `ci.yml`, `ci-gate`, always runs (`if: always()`), `needs` every
+    other job and decides through the pure `scripts/cigate.ts` verdict
+    (collector `scripts/check-ci-gate.ts`): `verify` and `scope` must
+    succeed, the scope-gated jobs may be `skipped`, anything else —
+    failure, cancelled, timed out, a job missing from `needs` — is red.
+    `scripts/workflow-yaml.test.ts` pins that the job needs *every* other
+    job of the file and is declared last, so a new job cannot bypass it.
+    It is the single context to require on `main` (operator action, one
+    time, after the job has reported at least once):
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and

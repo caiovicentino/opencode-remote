@@ -42,7 +42,7 @@ import {
   type PermissionAsk,
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
-import { appendDraft, getDraft, setDraft } from "../lib/drafts";
+import { appendDraft, getDraft, setDraft, takeSendOnOpen } from "../lib/drafts";
 import { firstSentence, pressureLevel } from "../lib/context";
 import { getTtsLang, speakBrief } from "../lib/voice";
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
@@ -108,6 +108,13 @@ interface Props {
   /** P2-312: microphone-permission verdict from the desktop shell (absent on
    * the phone) — replaces the Safari-only NotAllowedError advice. */
   getMicAccess?: () => Promise<MicAccessVerdict | null>;
+  /** EVAL4-B: reconnect telemetry from the client (App passes them) — real
+   * dial attempts since the drop, when the drop started (0 while paired) and
+   * the "try now" action that skips the pending backoff. All optional: the
+   * banner degrades to the old attempt counter without them. */
+  connAttempts?: number;
+  connSince?: number;
+  onRetryNow?: () => void;
 }
 
 interface QuestionInfo {
@@ -368,6 +375,9 @@ export default function ChatView({
   onPaneArtifactConsumed,
   shellBannerVisible = false,
   getMicAccess,
+  connAttempts: connAttemptsProp,
+  connSince = 0,
+  onRetryNow,
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -697,6 +707,10 @@ export default function ChatView({
   // sessionIdRef sync effect above so it is the last writer on a switch.
   useEffect(() => {
     setInput(getDraft(sessionId));
+    // EVAL4-B: the home composer's arrow sends — consume the one-shot flag
+    // (validated against this session's draft + TTL in lib/drafts.ts).
+    const auto = takeSendOnOpen(sessionId);
+    if (auto) void send(auto);
   }, [sessionId]);
 
   // P1-088: every composer write goes through these wrappers so the text is
@@ -1203,6 +1217,17 @@ export default function ChatView({
   // P2-049: reconnection attempts the user can see — increments each time a
   // connection that had been paired drops again (banner replaces the 9px dot)
   const [connAttempts, setConnAttempts] = useState(0);
+  // EVAL4-B: coarse clock for the stale copy of the banner — ticks only while
+  // disconnected, so a paired chat never re-renders for it.
+  const [connNow, setConnNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (connStatus === "paired") return;
+    setConnNow(Date.now());
+    const iv = setInterval(() => setConnNow(Date.now()), 5_000);
+    return () => clearInterval(iv);
+  }, [connStatus]);
+  const connStale = connSince > 0 && connNow - connSince >= 45_000;
+  const connStaleMin = Math.max(1, Math.round((connNow - connSince) / 60_000));
   const wasPairedRef = useRef(connStatus === "paired");
   useEffect(() => {
     if (connStatus === "paired") {
@@ -1710,6 +1735,10 @@ export default function ChatView({
     setAtBottom(true);
     setSending(true);
     setError("");
+    // EVAL4-B: a retry offer belongs to ONE failed send — without this the
+    // "Tentar de novo" of an earlier 500 survived later sends and resent the
+    // old text (evidence: /tmp/fable-eval4b/shots/20-b3-error-410-with-attachment.png).
+    setRetryText("");
     // P1-088: clears ONLY the sending session's draft (it is the current one
     // at click time) — a half-typed draft in another session is never wiped.
     updateInput("");
@@ -1751,7 +1780,24 @@ export default function ChatView({
         body = buildBody();
         res = await request("POST", `/session/${sessionId}/message`, body);
       }
-      if (res.status !== 200) {
+      if (res.status === 410) {
+        // EVAL4-B: 410 = the daemon no longer holds the upload (30 min TTL or
+        // a restart) and the in-memory re-upload above did not save it. The
+        // old path dropped BOTH the text and the attachment list and told the
+        // user to "reattach" with nothing left to tap. Put the text and every
+        // attachment still in memory back into the composer; say exactly
+        // which case this is. A 410 with no attachment in the request is not
+        // an attachment problem at all — say so instead of the misleading copy.
+        markPending(false);
+        if (attached.length === 0) {
+          setError(t("errUpstreamGone"));
+        } else {
+          const kept = attached.filter((img) => img.raw);
+          setImages(kept);
+          if (text) updateInput(text);
+          setError(kept.length === attached.length ? t("errAttachmentExpiredKept") : t("errAttachmentExpiredLost"));
+        }
+      } else if (res.status !== 200) {
         setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
         markPending(false);
         if (text && res.status >= 500) setRetryText(text);
@@ -2275,6 +2321,10 @@ export default function ChatView({
             fontSize: "0.9rem",
             margin: 0,
             flex: 1,
+            // EVAL4-B: a nowrap flex child defaults to min-width:auto (= the
+            // full title), so long titles widened the header past 390px and
+            // pushed the send button off-screen (probe: .screen 476px).
+            minWidth: 0,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -2343,9 +2393,20 @@ export default function ChatView({
       {/* P2-108: one reconnect banner only — when the shell strip is already
           showing, this in-chat banner stays silent. */}
       {connStatus !== "paired" && !shellBannerVisible && (
-        <div className="conn-banner" role="status" title={t("connTitle", { status: connStatus })}>
+        <div className="conn-banner" role="status" aria-live="polite" title={t("connTitle", { status: connStatus })}>
           <IconRefresh size={14} className="conn-banner-spin" aria-hidden />{" "}
-          {t("reconnecting", { n: Math.max(connAttempts, 1) })}
+          <span className="conn-banner-text">
+            {/* EVAL4-B: after 45 s the banner stops counting and says what to
+                check; "try now" skips the client's pending backoff. */}
+            {connStale
+              ? t("connBannerStale", { m: connStaleMin })
+              : t("reconnecting", { n: Math.max(connAttemptsProp ?? connAttempts, 1) })}
+          </span>
+          {onRetryNow && (
+            <button className="conn-banner-retry" onClick={onRetryNow}>
+              {t("connRetryNow")}
+            </button>
+          )}
         </div>
       )}
 

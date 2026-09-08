@@ -140,49 +140,6 @@ textarea {
   transition: transform var(--motion-fast) var(--ease-out);
 }
 
-.session-card {
-  transition: transform var(--motion-fast) var(--ease-out);
-}
-.session-card:active {
-  transform: scale(0.97);
-}
-
-/* bottom tab bar: thumb-first navigation on root screens */
-.has-tabbar .screen {
-  padding-bottom: calc(78px + env(safe-area-inset-bottom));
-}
-.tabbar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: space-around;
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-top: 1px solid var(--border);
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
-  z-index: 50;
-  max-width: 720px;
-  margin: 0 auto;
-}
-.tabbar button {
-  background: none;
-  border: none;
-  border-radius: var(--radius-md);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  font-size: 0.62rem;
-  color: var(--muted);
-  padding: 4px 14px;
-}
-.tabbar button.active {
-  color: var(--accent);
-}
-
 .screen > header {
   display: flex;
   align-items: center;
@@ -219,68 +176,6 @@ textarea {
   gap: 8px;
   overflow-y: auto;
   flex: 1;
-}
-
-.session-card {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.session-card h3 {
-  margin: 0 0 4px;
-  font-size: 0.95rem;
-}
-
-/* grid-variant session card (mobile): real class hooks instead of inline
-   styles so the desktop sidebar can restyle rows by specificity alone */
-.card.session-card {
-  flex-direction: column;
-  gap: var(--space-1);
-  min-height: 84px;
-}
-.session-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.session-title {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-tight);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.session-snippet {
-  flex: 1;
-  min-height: 0;
-  font-size: 0.75rem;
-  color: var(--muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.session-meta {
-  font-size: var(--font-size-xs);
-}
-.session-when {
-  font-size: 0.68rem;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-.session-actions {
-  display: flex;
-  gap: var(--space-1);
-}
-.session-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
-  gap: var(--space-2);
 }
 
 select {
@@ -1594,58 +1489,10 @@ button.desk-new:hover:not(:disabled) {
     transition: none;
   }
 }
-/* mobile chrome never shows inside the desktop shell */
-.desk .tabbar,
-.desk .has-tabbar {
-  display: none;
-}
-
 /* ── Claude-clean desktop polish: flat sidebar rows, no boxes ── */
 /* P1-047: targets real classes emitted by SessionsView (forced specificity,
    no positional child selectors), so card markup can evolve without silently
    breaking the shell */
-/* sessions grid → single flat column of rows */
-.desk-side .session-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-.desk-side .card.session-card {
-  overflow: hidden;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) 10px;
-  min-height: 0;
-  gap: 2px;
-}
-.desk-side .card.session-card:hover {
-  background: var(--bg2);
-}
-/* status label ("pronto") and edit/delete row hidden — status lives in the dot */
-.desk-side .session-meta,
-.desk-side .session-actions {
-  display: none;
-}
-/* title: lighter weight, single line */
-.desk-side .session-head {
-  overflow: hidden;
-}
-.desk-side .session-title {
-  display: block;
-  font-weight: 450;
-  font-size: 0.92rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* snippet: one muted line, ellipsis */
-.desk-side .session-snippet {
-  display: block;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 0.78rem;
-}
 /* search: borderless with underline, subtle */
 .desk-side .list input {
   background: transparent;
@@ -1838,55 +1685,6 @@ button.desk-new:hover:not(:disabled) {
 .row-actions button:hover {
   color: var(--fg);
   background: var(--border);
-}
-
-/* P2-108: mobile sessions chrome demoted to an overline — the machine name
-   is a label (0.72rem, tracked, muted), not a page title; the header actions
-   stay reachable as quiet ghost icons. */
-.sess-mobile-head {
-  padding: 2px 2px 8px;
-  border-bottom: 1px solid var(--border);
-}
-.sess-machine-overline {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  padding: 4px 2px;
-  cursor: pointer;
-  color: var(--muted);
-}
-.sess-machine-overline:active {
-  transform: none;
-}
-.sess-overline {
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
-.sess-head-actions {
-  display: flex;
-  gap: 2px;
-}
-.sess-head-actions button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: var(--muted);
-  padding: 7px;
-  border-radius: var(--radius-sm);
-}
-.sess-head-actions button:hover {
-  color: var(--fg);
-  background: var(--bg2);
-}
-.sess-head-actions button.danger:hover {
-  color: var(--danger);
 }
 
 /* P2-108: badge filters live in a menu attached to the search — one quiet
@@ -3786,4 +3584,705 @@ button.desk-new:hover:not(:disabled) {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+/* ── PWA shell (Bug 2): shell bar, drawer, mobile home, chats list, action
+   sheet — tokens only (P3-083), 2–3 type sizes, single accent, no bordered
+   cards. Motion: 300ms surfaces / 150ms interactions, all zeroed under
+   prefers-reduced-motion (explicit block at the end + the global one). ── */
+.app-root.mobile {
+  display: flex;
+  flex-direction: column;
+}
+.app-root.mobile > .screen,
+.app-root.mobile > .home {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.shell-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: calc(var(--space-1) + env(safe-area-inset-top)) var(--space-2) 0;
+  flex-shrink: 0;
+}
+.shell-menu,
+.shell-action {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  border-radius: var(--radius-md);
+  padding: 0;
+  flex-shrink: 0;
+}
+.shell-menu:hover,
+.shell-action:hover:not(:disabled) {
+  background: var(--bg2);
+}
+.shell-menu:active,
+.shell-action:active {
+  transform: none;
+}
+.shell-action:disabled {
+  opacity: 0.45;
+}
+.shell-menu-dot {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.shell-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell-bar + .screen {
+  padding-top: var(--space-2);
+}
+
+/* mobile home: centered serif greeting + soft mark, composer anchored to the
+   bottom, nothing else on the surface */
+.home-mobile {
+  height: auto;
+}
+.home-mobile .home-col {
+  max-width: 100%;
+  height: 100%;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-4) calc(var(--space-3) + env(safe-area-inset-bottom));
+}
+.home-mobile .home-head {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+}
+.home-mobile .home-greeting {
+  font-size: 1.9rem;
+  line-height: var(--line-height-tight);
+  overflow-wrap: anywhere;
+}
+.home-mobile .desk-greet-mark {
+  color: var(--accent);
+  opacity: 0.85;
+  display: inline-flex;
+}
+.home-mobile .home-composer .composer {
+  box-shadow: none;
+}
+
+/* chats list: 56px rows, dot + one-line title + kebab; the pill floats */
+.screen.chats {
+  padding-bottom: calc(92px + env(safe-area-inset-bottom));
+}
+.convo-rows {
+  display: flex;
+  flex-direction: column;
+}
+.convo-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 56px;
+  padding: 0 0 0 var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.convo-row:active,
+.convo-row.active {
+  background: var(--bg2);
+}
+.convo-row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.convo-row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-md);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.convo-row-menu {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  border-radius: var(--radius-md);
+  padding: 0;
+  flex-shrink: 0;
+}
+.convo-row-menu:active {
+  transform: none;
+  background: var(--gray-hover);
+}
+.chats-new-wrap {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom));
+  background: linear-gradient(to top, var(--bg) 65%, transparent);
+  z-index: 40;
+  pointer-events: none;
+}
+.chats-new-pill {
+  pointer-events: auto;
+  width: 100%;
+  min-height: 52px;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+}
+
+/* per-row action sheet (kebab / long-press) */
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim-soft);
+  z-index: 80;
+  animation: ask-fade var(--motion-slow) var(--ease-out);
+}
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 81;
+  max-width: 720px;
+  margin: 0 auto;
+  background: var(--surface);
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-3) var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: sheet-up var(--motion-slow) var(--ease-out);
+}
+.sheet-title {
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 52px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font-size: var(--font-size-md);
+  text-align: left;
+  border-radius: var(--radius-md);
+}
+.sheet-item:active {
+  transform: none;
+  background: var(--bg2);
+}
+.sheet-item.danger {
+  color: var(--danger);
+}
+@keyframes sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* drawer */
+.drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+.drawer-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim-soft);
+  animation: ask-fade var(--motion-slow) var(--ease-out);
+}
+.drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(84vw, 320px);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom));
+  box-shadow: var(--shadow-overlay);
+  overflow-y: auto;
+  animation: drawer-in var(--motion-slow) var(--ease-out);
+}
+.drawer-root.closing .drawer {
+  animation: drawer-out var(--motion-slow) var(--ease-out) forwards;
+}
+.drawer-root.closing .drawer-scrim {
+  animation: ask-fade var(--motion-slow) var(--ease-out) reverse forwards;
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes drawer-out {
+  from {
+    transform: none;
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+.drawer-head {
+  display: flex;
+  justify-content: flex-end;
+}
+.drawer-close {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  border-radius: var(--radius-md);
+  padding: 0;
+}
+.drawer-close:active {
+  transform: none;
+}
+.drawer-new {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 52px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+}
+.drawer-rows,
+.drawer-recents ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.drawer-row,
+.drawer-recent {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font-size: var(--font-size-md);
+  text-align: left;
+  border-radius: var(--radius-md);
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.drawer-row:active,
+.drawer-recent:active {
+  transform: none;
+}
+.drawer-row.active,
+.drawer-recent.active,
+.drawer-row:active,
+.drawer-recent:active {
+  background: var(--bg2);
+}
+.drawer-row-icon {
+  display: inline-flex;
+  justify-content: center;
+  width: 24px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.drawer-row.active .drawer-row-icon {
+  color: var(--accent);
+}
+.drawer-row-label,
+.drawer-recent-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drawer-recents {
+  margin-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+}
+.drawer-section {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+.drawer-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+.drawer-dot.unread {
+  background: var(--accent);
+}
+.drawer-foot {
+  margin-top: auto;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.drawer-machine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  border-radius: var(--radius-md);
+}
+.drawer-machine:active {
+  transform: none;
+}
+.drawer-machine-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drawer-disconnect {
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  border-radius: var(--radius-md);
+}
+
+/* ── Bug 1: expired-session card (one action) + desktop device hint ── */
+.reauth {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+}
+.reauth-card {
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  animation: ask-rise var(--motion-slow) var(--ease-out);
+}
+.reauth-icon {
+  display: inline-flex;
+  color: var(--warn);
+}
+.reauth-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 1.9rem;
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+  color: var(--fg);
+}
+.reauth-body {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-body);
+}
+.reauth-action {
+  width: 100%;
+  min-height: 52px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+}
+.pair-device-expired {
+  color: var(--warn);
+}
+
+/* explicit reduced-motion guarantee for every surface above (the global
+   block covers it too; this survives future edits of that block) */
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawer-scrim,
+  .drawer-root.closing .drawer,
+  .drawer-root.closing .drawer-scrim,
+  .drawer-row,
+  .drawer-recent,
+  .convo-row,
+  .sheet,
+  .sheet-scrim,
+  .reauth-card,
+  .home-mobile .home-col {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ── EVAL4-A (fable r4, product track) ──────────────────────────────── */
+/* F6: expired/revoked card — secondary reset action + explanatory notes */
+.reauth-note {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+.reauth-secondary {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+.reauth-reset {
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--fg);
+  font-size: var(--font-size-sm);
+}
+/* F4: connection strip of the mobile shell (home / lists), never in the chat
+   where ChatView's own .conn-banner already speaks (P2-108 one-banner rule) */
+.conn-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
+.conn-strip-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.conn-strip[data-stale] .conn-strip-line {
+  color: var(--warn);
+}
+.conn-strip-hint {
+  margin: 0;
+  color: var(--muted);
+}
+.conn-strip-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.conn-strip-actions button {
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+}
+/* F1: MachinePicker row as a real button (was a clickable div) */
+.machine-picker-row {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.machine-picker-row:active {
+  transform: none;
+}
+.machine-picker-relay {
+  max-width: 100%;
+  font-size: var(--font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── EVAL4-B (fable r4, product track) ─────────────────────────────── */
+/* B1 (P0, phone): a nowrap title in the chat header is a flex child with the
+   default min-width:auto, so a long conversation title widened the header
+   past the viewport and dragged the whole .screen with it (390px probe:
+   .screen 476px, send button @x=459 — unreachable). min-width:0 lets the
+   ellipsis work; the mobile shell also clips any future horizontal overflow
+   instead of turning the page into a sideways scroller. */
+.screen > header,
+.screen > header > h1 {
+  min-width: 0;
+}
+.app-root.mobile .screen {
+  max-width: 100vw;
+  overflow-x: clip;
+}
+/* B2 (a11y, phone): 44px touch targets. Icon buttons keep their 32px look
+   and gain an invisible hit area; small inline actions grow to 44px tall. */
+.composer-btn,
+.chat-btn,
+.composer-send,
+.composer-model-btn,
+.conn-banner-retry {
+  position: relative;
+}
+.composer-btn::before,
+.chat-btn::before,
+.composer-send::before,
+.conn-banner-retry::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+.composer-model-btn::before {
+  content: "";
+  position: absolute;
+  inset: -9px -4px;
+}
+.app-root.mobile .screen > header > button:not(.chat-btn),
+.app-root.mobile .qr-scanner header button,
+.app-root.mobile .pair-error-retry,
+.app-root.mobile .qr-unavailable .qr-paste-cta,
+.app-root.mobile .artifact-card,
+.app-root.mobile .composer-wrap button.danger,
+.app-root.mobile .pair-submit,
+.app-root.mobile .pair-scan-entry {
+  min-height: 44px;
+}
+.app-root.mobile .screen > header > button:not(.chat-btn) {
+  min-width: 44px;
+}
+/* B3: in-chat reconnect banner — text wraps, the action stays on one line */
+.conn-banner {
+  flex-wrap: wrap;
+}
+.conn-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.conn-banner-retry {
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+/* B4: Mission Control on the phone — one scrolling column (the 40% cards
+   strip of the tablet rule clipped the mission block at 390px), readable
+   type for the mission text, 44px rows. */
+.app-root.mobile .mission-phone-intro {
+  margin: 0;
+}
+.app-root.mobile .mission-grid {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+.app-root.mobile .mission-cards {
+  max-height: none;
+  overflow: visible;
+  border-bottom: none;
+}
+.app-root.mobile .mission-active-text,
+.app-root.mobile .mission-active-src {
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-body);
+}
+.app-root.mobile .mission-card {
+  min-height: 44px;
+}
+.app-root.mobile .mission-active-actions button,
+.app-root.mobile .mission-filters button {
+  min-height: 40px;
 }

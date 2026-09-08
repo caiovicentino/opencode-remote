@@ -32,7 +32,8 @@ interface Props {
   onDismiss: () => void;
   /** P1-056: paired devices — present when the user opened "Celular" with a
    * phone already paired (pair-another-device ceremony). */
-  deviceList?: { label: string; addedAt?: string }[];
+  /** Bug 1: `keyExpired` — frames from this device failed auth in the last 24h. */
+  deviceList?: { label: string; addedAt?: string; keyExpired?: boolean }[];
   /** P2-189: the app address + its QR (null QR when the address is
    * unavailable — the calm explanation renders instead). */
   webApp?: WebAppInfo | null;
@@ -255,7 +256,14 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
         {deviceList && deviceList.length > 0 && (
           <p className="splash-under muted">
             {t("pairDevicesCount", { n: String(deviceList.length) })}
-            {deviceList.map((d) => d.label).join(", ")}
+            {deviceList.map((d, i) => (
+              <span key={`${d.label}-${i}`} data-device-key={d.keyExpired ? "expired" : "ok"}>
+                {i > 0 ? ", " : ""}
+                {d.label}
+                {/* Bug 1: frames from this device failed auth in the last 24h */}
+                {d.keyExpired && <span className="pair-device-expired"> ({t("pairDeviceKeyExpired")})</span>}
+              </span>
+            ))}
           </p>
         )}
         <p className="splash-under">{t("splashUnder")}</p>

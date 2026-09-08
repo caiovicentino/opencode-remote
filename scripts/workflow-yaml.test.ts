@@ -111,6 +111,71 @@ for (const file of files) {
   check(`${file}: declares a trigger and at least one job`, !!doc && "on" in doc && jobs.length > 0, `jobs: ${jobs.join(",")}`);
 }
 
+// --- P3-352 (eval r4): the ci-gate aggregate job ---------------------------
+// Every pilot merge of 2026-09-08 landed before its first check started and
+// three of four turned a check red after landing; main requires no status
+// check. `ci-gate` is the single context to require: it always runs, needs
+// every other job and decides through the pure scripts/cigate.ts verdict.
+{
+  const { CI_GATE_JOB, CI_GATE_SPEC, ciGateVerdict } = await import("./cigate");
+  const all = (over: Record<string, string> = {}): Record<string, { result: string }> => {
+    const base: Record<string, string> = {
+      verify: "success",
+      scope: "success",
+      "desktop-package": "skipped",
+      "desktop-package-win": "skipped",
+      "verify-win": "success",
+      "relay-image": "skipped",
+    };
+    return Object.fromEntries(Object.entries({ ...base, ...over }).map(([k, v]) => [k, { result: v }]));
+  };
+  const green = ciGateVerdict(all());
+  check("P3-352: success everywhere + skipped scope-gated jobs is green", green.verdict === "green" && green.lines.length === 6, green.lines.join("\n"));
+  check("P3-352: a skipped scope-gated job is reported as the scope job's decision", green.lines.some((l) => l.includes("desktop-package-win=skipped (scope-gated")));
+  const redWin = ciGateVerdict(all({ "desktop-package-win": "failure" }));
+  check("P3-352: one failed scope-gated job is red (the 2026-09-08 #884/#891 shape)", redWin.verdict === "red" && redWin.lines.some((l) => l.startsWith("ci-gate: RED desktop-package-win=failure")));
+  check("P3-352: a cancelled job is red", ciGateVerdict(all({ "verify-win": "cancelled" })).verdict === "red");
+  const skippedVerify = ciGateVerdict(all({ verify: "skipped" }));
+  check("P3-352: an unconditional job (verify) skipped is red, never a pass", skippedVerify.verdict === "red" && skippedVerify.lines.some((l) => l.includes("verify=skipped (unconditional job skipped")));
+  check("P3-352: scope skipped is red too (it has no if: of its own)", ciGateVerdict(all({ scope: "skipped" })).verdict === "red");
+  const needs = all() as Record<string, unknown>;
+  delete needs["relay-image"];
+  const missing = ciGateVerdict(needs);
+  check("P3-352: a spec job missing from needs is red (dropped graph edge)", missing.verdict === "red" && missing.lines.some((l) => l.includes("relay-image — missing from needs")));
+  check("P3-352: a non-string result is treated as missing (red)", ciGateVerdict({ ...all(), verify: { result: 7 } }).verdict === "red");
+  const extra = ciGateVerdict({ ...all(), ghost: { result: "failure" } });
+  check("P3-352: a job in needs but not in the spec only warns and never decides", extra.verdict === "green" && extra.lines.some((l) => l.includes("WARN ghost")));
+  check("P3-352: no short-circuit — every red cause is listed in one run", ciGateVerdict(all({ verify: "failure", "verify-win": "failure" })).lines.filter((l) => l.includes("RED")).length === 2);
+  check("P3-352: unreadable needs (null / array / string) is red with one line", ["x", null, [1], 3].every((v) => { const r = ciGateVerdict(v); return r.verdict === "red" && r.lines.length === 1; }));
+  check("P3-352: deterministic — identical input yields identical lines", JSON.stringify(ciGateVerdict(all({ verify: "failure" }))) === JSON.stringify(ciGateVerdict(all({ verify: "failure" }))));
+  check("P3-352: the spec's unconditional jobs are exactly verify and scope", JSON.stringify(CI_GATE_SPEC.filter((j) => !j.scopeGated).map((j) => j.name)) === JSON.stringify(["verify", "scope"]));
+
+  // real ci.yml wiring — text assertions (no YAML dependency), fail-closed
+  const ci = readFileSync(join(dir, "ci.yml"), "utf8");
+  const gateAt = ci.indexOf(`\n  ${CI_GATE_JOB}:\n`);
+  check("P3-352: the real ci.yml declares the ci-gate job", gateAt > 0);
+  const gateBody = gateAt > 0 ? ci.slice(gateAt) : "";
+  const needsLine = /^\s{4}needs:\s*\[([^\]]+)\]\s*$/m.exec(gateBody);
+  const needed = needsLine ? needsLine[1]!.split(",").map((s) => s.trim()).filter(Boolean).sort() : [];
+  const jobsSection = ci.slice(ci.indexOf("\njobs:\n"));
+  const jobKeys = [...jobsSection.matchAll(/^ {2}([A-Za-z0-9_.-]+):\s*$/gm)].map((m) => m[1]!).filter((n) => n !== CI_GATE_JOB).sort();
+  check("P3-352: ci-gate needs EVERY other job of ci.yml (a new job cannot bypass the gate)", needed.length > 0 && JSON.stringify(needed) === JSON.stringify(jobKeys), `needs=${needed.join(",")} jobs=${jobKeys.join(",")}`);
+  check("P3-352: the spec mirrors the real job set", JSON.stringify([...CI_GATE_SPEC.map((j) => j.name)].sort()) === JSON.stringify(jobKeys), jobKeys.join(","));
+  check("P3-352: ci-gate always runs (if: always()) so a failed dependency still produces a verdict", /^\s{4}if:\s*always\(\)\s*$/m.test(gateBody));
+  check("P3-352: ci-gate is the last job of ci.yml (nothing declared after it escapes the gate)", gateAt > 0 && !/^ {2}[A-Za-z0-9_.-]+:\s*$/m.test(gateBody.slice(gateBody.indexOf(":") + 1)));
+  check("P3-352: ci-gate declares a job-level timeout and least-privilege permissions", /^\s{4}timeout-minutes:\s*\d+\s*$/m.test(gateBody) && /^\s{4}permissions:\s*$\n\s{6}contents:\s*read\s*$/m.test(gateBody));
+  check("P3-352: the verdict step feeds toJSON(needs) to scripts/check-ci-gate.ts with shell bash and its own timeout", gateBody.includes("toJSON(needs)") && gateBody.includes("scripts/check-ci-gate.ts") && /^\s{8}shell:\s*bash\s*$/m.test(gateBody) && /^\s{8}timeout-minutes:\s*\d+\s*$/m.test(gateBody));
+  check("P3-352: ci-gate never uploads, publishes or reads a secret", !/upload-artifact|gh release|secrets\./.test(gateBody));
+  for (const j of CI_GATE_SPEC) {
+    const at = ci.indexOf(`\n  ${j.name}:\n`);
+    // job body = from its key until the next 2-space job key
+    const next = at > 0 ? ci.slice(at + 1).search(/\n {2}[A-Za-z0-9_.-]+:\s*\n/) : -1;
+    const jobBody = at > 0 ? ci.slice(at, next > 0 ? at + 1 + next : undefined) : "";
+    const hasIf = /^\s{4}if:\s*needs\.scope\.outputs/m.test(jobBody);
+    check(`P3-352: spec scopeGated=${j.scopeGated} for ${j.name} matches the real if: on the scope outputs`, at > 0 && hasIf === j.scopeGated);
+  }
+}
+
 if (failures) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);

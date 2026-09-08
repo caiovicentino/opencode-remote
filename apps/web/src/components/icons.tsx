@@ -373,6 +373,40 @@ export function IconBookOpen(p: IconProps) {
   );
 }
 
+/** PWA shell (Bug 2): hamburger — opens the navigation drawer. */
+export function IconMenu(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M4 7h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17h16" />
+    </Icon>
+  );
+}
+
+/** PWA shell (Bug 2): per-row kebab (rename / archive / delete). */
+export function IconMore(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </Icon>
+  );
+}
+
+/** Soft product mark for the home greeting (SVG instead of a glyph). */
+export function IconMark(p: IconProps) {
+  return (
+    <Icon {...p} strokeWidth="1.5">
+      <path d="M12 3v18" />
+      <path d="M3 12h18" />
+      <path d="m5.6 5.6 12.8 12.8" />
+      <path d="m18.4 5.6-12.8 12.8" />
+    </Icon>
+  );
+}
+
 /** File-type icon for agent-produced artifacts (replaces emoji per kind). */
 export function ArtifactIcon({ kind, ...rest }: IconProps & { kind: string }) {
   switch (kind) {
