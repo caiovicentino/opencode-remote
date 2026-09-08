@@ -2068,10 +2068,27 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("singleton survives garbage pidfile", readFileSync(pidFile, "utf8").trim() === String(process.pid));
 
     // child traps SIGTERM so the 2s grace expires and the SIGKILL path must fire
-    holder = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'], {
-      stdio: "ignore",
+    holder = spawn(
+      process.execPath,
+      ["-e", 'process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);'],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    // P3-336 round 3: a fixed 300ms sleep raced the child's boot — under heavy
+    // machine load (a second slot running this same battery) SIGTERM could
+    // land before the trap existed and the child died with SIGTERM instead of
+    // surviving to the SIGKILL (flaked 5/30 under load). The child now
+    // signals readiness on stdout; waiting for it is load-independent.
+    await new Promise<void>((resolve, reject) => {
+      const guard = setTimeout(() => reject(new Error("child never signaled readiness")), 10_000);
+      holder!.stdout!.once("data", () => {
+        clearTimeout(guard);
+        resolve();
+      });
+      holder!.once("error", (err) => {
+        clearTimeout(guard);
+        reject(err);
+      });
     });
-    await new Promise((r) => setTimeout(r, 300)); // let the child install its SIGTERM handler
     writeFileSync(pidFile, String(holder.pid));
     const exited = new Promise<string>((resolve) => holder!.once("exit", (_code, signal) => resolve(String(signal))));
     await ensureSingleton(pidFile);
