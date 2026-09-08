@@ -948,6 +948,32 @@ retry que atualiza o head do PR usa `--force-with-lease` (mesmo precedente do
 `metapush`): a origin ainda está no tip do attempt anterior, e um push plain
 seria rejeitado non-fast-forward deixando o PR apontando pro sha velho.
 
+**PR conflitado ganha um reparo automático antes de escalar (P3-341)**: o pulo
+infra `conflict` do P2-134 continuava caro demais para o caso trivial — o P3-328
+morreu com gate verde e o PR bloqueado por um parágrafo novo no README que a main
+ganhou durante o review. Agora, quando o primeiro probe devolve
+`CONFLICTING`/`DIRTY` e os sinks de reparo estão ligados (o `mergeTask` passa
+`readFile`/`writeFile` reais resolvidos contra o workspace, recusando path
+absoluto ou `..`), o pipeline roda **uma** passada de reparo
+(`repairConflictedBranch`): `git fetch`, `git merge --no-edit origin/main` no
+próprio slot, leitura de cada path em conflito (`git diff --name-only
+--diff-filter=U`) e um triage puro (`mergerepair.ts`) decide. O que resolve
+sozinho: conflitos em `*.md` (união determinística ours-depois-theirs, cópia
+única quando os lados são idênticos) e hunks de código **só de comentário**
+(`//`, `/* */`, `#`, linhas vazias). O que escala pro operador (marcador
+`needs operator` no detail do evento, do log e do `notifySupervisor`; nesse caso
+nada é empurrado — `git merge --abort`, branch intacta): path protegido
+(`deploy/`, `scripts/invariants.ts`, `.github/`, `BACKLOG.md`), hunk de código
+com semântica, marcador malformado, arquivo ilegível (conflito delete/modify) e
+conflito misto (um `.md` trivial + um `.ts` semântico escala **tudo**). O push do
+head reparado usa `--force-with-lease` (mesmo precedente do `metapush`) e o
+re-probe de confirmação só considera verde o veredito calculado sobre o head
+**novo** (`headRefOid` entra no poll quando o sha esperado é informado) — nada de
+merge com CI herdado do head velho. Reparo roda no máximo uma vez por chamada:
+um segundo `CONFLICTING` depois do push cai no skip infra normal, e conflito de
+código com semântica continua sendo trabalho de builder round novo via
+`mergeConflictBlock` — a rota manual não mudou.
+
 **Falha de formato de spec é infra uma vez por task (P2-137)**: quando o planner
 não produz um `specs/<ID>.md` válido, o `specRejectReason` (seção faltando,
 marker de controle, spec grande demais) agora entra no próprio prompt de retry
