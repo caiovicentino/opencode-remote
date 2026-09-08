@@ -19,9 +19,12 @@ interface Props {
   /** P2-319: camera-permission verdict (desktop shell only) — the scanner's
    * permission refusal becomes an actionable system-panel call to action. */
   getCamAccess?: () => Promise<CameraAccessVerdict | null>;
+  /** P3-331: quiet return to the calm degraded card — the manual escape must
+   * never be a one-way door. Absent in flows without a surface behind it. */
+  onBack?: () => void;
 }
 
-export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess }: Props) {
+export default function PairingView({ phase, error, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -155,6 +158,11 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
           )}
           <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
         </div>
+      )}
+      {onBack && (
+        <button className="pair-back" onClick={onBack}>
+          {t("pairBack")}
+        </button>
       )}
     </div>
   );

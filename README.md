@@ -1475,6 +1475,15 @@ keeps the purely-local data (language, theme) working. "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
 stays one click away.
 
+**Local first boot never shows the pairing wall (P3-331)**: once the desktop
+shell proves the daemon on this machine (local mode), the verdict is sticky
+for the whole session — poll gaps and degraded states no longer resurrect the
+full "connect to another machine" ceremony on a machine that pairs by itself.
+The manual escape hatch gains a quiet "Back" link to the calm status card, and
+a first boot whose auto-connect failed now retries by itself as soon as the
+daemon answers again, landing straight on the home/chat surface instead of
+dead-ending behind the manual pairing wall.
+
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and

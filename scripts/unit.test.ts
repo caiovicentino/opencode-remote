@@ -331,7 +331,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
-import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -9898,12 +9898,50 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       sawHealthyDaemon({ reconnecting: true, reconnectAttempts: 3 }) === false &&
       sawHealthyDaemon(null) === false,
   );
+  // --- P3-331: sticky local verdict + guarded auto-connect (pure logic) --------
+  check(
+    "P3-331: shell local verdict is sticky across poll gaps and degraded pushes",
+    nextShellLocal(false, null) === false &&
+      nextShellLocal(false, { mode: "local" }) === true &&
+      nextShellLocal(true, null) === true &&
+      nextShellLocal(true, { daemonDown: true }) === true &&
+      nextShellLocal(true, { reconnecting: true }) === true,
+  );
+  check(
+    "P3-331: only an explicit remote request unsets the sticky local verdict",
+    nextShellLocal(true, { mode: "remote" }) === false &&
+      nextShellLocal(false, { mode: "remote" }) === false &&
+      // ...and returning to local quiet re-arms it
+      nextShellLocal(false, { mode: "local" }) === true,
+  );
+  check(
+    "P3-331: auto-connect runs on unpaired (local or past outage), never while paired/connecting",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true &&
+      autoConnectAllowed("unpaired", { localMode: false, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true &&
+      autoConnectAllowed("unpaired", { localMode: false, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("connecting", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("paired", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false,
+  );
+  check(
+    "P3-331: a stored pairing always wins — no auto-connect races the user's machine",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: true }) === false &&
+      autoConnectAllowed("error", { localMode: true, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: true }) === false,
+  );
+  check(
+    "P3-331: failed AUTO-connect retries once the daemon answers again…",
+    autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true,
+  );
+  check(
+    "P3-331: …but a manual paste mid-edit is never yanked by the recovery loop",
+    autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: true, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: false, addingMachine: true, hasStoredPairing: false }) === false,
+  );
   // Copy parity for the journey: every degraded title/hint key resolves in
   // both locales (same contract as the P2-118 connection screens).
   const degradedKeys = [
     "firstContactTitle", "firstContactHint", "degradedRetrying", "degradedDownHint",
     "degradedLocalTitle", "degradedLocalHint", "degradedPairManually",
-    "reconnectTrying", "reconnectStarted", "reconnectFailed",
+    "reconnectTrying", "reconnectStarted", "reconnectFailed", "pairBack",
   ];
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",

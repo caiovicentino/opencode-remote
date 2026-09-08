@@ -53,7 +53,7 @@ import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
-import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
+import { autoConnectAllowed, degradedKind, nextShellLocal, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import { WELCOME_DONE, WELCOME_KEY, shouldShowWelcome } from "./lib/welcome";
 import {
   INSTALL_HINT_DISMISSED_KEY,
@@ -275,6 +275,18 @@ export default function App() {
   // P1-056: the "Celular" nav item is an EXPLICIT pairing request — it must
   // open the QR even if the user once dismissed the boot-time overlay.
   const [phonePairing, setPhonePairing] = useState(false);
+  // P3-331: once the shell bridge reports a local daemon the verdict is sticky
+  // for the session (nextShellLocal) — poll gaps and degraded pushes must not
+  // resurrect the "connect to another machine" ceremony on a local machine.
+  const [shellLocal, setShellLocal] = useState(false);
+  // P3-331: single landing path for every shell pairing-state delivery (pull,
+  // push, auto-pair prefetch) so the sticky verdict can never miss one.
+  function observePairingState(s: PairingState | null) {
+    pairingStateRef.current = s;
+    setPairingState(s);
+    setShellLocal((cur) => nextShellLocal(cur, s));
+  }
+  const localMode = shellLocal && pairingState?.mode !== "remote";
   // P1-070: tryAutoPair reads the latest pairing state synchronously (the
   // effect ref below would still be null on the very first mount run).
   const pairingStateRef = useRef<PairingState | null>(null);
@@ -360,16 +372,10 @@ export default function App() {
     if (!bridge?.getPairingState) return;
     let alive = true;
     bridge.getPairingState().then((s) => {
-      if (alive) {
-        pairingStateRef.current = s;
-        setPairingState(s);
-      }
+      if (alive) observePairingState(s);
     }).catch(() => {});
     const un = bridge.onPairingState?.((s) => {
-      if (alive) {
-        pairingStateRef.current = s;
-        setPairingState(s);
-      }
+      if (alive) observePairingState(s);
     });
     return () => {
       alive = false;
@@ -559,7 +565,7 @@ export default function App() {
         let state = pairingStateRef.current;
         if (!state && bridge.getPairingState) {
           state = (await bridge.getPairingState().catch(() => null)) ?? null;
-          pairingStateRef.current = state;
+          observePairingState(state);
         }
         if (state?.mode === "local" && bridge.getLocalLink) {
           const pairing = localPairing(await bridge.getLocalLink());
@@ -605,17 +611,29 @@ export default function App() {
   // P1-070: a pairing state that lands (or degrades) with mode="local" also
   // re-runs the auto-pair — the mount-time run may have raced ahead of the
   // shell's first poll and found no state to decide on.
+  // P3-331: the decision lives in the pure autoConnectAllowed — a failed
+  // AUTO-connect (phase "error") now retries too, once the daemon answers
+  // again, so a slow first boot can never dead-end behind the manual wall;
+  // a manual paste mid-edit (pairManual/addingMachine) is never yanked.
   const sawOutageRef = useRef(false);
   useEffect(() => {
     if (pairingState?.reconnecting || pairingState?.daemonDown) {
       sawOutageRef.current = true;
       return;
     }
-    if (phase === "unpaired" && !loadState() && (pairingState?.mode === "local" || sawOutageRef.current)) {
+    if (
+      autoConnectAllowed(phase, {
+        localMode,
+        sawOutage: sawOutageRef.current,
+        pairManual,
+        addingMachine,
+        hasStoredPairing: !!loadState(),
+      })
+    ) {
       sawOutageRef.current = false;
       tryAutoPair();
     }
-  }, [pairingState, phase]);
+  }, [pairingState, phase, localMode, pairManual, addingMachine]);
 
   // Web Share Target (Android/desktop Chrome): shared content arrives as query params
   useEffect(() => {
@@ -940,7 +958,7 @@ export default function App() {
           }}
           onRetry={() => setAddingMachine(false)}
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-          localMode={pairingState?.mode === "local"}
+          localMode={localMode}
           preferPaste={!!desktopBridge()}
           getCamAccess={desktopBridge()?.getCamAccess}
         />
@@ -1019,9 +1037,10 @@ export default function App() {
               else setPhase("unpaired");
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-            localMode={pairingState?.mode === "local"}
+            localMode={localMode}
             preferPaste={!!desktopBridge()}
             getCamAccess={desktopBridge()?.getCamAccess}
+            onBack={pairManual ? () => setPairManual(false) : undefined}
           />
         )}
       </div>
@@ -1220,7 +1239,7 @@ export default function App() {
             </div>
             <div className="desk-side-scroll">{sessionsNode}</div>
             <SidebarAccount
-              localMode={pairingState?.mode === "local"}
+              localMode={localMode}
               machineName={machineName}
               connStatus={connStatus}
               machines={machines}
