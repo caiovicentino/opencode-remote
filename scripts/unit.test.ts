@@ -901,6 +901,7 @@ import {
   avgDoneDuration,
   buildCards,
   buildForensicIndex,
+  dataTask,
   progressOf,
   shotsForTask,
   shotPath,
@@ -24974,6 +24975,24 @@ check(
       return r.ready.length === 0 && r.blocked.length === 0 && r.misplaced === 0;
     })(),
   );
+  check(
+    "P2-240: queueView — red-team RT- ids parse as real tasks, never as \"?\" (RT-341 gate lesson)",
+    (() => {
+      const r = q("## Ready\n- [ ] (RT-341) [P0] Redteam finding 2026-09-08 — spec: \n- [ ] (P2-315) [P2] work — t\n");
+      return (
+        r.ready.length === 2 &&
+        r.ready[0]!.id === "RT-341" &&
+        r.ready[1]!.id === "P2-315" &&
+        !r.ready.some((t) => t.id === "?")
+      );
+    })(),
+  );
+  check("P2-240: queueView — RT- id without digits still degrades to \"?\"", q("## Ready\n- [ ] (RT-) [P0] malformed — t\n").ready[0]!.id === "?");
+
+  check("pilotforensic dataTask accepts the red-team RT- namespace", dataTask({ task: "RT-341" }) === "RT-341" && dataTask({ task: "P2-315" }) === "P2-315");
+
+  check("pilotforensic dataTask refuses malformed RT- ids", dataTask({ task: "RT-" }) === undefined && dataTask({ task: "RTX-1" }) === undefined && dataTask({ task: "???" }) === undefined);
+
   check(
     "P2-240: queueView — a line without an area tag yields an empty area",
     (() => {

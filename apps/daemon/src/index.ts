@@ -3766,7 +3766,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           .split("\n")
           .filter((l) => l.startsWith("- [x]"))
           .map((l) => {
-            const m = l.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
+            // same id grammar as backlogview.parseTaskLine: P0-P9 + red-team RT-
+            const m = l.match(/\(([P\d][\w.-]*|RT-\d+)\)\s*\[.*?\]\s*([^—]+)/);
             return { id: m?.[1] ?? "?", title: (m?.[2] ?? l).trim() };
           });
       } catch {}
@@ -3992,7 +3993,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (seg[1] === "pilot-forensic" && req.method === "GET") {
       if (seg[2] === "timeline") {
         const task = url.searchParams.get("task") ?? "";
-        if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+        if (!/^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(task)) {
           send(400, { error: "task required" });
           return true;
         }
@@ -4059,7 +4060,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         return true;
       }
       const task = body.task ?? "";
-      if (!/^[P\d][\w.-]{1,24}$/.test(task)) {
+      if (!/^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(task)) {
         send(400, { error: "task required" });
         return true;
       }

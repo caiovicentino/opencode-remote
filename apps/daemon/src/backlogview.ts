@@ -70,12 +70,14 @@ export function backlogSections(text: string): BacklogSection[] {
 
 /**
  * id/title/area extraction with EXACTLY the criteria the route always used —
- * same id regex, same em-dash title terminator, same lowercase `(area: …)` tag.
- * A line that does not match the format never throws: it degrades to id "?"
- * with the whole line as title and an empty area.
+ * same em-dash title terminator, same lowercase `(area: …)` tag. The id accepts
+ * the two queue namespaces: P0-P9 work (`P2-315`) and red-team findings
+ * (`RT-341`, the `[P\d]` prefix alone degraded those to "?" and broke the
+ * honest-queue hygiene check). A line that does not match the format never
+ * throws: it degrades to id "?" with the whole line as title and an empty area.
  */
 function parseTaskLine(line: string): QueueTask {
-  const m = line.match(/\(([P\d][\w.-]*)\)\s*\[.*?\]\s*([^—]+)/);
+  const m = line.match(/\(([P\d][\w.-]*|RT-\d+)\)\s*\[.*?\]\s*([^—]+)/);
   const area = (line.match(/\(area:\s*(\w+)\)/)?.[1] ?? "").toLowerCase();
   return { id: m?.[1] ?? "?", title: (m?.[2] ?? line).trim(), area };
 }
