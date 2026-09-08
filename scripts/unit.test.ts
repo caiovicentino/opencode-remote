@@ -10753,6 +10753,31 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-330: the degraded gate centers its brand header like the wizard -------
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const at = css.indexOf(".screen.degraded > header");
+  const rule = at === -1 ? "" : css.slice(at, css.indexOf("}", at));
+  // Same grammar as the wizard/pairing headers: drop the .screen > header
+  // space-between flex (flex items ignore text-align) and center the wordmark.
+  check(
+    "P3-330: the degraded gate centers its brand header on the wizard's axis",
+    rule.includes("display: block") && rule.includes("text-align: center"),
+  );
+  // Scoped to the degraded screen only — DegradedView is the sole .screen.degraded
+  // root, so chat/settings/scanner headers reusing .screen keep their flex row.
+  const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const others = ["ChatView.tsx", "SettingsView.tsx", "QrScanner.tsx", "PairingView.tsx"]
+    .map((f) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", f), "utf8"))
+    .filter((src) => /className="screen[^"]*degraded/.test(src));
+  check(
+    "P3-330: the centered-header override stays scoped to .screen.degraded",
+    rule.startsWith(".screen.degraded > header") &&
+      /className="screen degraded"/.test(degradedSrc) &&
+      others.length === 0,
+  );
+}
+
 // --- P3-338: one labeled exit on the welcome's final step ---------------------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
@@ -10800,6 +10825,25 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P3-334: PairingView renders the host section before the client ceremony",
     hostAt !== -1 && clientAt !== -1 && hostAt < clientAt,
   );
+}
+
+// --- P3-332: the local-mode pairing screen shows the live auto-connect -------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  check(
+    "P3-332: PairingView renders the live auto-connect card (status + phase) in local mode",
+    src.includes('className="pair-auto"') && src.includes('role="status"') &&
+      src.includes("autoConnectLooking") && src.includes("localConnecting"),
+  );
+  check(
+    "P3-332: the auto-connect card replaces the ceremony and wires retry to onRetry",
+    /ceremony = !localMode/.test(src) && src.includes('className="pair-auto-retry" onClick={onRetry}'),
+  );
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    check(`p3-332 i18n ${lang}: autoConnectLooking names the local daemon`, /daemon/i.test(d.autoConnectLooking));
+    check(`p3-332 i18n ${lang}: autoConnect hints explain the unattended attempt`, !!d.autoConnectBusyHint && !!d.autoConnectIdleHint);
+  }
 }
 
 

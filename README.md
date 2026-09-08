@@ -1473,7 +1473,11 @@ met, never a red "daemon fell" alert — explains that conversations, files and
 artifacts sync as soon as the daemon answers, shows the automatic retry, and
 keeps the purely-local data (language, theme) working. "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
-stays one click away.
+stays one click away. The gate sits on the same brand axis as the welcome
+wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered
+above the vertically centered card stack, so the post-wizard screen reads as
+the same intentional ceremony instead of a flush-left column floating in dead
+space at desktop sizes.
 
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
@@ -1532,6 +1536,15 @@ first-run QR splash "Pair later" is now a quiet text link — the QR is the only
 primary element on that screen. The brand header sits centered on the same
 axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
 as one product.
+
+**Live auto-connect state (P3-332)**: in local mode the pairing screen no
+longer sits idle while the copy promises the shell "connects by itself" — a
+calm status card shows the attempt in flight (pulsing dot, "Looking for the
+local daemon…" / "Connecting to the local daemon…", and a short hint that
+nothing needs to be typed or scanned). "Retry" re-arms the auto-pair when the
+daemon is slow to come up, the manual paste/scan ceremony stays a
+deliberate action ("Add machine" / the degraded card's "pair manually"), and
+adding a machine explicitly never gets swallowed by local mode.
 
 **Auto-preview (P1-072)**: when the agent brings up a local site (http.server,
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the

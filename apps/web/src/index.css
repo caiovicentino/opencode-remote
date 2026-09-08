@@ -2555,6 +2555,54 @@ button.desk-new:hover:not(:disabled) {
   margin: 0;
   font-size: 0.78rem;
 }
+/* ── P3-332: live auto-connect state (local mode) ───────────────────────────
+   The intro promises the shell connects itself, so the local-mode screen shows
+   the attempt in flight: pulsing status dot + phase copy + retry. Same flat
+   surface language as the degraded card — no spinners, no gradients. The dot
+   reuses the shared degraded-pulse keyframes. */
+.pair-auto {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  text-align: left;
+}
+.pair-auto-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--status-wait);
+  animation: degraded-pulse 2s var(--ease-out) infinite;
+}
+.pair-auto-copy {
+  min-width: 0;
+}
+.pair-auto-title {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+  line-height: var(--line-height-tight);
+  color: var(--fg);
+}
+.pair-auto-hint {
+  margin: 0;
+}
+.pair-auto-retry {
+  margin-top: 8px;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--fg);
+  border-color: var(--border);
+  background: transparent;
+}
+.pair-auto-retry:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
 /* Invalid-code error: styled block (was an inline-colored <p>) + inline
    helper with the expected format, announced via role=alert/aria-live. */
 .pair-error {
@@ -2613,6 +2661,19 @@ button.desk-new:hover:not(:disabled) {
    gradients, no glassmorphism. */
 .degraded {
   justify-content: center;
+}
+/* P3-330: the degraded gate is the screen right after the welcome wizard, so
+   its brand header sits on the same centered axis as the wizard's
+   (.welcome header) and the pairing screen's (P3-339) — a flush-left
+   wordmark over a vertically centered card stack read as a broken layout at
+   1440x900, not a focused one. The shared .screen > header rule is a
+   space-between flex row and flex items ignore text-align, so the flex is
+   dropped (the only child is the h1). Scoped to .screen.degraded: sibling
+   screens reusing .screen (chat, settings, scanner toolbar) keep their flex
+   headers with back buttons and actions. */
+.screen.degraded > header {
+  display: block;
+  text-align: center;
 }
 .degraded-status {
   display: flex;

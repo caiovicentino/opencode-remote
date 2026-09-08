@@ -958,7 +958,10 @@ export default function App() {
           }}
           onRetry={() => setAddingMachine(false)}
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-          localMode={localMode}
+          // P3-332: adding a machine IS the manual remote ceremony — the
+          // shell's local auto-connect mode must never hide the paste/scan
+          // form here (it would leave no way to type a remote code).
+          localMode={false}
           preferPaste={!!desktopBridge()}
           getCamAccess={desktopBridge()?.getCamAccess}
         />
@@ -1032,9 +1035,10 @@ export default function App() {
               void connect(pairing, true);
             }}
             onRetry={() => {
-              const stored = loadState();
-              if (stored) void connect(stored.pairing, false);
-              else setPhase("unpaired");
+              // P3-332: with no stored pairing the retry re-arms the auto-pair
+              // (local link / deep link) — the live card's only way forward.
+              setPhase("unpaired");
+              tryAutoPair();
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
             localMode={localMode}
