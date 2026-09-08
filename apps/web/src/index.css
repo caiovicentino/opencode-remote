@@ -2647,6 +2647,19 @@ button.desk-new:hover:not(:disabled) {
 .degraded {
   justify-content: center;
 }
+/* P3-330: the degraded gate is the screen right after the welcome wizard, so
+   its brand header sits on the same centered axis as the wizard's
+   (.welcome header) and the pairing screen's (P3-339) — a flush-left
+   wordmark over a vertically centered card stack read as a broken layout at
+   1440x900, not a focused one. The shared .screen > header rule is a
+   space-between flex row and flex items ignore text-align, so the flex is
+   dropped (the only child is the h1). Scoped to .screen.degraded: sibling
+   screens reusing .screen (chat, settings, scanner toolbar) keep their flex
+   headers with back buttons and actions. */
+.screen.degraded > header {
+  display: block;
+  text-align: center;
+}
 .degraded-status {
   display: flex;
   align-items: flex-start;
