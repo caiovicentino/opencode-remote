@@ -53,7 +53,7 @@ import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
-import { autoConnectAllowed, degradedKind, nextShellLocal, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
+import { autoConnectAllowed, degradedKind, nextShellLocal, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
 import { WELCOME_DONE, WELCOME_KEY, shouldShowWelcome } from "./lib/welcome";
 import {
   INSTALL_HINT_DISMISSED_KEY,
@@ -105,6 +105,9 @@ interface PairingState {
   opencode?: UpstreamHealth;
   /** P2-140: why the local daemon died (desktop shell only). */
   sidecarExit?: SidecarExitHealth;
+  /** P2-324: wedged-daemon probe verdict (desktop shell only, additive) —
+   * absent while the daemon answers; observe renders nothing. */
+  sidecarWedge?: { state: string; message: string };
   /** P2-189: step one — the address the phone opens (desktop shell only). */
   webApp?: WebAppInfo;
   /** P2-193: the combined pair link — app address + credential in the
@@ -889,6 +892,9 @@ export default function App() {
   // P2-140: why the local daemon died — null unless the shell attached an
   // exit verdict. Rendered ONLY inside the degraded calm card (P2-108 rule).
   const sidecarExit = sidecarExitNotice(pairingState?.sidecarExit);
+  // P2-324: the daemon wedged alive — null unless the shell attached a wedge
+  // verdict. Same calm card, below the exit notice in precedence (exit wins).
+  const sidecarWedge = sidecarWedgeNotice(pairingState?.sidecarWedge);
   // P1-071: the Settings help section is reachable from the first-boot calm
   // card too — the stub request no-ops every fetch while no client exists.
   const [helpOpen, setHelpOpen] = useState(false);
@@ -1033,6 +1039,7 @@ export default function App() {
             upstream={upstream}
             onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
             sidecarExit={sidecarExit}
+            sidecarWedge={sidecarWedge}
           />
         ) : (
           <PairingView
