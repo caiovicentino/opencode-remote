@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import type { DegradedKind, UpstreamNotice } from "../lib/degraded";
+import { qrWaitVerdict, QR_WAIT_TIMEOUT_MS } from "../lib/qrWait";
 import ReconnectButton from "./ReconnectButton";
 
 interface Props {
@@ -54,6 +55,33 @@ function InlinePair({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const anyPairRemote = true;
+  // P3-333: the QR is minted by the shell's poll (normally well under a
+  // second) — but a cold daemon or a failed tick used to leave this step on
+  // a bare "generating" line forever. Track elapsed time since the wait
+  // started; past the timeout the pure verdict resolves to a retryable
+  // inline error instead of a frozen skeleton.
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [attempt, setAttempt] = useState(0);
+  const startedAt = useRef(Date.now());
+  useEffect(() => {
+    if (qrDataUrl) return;
+    const id = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt.current;
+      setElapsedMs(elapsed);
+      if (elapsed >= QR_WAIT_TIMEOUT_MS) window.clearInterval(id);
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [qrDataUrl, attempt]);
+  const verdict = qrWaitVerdict({ qrDataUrl, elapsedMs });
+  // Retry re-fires the shell's remote-pairing request (app:setRemotePairing
+  // re-runs its poll) and restarts the wait window. The calm exit stays the
+  // step's "do this later" — this block only adds the way back in.
+  const retry = () => {
+    startedAt.current = Date.now();
+    setElapsedMs(0);
+    setAttempt((a) => a + 1);
+    on.current();
+  };
   if (phonePaired) {
     return (
       <div className="degraded-status" data-paired="ok">
@@ -69,7 +97,21 @@ function InlinePair({
   // section carries only the live QR/status, no all-caps kicker repeating it.
   return (
     <section className="pair-section" data-pair-wait={!qrDataUrl}>
-      {qrDataUrl ? <img className="welcome-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} /> : <p className="muted">{t("welcomeQrWait")}</p>}
+      {qrDataUrl ? (
+        <img className="welcome-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} />
+      ) : verdict === "error" ? (
+        <div className="welcome-qr-error" role="alert">
+          <p className="welcome-qr-error-title">{t("welcomeQrError")}</p>
+          <button className="welcome-qr-retry" onClick={retry}>
+            {t("welcomeQrRetry")}
+          </button>
+        </div>
+      ) : (
+        <div className="welcome-qr-wait" role="status">
+          <div className="skel welcome-qr-skel" aria-hidden="true" />
+          <p className="muted">{t("welcomeQrWait")}</p>
+        </div>
+      )}
     </section>
   );
 }
