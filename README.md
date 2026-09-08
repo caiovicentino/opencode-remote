@@ -1478,7 +1478,10 @@ stays one click away.
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and
-the phone-pairing invitation with an explicit "do this later". It is skippable
+the phone-pairing invitation with an explicit "do this later". It opens with
+the product identity (P3-340) — the accent glyph above the serif "OpenCode
+Remote" wordmark, the same mark language as the P2-123 home greeting. It is
+skippable
 at any moment; finishing or skipping stamps a flag in the renderer's
 localStorage (no IPC, no main-process change), so existing users — including
 everyone upgrading with a stored pairing — never see it. It renders as a

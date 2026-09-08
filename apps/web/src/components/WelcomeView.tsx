@@ -100,7 +100,10 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
     <div className="welcome" data-welcome-step={step}>
       <div className="welcome-col">
         <header>
-          <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
+          <div className="welcome-mark" aria-hidden="true">
+            ✻
+          </div>
+          <h1 className="welcome-wordmark">OpenCode Remote</h1>
         </header>
         <div className="welcome-meta">
           <span className="welcome-step-of">{t("welcomeStepOf", { n: step })}</span>
