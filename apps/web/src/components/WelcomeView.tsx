@@ -65,9 +65,10 @@ function InlinePair({
       </div>
     );
   }
+  // P3-337: the step-3 card heading above is the single pairing title — this
+  // section carries only the live QR/status, no all-caps kicker repeating it.
   return (
     <section className="pair-section" data-pair-wait={!qrDataUrl}>
-      <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
       {qrDataUrl ? <img className="welcome-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} /> : <p className="muted">{t("welcomeQrWait")}</p>}
     </section>
   );
@@ -100,7 +101,10 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
     <div className="welcome" data-welcome-step={step}>
       <div className="welcome-col">
         <header>
-          <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
+          <div className="welcome-mark" aria-hidden="true">
+            ✻
+          </div>
+          <h1 className="welcome-wordmark">OpenCode Remote</h1>
         </header>
         <div className="welcome-meta">
           <span className="welcome-step-of">{t("welcomeStepOf", { n: step })}</span>
@@ -171,7 +175,6 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
             )}
             {!onPairRemote && (
               <section className="pair-section">
-                <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
                 <span className="muted">{t("pairRemoteHint")}</span>
               </section>
             )}

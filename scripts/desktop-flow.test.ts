@@ -430,8 +430,12 @@ try {
     );
   }
   run("P2-148: advance to the pairing step", ["click", ".welcome-next"], 15_000);
-  const pairStep = run("P2-148: pairing invitation rendered", ["ipc", "document.querySelector('.welcome .pair-section-title')?.textContent ?? 'MISS'"], 15_000);
+  // P3-337: the card heading is the single pairing title — the InlinePair
+  // section carries only the QR/status, with no all-caps kicker repeating it.
+  const pairStep = run("P2-148: pairing invitation rendered", ["ipc", "document.querySelector('.welcome-pair .welcome-step-title')?.textContent ?? 'MISS'"], 15_000);
   if (pairStep.ok) check("P2-148: host section title inside the welcome", /Pair a phone|Parear um celular/.test(pairStep.stdout), pairStep.stdout);
+  const pairTitleCount = run("P3-337: h2 count in the pairing card", ["ipc", "String(document.querySelectorAll('.welcome-pair h2').length)"], 15_000);
+  if (pairTitleCount.ok) check("P3-337: exactly one pairing title in the card", pairTitleCount.stdout.replace(/"/g, "").trim() === "1", pairTitleCount.stdout);
   const later = run("P2-148: explicit 'do this later' option", ["ipc", "!!document.querySelector('.welcome-later')"], 15_000);
   if (later.ok) check("P2-148: .welcome-later present", /true/.test(later.stdout));
   const welcomeShot390 = join(shotsDir, "P2-148-welcome-390.png");

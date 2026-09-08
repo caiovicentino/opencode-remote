@@ -1415,6 +1415,20 @@ button.desk-new:hover:not(:disabled) {
 .welcome header {
   text-align: center;
 }
+/* P3-340: product identity — same glyph language as the P2-123 home mark */
+.welcome-mark {
+  display: inline-flex;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+.welcome-wordmark {
+  margin: 0;
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-size: 1.35rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
 .welcome-meta {
   display: flex;
   align-items: center;
