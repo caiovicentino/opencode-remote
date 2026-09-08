@@ -25,7 +25,7 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
   delete process.env[k];
 }
 
-import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
+import { b64, fromB64, newIdentity, seal, openSealed, seqAad } from "@ocr/protocol";
 
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { classifyConflictPath, isCommentOnlyHunk, parseConflictedFile, repairPlan, resolveConflictedFile } from "../apps/pilot/src/mergerepair";
@@ -297,6 +297,12 @@ import {
   DEVICE_STALE_SHORT_WINDOW_MS,
   deviceStaleVerdict,
 } from "../apps/daemon/src/devicestale";
+import {
+  noteRejectWarn,
+  pubFingerprint,
+  rejectLogDecision,
+  REJECT_WARN_INTERVAL_MS,
+} from "../apps/daemon/src/clientfp";
 
 import {
   admitNewUpload,
@@ -19298,6 +19304,71 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       daemonIndexSrc.slice(bootstrapLabelAt, bootstrapLabelAt + 600).includes("nextDeviceLabel(") &&
       !daemonIndexSrc.includes('label: "first"'),
   );
+}
+
+// --- P3-344: client fingerprint + reject-log throttle (clientfp.ts) ----------
+
+{
+  const base = 1_700_000_000_000; // arbitrary fixed "now" anchor (pure: no clock reads)
+  const [idA, idB] = await Promise.all([newIdentity(false), newIdentity(false)]);
+
+  // premise of the fix: the old `pub.slice(0, 16)` identifier is identical for
+  // every P-256 key (constant ASN.1 header), the sha-256 fingerprint is not
+  check(
+    "P3-344: slice(0,16) of two distinct P-256 keys collides (the bug being fixed)",
+    idA.publicKey.slice(0, 16) === idB.publicKey.slice(0, 16),
+  );
+  check(
+    "P3-344: distinct keys → distinct fingerprints, 16 lowercase hex chars",
+    pubFingerprint(idA.publicKey) !== pubFingerprint(idB.publicKey) &&
+      /^[0-9a-f]{16}$/.test(pubFingerprint(idA.publicKey)) &&
+      /^[0-9a-f]{16}$/.test(pubFingerprint(idB.publicKey)),
+  );
+  check(
+    "P3-344: same key → same fingerprint on repeated calls (stable per device)",
+    pubFingerprint(idA.publicKey) === pubFingerprint(idA.publicKey),
+  );
+  check(
+    "P3-344: invalid input (empty, null, number, garbage) → 'unknown', never throws",
+    pubFingerprint("") === "unknown" &&
+      pubFingerprint(null) === "unknown" &&
+      pubFingerprint(undefined) === "unknown" &&
+      pubFingerprint(123) === "unknown" &&
+      pubFingerprint("!!!") === "unknown",
+  );
+
+  // rejectLogDecision — fixed rule order: (a) missing → warn, (b) future →
+  // silent, (c) at/after the interval → warn, (d) fresh → silent
+  check(
+    "P3-344: rejectLogDecision missing/non-numeric lastWarnAt → warn (first sighting)",
+    rejectLogDecision(undefined, base) === "warn" && rejectLogDecision(Number.NaN, base) === "warn",
+  );
+  check(
+    "P3-344: rejectLogDecision lastWarnAt in the future (clock moved back) → silent",
+    rejectLogDecision(base + 1, base) === "silent" &&
+      rejectLogDecision(base + REJECT_WARN_INTERVAL_MS * 10, base) === "silent",
+  );
+  check(
+    "P3-344: rejectLogDecision at/after the interval → warn",
+    rejectLogDecision(base - REJECT_WARN_INTERVAL_MS, base + REJECT_WARN_INTERVAL_MS) === "warn" &&
+      rejectLogDecision(base - REJECT_WARN_INTERVAL_MS - 1, base) === "warn",
+  );
+  check(
+    "P3-344: rejectLogDecision fresh warn → silent (no zombie log flood)",
+    rejectLogDecision(base, base + REJECT_WARN_INTERVAL_MS - 1) === "silent" &&
+      rejectLogDecision(base, base) === "silent",
+  );
+
+  // noteRejectWarn — bounded map
+  {
+    const state = new Map<string, number>();
+    for (let i = 0; i < 200; i++) noteRejectWarn(state, `fp${i}`, base + i);
+    check("P3-344: noteRejectWarn keeps the map bounded at 64 after 200 pubs", state.size === 64);
+    check(
+      "P3-344: noteRejectWarn evicts the OLDEST entries (newest survive)",
+      !state.has("fp0") && !state.has("fp135") && state.has("fp136") && state.has("fp199"),
+    );
+  }
 }
 
 // --- P2-268: stale-device classifier (devicestale.ts) ------------------------
