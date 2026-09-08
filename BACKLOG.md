@@ -5,6 +5,7 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
+- [ ] (P3-343) [P2] desktop-package-win: smoke do app empacotado falha com 'binary-missing' em win-unpacked — spec: o job empacota com electron-builder no Windows mas o smoke nao encontra o binario dentro de apps/desktop/dist/win-unpacked (run 34275463862); investigar se o build really produziu o exe (step de build silenciosamente degradado) ou se o path de deteccao do smoke difere no Windows; criterio: desktop-package-win verde em PR real com screenshot do boot; evidencia: PR #877 comment 5591541665. (area: infra)
 - [x] (P3-342) [P1] client-ready.test falha no Windows (verify-win vermelho) — writeCrashReport retention comparava paths com '/' literal contra paths de path.join (backslash) e resolveUpdatePath comparava resultado de path.resolve (com drive no Windows) contra join puro; fix: fake fs normaliza separadores, split de basename aceita [\\/], esperado do resolveUpdatePath passa por resolve(); criterio: verify-win verde em PR real. — built by operator 2026-09-08 (PR #878)
 
 **Title:** PWA client accepts unauthenticated clear control frames ("reconnect"/"pong") from any room member — forced rehandshake loop and fake-liveness freeze
