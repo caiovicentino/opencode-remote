@@ -5,6 +5,13 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
+- [ ] (RT-341) [P0] Redteam finding 2026-09-08 — spec: 
+
+**Title:** PWA client accepts unauthenticated clear control frames ("reconnect"/"pong") from any room member — forced rehandshake loop and fake-liveness freeze
+
+**Severity:** Medium (availability/robustness; E2E confidentiality/integrity of the sealed channel is not broken)
+
+**Proof/attack sketch:** The relay is a blind router and the room id is the only credential to join one (relay admits any socket to any room, `apps/relay/src/index.ts:981-1048`), and the code itself treats room ids as leak-prone ("QR ends up in photos, screen shares…", `apps/daemon/src/pairwindow.ts`). Sealed frames are 
 - [ ] (P3-340) [P3] [fable][P3] Welcome screen has no product identity — text-only title in a gray void — spec: The first impression is a 1rem text title over ~60% empty background — no glyph, wordmark, or serif greeting of the kind PRODUCT.md's P2-123 home prescribes. Add a small glyph/wordmark above the title so the wizard opens with care, not a bare label. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-first-boot-20260908.png, where: apps/web/src/components/WelcomeView.tsx:102)
 - [ ] (P3-339) [P3] [fable][P3] Brand header alignment flips between wizard (centered) and pairing (left) — spec: The welcome wizard centers the h1 (`.welcome header { text-align: center }`) while PairingView left-aligns the identical header — consecutive first-boot screens feel like two different products. Unify on one header treatment across the unpaired journey. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-first-boot-20260908.png, where: apps/web/src/index.css:1415)
 - [ ] (P3-338) [P3] [fable][P3] Two differently-labeled exits for the same action on the pairing step — spec: "Pular" (top-right meta row) and "Fazer isso depois" (card footer) both call onDone but use different words and placements, making the user parse two escapes. Keep one calm labeled exit per screen (the in-context "Fazer isso depois") and drop the global skip on the final step. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-pairing-20260908.png, where: apps/web/src/components/WelcomeView.tsx:179)
