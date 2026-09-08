@@ -108,7 +108,10 @@ export function tokensSql(ids: string[]): string {
 
 /** P1-077: provider prefix-cache hit ratio — cacheRead over cacheRead+input
  * (the two "prefix went through the model" token kinds); 0 on empty input so
- * logs/JSON never carry NaN. */
+ * logs/JSON never carry NaN. Eval r3: a ratio of exactly 0 across EVERY task
+ * means the gateway is not reporting cache tokens at all (the SGLang server
+ * behind glm52 needs `--enable-cache-report` — docs/PILOT.md, P1-077 entry),
+ * not that the prefix never matched. */
 export function cacheHitRatio(cacheRead: number, input: number): number {
   const denom = cacheRead + input;
   return denom > 0 ? cacheRead / denom : 0;

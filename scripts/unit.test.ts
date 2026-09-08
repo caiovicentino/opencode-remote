@@ -6,6 +6,25 @@
 // sha-guard/deploy events from tests must never land in the production feed.
 process.env.PILOT_EVENTS_FILE = "/tmp/pilot-unit-events.jsonl";
 
+// Hermetic git for every real-git battery below (temp bare remote + clone):
+// the CI runner has no global identity (`git commit` dies with "unable to
+// auto-detect email address (got 'runner@fv-az…(none)')" — main was red for
+// a week while the same test passed on every developer machine, where the
+// hostname yields a usable implicit identity). A committer identity travels
+// in the environment the spawned git inherits, the developer's global/system
+// config (gpgsign, hooksPath, init.defaultBranch…) is masked, and any GIT_*
+// pointer inherited from a hook/rebase context is dropped so the temp clones
+// are the only repos the tests ever touch. Explicit values win (`??=`).
+process.env.GIT_AUTHOR_NAME ??= "ocr-unit";
+process.env.GIT_AUTHOR_EMAIL ??= "ocr-unit@test.local";
+process.env.GIT_COMMITTER_NAME ??= process.env.GIT_AUTHOR_NAME;
+process.env.GIT_COMMITTER_EMAIL ??= process.env.GIT_AUTHOR_EMAIL;
+process.env.GIT_CONFIG_GLOBAL ??= process.platform === "win32" ? "NUL" : "/dev/null";
+process.env.GIT_CONFIG_NOSYSTEM ??= "1";
+for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE"]) {
+  delete process.env[k];
+}
+
 import { b64, fromB64, seal, openSealed, seqAad } from "@ocr/protocol";
 
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
@@ -443,7 +462,7 @@ import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels,
 
 import type { PilotState } from "../apps/pilot/src/state";
 
-import { clearTaskAttempts, doctorBacklog, doctorBranches, doctorRefs, doctorState, doctorTierB, normalizePilotState, parseAttemptsArgs, protectedBranchIds, runAttemptsCommand, runDoctor, validateBacklog, type AttemptsRequest, type RunFn } from "../apps/pilot/src/doctor";
+import { DIST_SWEEP_EVERY_MS, DIST_SWEEP_MIN_AGE_MS, DIST_SWEEP_REL, clearTaskAttempts, distSweepDue, doctorBacklog, doctorBranches, doctorDist, doctorRefs, doctorState, doctorTierB, nodeDistFs, normalizePilotState, parseAttemptsArgs, protectedBranchIds, runAttemptsCommand, runDoctor, validateBacklog, type AttemptsRequest, type DistFs, type RunFn } from "../apps/pilot/src/doctor";
 
 import { avgPhaseDurations, burnDown, countFailSteps, recordLessonImpact, rollbackHealthAlert } from "../apps/pilot/src/metrics";
 
@@ -499,7 +518,7 @@ import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, runAgentForRole, API
 
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
 
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, statSync, symlinkSync, utimesSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, statSync, symlinkSync, utimesSync, lutimesSync, copyFileSync } from "node:fs";
 
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 
@@ -701,7 +720,7 @@ import {
   type AssetProbe,
 } from "../apps/relay/src/webroot";
 
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
@@ -2360,6 +2379,10 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
       const work = join(gdir, "work");
       execSync(`git init -q --bare -b main ${JSON.stringify(remote)}`);
       execSync(`git clone -q ${JSON.stringify(remote)} ${JSON.stringify(work)}`);
+      // the landing's own `git commit` runs through the real auxPushIo with no
+      // `-c user.*` — the identity must live in the clone (CI runners have no
+      // global one; the env defaults at the top of this file are the backstop)
+      execSync("git config user.name t && git config user.email t@t.local && git config commit.gpgsign false", { cwd: work });
       writeFileSync(join(work, "BACKLOG.md"), pristineBase);
       execSync(`git -C ${JSON.stringify(work)} add BACKLOG.md`);
       execSync(`git -C ${JSON.stringify(work)} -c user.name=t -c user.email=t@t commit -qm init`);
@@ -8420,9 +8443,13 @@ check(
         if (cmd.startsWith("gh pr merge")) return { ok: false, output: mergeOutput };
         if (cmd.startsWith("gh pr view")) {
           const snap = view();
-          return snap
-            ? { ok: true, output: JSON.stringify({ state: snap.state, headRefOid: snap.headRefOid }) }
-            : { ok: false, output: "no pull requests" };
+          if (!snap) return { ok: false, output: "no pull requests" };
+          // eval r3: the pre-merge readiness probe (statusCheckRollup) sees a
+          // clean green PR here — these cases pin the CONFIRMATION poll
+          if (cmd.includes("statusCheckRollup")) {
+            return { ok: true, output: JSON.stringify({ state: snap.state, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [] }) };
+          }
+          return { ok: true, output: JSON.stringify({ state: snap.state, headRefOid: snap.headRefOid }) };
         }
         return { ok: false, output: `unexpected exec: ${cmd}` };
       },
@@ -8433,6 +8460,7 @@ check(
     };
     return { io, calls, getSleeps: () => sleeps };
   };
+  const confirmViews = (calls: string[]) => calls.filter((c) => c.startsWith("gh pr view") && c.includes("headRefOid")).length;
 
   // THE P2-117/P2-123 criterion: merge exec errored, PR still confirms MERGED
   // with our sha ⇒ success (auto-merge was armed; the squash fired later).
@@ -8459,7 +8487,7 @@ check(
   const queuedOut = await mergePrForTask(queued.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
   check("P2-125: merge never confirmed ⇒ ok=false with infra=timeout", queuedOut.ok === false && queuedOut.infra === "timeout");
   check("P2-125: unconfirmed detail carries the gh merge tail", queuedOut.detail.includes("failed to arm auto-merge"));
-  check("P2-125: every poll in the budget ran", queued.calls.filter((c) => c.startsWith("gh pr view")).length === PR_MERGE_CONFIRM_POLLS);
+  check("P2-125: every poll in the budget ran", confirmViews(queued.calls) === PR_MERGE_CONFIRM_POLLS);
   check("P2-125: sleep only between polls (59 sleeps for 60 polls)", queued.getSleeps() === PR_MERGE_CONFIRM_POLLS - 1);
 
   // the runSlot infra branch: structured kind → recordInfraFailure only —
@@ -8540,7 +8568,11 @@ check(
         if (cmd.startsWith("gh pr merge")) return { ok: false, output: "gh: failed to arm auto-merge" };
         if (cmd.startsWith("gh pr view")) {
           const snap = view();
-          return snap ? { ok: true, output: JSON.stringify(snap) } : { ok: false, output: "no pull requests" };
+          if (!snap) return { ok: false, output: "no pull requests" };
+          // eval r3: the readiness probe reads the same conflict fields (plus
+          // an empty check rollup) BEFORE the merge is armed
+          if (cmd.includes("statusCheckRollup")) return { ok: true, output: JSON.stringify({ ...snap, statusCheckRollup: [] }) };
+          return { ok: true, output: JSON.stringify(snap) };
         }
         return { ok: false, output: `unexpected exec: ${cmd}` };
       },
@@ -8553,13 +8585,15 @@ check(
   };
 
   // THE P2-117/P2-123/P2-126 shape: gate green, PR parked on a merge conflict
-  // with main ⇒ bail out on the CURRENT poll with infra "conflict"
+  // with main ⇒ the readiness probe skips on the CURRENT poll with infra
+  // "conflict" — the merge is never armed (eval r3)
   const conflicting = mkIo134(() => ({ state: "OPEN", headRefOid: sha, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }));
   const conflictOut = await mergePrForTask(conflicting.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
   check("P2-134: CONFLICTING PR ⇒ ok=false with infra=conflict", conflictOut.ok === false && conflictOut.infra === "conflict");
-  check("P2-134: conflict detail cites the real GitHub reason", conflictOut.detail.includes("PR #42 blocked:") && conflictOut.detail.includes("CONFLICTING") && conflictOut.detail.includes("DIRTY"));
+  check("P2-134: conflict detail cites the real GitHub reason", conflictOut.detail.includes("PR #42 not merged") && conflictOut.detail.includes("CONFLICTING") && conflictOut.detail.includes("DIRTY"));
   check("P2-134: conflict bails on the current poll (exactly 1 view, 0 sleeps)", conflicting.calls.filter((c) => c.startsWith("gh pr view")).length === 1 && conflicting.getSleeps() === 0);
-  check("P2-134: poll query pinned to state,headRefOid,mergeable,mergeStateStatus", conflicting.calls.some((c) => c === "gh pr view 42 --json state,headRefOid,mergeable,mergeStateStatus"));
+  check("P2-134: readiness query pinned to state,mergeable,mergeStateStatus,statusCheckRollup", conflicting.calls.some((c) => c === "gh pr view 42 --json state,mergeable,mergeStateStatus,statusCheckRollup"));
+  check("P2-134: a conflicting PR never reaches `gh pr merge`", !conflicting.calls.some((c) => c.startsWith("gh pr merge")));
 
   // MERGED wins over the conflict check — residual mergeable fields are noise
   const mergeable = mkIo134(() => ({ state: "MERGED", headRefOid: sha, mergeable: "UNKNOWN" }));
@@ -8569,12 +8603,13 @@ check(
   const residualOut = await mergePrForTask(residual.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
   check("P2-134: MERGED wins over a residual CONFLICTING (order pinned)", residualOut.ok === true);
 
-  // snapshot without mergeable/mergeStateStatus (old gh): today's behavior —
-  // poll the whole budget, then honest infra timeout
+  // snapshot without mergeable/mergeStateStatus (old gh): mergeability never
+  // becomes known — the readiness probe polls its whole budget (pending), then
+  // an honest infra timeout; the merge is never armed
   const noField = mkIo134(() => ({ state: "OPEN", headRefOid: sha }));
   const noFieldOut = await mergePrForTask(noField.io, { branch: "pilot/P2-134", title: "t", body: "b", pushedSha: sha });
   check("P2-134: snapshot without mergeable keeps polling ⇒ infra=timeout", noFieldOut.ok === false && noFieldOut.infra === "timeout");
-  check("P2-134: legacy snapshot runs the full poll budget", noField.calls.filter((c) => c.startsWith("gh pr view")).length === PR_MERGE_CONFIRM_POLLS);
+  check("P2-134: legacy snapshot runs the full readiness budget without arming the merge", noField.calls.filter((c) => c.startsWith("gh pr view")).length === PR_READINESS_POLLS && !noField.calls.some((c) => c.startsWith("gh pr merge")));
 
   // the runSlot infra branch: structured "conflict" → recordInfraFailure only —
   // no taskAttempts entry, no fever sample (mirrors apps/pilot/src/index.ts)
@@ -31836,6 +31871,253 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     css.includes(".welcome-qr-hint") && css.includes(".welcome-qr-actions") && css.includes(".welcome-qr-manual {"),
   );
 }
+
+
+// ── eval r3: doctorDist + mergeReadiness (operator landing P1-060) ──────
+// --- eval r3: merge readiness — GitHub's verdict is read BEFORE the merge is armed --
+{
+  const run = (name: string, status: string, conclusion: string | null) => ({ __typename: "CheckRun", name, status, conclusion, workflowName: "CI" });
+  const ctx = (context: string, state: string) => ({ __typename: "StatusContext", context, state });
+
+  const green = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS"), run("scope", "COMPLETED", "SKIPPED"), run("lint", "COMPLETED", "NEUTRAL")] });
+  check("readiness: MERGEABLE + every check green ⇒ merge", green.verdict === "merge" && green.detail === "3 check(s) green");
+  const noChecks = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [] });
+  check("readiness: no checks at all (foreign mission repo without CI) ⇒ merge", noChecks.verdict === "merge" && noChecks.detail.includes("no checks"));
+  const red = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE"), run("scope", "COMPLETED", "SUCCESS"), run("desktop-package", "IN_PROGRESS", null)] });
+  check("readiness: one FAILURE ⇒ skip ci-red, even while other checks still run", red.verdict === "skip" && red.infra === "ci-red" && red.detail === "CI red: verify=FAILURE");
+  const conflict = mergeReadiness({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] });
+  check("readiness: CONFLICTING/DIRTY ⇒ skip conflict, decided before the checks", conflict.verdict === "skip" && conflict.infra === "conflict" && conflict.detail.includes("CONFLICTING"));
+  check("readiness: DIRTY alone is a conflict too", mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "DIRTY", statusCheckRollup: [] }).verdict === "skip");
+  const computing = mergeReadiness({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN", statusCheckRollup: [] });
+  check("readiness: mergeable UNKNOWN (GitHub still computing) ⇒ pending", computing.verdict === "pending" && computing.detail.includes("computing"));
+  const running = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", statusCheckRollup: [run("verify", "IN_PROGRESS", null), run("scope", "QUEUED", null), run("lint", "COMPLETED", "SUCCESS")] });
+  check("readiness: QUEUED/IN_PROGRESS checks ⇒ pending, named", running.verdict === "pending" && running.detail === "checks in progress: verify, scope");
+  check(
+    "readiness: legacy StatusContext states — FAILURE/ERROR red, PENDING/EXPECTED pending, SUCCESS green",
+    mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [ctx("ci/legacy", "FAILURE")] }).verdict === "skip" &&
+      mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [ctx("ci/legacy", "ERROR")] }).verdict === "skip" &&
+      mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [ctx("ci/legacy", "PENDING")] }).verdict === "pending" &&
+      mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [ctx("ci/legacy", "EXPECTED")] }).verdict === "pending" &&
+      mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [ctx("ci/legacy", "SUCCESS")] }).verdict === "merge",
+  );
+  check(
+    "readiness: TIMED_OUT/CANCELLED/ACTION_REQUIRED/STARTUP_FAILURE are red",
+    ["TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"].every((c) => {
+      const r = mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "COMPLETED", c)] });
+      return r.verdict === "skip" && r.infra === "ci-red";
+    }),
+  );
+  const merged = mergeReadiness({ state: "MERGED", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE")] });
+  check("readiness: state MERGED short-circuits to merge (out-of-band landing; confirmation still verifies the head)", merged.verdict === "merge" && merged.detail.includes("already MERGED"));
+  check(
+    "readiness: snapshot without mergeable and without a rollup, non-objects and garbage ⇒ unknown",
+    mergeReadiness({ state: "OPEN" }).verdict === "unknown" && mergeReadiness(null).verdict === "unknown" && mergeReadiness("x").verdict === "unknown" && mergeReadiness(42).verdict === "unknown",
+  );
+  check(
+    "readiness: non-object rollup items are ignored, an empty object is an unreadable check (pending)",
+    mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [null, 1, "x"] }).verdict === "merge" &&
+      mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [{}] }).verdict === "pending",
+  );
+  check("readiness: non-string fields behave as absent (external JSON)", mergeReadiness({ mergeable: 7, statusCheckRollup: "not-an-array" }).verdict === "unknown");
+  check(
+    "readinessInfraKind: skip carries its own kind, pending ⇒ timeout, unknown ⇒ network",
+    readinessInfraKind({ verdict: "skip", infra: "ci-red", detail: "" }) === "ci-red" &&
+      readinessInfraKind({ verdict: "skip", infra: "conflict", detail: "" }) === "conflict" &&
+      readinessInfraKind({ verdict: "pending", detail: "" }) === "timeout" &&
+      readinessInfraKind({ verdict: "unknown", detail: "" }) === "network",
+  );
+  check("readiness budget: 120 polls × 5s = 10min", PR_READINESS_POLLS * PR_MERGE_CONFIRM_DELAY_MS === 600_000);
+
+  // the polling wrapper: a gh outage → still computing → checks running →
+  // green resolves on the green poll; every non-decisive verdict keeps polling
+  {
+    const seq: Array<unknown | null> = [
+      null,
+      { mergeable: "UNKNOWN", statusCheckRollup: [] },
+      { mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "IN_PROGRESS", null)] },
+      { mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] },
+    ];
+    let i = 0;
+    let sleeps = 0;
+    const calls: string[] = [];
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        const s = seq[Math.min(i++, seq.length - 1)];
+        return s ? { ok: true, output: JSON.stringify(s) } : { ok: false, output: "gh: connection reset" };
+      },
+      sleep: () => {
+        sleeps++;
+        return Promise.resolve();
+      },
+    };
+    const out = await awaitMergeReadiness(io, 42);
+    check("awaitMergeReadiness: outage → computing → running → green resolves on the green poll", out.verdict === "merge" && calls.length === 4 && sleeps === 3);
+    check("awaitMergeReadiness: query pinned to state,mergeable,mergeStateStatus,statusCheckRollup by PR number", calls.every((c) => c === "gh pr view 42 --json state,mergeable,mergeStateStatus,statusCheckRollup"));
+    let pendingViews = 0;
+    let pendingSleeps = 0;
+    const pend = await awaitMergeReadiness(
+      {
+        exec: () => {
+          pendingViews++;
+          return { ok: true, output: JSON.stringify({ mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "QUEUED", null)] }) };
+        },
+        sleep: () => {
+          pendingSleeps++;
+          return Promise.resolve();
+        },
+      },
+      7,
+      7,
+    );
+    check("awaitMergeReadiness: pending for the whole budget ⇒ last verdict pending, N views, N-1 sleeps", pend.verdict === "pending" && pendingViews === 7 && pendingSleeps === 6);
+    const garbage = await awaitMergeReadiness({ exec: () => ({ ok: true, output: "{nope" }), sleep: () => Promise.resolve() }, 7, 3);
+    check("awaitMergeReadiness: malformed JSON throughout ⇒ unknown, never merge", garbage.verdict === "unknown" && garbage.detail.includes("malformed"));
+    const red1 = await awaitMergeReadiness({ exec: () => ({ ok: true, output: JSON.stringify({ mergeable: "UNKNOWN", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE")] }) }), sleep: () => Promise.resolve() }, 7, 50);
+    check("awaitMergeReadiness: a red check is decisive on the first poll, even with mergeability still unknown", red1.verdict === "skip" && red1.infra === "ci-red");
+  }
+
+  // wiring: mergePrForTask reads the verdict and never arms `gh pr merge` on a
+  // red/conflicting/undeterminable PR; green proceeds exactly as before
+  {
+    const sha = "e".repeat(40);
+    const mk = (readiness: () => unknown | null) => {
+      const calls: string[] = [];
+      const io: PrMergeIo = {
+        exec: (cmd) => {
+          calls.push(cmd);
+          if (cmd.startsWith("gh pr create")) return { ok: true, output: "https://github.com/x/y/pull/77" };
+          if (cmd.startsWith("gh pr list")) return { ok: true, output: "77\n" };
+          if (cmd.startsWith("gh pr merge")) return { ok: true, output: "" };
+          if (cmd.startsWith("gh pr view") && cmd.includes("statusCheckRollup")) {
+            const snap = readiness();
+            return snap ? { ok: true, output: JSON.stringify(snap) } : { ok: false, output: "gh: api unreachable" };
+          }
+          if (cmd.startsWith("gh pr view")) return { ok: true, output: JSON.stringify({ state: "MERGED", headRefOid: sha }) };
+          return { ok: false, output: `unexpected exec: ${cmd}` };
+        },
+        sleep: () => Promise.resolve(),
+      };
+      return { io, calls };
+    };
+    const args = { branch: "pilot/P2-999", title: "t", body: "b", pushedSha: sha };
+    const redIo = mk(() => ({ state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE")] }));
+    const redOut = await mergePrForTask(redIo.io, args);
+    check("merge wiring: red CI ⇒ ok=false, infra=ci-red, `gh pr merge` never executed", redOut.ok === false && redOut.infra === "ci-red" && !redIo.calls.some((c) => c.startsWith("gh pr merge")));
+    check("merge wiring: the skip detail names the PR and the failed check", redOut.detail.includes("PR #77 not merged (skip)") && redOut.detail.includes("verify=FAILURE"));
+    const conflictIo = mk(() => ({ state: "OPEN", mergeable: "CONFLICTING", statusCheckRollup: [] }));
+    const conflictOut = await mergePrForTask(conflictIo.io, args);
+    check("merge wiring: conflicting ⇒ infra=conflict, merge never armed", conflictOut.ok === false && conflictOut.infra === "conflict" && !conflictIo.calls.some((c) => c.startsWith("gh pr merge")));
+    const greenIo = mk(() => ({ state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] }));
+    const greenOut = await mergePrForTask(greenIo.io, args);
+    check("merge wiring: green ⇒ merge armed by PR number and confirmed with our head", greenOut.ok === true && greenIo.calls.some((c) => c.startsWith("gh pr merge 77 ")));
+    check("merge wiring: the readiness probe runs after the PR number is resolved and before the merge", greenIo.calls.findIndex((c) => c.includes("statusCheckRollup")) > greenIo.calls.findIndex((c) => c.startsWith("gh pr list")) && greenIo.calls.findIndex((c) => c.includes("statusCheckRollup")) < greenIo.calls.findIndex((c) => c.startsWith("gh pr merge")));
+    const deadIo = mk(() => null);
+    const deadOut = await mergePrForTask(deadIo.io, args);
+    check("merge wiring: undeterminable readiness for the whole budget ⇒ infra=network, merge never armed", deadOut.ok === false && deadOut.infra === "network" && !deadIo.calls.some((c) => c.startsWith("gh pr merge")) && deadIo.calls.filter((c) => c.includes("statusCheckRollup")).length === PR_READINESS_POLLS);
+
+    // the existing retry/backoff machinery owns the skip: a structured infra
+    // kind burns no attempt, and three identical red cycles hard-block the
+    // task with the kind in the reason (mirrors runSlot in index.ts)
+    const st = { date: "2026-09-08", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+    check("merge wiring: ci-red is a structured infra kind (free retry)", resultInfraKind({ ok: redOut.ok, infra: redOut.infra }) === "ci-red");
+    let streak = 0;
+    for (let n = 0; n < 3; n++) streak = recordTaskInfraStreak(st, "P2-999", "ci-red");
+    check("merge wiring: three consecutive ci-red skips exhaust the streak breaker", infraStreakExhausted(streak) && infraStarvationReason("ci-red", streak).includes('"ci-red" failed 3x in a row'));
+  }
+}
+
+
+// --- eval r3: doctor dist sweep — stale electron-builder output leaves idle slots ---
+{
+  const H = 60 * 60_000;
+  const now = 10 * H;
+  const d = (ws: string) => join(ws, DIST_SWEEP_REL);
+  const w1 = "/slots/repo-1";
+  const w2 = "/slots/repo-2";
+  const w3 = "/slots/repo-3";
+  const mkFs = (trees: Record<string, { bytes: number; newestMtimeMs: number } | null>) => {
+    const rms: string[] = [];
+    const fs: DistFs = {
+      walk: (dir) => trees[dir] ?? null,
+      rm: (dir) => {
+        rms.push(dir);
+        trees[dir] = null;
+      },
+    };
+    return { fs, rms };
+  };
+  check("dist: the swept path is apps/desktop/dist inside the workspace", DIST_SWEEP_REL === join("apps", "desktop", "dist"));
+
+  const t = mkFs({ [d(w1)]: { bytes: 1.5 * 1024 ** 3, newestMtimeMs: now - 2 * H }, [d(w2)]: { bytes: 5e8, newestMtimeMs: now - 10 * 60_000 }, [d(w3)]: null });
+  const r = doctorDist([w1, w2, w3], { fs: t.fs, now, busy: () => false });
+  check("dist: stale tree removed, fresh tree kept, missing tree ignored", r.ok && r.changed && t.rms.length === 1 && t.rms[0] === d(w1));
+  check("dist: freed bytes reported in the result and the detail", r.freedBytes === 1.5 * 1024 ** 3 && r.detail.includes("freed 1.5gb") && r.detail.includes("repo-1 (1.5gb)"));
+  check("dist: the fresh tree is named with its age", r.detail.includes("repo-2 (written 10min ago)"));
+  const again = doctorDist([w1, w2, w3], { fs: t.fs, now, busy: () => false });
+  check("dist: second pass is a noop (changed:false, 0 bytes, no rm)", again.ok && !again.changed && again.freedBytes === 0 && t.rms.length === 1 && again.detail.includes("repo-2 (written 10min ago)"));
+
+  const b = mkFs({ [d(w1)]: { bytes: 100, newestMtimeMs: 0 } });
+  const busyOut = doctorDist([w1], { fs: b.fs, now, busy: (ws) => ws === w1 });
+  check("dist: a busy slot is skipped even with a stale tree (never walked, never removed)", busyOut.ok && !busyOut.changed && b.rms.length === 0 && busyOut.detail.includes("repo-1 (pipeline running)"));
+
+  const edge = mkFs({ [d(w1)]: { bytes: 1, newestMtimeMs: now - DIST_SWEEP_MIN_AGE_MS } });
+  check("dist: exactly 1h since the last write is stale", DIST_SWEEP_MIN_AGE_MS === H && doctorDist([w1], { fs: edge.fs, now }).changed === true);
+  const under = mkFs({ [d(w1)]: { bytes: 1, newestMtimeMs: now - DIST_SWEEP_MIN_AGE_MS + 1 } });
+  check("dist: 1h minus 1ms is still fresh", doctorDist([w1], { fs: under.fs, now }).changed === false);
+  const future = mkFs({ [d(w1)]: { bytes: 1, newestMtimeMs: now + H } });
+  check("dist: a future mtime (clock skew) is fresh, age never negative", doctorDist([w1], { fs: future.fs, now }).detail.includes("written 0min ago"));
+
+  const failing: DistFs = { walk: () => ({ bytes: 5, newestMtimeMs: 0 }), rm: () => { throw new Error("EACCES"); } };
+  const failOut = doctorDist([w1], { fs: failing, now });
+  check("dist: rm failure ⇒ ok:false with the reason, nothing counted as freed", !failOut.ok && !failOut.changed && failOut.freedBytes === 0 && failOut.detail.includes("rm failed: Error: EACCES"));
+  const sticky: DistFs = { walk: () => ({ bytes: 5, newestMtimeMs: 0 }), rm: () => {} };
+  const stickyOut = doctorDist([w1], { fs: sticky, now });
+  check("dist: tree still present after rm ⇒ ok:false, never reported freed", !stickyOut.ok && stickyOut.freedBytes === 0 && stickyOut.detail.includes("still present after rm"));
+  check("dist: empty workspace list ⇒ ok noop", doctorDist([], { fs: sticky }).ok && doctorDist([], { fs: sticky }).detail === "no stale dist output");
+
+  check("dist throttle: due when never run", distSweepDue(null, now));
+  check("dist throttle: not due 59min after the last run", !distSweepDue(now - 59 * 60_000, now));
+  check("dist throttle: due exactly 1h after the last run (hourly)", DIST_SWEEP_EVERY_MS === H && distSweepDue(now - DIST_SWEEP_EVERY_MS, now));
+
+  // real filesystem: the walk sums file bytes, tracks the newest mtime and
+  // never follows symlinks; the sweep removes the tree and nothing else
+  const root = mkdtempSync(join(tmpdir(), "ocr-dist-"));
+  try {
+    const dist = d(root);
+    mkdirSync(join(dist, "mac-arm64"), { recursive: true });
+    writeFileSync(join(dist, "app.dmg"), Buffer.alloc(1000));
+    writeFileSync(join(dist, "mac-arm64", "x.bin"), Buffer.alloc(24));
+    const outside = join(root, "outside.bin");
+    writeFileSync(outside, Buffer.alloc(4096));
+    symlinkSync(outside, join(dist, "link"));
+    const old = new Date(Date.now() - 3 * H);
+    for (const p of [join(dist, "app.dmg"), join(dist, "mac-arm64", "x.bin"), join(dist, "mac-arm64"), dist]) utimesSync(p, old, old);
+    const info = nodeDistFs().walk(dist)!;
+    check("dist/nodeDistFs: byte total sums the files, the symlink target is never followed", info.bytes >= 1024 && info.bytes < 1024 + 4096);
+    check("dist/nodeDistFs: newest mtime is the just-created symlink (lstat), not the aged files", info.newestMtimeMs > Date.now() - 60_000);
+    const kept = doctorDist([root], {});
+    check("dist/nodeDistFs: a tree with a fresh entry is kept", !kept.changed && existsSync(dist) && kept.detail.includes("written 0min ago"));
+    lutimesSync(join(dist, "link"), old, old);
+    const swept = doctorDist([root], {});
+    check("dist/nodeDistFs: once every entry is stale the tree is removed, the outside file untouched", swept.ok && swept.changed && !existsSync(dist) && existsSync(outside) && swept.freedBytes >= 1024);
+    check("dist/nodeDistFs: missing tree ⇒ walk null (idempotent second pass)", nodeDistFs().walk(dist) === null && doctorDist([root], {}).changed === false);
+    writeFileSync(dist, "not a dir");
+    check("dist/nodeDistFs: a plain file at the dist path is not a tree", nodeDistFs().walk(dist) === null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  // runDoctor wiring: the boot pass sweeps every workspace and logs freed bytes
+  const bootLogs: Array<{ level: string; msg: string; data?: unknown }> = [];
+  runDoctor({ repo: tmpdir(), models: undefined }, [], (level, msg, data) => bootLogs.push({ level, msg, data }), { runTierB: () => ({ ok: true, output: "1.0.0" }) });
+  const distLog = bootLogs.find((l) => l.msg === "doctor: dist");
+  check("dist wiring: runDoctor logs a `doctor: dist` line with freedBytes", !!distLog && distLog.level === "info" && (distLog.data as { freedBytes?: number }).freedBytes === 0);
+  const indexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check("dist wiring: the main loop repeats the sweep hourly on idle slots only", indexSrc.includes("distSweepDue(lastDistSweep, Date.now())") && /const idle = slotNumbers\.filter\(\(s\) => !running\.has\(s\)\)\.map\(\(s\) => slotCfg\.get\(s\)!\.workspace\);\s+try \{\s+const sweep = doctorDist\(idle\)/.test(indexSrc));
+  check("dist wiring: the boot pass counts as the first run", indexSrc.includes("lastDistSweep = Date.now();"));
+}
+
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

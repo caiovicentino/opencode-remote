@@ -792,6 +792,25 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   praticamente impossível. Conclusão: nenhum option extra de modelo é
   necessário no `opencode.jsonc` (arquivo do host, nunca commitado — contém a
   API key); o lever é a ordem de montagem do prompt, implementada nesta task.
+  **Eval r3 (2026-09-08) — conclusão corrigida**: após a P1-077, TODAS as 288
+  medições de `task cache` seguiram com `cacheRead = 0`; no `opencode.db`, as
+  2.683 sessões `glm52/glm-5.2` somam 4,2B tokens de input e zero de
+  `tokens_cache_read`, enquanto sessões `openrouter`/`opencode` do mesmo banco
+  reportam cache normalmente. Sonda direta no gateway (`GET /v1/models` →
+  `owned_by: sglang`; três `POST /v1/chat/completions` com o MESMO prefixo de
+  4k tokens, em sequência) devolveu `usage.prompt_tokens_details: null` nas
+  três — o servidor **nunca reporta** tokens em cache, então a ordem do prompt
+  não tem como aparecer na métrica. O `@ai-sdk/openai-compatible` só preenche
+  `cache.read` a partir de `usage.prompt_tokens_details.cached_tokens`, e o
+  SGLang só emite esse campo quando é lançado com **`--enable-cache-report`**
+  (o RadixAttention/prefix caching em si fica ligado por padrão — os hits
+  provavelmente acontecem, mas são invisíveis e, na `pricing.ts`, cobrados
+  como input cheio: é daí que vem o "~$14/merge"). **Onde está o fix** (fora
+  deste repo): a linha de launch do SGLang que serve
+  `http://154.59.156.40:33532/v1` precisa de `--enable-cache-report`; nada
+  muda no pilot, no daemon nem no `opencode.jsonc`. Critério de verificação:
+  repetir a sonda e ver `prompt_tokens_details.cached_tokens > 0` na segunda
+  chamada; depois, `msg:"task cache"` com `ratio > 0` nas tasks seguintes.
 - **Telemetria em dólares (P2-113)**: a reconciliação do P2-028 agora aplica
   uma **tabela de preços por modelo/tier** (`apps/pilot/src/pricing.ts`) às
   quatro colunas de token que o `costs.ts` já lê do `opencode.db`

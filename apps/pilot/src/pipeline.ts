@@ -2110,6 +2110,118 @@ export function mergeBlockReason(snap: { mergeable?: unknown; mergeStateStatus?:
   return reasons.length > 0 ? reasons.join(" + ") : null;
 }
 
+/** Readiness verdict read from GitHub BEFORE the merge is armed (eval r3). */
+export type MergeReadiness =
+  | { verdict: "merge"; detail: string }
+  | { verdict: "pending"; detail: string }
+  | { verdict: "unknown"; detail: string }
+  | { verdict: "skip"; infra: "conflict" | "ci-red"; detail: string };
+
+/** Check-run conclusions / status-context states that mean "CI is red". */
+const CHECK_RED = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]);
+
+/**
+ * Eval r3: the pilot merged without ever reading the PR's checks — with zero
+ * required status checks on main, `gh pr merge` lands red code the moment the
+ * local gate is green. Pure classification of one
+ * `gh pr view --json state,mergeable,mergeStateStatus,statusCheckRollup`
+ * snapshot (untrusted external JSON — every field optional, every value
+ * unknown):
+ *   merge         — state MERGED: an out-of-band landing (operator, a previous
+ *                   cycle's --auto) is already the end state; the confirmation
+ *                   poll still verifies the merged head is ours
+ *   skip/conflict — CONFLICTING or DIRTY (P2-134 rule, decided first)
+ *   skip/ci-red   — any CheckRun conclusion or StatusContext state in CHECK_RED
+ *   pending       — mergeability still UNKNOWN, or a check not COMPLETED yet
+ *   unknown       — a snapshot carrying neither mergeable nor a rollup
+ *   merge         — mergeable known, every reported check green (or no checks
+ *                   at all: a foreign mission repo without CI must still merge)
+ * A red check wins over pending ones: one failed job is decisive even while
+ * the rest of the run is still going.
+ */
+export function mergeReadiness(snap: unknown): MergeReadiness {
+  if (!snap || typeof snap !== "object") return { verdict: "unknown", detail: "malformed PR snapshot" };
+  const s = snap as { state?: unknown; mergeable?: unknown; mergeStateStatus?: unknown; statusCheckRollup?: unknown };
+  if (s.state === "MERGED") return { verdict: "merge", detail: "already MERGED on GitHub" };
+  const blocked = mergeBlockReason(s);
+  if (blocked) return { verdict: "skip", infra: "conflict", detail: blocked };
+  const rollup = Array.isArray(s.statusCheckRollup) ? s.statusCheckRollup : null;
+  const mergeable = typeof s.mergeable === "string" ? s.mergeable : "";
+  if (!rollup && !mergeable) return { verdict: "unknown", detail: "snapshot carries neither mergeable nor statusCheckRollup" };
+  const red: string[] = [];
+  const pending: string[] = [];
+  let green = 0;
+  for (const item of rollup ?? []) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    const name = typeof c.name === "string" ? c.name : typeof c.context === "string" ? c.context : "check";
+    // CheckRun: status (QUEUED/IN_PROGRESS/COMPLETED) + conclusion;
+    // StatusContext (legacy commit status): a single state field.
+    const status = typeof c.status === "string" ? c.status : "";
+    const outcome = typeof c.conclusion === "string" ? c.conclusion : typeof c.state === "string" ? c.state : "";
+    if (status && status !== "COMPLETED") {
+      pending.push(name);
+      continue;
+    }
+    if (CHECK_RED.has(outcome)) {
+      red.push(`${name}=${outcome}`);
+      continue;
+    }
+    if (!outcome || outcome === "PENDING" || outcome === "EXPECTED") {
+      pending.push(name);
+      continue;
+    }
+    green++; // SUCCESS / NEUTRAL / SKIPPED / STALE
+  }
+  if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}` };
+  if (!mergeable || mergeable === "UNKNOWN") return { verdict: "pending", detail: "GitHub still computing mergeability" };
+  if (pending.length) return { verdict: "pending", detail: `checks in progress: ${pending.join(", ")}` };
+  return { verdict: "merge", detail: green ? `${green} check(s) green` : "no checks reported" };
+}
+
+/** Readiness budget: a green CI run on this repo (lint → unit → build → e2e →
+ * real opencode integration) takes ~2min; a "pending" skip re-runs the whole
+ * pipeline next cycle, so the ceiling is generous — 10min, one poll per
+ * PR_MERGE_CONFIRM_DELAY_MS. Async sleeps only: the main loop keeps feeding
+ * the 3min watchdog meanwhile. */
+export const PR_READINESS_POLLS = 120;
+
+/**
+ * Poll GitHub until the PR is decidable: `merge`/`skip` return at once,
+ * `pending` and `unknown` (gh down, malformed JSON) keep polling and the LAST
+ * verdict is returned when the budget ends — the caller maps it to an infra
+ * skip, never to a merge.
+ */
+export async function awaitMergeReadiness(io: PrMergeIo, prNumber: number, polls = PR_READINESS_POLLS): Promise<MergeReadiness> {
+  let last: MergeReadiness = { verdict: "unknown", detail: "no readable PR snapshot" };
+  for (let poll = 0; poll < polls; poll++) {
+    if (poll > 0) await io.sleep(PR_MERGE_CONFIRM_DELAY_MS);
+    const view = io.exec(`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,statusCheckRollup`);
+    if (!view.ok) {
+      last = { verdict: "unknown", detail: `gh pr view failed: ${ghTail(view.output)}` };
+      continue;
+    }
+    let snap: unknown;
+    try {
+      snap = JSON.parse(view.output);
+    } catch {
+      last = { verdict: "unknown", detail: "gh pr view returned malformed JSON" };
+      continue;
+    }
+    last = mergeReadiness(snap);
+    if (last.verdict === "merge" || last.verdict === "skip") return last;
+  }
+  return last;
+}
+
+/** Infra kind of a non-merge readiness verdict: the skip's own kind, an
+ * exhausted "pending" budget is a timeout, an undeterminable answer is gh
+ * noise ("network") — every one of them a free retry next cycle. */
+export function readinessInfraKind(ready: MergeReadiness): InfraFailureKind {
+  if (ready.verdict === "skip") return ready.infra;
+  return ready.verdict === "pending" ? "timeout" : "network";
+}
+
 /**
  * P2-125: create + merge the task PR and CONFIRM it landed with OUR sha as
  * the merged head — the same fail-closed confirmation `armMetaPr` applies to
@@ -2149,6 +2261,24 @@ export async function mergePrForTask(
       infra: "network",
       detail: `pr create failed: ${ghTail(create.output)} | pr list: ${ghTail(list.output)}`,
     };
+  }
+  // Eval r3: read GitHub's verdict BEFORE arming anything. With no required
+  // checks on main the immediate squash below merges regardless of CI, so a
+  // red or conflicting PR is skipped here with the reason — classified infra
+  // (free retry: the next cycle rebases/re-runs and probes again; three
+  // identical skips in a row become a hard block via the streak breaker).
+  const ready = await awaitMergeReadiness(io, prNumber);
+  if (ready.verdict !== "merge") {
+    const infra = readinessInfraKind(ready);
+    console.log(
+      JSON.stringify({
+        ts: nowLocalISO(),
+        level: "warn",
+        msg: "merge skipped — PR not ready on GitHub",
+        data: { pr: prNumber, verdict: ready.verdict, infra, detail: ready.detail.slice(0, 300) },
+      }),
+    );
+    return { ok: false, infra, detail: `PR #${prNumber} not merged (${ready.verdict}): ${ready.detail}` };
   }
   // --auto only works once branch protection exists; the immediate squash is
   // the fallback. Failure here is NOT fatal: the squash may be queued anyway.
