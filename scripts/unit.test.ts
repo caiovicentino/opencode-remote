@@ -10698,6 +10698,29 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-336: brand title on a token-based scale, no inline font sizes ---------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const tokens = read("tokens.css");
+  const wordmark = css.slice(css.indexOf(".brand-wordmark"), css.indexOf("}", css.indexOf(".brand-wordmark")));
+  check(
+    "P3-336: .brand-wordmark renders from the type-scale tokens",
+    wordmark.includes("font-size: var(--font-size-xl)") && wordmark.includes("font-family: var(--font-serif)") &&
+      tokens.includes("--font-size-xl: 1.35rem") && tokens.includes("--font-serif:"),
+  );
+  // Every "OpenCode Remote" h1 on a first-contact screen carries the shared
+  // class and none carries an inline fontSize override again.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+    const src = read(join("components", view));
+    const h1s = src.match(/<h1[^>]*>OpenCode Remote<\/h1>/g) ?? [];
+    check(
+      `P3-336: ${view} brand h1 uses .brand-wordmark (no inline fontSize)`,
+      h1s.length > 0 && h1s.every((h) => h.includes('className="brand-wordmark"') && !h.includes("style=")),
+    );
+  }
+}
+
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {

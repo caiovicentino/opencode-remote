@@ -1421,10 +1421,14 @@ button.desk-new:hover:not(:disabled) {
   color: var(--accent);
   margin-bottom: 10px;
 }
-.welcome-wordmark {
+/* P3-340/P3-336: the product wordmark — serif voice at the display step of
+   the type scale. One shared class for every first-contact screen (welcome
+   wizard, pairing, degraded journey) so the brand title never collapses back
+   to body size via inline overrides. */
+.brand-wordmark {
   margin: 0;
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
-  font-size: 1.35rem;
+  font-family: var(--font-serif);
+  font-size: var(--font-size-xl);
   font-weight: var(--font-weight-medium);
   letter-spacing: -0.01em;
   color: var(--fg);

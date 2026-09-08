@@ -48,7 +48,7 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   return (
     <div className="screen degraded" data-degraded-kind={busy ? "connecting" : kind}>
       <header>
-        <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
+        <h1 className="brand-wordmark">OpenCode Remote</h1>
       </header>
       <div className="degraded-status">
         <span className={`degraded-dot${kind === "down" ? " err" : ""}`} aria-hidden="true" />
