@@ -727,7 +727,7 @@ import {
   type AssetProbe,
 } from "../apps/relay/src/webroot";
 
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, readWorkflowTexts, workflowsExpectPrChecks, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONFLICT_OPERATOR_MARKER, CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, readWorkflowTexts, workflowsExpectPrChecks, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";

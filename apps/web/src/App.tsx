@@ -1161,6 +1161,16 @@ export default function App() {
           />
         ) : (
           <PairingView
+            // Round 2 (review): the degraded journey's "pair manually" escape
+            // must always show the paste/scan ceremony — the sticky localMode
+            // alone would render the auto-connect card with no way to type a
+            // remote code (the P3-332 dead-end class, one screen later).
+            // P3-329: reaching this screen through pairManual IS explicit
+            // manual intent (wizard escape or degraded escape) — the local
+            // auto-connect mode must never swallow the paste/scan ceremony
+            // (same rule as "add machine", P3-332).
+            localMode={localMode && !pairManual}
+            onBack={pairManual ? () => setPairManual(false) : undefined}
             phase={phase}
             error={error}
             hint={errorHint}
@@ -1190,18 +1200,6 @@ export default function App() {
               }
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-            // Round 2 (review): the degraded journey's "pair manually" escape
-            // must always show the paste/scan ceremony — the sticky localMode
-            // alone would render the auto-connect card with no way to type a
-            // remote code (the P3-332 dead-end class, one screen later).
-            // P3-329: reaching this screen through pairManual IS explicit
-            // manual intent (wizard escape or degraded escape) — the local
-            // auto-connect mode must never swallow the paste/scan ceremony
-            // (same rule as "add machine", P3-332).
-            localMode={localMode && !pairManual}
-            preferPaste={!!desktopBridge()}
-            getCamAccess={desktopBridge()?.getCamAccess}
-            onBack={pairManual ? () => setPairManual(false) : undefined}
           />
         )}
       </div>
