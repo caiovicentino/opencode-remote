@@ -119,6 +119,16 @@ async function handshake() {
       // when the daemon dials while the handshake is in flight
       if (frame.from === state.room && frame.payload === "") return;
       if (frame.from === "testclient") return;
+      // a sealed op-response from the previous session can also land here
+      // after a daemon restart (the relay replays queued frames) — it is not
+      // the confirm; keep waiting instead of resolving with binary garbage
+      let parsed: { confirm?: unknown };
+      try {
+        parsed = JSON.parse(atob(frame.payload!));
+      } catch {
+        return;
+      }
+      if (typeof parsed.confirm !== "string") return;
       clearTimeout(t);
       ws.off("message", onMsg);
       resolve(frame.payload!);
