@@ -14,6 +14,7 @@ import { attemptsKey } from "./mission";
 import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
+import { repairPlan } from "./mergerepair";
 /**
  * P2-009 (round 2): single predicate for "UI evidence required", shared by the
  * builder prompt and the gatekeeper so the builder is always asked for exactly
@@ -2071,11 +2072,26 @@ export function gateFindingBlock(step: string, tail: string): string {
   return `[deterministic gate failed at step "${step}" — fix this FIRST and re-run the EVIDENCE commands]\n${tail.slice(-1500)}`;
 }
 
-/** Injectable sinks for mergePrForTask (unit battery pins the semantics). */
+/** Injectable sinks for mergePrForTask (unit battery pins the semantics).
+ * P3-341: readFile/writeFile are optional conflict-repair sinks — absent ⇒
+ * the repair is skipped and the behavior is byte-for-byte the pre-P3-341 one. */
 export interface PrMergeIo {
   exec: (cmd: string) => { ok: boolean; output: string };
   sleep: (ms: number) => Promise<void>;
+  readFile?: (p: string) => string | null;
+  writeFile?: (p: string, c: string) => boolean;
 }
+
+/** P3-341: marker in every conflict-escalation detail so the reason reaches
+ * the phase event, the pipeline log and the end-of-cycle notifySupervisor. */
+export const CONFLICT_OPERATOR_MARKER = "needs operator";
+
+/** Outcome of one automatic conflict-repair pass on the task branch. */
+export type RepairOutcome =
+  | { status: "repaired"; sha: string }
+  | { status: "clean"; sha: string }
+  | { status: "escalate"; detail: string }
+  | { status: "failed"; detail: string };
 
 /** Outcome of the task-PR merge: `infra` classifies unambiguous gh-side noise
  * (P2-125) so runSlot's classifier spares the attempt counter and the fever
@@ -2190,13 +2206,18 @@ export const PR_READINESS_POLLS = 120;
  * Poll GitHub until the PR is decidable: `merge`/`skip` return at once,
  * `pending` and `unknown` (gh down, malformed JSON) keep polling and the LAST
  * verdict is returned when the budget ends — the caller maps it to an infra
- * skip, never to a merge.
+ * skip, never to a merge. P3-341: with `expectSha` set (right after the
+ * conflict repair pushed a new head) the query also reads `headRefOid` and a
+ * snapshot still reporting the old head stays `pending` — the second probe
+ * then waits for the CI of the NEW head before any merge is armed, so a green
+ * verdict inherited from the old head can never land. Without `expectSha` the
+ * behavior is unchanged (same command, same verdicts).
  */
-export async function awaitMergeReadiness(io: PrMergeIo, prNumber: number, polls = PR_READINESS_POLLS): Promise<MergeReadiness> {
+export async function awaitMergeReadiness(io: PrMergeIo, prNumber: number, polls = PR_READINESS_POLLS, expectSha?: string): Promise<MergeReadiness> {
   let last: MergeReadiness = { verdict: "unknown", detail: "no readable PR snapshot" };
   for (let poll = 0; poll < polls; poll++) {
     if (poll > 0) await io.sleep(PR_MERGE_CONFIRM_DELAY_MS);
-    const view = io.exec(`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,statusCheckRollup`);
+    const view = io.exec(`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,statusCheckRollup${expectSha ? ",headRefOid" : ""}`);
     if (!view.ok) {
       last = { verdict: "unknown", detail: `gh pr view failed: ${ghTail(view.output)}` };
       continue;
@@ -2209,6 +2230,17 @@ export async function awaitMergeReadiness(io: PrMergeIo, prNumber: number, polls
       continue;
     }
     last = mergeReadiness(snap);
+    if (expectSha) {
+      // fail-closed: a snapshot WITHOUT headRefOid cannot prove the head moved
+      // either — it stays pending (honest infra timeout on budget exhaustion,
+      // free retry) instead of arming a merge on an unverified head
+      const headRaw = (snap as { headRefOid?: unknown }).headRefOid;
+      const head = typeof headRaw === "string" ? headRaw : "";
+      if (!head || head !== expectSha) {
+        last = { verdict: "pending", detail: "PR head not yet updated" };
+        continue;
+      }
+    }
     if (last.verdict === "merge" || last.verdict === "skip") return last;
   }
   return last;
@@ -2223,6 +2255,92 @@ export function readinessInfraKind(ready: MergeReadiness): InfraFailureKind {
 }
 
 /**
+ * P3-341: one automatic conflict-repair pass on the task branch — thin runner
+ * over the pure `repairPlan`, all I/O here. Closed ordered plan: fetch →
+ * `git merge --no-edit origin/main` → on conflict, read every unmerged path
+ * (NUL-delimited `-z` output — never newline-split, never shell-parsed)
+ * through the io sinks → `repairPlan` decides. Escalate ⇒ `git merge --abort`
+ * (branch intact, nothing pushed); resolve ⇒ write the union, `git add` with
+ * single-quoted paths (JSON.stringify is NOT shell quoting), `git commit
+ * --no-edit`, `git push -q --force-with-lease` (metapush precedent — never a
+ * plain `--force`, never a push to main) and report the new HEAD. A clean
+ * merge (main just moved) also pushes and reports the new HEAD. Runs at most
+ * once per mergePrForTask call; any `failed` outcome leaves the retry to the
+ * next cycle.
+ */
+export async function repairConflictedBranch(io: PrMergeIo, args: { branch: string }): Promise<RepairOutcome> {
+  const fetched = io.exec("git fetch -q origin");
+  if (!fetched.ok) return { status: "failed", detail: `git fetch failed: ${ghTail(fetched.output)}` };
+  const merge = io.exec("git merge --no-edit origin/main");
+  if (merge.ok) {
+    const head = io.exec("git rev-parse HEAD");
+    const sha = head.output.trim();
+    if (!head.ok || !/^[0-9a-f]{40}$/.test(sha)) return { status: "failed", detail: `post-merge rev-parse failed: ${ghTail(head.output)}` };
+    const push = io.exec(`git push -q --force-with-lease origin ${args.branch}`);
+    if (!push.ok) return { status: "failed", detail: `push after clean merge failed: ${ghTail(push.output)}` };
+    return { status: "clean", sha };
+  }
+  const diff = io.exec("git diff -z --name-only --diff-filter=U");
+  if (!diff.ok) {
+    io.exec("git merge --abort");
+    return { status: "failed", detail: `git diff failed on conflicted branch: ${ghTail(diff.output)}` };
+  }
+  // -z: entries are NUL-terminated and C-quoting is suppressed — filenames
+  // with spaces, quotes, $() or newlines survive verbatim into the sinks
+  const paths = diff.output.split("\0").filter((p) => p.length > 0);
+  const files: { path: string; content: string }[] = [];
+  const unreadable: string[] = [];
+  for (const p of paths) {
+    const content = io.readFile?.(p);
+    if (content === null || content === undefined) unreadable.push(p);
+    else files.push({ path: p, content });
+  }
+  const escalate = (detail: string): RepairOutcome => {
+    io.exec("git merge --abort");
+    return { status: "escalate", detail };
+  };
+  if (unreadable.length > 0) {
+    return escalate(`conflicted file(s) unreadable, delete/modify conflict: ${unreadable.join(", ")}`);
+  }
+  const plan = repairPlan(files);
+  if (plan.verdict === "escalate") {
+    const where = plan.paths.length > 0 ? ` (${plan.paths.join(", ")})` : "";
+    return escalate(`conflict(s) not auto-resolvable: ${plan.reason}${where}`);
+  }
+  let written = true;
+  for (const f of plan.files) {
+    if (!io.writeFile?.(f.path, f.content)) {
+      written = false;
+      break;
+    }
+  }
+  if (!written) {
+    io.exec("git merge --abort");
+    return { status: "failed", detail: "conflict repair could not write the resolved file(s)" };
+  }
+  const add = io.exec(`git add -- ${plan.files.map((f) => shQuote(f.path)).join(" ")}`);
+  if (!add.ok) {
+    io.exec("git merge --abort");
+    return { status: "failed", detail: `git add failed during repair: ${ghTail(add.output)}` };
+  }
+  const commit = io.exec("git commit --no-edit");
+  if (!commit.ok) {
+    io.exec("git merge --abort");
+    return { status: "failed", detail: `git commit failed during repair: ${ghTail(commit.output)}` };
+  }
+  const push = io.exec(`git push -q --force-with-lease origin ${args.branch}`);
+  if (!push.ok) {
+    // the repair commit exists locally; the next cycle's push (mergeTask /
+    // setupTaskBranch rebase flow) carries it — nothing to abort anymore
+    return { status: "failed", detail: `push after repair failed (peer push?): ${ghTail(push.output)}` };
+  }
+  const head = io.exec("git rev-parse HEAD");
+  const sha = head.output.trim();
+  if (!head.ok || !/^[0-9a-f]{40}$/.test(sha)) return { status: "failed", detail: `post-repair rev-parse failed: ${ghTail(head.output)}` };
+  return { status: "repaired", sha };
+}
+
+/**
  * P2-125: create + merge the task PR and CONFIRM it landed with OUR sha as
  * the merged head — the same fail-closed confirmation `armMetaPr` applies to
  * the meta PR. Every gh step's output is captured and its last 300 chars ride
@@ -2234,8 +2352,11 @@ export function readinessInfraKind(ready: MergeReadiness): InfraFailureKind {
  * + headRefOid === the pushed sha) — even when the merge exec itself returned
  * an error. P2-134: the poll also reads `mergeable`/`mergeStateStatus` and bails
  * out immediately with infra "conflict" when GitHub already marks the PR
- * CONFLICTING/DIRTY — rebase happens on the next cycle's setupTaskBranch. If
- * nothing confirms within the budget the outcome is honest infra ("timeout"): the
+ * CONFLICTING/DIRTY (P3-341: when the repair sinks are wired, that skip first
+ * triggers ONE automatic repair — merge origin/main in the slot, resolve
+ * trivial conflicts, push the new head, re-probe — see repairConflictedBranch;
+ * semantic conflicts escalate to the operator with CONFLICT_OPERATOR_MARKER).
+ * If nothing confirms within the budget the outcome is honest infra ("timeout"): the
  * next cycle re-schedules instead of burning an attempt. The PR is always
  * addressed by NUMBER (`--delete-branch` removes the ref, the poll must stay
  * valid) and there is deliberately NO local-merge/push-to-main fallback
@@ -2268,17 +2389,65 @@ export async function mergePrForTask(
   // (free retry: the next cycle rebases/re-runs and probes again; three
   // identical skips in a row become a hard block via the streak breaker).
   const ready = await awaitMergeReadiness(io, prNumber);
-  if (ready.verdict !== "merge") {
-    const infra = readinessInfraKind(ready);
+  // P3-341: a CONFLICTING PR is no longer a dead end. With the repair sinks
+  // wired (real workspace) the builder merges origin/main into the branch in
+  // the slot, resolves trivial conflicts (docs, comment-only code hunks) and
+  // pushes the updated head — then exactly ONE re-probe waits for the new
+  // head's CI before arming the merge. Any escalation path (semantic code
+  // hunks, protected paths, malformed markers, unreadable files) reports the
+  // operator marker and pushes nothing. Without sinks the pre-P3-341 behavior
+  // is preserved byte-for-byte. At most one repair per call: a second
+  // CONFLICTING after the push falls through to the normal conflict skip.
+  let effective = ready;
+  let expectedSha = args.pushedSha;
+  if (ready.verdict === "skip" && ready.infra === "conflict" && io.readFile && io.writeFile) {
+    const repair = await repairConflictedBranch(io, { branch: args.branch });
+    if (repair.status === "repaired" || repair.status === "clean") {
+      expectedSha = repair.sha;
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "info",
+          msg: "conflict repair pushed a new PR head — re-checking merge readiness",
+          data: { pr: prNumber, branch: args.branch, status: repair.status, sha: repair.sha.slice(0, 7) },
+        }),
+      );
+      effective = await awaitMergeReadiness(io, prNumber, PR_READINESS_POLLS, expectedSha);
+    } else if (repair.status === "escalate") {
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "warn",
+          msg: "conflict repair escalated — operator attention required",
+          data: { pr: prNumber, branch: args.branch, status: repair.status, detail: repair.detail.slice(0, 300) },
+        }),
+      );
+      return { ok: false, infra: "conflict", detail: `PR #${prNumber} ${CONFLICT_OPERATOR_MARKER}: ${repair.detail}` };
+    } else {
+      // transient repair failure (fetch/push/commit noise) — NOT an operator
+      // escalation: honest infra kind, free retry next cycle, marker reserved
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "warn",
+          msg: "conflict repair failed transiently — retrying next cycle",
+          data: { pr: prNumber, branch: args.branch, status: repair.status, detail: repair.detail.slice(0, 300) },
+        }),
+      );
+      return { ok: false, infra: "network", detail: `PR #${prNumber} conflict repair failed (retry next cycle): ${repair.detail}` };
+    }
+  }
+  if (effective.verdict !== "merge") {
+    const infra = readinessInfraKind(effective);
     console.log(
       JSON.stringify({
         ts: nowLocalISO(),
         level: "warn",
         msg: "merge skipped — PR not ready on GitHub",
-        data: { pr: prNumber, verdict: ready.verdict, infra, detail: ready.detail.slice(0, 300) },
+        data: { pr: prNumber, verdict: effective.verdict, infra, detail: effective.detail.slice(0, 300) },
       }),
     );
-    return { ok: false, infra, detail: `PR #${prNumber} not merged (${ready.verdict}): ${ready.detail}` };
+    return { ok: false, infra, detail: `PR #${prNumber} not merged (${effective.verdict}): ${effective.detail}` };
   }
   // --auto only works once branch protection exists; the immediate squash is
   // the fallback. Failure here is NOT fatal: the squash may be queued anyway.
@@ -2299,11 +2468,12 @@ export async function mergePrForTask(
     const state = typeof snap.state === "string" ? snap.state : "";
     const head = typeof snap.headRefOid === "string" ? snap.headRefOid : "";
     // a head that is not ours (before or at merge) is a real anomaly, not infra
-    if (head && head !== args.pushedSha) {
-      return { ok: false, detail: `PR #${prNumber} head is ${head.slice(0, 7)}, not our ${args.pushedSha.slice(0, 7)} — merge exec: ${mergeTail}` };
+    // — P3-341: "ours" is the pre-merge pushed sha OR the repair's new head
+    if (head && head !== expectedSha) {
+      return { ok: false, detail: `PR #${prNumber} head is ${head.slice(0, 7)}, not our ${expectedSha.slice(0, 7)} — merge exec: ${mergeTail}` };
     }
     if (state === "MERGED") {
-      if (head === args.pushedSha) return { ok: true, detail: `PR #${prNumber} squash-merged, head confirmed` };
+      if (head === expectedSha) return { ok: true, detail: `PR #${prNumber} squash-merged, head confirmed` };
       return { ok: false, detail: `PR #${prNumber} MERGED with another head — merge exec: ${mergeTail}` };
     }
     // P2-134: GitHub already computed the merge cannot land — bail out on the
@@ -2314,6 +2484,24 @@ export async function mergePrForTask(
     if (blocked) return { ok: false, infra: "conflict", detail: `PR #${prNumber} blocked: ${blocked} — merge exec: ${mergeTail}` };
   }
   return { ok: false, infra: "timeout", detail: `merge unconfirmed after ~5min: ${mergeTail}` };
+}
+
+/** P3-341: resolve a repo-relative conflict path against the workspace for
+ * the repair sinks — absolute paths, backslashes and `..` traversal are
+ * refused (fail-closed; git reports repo-relative paths). */
+function wsRepoPath(ws: string, rel: string): string | null {
+  if (!rel || rel.startsWith("/") || rel.includes("\\")) return null;
+  if (rel.split("/").some((part) => part === ".." || part === "")) return null;
+  return join(ws, rel);
+}
+
+/** P3-341: single-quote shell escaping for git path arguments — the safe
+ * quoting for `spawnSync(shell: true)`: every character inside single quotes
+ * is literal, including `$`, backticks and double quotes; a literal `'` is
+ * spelled `'\''`. JSON.stringify is NOT shell quoting (it leaves `$()` and
+ * backticks active inside double quotes). */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 /**
@@ -2352,6 +2540,28 @@ async function mergeTask(
     {
       exec: (cmd) => exec(cmd, { cwd: ws, timeoutMin: 5, allowFail: true }),
       sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+      // P3-341: real repair sinks, resolved against the workspace and refusing
+      // absolute paths or `..` traversal (git diff paths are repo-relative,
+      // but stay fail-closed — these run arbitrary repo files through the repair)
+      readFile: (p) => {
+        const abs = wsRepoPath(ws, p);
+        if (!abs) return null;
+        try {
+          return readFileSync(abs, "utf8");
+        } catch {
+          return null;
+        }
+      },
+      writeFile: (p, c) => {
+        const abs = wsRepoPath(ws, p);
+        if (!abs) return false;
+        try {
+          writeFileSync(abs, c);
+          return true;
+        } catch {
+          return false;
+        }
+      },
     },
     {
       branch: `pilot/${t.id}`,
