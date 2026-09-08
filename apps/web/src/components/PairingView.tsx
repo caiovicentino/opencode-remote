@@ -52,9 +52,9 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
   // as a first-contact dead weight.
   const ceremony = !localMode;
 
-  // P2-106: the two pairing directions read as titled sections — "connect to
-  // another machine" (this device as client: scan/paste) vs "pair a phone
-  // with this machine" (this device as host). The error keeps the
+  // P2-106: the two pairing directions read as titled sections — "pair a phone
+  // with this machine" (this device as host) and "connect to another machine"
+  // (this device as client: scan/paste). The error keeps the
   // locale-independent .pair-error hook the desktop-flow gate asserts on.
 
   // P2-117: paste-first on the desktop (the camera path is the option);
@@ -89,12 +89,46 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
     </button>
   );
 
+  // P2-106: the two pairing directions read as titled sections — "pair a phone
+  // with this machine" (this device as host) and "connect to another machine"
+  // (this device as client: scan/paste). The error keeps the
+  // locale-independent .pair-error hook the desktop-flow gate asserts on.
+
+  // P3-334: on the desktop the host section leads — pairing a phone is the
+  // primary story on this machine, so the client ceremony reads as the
+  // secondary option. The phone never renders the host section (no
+  // onPairRemote), so its scan/paste flow is untouched.
   return (
     <div className="screen pair-screen">
       <header>
         <h1 className="brand-wordmark">OpenCode Remote</h1>
       </header>
       <p className="muted pair-intro">{t("pairIntro")}</p>
+      {onPairRemote && (
+        <section className="pair-section">
+          <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
+          <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
+            <span className="pair-remote-copy">
+              <b>{t("pairRemoteTitle")}</b>
+              <span className="muted">{t("pairRemoteHint")}</span>
+            </span>
+            <svg
+              className="pair-remote-chevron"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </button>
+        </section>
+      )}
       {ceremony && (
         <section className="pair-section">
           <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>
@@ -121,31 +155,6 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
           )}
           <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
         </div>
-      )}
-      {onPairRemote && (
-        <section className="pair-section">
-          <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
-          <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
-            <span className="pair-remote-copy">
-              <b>{t("pairRemoteTitle")}</b>
-              <span className="muted">{t("pairRemoteHint")}</span>
-            </span>
-            <svg
-              className="pair-remote-chevron"
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="m9 18 6-6-6-6" />
-            </svg>
-          </button>
-        </section>
       )}
     </div>
   );

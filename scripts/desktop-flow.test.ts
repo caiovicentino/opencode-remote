@@ -520,12 +520,16 @@ try {
   // (1) two titled sections on the ceremony screen, (2) scanner route,
   // (3) styled invalid-code error with the inline format helper, and (4) the
   // QR overlay with the demoted "pair later" link (local-boot beat below).
-  const connectTitle = run("P2-106: client section title", ["ipc", "document.querySelector('.pair-section-title')?.textContent ?? ''"], 15_000);
-  if (connectTitle.ok) {
+  // P3-334: the host section leads — pairing a phone is the primary story on
+  // the desktop — and the client ceremony follows as the secondary option.
+  const sectionTitles = run("P3-334: section order host → client", ["ipc", "[...document.querySelectorAll('.pair-section-title')].map((el) => el.textContent).join('|')"], 15_000);
+  if (sectionTitles.ok) {
+    const titles = sectionTitles.stdout.replace(/"/g, "").trim();
     check(
-      "P2-106: 'connect to another machine' section title (en|pt)",
-      /Connect to another machine|Conectar a outra máquina/.test(connectTitle.stdout),
-      connectTitle.stdout,
+      "P3-334: host section first, client ceremony second (en|pt)",
+      titles === "Pair a phone with this machine|Connect to another machine" ||
+        titles === "Parear um celular com esta máquina|Conectar a outra máquina",
+      sectionTitles.stdout,
     );
   }
   const sectionCount = run("P2-106: titled section count", ["ipc", "String(document.querySelectorAll('.pair-section').length)"], 15_000);
