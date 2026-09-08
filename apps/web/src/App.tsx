@@ -616,6 +616,10 @@ export default function App() {
   // again, so a slow first boot can never dead-end behind the manual wall;
   // a manual paste mid-edit (pairManual/addingMachine) is never yanked.
   const sawOutageRef = useRef(false);
+  // Round 2 (review): error-phase re-arms ride the 3s pairing-state poll —
+  // a half-up daemon would be connect-hammered forever. A time backoff (never
+  // a hard cap) keeps the recovery loop alive without the burst.
+  const lastAutoRetryRef = useRef(0);
   useEffect(() => {
     if (pairingState?.reconnecting || pairingState?.daemonDown) {
       sawOutageRef.current = true;
@@ -630,6 +634,8 @@ export default function App() {
         hasStoredPairing: !!loadState(),
       })
     ) {
+      if (phase === "error" && Date.now() - lastAutoRetryRef.current < 15_000) return;
+      lastAutoRetryRef.current = Date.now();
       sawOutageRef.current = false;
       tryAutoPair();
     }
@@ -1035,13 +1041,24 @@ export default function App() {
               void connect(pairing, true);
             }}
             onRetry={() => {
+              // Round 2 (review): a stored pairing reconnects verbatim — the
+              // PWA has no auto-pair to re-arm (tryAutoPair is a no-op without
+              // the shell bridge), so Retry must never lose this path.
               // P3-332: with no stored pairing the retry re-arms the auto-pair
               // (local link / deep link) — the live card's only way forward.
-              setPhase("unpaired");
-              tryAutoPair();
+              const stored = loadState();
+              if (stored) void connect(stored.pairing, false);
+              else {
+                setPhase("unpaired");
+                tryAutoPair();
+              }
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-            localMode={localMode}
+            // Round 2 (review): the degraded journey's "pair manually" escape
+            // must always show the paste/scan ceremony — the sticky localMode
+            // alone would render the auto-connect card with no way to type a
+            // remote code (the P3-332 dead-end class, one screen later).
+            localMode={localMode && !pairManual}
             preferPaste={!!desktopBridge()}
             getCamAccess={desktopBridge()?.getCamAccess}
             onBack={pairManual ? () => setPairManual(false) : undefined}

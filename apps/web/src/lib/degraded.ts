@@ -59,8 +59,12 @@ export function autoConnectAllowed(
 ): boolean {
   if (phase === "paired" || phase === "connecting") return false;
   if (opts.hasStoredPairing) return false;
+  // Round 2 (review): an explicit manual request — the degraded journey's
+  // "pair manually" escape or the add-machine screen — must never be yanked
+  // by the auto-connect loop on the next 3s poll (P3-332's dead-end class).
+  if (opts.pairManual || opts.addingMachine) return false;
   if (phase === "unpaired") return opts.localMode || opts.sawOutage;
-  return opts.localMode && !opts.pairManual && !opts.addingMachine;
+  return opts.localMode;
 }
 
 /** P2-138: tolerant view of the daemon's /api/health `opencode` object (the
