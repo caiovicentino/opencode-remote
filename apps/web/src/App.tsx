@@ -914,6 +914,13 @@ export default function App() {
           phonePaired={pairingState?.phonePaired}
           onCancelPairRemote={() => void desktopBridge()?.setRemotePairing?.(false)}
           onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+          onPairManually={() => {
+            // P3-329: the stuck QR wait's labeled escape — leave the wizard
+            // straight into the manual paste-code ceremony instead of making
+            // the user find the unlabeled link one screen earlier.
+            finishWelcome();
+            setPairManual(true);
+          }}
           onDone={finishWelcome}
         />
       </div>
@@ -1023,7 +1030,11 @@ export default function App() {
               tryAutoPair();
             }}
             onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-            localMode={pairingState?.mode === "local"}
+            // P3-329: reaching this screen through pairManual IS explicit
+            // manual intent (wizard escape or degraded escape) — the local
+            // auto-connect mode must never swallow the paste/scan ceremony
+            // (same rule as "add machine", P3-332).
+            localMode={pairManual ? false : pairingState?.mode === "local"}
             preferPaste={!!desktopBridge()}
             getCamAccess={desktopBridge()?.getCamAccess}
           />

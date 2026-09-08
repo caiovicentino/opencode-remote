@@ -31702,6 +31702,67 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   })());
 }
 
+// --- P3-329: the stuck QR wait names its dependency and offers the manual path
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const welcome = read(join("components", "WelcomeView.tsx"));
+  const app = read("App.tsx");
+  const css = read("index.css");
+
+  // the new copy resolves in BOTH locales — no raw-key fallback on the stuck screen
+  const qrKeys = ["welcomeQrWaitHint", "welcomeQrErrorHint", "welcomeQrManual"];
+  check(
+    "P3-329: QR wait/error copy resolves per locale",
+    (["en", "pt"] as const).every((lang) =>
+      qrKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+
+  // the wait branch carries the dependency hint right under "generating"
+  const waitAt = welcome.indexOf('t("welcomeQrWait")');
+  const waitHintAt = welcome.indexOf('t("welcomeQrWaitHint")');
+  check("P3-329: the wait state names the local-agent dependency", waitAt !== -1 && waitHintAt > waitAt);
+
+  // the error branch explains why and offers the labeled manual escape next
+  // to the retry — conditional on the App-provided wiring, never a dead button
+  const errAt = welcome.indexOf('t("welcomeQrError")');
+  const errHintAt = welcome.indexOf('t("welcomeQrErrorHint")');
+  const retryAt = welcome.indexOf('className="welcome-qr-retry"');
+  const manualAt = welcome.indexOf('className="welcome-qr-manual"');
+  check(
+    "P3-329: the error branch explains the dependency and pairs retry with the manual escape",
+    errAt !== -1 && errHintAt > errAt && retryAt > errHintAt && manualAt > retryAt && manualAt < welcome.indexOf('t("welcomeQrWaitHint")'),
+  );
+  check(
+    "P3-329: the manual button renders only when the escape is wired",
+    welcome.includes("{onPairManually && (") && welcome.includes("onClick={onPairManually}"),
+  );
+
+  // App wires the escape: finish the wizard, land on the manual ceremony, and
+  // explicit manual intent keeps the paste form visible (localMode forced off)
+  const wiringAt = app.indexOf("onPairManually={() => {");
+  const finishAt = app.indexOf("finishWelcome();", wiringAt);
+  const setManualAt = app.indexOf("setPairManual(true);", wiringAt);
+  check(
+    "P3-329: the wizard escape finishes onboarding and opens the manual ceremony",
+    wiringAt !== -1 && finishAt > wiringAt && setManualAt > finishAt,
+  );
+  check(
+    "P3-329: pairManual intent forces localMode off (paste form never swallowed)",
+    app.includes('localMode={pairManual ? false : pairingState?.mode === "local"}'),
+  );
+
+  // styling stays on the quiet bordered vocabulary — the manual button shares
+  // the retry rule instead of growing a second visual grammar
+  check(
+    "P3-329: hint + actions styled, manual button shares the retry rule",
+    css.includes(".welcome-qr-hint") && css.includes(".welcome-qr-actions") && css.includes(".welcome-qr-manual {"),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

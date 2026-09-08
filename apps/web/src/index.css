@@ -1509,7 +1509,19 @@ button.desk-new:hover:not(:disabled) {
   font-size: var(--font-size-sm);
   color: var(--text);
 }
-.welcome-qr-retry {
+/* P3-329: the wait/error states name the QR's dependency (the local agent)
+   in the same quiet vocabulary; the error block adds the labeled escape to
+   the manual paste-code ceremony next to the retry. */
+.welcome-qr-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+.welcome-qr-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.welcome-qr-retry,
+.welcome-qr-manual {
   font: inherit;
   font-size: var(--font-size-sm);
   color: var(--text);
@@ -1520,7 +1532,8 @@ button.desk-new:hover:not(:disabled) {
   cursor: pointer;
   transition: border-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
 }
-.welcome-qr-retry:hover {
+.welcome-qr-retry:hover,
+.welcome-qr-manual:hover {
   border-color: var(--fg);
 }
 
