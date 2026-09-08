@@ -104,9 +104,14 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
         </header>
         <div className="welcome-meta">
           <span className="welcome-step-of">{t("welcomeStepOf", { n: step })}</span>
-          <button className="welcome-skip" onClick={onDone}>
-            {t("welcomeSkip")}
-          </button>
+          {/* P3-338: one labeled exit per screen — the final step already ends
+              with the in-context "do this later"/"done" button, so the global
+              skip would be a second, differently-labeled way out. */}
+          {step < 3 && (
+            <button className="welcome-skip" onClick={onDone}>
+              {t("welcomeSkip")}
+            </button>
+          )}
         </div>
         {step === 1 && (
           <div className="welcome-step welcome-intro">

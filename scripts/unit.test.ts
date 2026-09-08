@@ -10698,6 +10698,21 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-338: one labeled exit on the welcome's final step ---------------------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
+  const metaAt = src.indexOf('className="welcome-meta"');
+  const guardAt = src.indexOf("{step < 3 && (", metaAt);
+  const skipAt = src.indexOf('className="welcome-skip"', metaAt);
+  const laterAt = src.indexOf('className="welcome-later"');
+  // The global skip renders only while the step card has no in-context exit;
+  // the pairing step keeps "do this later" as the single way out.
+  check(
+    "P3-338: the global welcome skip is hidden on the final step (welcome-later is the one exit)",
+    metaAt >= 0 && guardAt >= 0 && skipAt > guardAt && laterAt > 0,
+  );
+}
+
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {

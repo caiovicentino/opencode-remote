@@ -316,8 +316,9 @@ export const dict = {
       "Reopen the app — it reconnects by itself; if this keeps happening, close other heavy programs.",
     sidecarUnknownTitle: "The daemon exited unexpectedly",
     sidecarUnknownAction: "Reopen the app; if it persists, send the diagnostic from Settings → Help.",
-    // P2-148: first-run welcome — three steps, shown once, skippable at any
-    // time. Calm, plain sentences; step 2 reuses the degraded-journey copy.
+    // P2-148: first-run welcome — three steps, shown once; steps 1–2 carry a
+    // global skip, the final step exits via the in-context "do this later".
+    // Calm, plain sentences; step 2 reuses the degraded-journey copy.
     welcomeStepOf: "Step {n} of 3",
     welcomeStep1Title: "Control this machine from your phone",
     welcomeStep1Body:
@@ -880,8 +881,9 @@ export const dict = {
     sidecarUnknownTitle: "O daemon saiu de forma inesperada",
     sidecarUnknownAction: "Reabra o app; se persistir, envie o diagnóstico em Configurações → Ajuda.",
     // P2-148: boas-vindas de primeira execução — três passos, mostrados uma
-    // vez, puláveis a qualquer momento. Frases simples e calmas; o passo 2
-    // reusa a copy da jornada degradada.
+    // vez; passos 1–2 têm o atalho global, o passo final sai pelo
+    // "Fazer isso depois" do próprio cartão. Frases simples e calmas; o passo
+    // 2 reusa a copy da jornada degradada.
     welcomeStepOf: "Passo {n} de 3",
     welcomeStep1Title: "Controle esta máquina pelo celular",
     welcomeStep1Body:

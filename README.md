@@ -1478,11 +1478,14 @@ stays one click away.
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and
-the phone-pairing invitation with an explicit "do this later". It is skippable
-at any moment; finishing or skipping stamps a flag in the renderer's
-localStorage (no IPC, no main-process change), so existing users — including
-everyone upgrading with a stored pairing — never see it. It renders as a
-single full-screen surface: no banners, no pairing overlay (P2-108 rule).
+the phone-pairing invitation with an explicit "do this later". The first two
+steps carry a global "Skip" in the top meta row; the final step has a single,
+in-context way out — "Do this later" (or "Done" once paired) — so one action
+never shows two differently-labeled exits (P3-338). Finishing or skipping
+stamps a flag in the renderer's localStorage (no IPC, no main-process change),
+so existing users — including everyone upgrading with a stored pairing — never
+see it. It renders as a single full-screen surface: no banners, no pairing
+overlay (P2-108 rule).
 
 **Upstream notice (P2-138)**: the daemon can be healthy while the agent server
 it proxies is not (`opencode serve` not installed, wrong port, changed
