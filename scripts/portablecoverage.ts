@@ -57,6 +57,7 @@ export interface PortableExclusion {
  */
 export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "artifact-auto.test.ts", cause: "symlink" },
+  { file: "artifactbudget.test.ts", cause: "long-lived-child" },
   { file: "chunk.test.ts", cause: "long-lived-child" },
   { file: "context-checkpoint.test.ts", cause: "network-port" },
   { file: "desktop-crash.test.ts", cause: "electron" },
