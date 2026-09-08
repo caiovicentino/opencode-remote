@@ -441,7 +441,9 @@ try {
   const welcomeShot390 = join(shotsDir, "P2-148-welcome-390.png");
   const w2 = run("P2-148: 390 welcome shot", ["shot", welcomeShot390, "390", "844"], 15_000);
   if (w2.ok) check("P2-148: 390 welcome shot is a real PNG", pngSize(welcomeShot390)[0] === 390);
-  run("P2-148: skip the onboarding", ["click", ".welcome-skip"], 15_000);
+  const skipGone = run("P3-338: global skip absent on the final step", ["ipc", "!!document.querySelector('.welcome-skip')"], 15_000);
+  if (skipGone.ok) check("P3-338: .welcome-skip hidden on the pairing step", /false/.test(skipGone.stdout));
+  run("P2-148: leave via the in-context exit", ["click", ".welcome-later"], 15_000);
   const welcomeGone = run("P2-148: welcome absent after skip", ["ipc", "!!document.querySelector('.welcome')"], 15_000);
   if (welcomeGone.ok) check("P2-148: .welcome unmounted after skip", /false/.test(welcomeGone.stdout));
   const homeBack = run("P2-148: home rendered after skip", ["ipc", "!!document.querySelector('.degraded')"], 15_000);
