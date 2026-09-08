@@ -2650,6 +2650,21 @@ button.desk-new:hover:not(:disabled) {
   border-color: var(--danger);
   background: transparent;
 }
+/* P3-331: quiet return from the manual pairing escape hatch to the calm
+   degraded card — same underlined-link language as .degraded-manual. */
+.pair-back {
+  align-self: center;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.pair-back:hover {
+  color: var(--text);
+}
 
 /* ── P2-112: first-boot degraded journey ─────────────────────────────────────
    Desktop shell, daemon unreachable: one calm status card (never a dead-end

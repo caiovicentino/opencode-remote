@@ -37,6 +37,36 @@ export function degradedKind(state: DegradedState | null, everSeen: boolean): De
   return "none";
 }
 
+/** P3-331: the shell's local verdict is STICKY for the whole session. A poll
+ * gap (state null) or a degraded push (daemon down) must never resurrect the
+ * "connect to another machine" ceremony on a machine the shell already proved
+ * local — only an explicit remote-pairing request (mode "remote") unsets it. */
+export function nextShellLocal(current: boolean, state: DegradedState | null): boolean {
+  if (state?.mode === "local") return true;
+  if (state?.mode === "remote") return false;
+  return current;
+}
+
+/** P3-331: when may the renderer (re-)run the local auto-connect? The mount
+ * run and the P1-053 recovery watcher share this decision. "unpaired" keeps
+ * the legacy arms (local verdict or a past outage — the manual pairing wall
+ * dissolving on daemon recovery included); "error" is new and guarded: a
+ * failed manual paste (pairManual/addingMachine) is never yanked mid-edit,
+ * only the failed AUTO-connect retries once the daemon answers again. */
+export function autoConnectAllowed(
+  phase: "unpaired" | "connecting" | "paired" | "error",
+  opts: { localMode: boolean; sawOutage: boolean; pairManual: boolean; addingMachine: boolean; hasStoredPairing: boolean },
+): boolean {
+  if (phase === "paired" || phase === "connecting") return false;
+  if (opts.hasStoredPairing) return false;
+  // Round 2 (review): an explicit manual request — the degraded journey's
+  // "pair manually" escape or the add-machine screen — must never be yanked
+  // by the auto-connect loop on the next 3s poll (P3-332's dead-end class).
+  if (opts.pairManual || opts.addingMachine) return false;
+  if (phase === "unpaired") return opts.localMode || opts.sawOutage;
+  return opts.localMode;
+}
+
 /** P2-138: tolerant view of the daemon's /api/health `opencode` object (the
  * P2-135 classifier verdict). Fields are validated, never trusted — a legacy
  * daemon omits the object entirely. */

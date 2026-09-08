@@ -331,7 +331,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
-import { degradedKind, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -9898,12 +9898,55 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       sawHealthyDaemon({ reconnecting: true, reconnectAttempts: 3 }) === false &&
       sawHealthyDaemon(null) === false,
   );
+  // --- P3-331: sticky local verdict + guarded auto-connect (pure logic) --------
+  check(
+    "P3-331: shell local verdict is sticky across poll gaps and degraded pushes",
+    nextShellLocal(false, null) === false &&
+      nextShellLocal(false, { mode: "local" }) === true &&
+      nextShellLocal(true, null) === true &&
+      nextShellLocal(true, { daemonDown: true }) === true &&
+      nextShellLocal(true, { reconnecting: true }) === true,
+  );
+  check(
+    "P3-331: only an explicit remote request unsets the sticky local verdict",
+    nextShellLocal(true, { mode: "remote" }) === false &&
+      nextShellLocal(false, { mode: "remote" }) === false &&
+      // ...and returning to local quiet re-arms it
+      nextShellLocal(false, { mode: "local" }) === true,
+  );
+  check(
+    "P3-331: auto-connect runs on unpaired (local or past outage), never while paired/connecting",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true &&
+      autoConnectAllowed("unpaired", { localMode: false, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true &&
+      autoConnectAllowed("unpaired", { localMode: false, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("connecting", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("paired", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === false,
+  );
+  check(
+    "P3-331: a stored pairing always wins — no auto-connect races the user's machine",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: true }) === false &&
+      autoConnectAllowed("error", { localMode: true, sawOutage: true, pairManual: false, addingMachine: false, hasStoredPairing: true }) === false,
+  );
+  check(
+    "P3-331: failed AUTO-connect retries once the daemon answers again…",
+    autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: false, addingMachine: false, hasStoredPairing: false }) === true,
+  );
+  check(
+    "P3-331: …but a manual paste mid-edit is never yanked by the recovery loop",
+    autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: true, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("error", { localMode: true, sawOutage: false, pairManual: false, addingMachine: true, hasStoredPairing: false }) === false,
+  );
+  check(
+    "P3-331 r2: an explicit manual request also guards the unpaired arm (no yank from the 3s poll)",
+    autoConnectAllowed("unpaired", { localMode: true, sawOutage: true, pairManual: true, addingMachine: false, hasStoredPairing: false }) === false &&
+      autoConnectAllowed("unpaired", { localMode: true, sawOutage: true, pairManual: false, addingMachine: true, hasStoredPairing: false }) === false,
+  );
   // Copy parity for the journey: every degraded title/hint key resolves in
   // both locales (same contract as the P2-118 connection screens).
   const degradedKeys = [
     "firstContactTitle", "firstContactHint", "degradedRetrying", "degradedDownHint",
     "degradedLocalTitle", "degradedLocalHint", "degradedPairManually",
-    "reconnectTrying", "reconnectStarted", "reconnectFailed",
+    "reconnectTrying", "reconnectStarted", "reconnectFailed", "pairBack",
   ];
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",
@@ -10806,6 +10849,35 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     check(`p3-332 i18n ${lang}: autoConnectLooking names the local daemon`, /daemon/i.test(d.autoConnectLooking));
     check(`p3-332 i18n ${lang}: autoConnect hints explain the unattended attempt`, !!d.autoConnectBusyHint && !!d.autoConnectIdleHint);
   }
+}
+
+// --- P3-331 round 2: the manual escape survives the sticky local verdict ------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  // The degraded branch's PairingView must force the ceremony on when the user
+  // asked for manual pairing — sticky localMode alone would render the
+  // auto-connect card with no paste/scan form (dead-end one screen later).
+  const manualAt = src.indexOf("onPairManually={() => setPairManual(true)}");
+  check(
+    "P3-331 r2: the degraded journey's manual escape forces the paste/scan ceremony",
+    manualAt !== -1 &&
+      src.slice(manualAt, manualAt + 2400).includes("localMode={localMode && !pairManual}") &&
+      src.slice(manualAt, manualAt + 2400).includes("onBack={pairManual ?"),
+  );
+  // Retry on the error block reconnects a stored pairing verbatim (the PWA has
+  // no bridge to auto-pair with) before falling back to the auto-pair re-arm.
+  const retryAt = src.indexOf("a stored pairing reconnects verbatim");
+  check(
+    "P3-331 r2: Retry reconnects a stored pairing, then re-arms the auto-pair",
+    retryAt !== -1 && src.slice(retryAt, retryAt + 700).includes("const stored = loadState();") &&
+      src.slice(retryAt, retryAt + 700).includes("void connect(stored.pairing, false)") &&
+      src.slice(retryAt, retryAt + 700).includes("tryAutoPair()"),
+  );
+  // The error-phase recovery loop retries on a 15s backoff, never on the 3s poll.
+  check(
+    "P3-331 r2: error-phase auto-retry rides a 15s backoff, not the 3s poll",
+    src.includes("lastAutoRetryRef") && src.includes('Date.now() - lastAutoRetryRef.current < 15_000'),
+  );
 }
 
 
@@ -31752,7 +31824,9 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   );
   check(
     "P3-329: pairManual intent forces localMode off (paste form never swallowed)",
-    app.includes('localMode={pairManual ? false : pairingState?.mode === "local"}'),
+    // P3-331 merged: localMode is now the sticky shell verdict, and pairManual
+    // forces it off — same rule, one expression (apps/web/src/App.tsx).
+    app.includes("localMode={localMode && !pairManual}"),
   );
 
   // styling stays on the quiet bordered vocabulary — the manual button shares

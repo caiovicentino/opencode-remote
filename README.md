@@ -1479,6 +1479,18 @@ above the vertically centered card stack, so the post-wizard screen reads as
 the same intentional ceremony instead of a flush-left column floating in dead
 space at desktop sizes.
 
+**Local first boot never shows the pairing wall (P3-331)**: once the desktop
+shell proves the daemon on this machine (local mode), the verdict is sticky
+for the whole session — poll gaps and degraded states no longer resurrect the
+full "connect to another machine" ceremony on a machine that pairs by itself.
+The manual escape hatch gains a quiet "Back" link to the calm status card, and
+a first boot whose auto-connect failed now retries by itself as soon as the
+daemon answers again (on a 15s backoff, not a busy loop), landing straight on
+the home/chat surface instead of dead-ending behind the manual pairing wall.
+Asking to pair manually from the calm card always shows the paste/scan form —
+the sticky local mode never hides it — and Retry on a failed connect
+reconnects a stored pairing verbatim before re-arming the auto-connect.
+
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and

@@ -155,8 +155,14 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // P2-323 added the rename-dialog beat (prefilled in-app dialog over the fake
 // backend's session list, identical-title refusal, focus round-trip, a real
 // PATCH on confirm and 1440/390 evidence shots) inside the same budget.
+// P3-331 made every hermetic-daemon readiness wait deadline-based and dropped
+// the npx indirection, but the pipeline now runs gate slots concurrently on
+// one box — wall time crossed 300s on a loaded run with ALL beats green
+// (P1-089 passed ~20s after the readiness fix), so the budget grows to 360s;
+// the first 360s run stayed green through the second-to-last beat and died at
+// the P2-152 close-to-tray boot, so it lands at 420s.
 const startedAt = Date.now();
-const DEADLINE_MS = 300_000;
+const DEADLINE_MS = 420_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
 // Evidence shots live in the builder dir (never used as review evidence).
 // Declared up front: the P2-112 degraded-journey beats record there too.
@@ -201,6 +207,36 @@ function probe(cliArgs: string[], timeoutMs: number, env: NodeJS.ProcessEnv): { 
     env,
   });
   return { ok: res.status === 0, stdout: res.stdout ?? "" };
+}
+
+/** P3-331 round 3: spawn the hermetic daemons through the repo-local tsx CLI
+ * instead of `npx tsx` — under parallel slot load the npx resolution alone
+ * can take 10s+ and it multiplied across every hermetic boot in this gate. */
+function daemonSpawn(): { command: string; args: string[] } {
+  return {
+    command: process.execPath,
+    args: [join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs"), "apps/daemon/src/index.ts"],
+  };
+}
+
+/** P3-331 round 3: readiness wait for a hermetic daemon's 0600 state file.
+ * The fixed 25×200ms loops (~5s) raced the daemon's cold start under machine
+ * load — the P1-089 beat then cascaded (unadopted daemon ⇒ queue flush never
+ * ran) until the 300s budget died. Deadline-based now: exits the moment the
+ * file publishes (happy path unchanged), tolerates 60s of slow boots, and
+ * pokes /api/health only to warm the daemon up exactly as before. */
+async function waitForDaemonStateFile(stateFile: string, port: number): Promise<string> {
+  const deadlineMs = Date.now() + 60_000;
+  let token = "";
+  while (Date.now() < deadlineMs) {
+    try {
+      token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken ?? "";
+    } catch {}
+    if (token) break;
+    await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { authorization: "Bearer warmup" } }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return token;
 }
 
 /** Poll a harness ipc expression until `predicate` holds (or the tries run
@@ -1013,23 +1049,19 @@ try {
     });
     srv.on("error", reject);
   });
-  const localDaemon = spawn(
-    "npx",
-    ["tsx", "apps/daemon/src/index.ts"],
-    {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        HOME: daemonHome,
-        OCR_METRICS_PORT: String(localPort),
-        RELAY_URL: "ws://127.0.0.1:1", // dead: relay must be irrelevant in local mode
-        OPENCODE_URL: "http://127.0.0.1:1",
-        OCR_LOG_LEVEL: "error",
-      },
-      stdio: ["ignore", "ignore", "ignore"],
-      detached: true, // own process group — the kill below hits tsx's child too
+  const localDaemon = spawn(daemonSpawn().command, daemonSpawn().args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: daemonHome,
+      OCR_METRICS_PORT: String(localPort),
+      RELAY_URL: "ws://127.0.0.1:1", // dead: relay must be irrelevant in local mode
+      OPENCODE_URL: "http://127.0.0.1:1",
+      OCR_LOG_LEVEL: "error",
     },
-  );
+    stdio: ["ignore", "ignore", "ignore"],
+    detached: true, // own process group — the kill below hits tsx's child too
+  });
   const killDaemon = (signal: NodeJS.Signals = "SIGTERM"): void => {
     if (!localDaemon.pid) return;
     try {
@@ -1050,15 +1082,7 @@ try {
   try {
     // Wait for the daemon to publish its 0600 state file, mint the apiToken
     // (lazy — poke any Bearer-gated route) and prove the health challenge.
-    let token = "";
-    for (let i = 0; i < 25; i++) {
-      try {
-        token = (JSON.parse(readFileSync(localStateFile, "utf8")) as { apiToken?: string }).apiToken ?? "";
-      } catch {}
-      if (token) break;
-      await fetch(`http://127.0.0.1:${localPort}/api/health`, { headers: { authorization: "Bearer warmup" } }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    const token = await waitForDaemonStateFile(localStateFile, localPort);
     check("local: hermetic daemon published the 0600 state file", !!token);
     if (token) {
       const health = await fetch(`http://127.0.0.1:${localPort}/api/health`, {
@@ -2113,23 +2137,19 @@ try {
           });
           srv.on("error", reject);
         });
-        const localDaemon2 = spawn(
-          "npx",
-          ["tsx", "apps/daemon/src/index.ts"],
-          {
-            cwd: repoRoot,
-            env: {
-              ...process.env,
-              HOME: daemonHome2,
-              OCR_METRICS_PORT: String(port2),
-              RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
-              OPENCODE_URL: fakeUrl,
-              OCR_LOG_LEVEL: "error",
-            },
-            stdio: ["ignore", "ignore", "ignore"],
-            detached: true,
+        const localDaemon2 = spawn(daemonSpawn().command, daemonSpawn().args, {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            HOME: daemonHome2,
+            OCR_METRICS_PORT: String(port2),
+            RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
+            OPENCODE_URL: fakeUrl,
+            OCR_LOG_LEVEL: "error",
           },
-        );
+          stdio: ["ignore", "ignore", "ignore"],
+          detached: true,
+        });
         const killDaemon2 = (signal: NodeJS.Signals = "SIGTERM"): void => {
           if (!localDaemon2.pid) return;
           try {
@@ -2148,15 +2168,7 @@ try {
           OCR_DAEMON_METRICS_PORT: String(port2),
         };
         try {
-          let token2 = "";
-          for (let i = 0; i < 25; i++) {
-            try {
-              token2 = (JSON.parse(readFileSync(localStateFile2, "utf8")) as { apiToken?: string }).apiToken ?? "";
-            } catch {}
-            if (token2) break;
-            await fetch(`http://127.0.0.1:${port2}/api/health`, { headers: { authorization: "Bearer warmup" } }).catch(() => {});
-            await new Promise((r) => setTimeout(r, 200));
-          }
+          const token2 = await waitForDaemonStateFile(localStateFile2, port2);
           check("P1-089: boot-2 daemon published the 0600 state file", !!token2);
           // single-instance lock: boot 1 must be fully closed before boot 2.
           // The old keeper unlinks its socket EARLY in shutdown but stays
@@ -2196,11 +2208,15 @@ try {
               localEnv2,
             );
             run("P1-089: deep-link to the queued session", ["ipc", `location.hash = '#/session/${DRAFT}'`], 15_000, localEnv2);
+            // 24 probes: the flush is a mount-time effect — fast on a healthy
+            // daemon, but a loaded box pays ipc-spawn latency per probe and
+            // this probe is the beat's second domino (P3-331 round 3).
             await waitProbe(
               "P1-089: offline queue drained",
               "window.localStorage.getItem('ocr.queue." + DRAFT + "') ?? 'null'",
               (v) => v.trim() === '"[]"',
               localEnv2,
+              24,
             );
             let flushed = false;
             for (let i = 0; i < 12 && !flushed; i++) {
@@ -3113,7 +3129,7 @@ try {
     });
     srv.on("error", reject);
   });
-  const localDaemon3 = spawn("npx", ["tsx", "apps/daemon/src/index.ts"], {
+  const localDaemon3 = spawn(daemonSpawn().command, daemonSpawn().args, {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -3143,15 +3159,7 @@ try {
   };
   let upstreamBooted = false;
   try {
-    let token3 = "";
-    for (let i = 0; i < 25; i++) {
-      try {
-        token3 = (JSON.parse(readFileSync(localStateFile3, "utf8")) as { apiToken?: string }).apiToken ?? "";
-      } catch {}
-      if (token3) break;
-      await fetch(`http://127.0.0.1:${port3}/api/health`, { headers: { authorization: "Bearer warmup" } }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    const token3 = await waitForDaemonStateFile(localStateFile3, port3);
     check("P2-138: hermetic daemon (401 upstream) published the 0600 state file", !!token3);
     // daemon-side proof first: the classifier verdict rides on /api/health
     const upstreamHealth = token3

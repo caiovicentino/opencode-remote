@@ -408,6 +408,8 @@ export const dict = {
     "scanErr_generic": "Camera unavailable.",
     orScan: "— or scan the QR —",
     pairBtn: "Pair",
+    // P3-331: quiet return link from the manual pairing escape hatch.
+    pairBack: "Back",
     connecting: "Connecting…",
     invalidCode: "Invalid pairing code",
     // P2-106: inline recovery helper under the invalid-code error — shows the
@@ -982,6 +984,8 @@ export const dict = {
     "scanErr_generic": "Câmera indisponível.",
     orScan: "— ou escaneie o QR —",
     pairBtn: "Parear",
+    // P3-331: link calmo de volta a partir do pareamento manual.
+    pairBack: "Voltar",
     connecting: "Conectando…",
     invalidCode: "Código de pareamento inválido",
     // P2-106: helper inline sob o erro de código inválido — mostra o formato
