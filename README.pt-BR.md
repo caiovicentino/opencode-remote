@@ -740,7 +740,13 @@ ficar sob os tetos, ou o job falha antes de empacotar qualquer coisa — uma
 dependência gorda não vira mais um download lento em silêncio. Meça localmente
 após o build com `npx tsx scripts/bundle-budget.ts`; suba um teto de propósito,
 atualizando `BUNDLE_BUDGETS` com a justificativa na mensagem do
-commit.
+commit. Depois do smoke, os mesmos jobs também garantem os orçamentos dos
+artefatos distribuíveis de `scripts/artifactbudget.ts` (P2-325): o DMG, o zip
+Squirrel.Mac de cada arquitetura e o instalador NSIS encontrados em
+`apps/desktop/dist` precisam ficar sob seus tetos documentados de 180 MB
+(`npm run check:artifact-size`, fail-closed com diretório de empacotamento
+ausente ou vazio) — suba um teto de propósito, atualizando `ARTIFACT_BUDGETS`
+com a justificativa na mensagem do commit.
 
 **O que cada release precisa ter** (P2-153): o tarball de fonte
 (`opencode-remote-<tag>.tar.gz`) do job `release`; o lado macOS do

@@ -197,6 +197,19 @@ jobs:
       - name: Smoke-check the packaged bundle (installer checks skipped)
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
 
+      # P2-325: the distributables get the same fail-closed size gate the
+      # build output has had since P2-162 — any DMG/Squirrel zip/NSIS file in
+      # the packaging output above its documented ceiling
+      # (scripts/artifactbudget.ts) fails the PR, and a missing or empty
+      # output dir fails closed instead of approving silently. The --dir
+      # targets produce no installers, so no --expect here; the gate still
+      # runs on every PR so an installer target added later is born covered.
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Check artifact sizes
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:artifact-size
+
       # P2-242: dist-smoke only INSPECTS the bundle; a regression that only
       # shows up at runtime — main throwing at boot, an asar missing an asset
       # the renderer asks for, a blank window — used to surface only on
@@ -281,6 +294,16 @@ jobs:
         shell: bash
         timeout-minutes: 10
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
+
+      # P2-325: same artifact-size gate as the mac job — the unpacked
+      # win-unpacked payload is skipped by the collector, so the app's own
+      # .exe binary is never mistaken for the NSIS installer, and any real
+      # installer above its ceiling (scripts/artifactbudget.ts) fails the PR.
+      # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      - name: Check artifact sizes
+        shell: bash
+        timeout-minutes: 5
+        run: npm run check:artifact-size
 
       # P2-242: same parity for Windows — boot the real win-unpacked bundle
       # in the PR, reusing the release boot script and its hermetic contract
