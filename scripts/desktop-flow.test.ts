@@ -2674,7 +2674,7 @@ try {
                 }
                 const p323Focus = run("P2-323: focus is on the input", ["ipc", "document.activeElement === document.querySelector('.ask-dialog input')"], 15_000, localEnv2);
                 if (p323Focus.ok) check("P2-323: input takes focus on open", /true/.test(p323Focus.stdout), p323Focus.stdout);
-                run("P2-323: rename dialog evidence shot", ["shot", join(shotsDir, "P2-323-rename-1440.png")], 15_000, localEnv2);
+                run("P2-323: rename dialog evidence shot", ["shot", join(shotsDir, "P2-323-rename-1440.png"), "1440", "900"], 15_000, localEnv2);
                 // identical title stays refused: the confirm button is disabled
                 const p323Gate = run("P2-323: confirm with an identical title", ["ipc", "document.querySelector('.ask-dialog .ask-confirm')?.disabled ?? 'MISS'"], 15_000, localEnv2);
                 if (p323Gate.ok) check("P2-323: identical title keeps confirm disabled", /true/.test(p323Gate.stdout), p323Gate.stdout);
