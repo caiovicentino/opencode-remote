@@ -126,8 +126,24 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
         <section className="pair-section">
           <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
           <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
-            <b>{t("pairRemoteTitle")}</b>
-            <span className="muted">{t("pairRemoteHint")}</span>
+            <span className="pair-remote-copy">
+              <b>{t("pairRemoteTitle")}</b>
+              <span className="muted">{t("pairRemoteHint")}</span>
+            </span>
+            <svg
+              className="pair-remote-chevron"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
           </button>
         </section>
       )}
