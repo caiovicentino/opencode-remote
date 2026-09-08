@@ -2068,10 +2068,27 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     check("singleton survives garbage pidfile", readFileSync(pidFile, "utf8").trim() === String(process.pid));
 
     // child traps SIGTERM so the 2s grace expires and the SIGKILL path must fire
-    holder = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);'], {
-      stdio: "ignore",
+    holder = spawn(
+      process.execPath,
+      ["-e", 'process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);'],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    // P3-336 round 3: a fixed 300ms sleep raced the child's boot — under heavy
+    // machine load (a second slot running this same battery) SIGTERM could
+    // land before the trap existed and the child died with SIGTERM instead of
+    // surviving to the SIGKILL (flaked 5/30 under load). The child now
+    // signals readiness on stdout; waiting for it is load-independent.
+    await new Promise<void>((resolve, reject) => {
+      const guard = setTimeout(() => reject(new Error("child never signaled readiness")), 10_000);
+      holder!.stdout!.once("data", () => {
+        clearTimeout(guard);
+        resolve();
+      });
+      holder!.once("error", (err) => {
+        clearTimeout(guard);
+        reject(err);
+      });
     });
-    await new Promise((r) => setTimeout(r, 300)); // let the child install its SIGTERM handler
     writeFileSync(pidFile, String(holder.pid));
     const exited = new Promise<string>((resolve) => holder!.once("exit", (_code, signal) => resolve(String(signal))));
     await ensureSingleton(pidFile);
@@ -10696,6 +10713,29 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     pairing.startsWith(".pair-wrap .pair-screen header") &&
       !/className="screen qr-scanner[^"]*pair-screen/.test(scannerSrc),
   );
+}
+
+// --- P3-336: brand title on a token-based scale, no inline font sizes ---------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const tokens = read("tokens.css");
+  const wordmark = css.slice(css.indexOf(".brand-wordmark"), css.indexOf("}", css.indexOf(".brand-wordmark")));
+  check(
+    "P3-336: .brand-wordmark renders from the type-scale tokens",
+    wordmark.includes("font-size: var(--font-size-xl)") && wordmark.includes("font-family: var(--font-serif)") &&
+      tokens.includes("--font-size-xl: 1.35rem") && tokens.includes("--font-serif:"),
+  );
+  // Every "OpenCode Remote" h1 on a first-contact screen carries the shared
+  // class and none carries an inline fontSize override again.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+    const src = read(join("components", view));
+    const h1s = src.match(/<h1[^>]*>OpenCode Remote<\/h1>/g) ?? [];
+    check(
+      `P3-336: ${view} brand h1 uses .brand-wordmark (no inline fontSize)`,
+      h1s.length > 0 && h1s.every((h) => h.includes('className="brand-wordmark"') && !h.includes("style=")),
+    );
+  }
 }
 
 
