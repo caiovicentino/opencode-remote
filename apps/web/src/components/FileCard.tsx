@@ -106,7 +106,7 @@ export default function FileCard({
               })()
             }
           >
-            {busy ? "…" : "Save"}
+            {busy ? "…" : t("save")}
           </button>
         </div>
         {preview.url ? (
@@ -175,7 +175,7 @@ export default function FileCard({
             })()
           }
         >
-          {busy ? "…" : "Save"}
+          {busy ? "…" : t("save")}
         </button>
       </div>
       {preview?.url && (

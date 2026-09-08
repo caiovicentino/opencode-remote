@@ -4081,3 +4081,184 @@ button.desk-new:hover:not(:disabled) {
     transition: none;
   }
 }
+
+/* ── EVAL4-A (fable r4, product track) ──────────────────────────────── */
+/* F6: expired/revoked card — secondary reset action + explanatory notes */
+.reauth-note {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+.reauth-secondary {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+.reauth-reset {
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--fg);
+  font-size: var(--font-size-sm);
+}
+/* F4: connection strip of the mobile shell (home / lists), never in the chat
+   where ChatView's own .conn-banner already speaks (P2-108 one-banner rule) */
+.conn-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
+.conn-strip-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.conn-strip[data-stale] .conn-strip-line {
+  color: var(--warn);
+}
+.conn-strip-hint {
+  margin: 0;
+  color: var(--muted);
+}
+.conn-strip-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.conn-strip-actions button {
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+}
+/* F1: MachinePicker row as a real button (was a clickable div) */
+.machine-picker-row {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.machine-picker-row:active {
+  transform: none;
+}
+.machine-picker-relay {
+  max-width: 100%;
+  font-size: var(--font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── EVAL4-B (fable r4, product track) ─────────────────────────────── */
+/* B1 (P0, phone): a nowrap title in the chat header is a flex child with the
+   default min-width:auto, so a long conversation title widened the header
+   past the viewport and dragged the whole .screen with it (390px probe:
+   .screen 476px, send button @x=459 — unreachable). min-width:0 lets the
+   ellipsis work; the mobile shell also clips any future horizontal overflow
+   instead of turning the page into a sideways scroller. */
+.screen > header,
+.screen > header > h1 {
+  min-width: 0;
+}
+.app-root.mobile .screen {
+  max-width: 100vw;
+  overflow-x: clip;
+}
+/* B2 (a11y, phone): 44px touch targets. Icon buttons keep their 32px look
+   and gain an invisible hit area; small inline actions grow to 44px tall. */
+.composer-btn,
+.chat-btn,
+.composer-send,
+.composer-model-btn,
+.conn-banner-retry {
+  position: relative;
+}
+.composer-btn::before,
+.chat-btn::before,
+.composer-send::before,
+.conn-banner-retry::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+.composer-model-btn::before {
+  content: "";
+  position: absolute;
+  inset: -9px -4px;
+}
+.app-root.mobile .screen > header > button:not(.chat-btn),
+.app-root.mobile .qr-scanner header button,
+.app-root.mobile .pair-error-retry,
+.app-root.mobile .qr-unavailable .qr-paste-cta,
+.app-root.mobile .artifact-card,
+.app-root.mobile .composer-wrap button.danger,
+.app-root.mobile .pair-submit,
+.app-root.mobile .pair-scan-entry {
+  min-height: 44px;
+}
+.app-root.mobile .screen > header > button:not(.chat-btn) {
+  min-width: 44px;
+}
+/* B3: in-chat reconnect banner — text wraps, the action stays on one line */
+.conn-banner {
+  flex-wrap: wrap;
+}
+.conn-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.conn-banner-retry {
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+}
+/* B4: Mission Control on the phone — one scrolling column (the 40% cards
+   strip of the tablet rule clipped the mission block at 390px), readable
+   type for the mission text, 44px rows. */
+.app-root.mobile .mission-phone-intro {
+  margin: 0;
+}
+.app-root.mobile .mission-grid {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+.app-root.mobile .mission-cards {
+  max-height: none;
+  overflow: visible;
+  border-bottom: none;
+}
+.app-root.mobile .mission-active-text,
+.app-root.mobile .mission-active-src {
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-body);
+}
+.app-root.mobile .mission-card {
+  min-height: 44px;
+}
+.app-root.mobile .mission-active-actions button,
+.app-root.mobile .mission-filters button {
+  min-height: 40px;
+}

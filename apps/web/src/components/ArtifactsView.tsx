@@ -10,6 +10,7 @@ import { useExitAnimation } from "../lib/motion";
 import type { OcrRequest } from "../lib/files";
 import ArtifactViewer from "./ArtifactViewer";
 import { ArtifactIcon } from "./icons";
+import { useT } from "../lib/i18n";
 
 /**
  * Artifacts pane (P1-010): agent-produced documents written to
@@ -28,6 +29,9 @@ export default function ArtifactsView({
   /** P2-091: open the artifact beside the chat (wide viewports only). */
   onOpenInChat?: (a: ArtifactMeta) => void;
 }) {
+  // EVAL4-B: every string here was hardcoded English — the pt phone showed
+  // "Artifacts / Refresh / No artifacts yet…" (shot 04-b1-artifacts-empty).
+  const t = useT();
   const [listing, setListing] = useState<ArtifactListing>({ artifacts: [], titles: {} });
   const [error, setError] = useState("");
   const [viewer, setViewer] = useState<ArtifactMeta | null>(null);
@@ -70,19 +74,16 @@ export default function ArtifactsView({
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack}>←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Artifacts</h1>
-        <button onClick={load} aria-label="Refresh">
+        <button onClick={onBack} aria-label={t("back")}>←</button>
+        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1, minWidth: 0 }}>{t("artifactsTitle")}</h1>
+        <button onClick={load} aria-label={t("artifactsRefresh")} title={t("artifactsRefresh")}>
           ↻
         </button>
       </header>
       <div className="list">
         {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
         {artifacts.length === 0 && !error && (
-          <p className="muted">
-            No artifacts yet. Ask the agent to produce a document (html, md, csv, pdf) and it will
-            show up here.
-          </p>
+          <p className="muted">{t("artifactsEmpty")}</p>
         )}
         {[...groups.entries()].map(([sid, items]) => (
           <div key={sid}>

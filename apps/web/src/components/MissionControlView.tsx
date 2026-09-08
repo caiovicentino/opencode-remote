@@ -19,6 +19,48 @@ export type BrowseFn = (
   req: { path: string; method?: string; body?: unknown },
 ) => Promise<{ status: number; contentType: string; body: string } | null>;
 
+/** Sealed-tunnel request (App.request) — the phone's only path to the daemon. */
+export type TunnelRequest = (
+  method: string,
+  path: string,
+  body?: unknown,
+  query?: Record<string, string>,
+) => Promise<{ status: number; body: unknown }>;
+
+function utf8ToB64(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/**
+ * EVAL4-B (fable r4, product track): Mission Control on the phone. The pane
+ * used to dead-end without the desktop bridge ("open the app on the host
+ * machine"). This adapter maps the loopback /api paths the pane speaks onto
+ * the daemon's sealed /__ocr/pilot-* routes so the SAME loaders work over
+ * the E2E tunnel. Host-only actions (takeover, shots, live browse) stay
+ * desktop-only and answer 501 here — the UI hides them on the phone.
+ */
+export function tunnelApi(request: TunnelRequest): DaemonApiFn {
+  return async ({ path, method }) => {
+    const url = new URL(path, "http://x");
+    const seg = url.pathname.split("/").filter(Boolean); // ["api", "pilot-forensic", "timeline"?]
+    let res: { status: number; body: unknown };
+    if (seg[1] === "pilot-forensic" && (method ?? "GET") === "GET") {
+      const task = seg[2] === "timeline" ? (url.searchParams.get("task") ?? "") : "";
+      res = await request("GET", "/__ocr/pilot-forensic", undefined, task ? { task } : undefined);
+    } else if (seg[1] === "pilot-mission" && (method ?? "GET") === "GET") {
+      res = await request("GET", "/__ocr/pilot-mission");
+    } else if (seg[1] === "mission" && method === "DELETE") {
+      res = await request("DELETE", "/__ocr/mission");
+    } else {
+      res = { status: 501, body: { error: "host-only" } };
+    }
+    return { status: res.status, contentType: "application/json", body: utf8ToB64(JSON.stringify(res.body ?? {})) };
+  };
+}
+
 interface SessionCard {
   id: string;
   title: string;
@@ -119,15 +161,25 @@ async function decode(
 }
 
 export default function MissionControlView({
-  daemonApi,
+  daemonApi: bridgeApi,
   browse,
   onBack,
+  request,
 }: {
   daemonApi: DaemonApiFn | null;
   browse: BrowseFn | null;
   onBack: () => void;
+  /** EVAL4-B: sealed tunnel (phone). Used only when the bridge is absent. */
+  request?: TunnelRequest;
 }) {
   const t = useT();
+  // EVAL4-B: phone = no desktop bridge; the sealed tunnel takes its place for
+  // the read-only loaders and the mission clear. Stable identity per request.
+  const phone = !bridgeApi && !!request;
+  const daemonApi = useMemo<DaemonApiFn | null>(
+    () => bridgeApi ?? (request ? tunnelApi(request) : null),
+    [bridgeApi, request],
+  );
   const [cards, setCards] = useState<SessionCard[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [entries, setEntries] = useState<TimelineEntry[]>([]);
@@ -141,7 +193,7 @@ export default function MissionControlView({
   // P2-123 follow-up: the pane's main surface is the LIVE orbital dashboard
   // (the same /dashboard/v3 the browser shows), embedded with self-auth via
   // the desktop bridge's local link. The forensic timeline stays one toggle away.
-  const [view, setView] = useState<"dash" | "forensic">("dash");
+  const [view, setView] = useState<"dash" | "forensic">(bridgeApi ? "dash" : "forensic");
   const [dashUrl, setDashUrl] = useState<string | null>(null);
   // Self-serve mission: undefined = not loaded yet, null = none set.
   const [mission, setMission] = useState<MissionSpecView | null | undefined>(undefined);
@@ -300,23 +352,28 @@ export default function MissionControlView({
         <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>
           <IconRadar size={16} /> Mission Control
         </h1>
-        <button className={view === "dash" ? "on" : ""} onClick={() => setView("dash")} aria-label={t("missionDash")}>
-          {t("missionDash")}
-        </button>
-        <button
-          className={view === "forensic" ? "on" : ""}
-          onClick={() => setView("forensic")}
-          aria-label={t("missionForensic")}
-        >
-          {t("missionForensic")}
-        </button>
+        {!phone && (
+          <>
+            <button className={view === "dash" ? "on" : ""} onClick={() => setView("dash")} aria-label={t("missionDash")}>
+              {t("missionDash")}
+            </button>
+            <button
+              className={view === "forensic" ? "on" : ""}
+              onClick={() => setView("forensic")}
+              aria-label={t("missionForensic")}
+            >
+              {t("missionForensic")}
+            </button>
+          </>
+        )}
         {browse && (
           <button onClick={() => void liveShotNow()} disabled={liveBusy} aria-label="live dashboard shot">
             {liveBusy ? "…" : t("missionLive")}
           </button>
         )}
       </header>
-      {error && <p className="mission-error">{error}</p>}
+      {phone && <p className="muted mission-phone-intro">{t("missionPhoneIntro")}</p>}
+      {error && <p className="mission-error">{phone ? t("missionLoadFailed") : error}</p>}
       {view === "dash" && dashUrl && (
         <iframe
           src={dashUrl}
@@ -412,7 +469,7 @@ export default function MissionControlView({
           ))}
         </div>
         <div className="mission-detail">
-          {!selected && <p className="muted" style={{ padding: 12 }}>{t("missionSelect")}</p>}
+          {!selected && (cards?.length ?? 0) > 0 && <p className="muted" style={{ padding: 12 }}>{t("missionSelect")}</p>}
           {selected && (
             <>
               <div className="mission-tbar">
@@ -428,13 +485,15 @@ export default function MissionControlView({
                     </button>
                   ))}
                 </div>
-                <button
-                  className="mission-takeover"
-                  onClick={() => void takeover(selected)}
-                  disabled={taking}
-                >
-                  {taking ? "…" : t("missionTakeover")}
-                </button>
+                {!phone && (
+                  <button
+                    className="mission-takeover"
+                    onClick={() => void takeover(selected)}
+                    disabled={taking}
+                  >
+                    {taking ? "…" : t("missionTakeover")}
+                  </button>
+                )}
               </div>
               {taken && <p className="mission-taken">{taken}</p>}
               <div className="mission-timeline">
@@ -450,7 +509,7 @@ export default function MissionControlView({
                   </div>
                 ))}
               </div>
-              {shots.length > 0 && (
+              {!phone && shots.length > 0 && (
                 <div className="mission-shots">
                   <span className="mission-shots-label">{t("missionShots")}</span>
                   <div className="mission-shots-row">

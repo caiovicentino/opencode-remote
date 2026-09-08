@@ -37,6 +37,53 @@ export function reauthVerdict(status: string, strikes: number, helloSent: boolea
 /** Error message the initial connect() rejects with once the session expired. */
 export const REAUTH_ERROR = "session-reauth-required";
 
+/**
+ * EVAL4-F2 (fable r4): error message the initial connect() rejects with when
+ * the daemon answered `not-allowed` (device revoked, or the bootstrap pairing
+ * window is closed). Replaces the old hardcoded English sentence that told a
+ * phone user to run `manage.ts revoke-all` — the shell maps this constant to
+ * a localized message with a real next step (lib/pairerror.ts).
+ */
+export const REJECTED_ERROR = "session-rejected";
+
+/**
+ * EVAL4-F5 (fable r4): a clear `session-reauth-required` received while
+ * CONNECTING (our hello is out) used to count as a strike on the spot. The
+ * frame is forgeable by any room member (the room id rides the QR, `from`
+ * is client-supplied at the relay), so two forged frames timed with the
+ * client's dial cycle could push every phone in the room to the re-pair wall.
+ * The frame is now only a hint here too: it shortens the confirm watchdog to
+ * this grace window, and the strike is counted when the window closes with
+ * NO sealed confirmation — a real refusal is followed by silence, a forged
+ * frame is followed by the real confirm.
+ */
+export const REAUTH_CONFIRM_GRACE_MS = 2_500;
+
+/**
+ * EVAL4-F3 (fable r4): minimum delay before the retry dial after a refused
+ * hello. The daemon throttles reauth replies to one per sender per 2 s
+ * (apps/daemon/src/reauth.ts REAUTH_REPLY_MIN_INTERVAL_MS): the old 1 s
+ * retry landed inside that window, its refusal was suppressed, and the
+ * client sat on the 15 s confirm watchdog before the second strike — long
+ * enough for the initial connect's own 15 s timeout to win and show
+ * "pairing timeout" instead of the expired card.
+ */
+export const REAUTH_RETRY_DELAY_MS = 2_500;
+
+/** What the client does the moment a reauth frame arrives (EVAL4-F5). */
+export type ReauthFrameAction = "verify" | "grace" | "ignore";
+
+/**
+ * Frame-time decision: paired → verify with a ping (unchanged); connecting
+ * with our hello out → arm the grace window (the strike is decided later by
+ * reauthVerdict when the window closes unconfirmed); anything else → ignore.
+ */
+export function reauthFrameAction(status: string, helloSent: boolean): ReauthFrameAction {
+  if (status === "paired") return "verify";
+  if (status === "connecting" && helloSent) return "grace";
+  return "ignore";
+}
+
 /** IndexedDB database holding the non-extractable identity + WebAuthn id. */
 export const IDENTITY_DB_NAME = "ocr-identity";
 

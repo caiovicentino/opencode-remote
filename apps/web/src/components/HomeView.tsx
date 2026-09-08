@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpResponse } from "@ocr/protocol";
 import { useT, getLang } from "../lib/i18n";
+import { markSendOnOpen } from "../lib/drafts";
 import { greetingKey, homeIdeas, timeGreetingKey, type HomeIdeaIcon } from "../lib/home";
 import { composerSelectorLabel } from "../lib/composer";
 import { useModelSelector } from "../lib/models";
@@ -85,10 +86,14 @@ export default function HomeView({ machineName, request, voice, creating, onStar
     };
   }, [modelMenu]);
 
-  async function start(prompt: string) {
+  // EVAL4-B: `autoSend` is true only for the composer submit (arrow / Enter):
+  // the new chat then sends the text on open (lib/drafts.ts takeSendOnOpen).
+  // Ideas stay edit-first (P2-123).
+  async function start(prompt: string, autoSend = false) {
     const text = prompt.trim();
     if (!text || creating) return;
     setError("");
+    if (autoSend) markSendOnOpen(text);
     const err = await onStart(text);
     if (err) setError(t("homeStartError")); // input stays — never lose the text
   }
@@ -156,7 +161,7 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  void start(input);
+                  void start(input, true);
                 }
               }}
             />
@@ -220,7 +225,7 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               </button>
               <button
                 className="primary composer-send"
-                onClick={() => void start(input)}
+                onClick={() => void start(input, true)}
                 disabled={creating || !input.trim()}
                 aria-label={t("send")}
                 title={t("send")}

@@ -14,7 +14,16 @@ import {
   readClearControl,
   RECONNECT_HINT_VERIFY_MS,
 } from "./framegate";
-import { IDENTITY_DB_NAME, REAUTH_ERROR, identityStorageKeys, reauthVerdict } from "./reauth";
+import {
+  IDENTITY_DB_NAME,
+  REAUTH_CONFIRM_GRACE_MS,
+  REAUTH_ERROR,
+  REAUTH_RETRY_DELAY_MS,
+  REJECTED_ERROR,
+  identityStorageKeys,
+  reauthFrameAction,
+  reauthVerdict,
+} from "./reauth";
 
 export interface Pairing {
   v: 2;
@@ -27,8 +36,20 @@ export interface Pairing {
 
 /** Bug 1: "expired" — the daemon refused our handshake twice in a row (stale
  * keys after a daemon restart/rekey). Terminal: the only way out is the
- * "pair again" wipe (wipeLocalIdentity) and a fresh pairing ceremony. */
+ * "pair again" wipe (wipeLocalIdentity) and a fresh pairing ceremony.
+ * EVAL4-F2: "rejected" is terminal too — the daemon answered not-allowed
+ * (device revoked / pairing window closed); the client stops dialing and the
+ * shell shows the "device removed" card. Recovery is a user action. */
 export type Status = "connecting" | "paired" | "rejected" | "closed" | "expired";
+
+/** EVAL4-F3: how many times the initial dial's timeout re-arms while a
+ * reauth exchange (refused hello → retry) is still in flight, so the
+ * expired verdict — not "pairing timeout" — reaches the screen. */
+const DIAL_TIMEOUT_REAUTH_EXTENSIONS = 2;
+
+/** EVAL4-F3b: op-level liveness probe — see armAckWatchdog(). */
+const ACK_PROBE_MS = 4_000;
+const ACK_PONG_MS = 2_500;
 
 /** P1-061: which wire the client is currently dialed on. */
 export type Transport = "local" | "relay";
@@ -344,6 +365,32 @@ export class OcrClient {
   // whether a hello went out on the current dial (a reauth before that is noise).
   private reauthStrikes = 0;
   private helloSent = false;
+  // EVAL4-F5: a reauth frame arrived on the current dial — the strike is
+  // decided when the (shortened) confirm watchdog closes unconfirmed.
+  private reauthPending = false;
+  // EVAL4-F4: when the current outage began (0 while paired) — the shell
+  // escalates its copy after a while instead of spinning forever.
+  private disconnectedAt = 0;
+
+  /** EVAL4-F4: dials attempted since the session was last paired (0 while paired). */
+  get attempts(): number {
+    return this.reconnectAttempt;
+  }
+
+  /** EVAL4-F4: Date.now() of the moment the session dropped; 0 while paired. */
+  get disconnectedSince(): number {
+    return this.disconnectedAt;
+  }
+
+  /** EVAL4-F4: the "try now" button — skip the pending backoff and dial at once. */
+  retryNow(): void {
+    if (this.intentionalClose || this.status === "paired") return;
+    // only while waiting out a backoff — a dial already in flight is left alone
+    if (this.reconnectTimer === null) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    void this.reconnect();
+  }
 
   private attach(ws: WebSocket) {
     const gen = ++this.gen;
@@ -397,24 +444,26 @@ export class OcrClient {
       this.hbTimer = null;
     }
     this.clearHintVerify();
+    this.clearAckWatchdog();
   }
 
-  private forceReconnect() {
+  /** `minDelayMs` (EVAL4-F3): floor for the next dial's backoff. */
+  private forceReconnect(minDelayMs = 0) {
     const dead = this.ws;
     this.awaitingPong = false;
-    this.scheduleReconnect();
+    this.scheduleReconnect(minDelayMs);
     try {
       dead.close();
     } catch {}
   }
 
-  private scheduleReconnect() {
+  private scheduleReconnect(minDelayMs = 0) {
     this.stopHeartbeat();
     this.clearConfirmWatchdog();
     this.clearHintVerify();
     if (this.reconnectTimer !== null || this.intentionalClose) return;
     this.setStatus("connecting");
-    const delay = Math.min(15_000, 1000 * 2 ** this.reconnectAttempt++);
+    const delay = Math.max(minDelayMs, Math.min(15_000, 1000 * 2 ** this.reconnectAttempt++));
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       void this.reconnect();
@@ -424,6 +473,7 @@ export class OcrClient {
   private async reconnect() {
     if (this.intentionalClose || !this.pairing) return;
     this.helloSent = false; // Bug 1: only a reauth AFTER this dial's hello counts
+    this.reauthPending = false; // EVAL4-F5: a fresh dial starts with no pending strike
     try {
       const target = await this.dialTarget();
       const ws = new WebSocket(target.url);
@@ -464,7 +514,27 @@ export class OcrClient {
     if (this.confirmTimer !== null) clearTimeout(this.confirmTimer);
     this.confirmTimer = window.setTimeout(() => {
       this.confirmTimer = null;
-      if (this.status !== "paired" && !this.intentionalClose) this.forceReconnect();
+      if (this.status === "paired" || this.intentionalClose) return;
+      // EVAL4-F5: the window closed with no sealed confirmation after a
+      // reauth frame — NOW the refusal counts (reauthVerdict decides).
+      if (this.reauthPending) {
+        this.reauthPending = false;
+        const action = reauthVerdict(this.status, this.reauthStrikes, this.helloSent);
+        if (action === "expired") {
+          this.reauthStrikes++;
+          this.expire();
+          return;
+        }
+        if (action === "retry") {
+          this.reauthStrikes++;
+          this.helloSent = false;
+          // EVAL4-F3: past the daemon's per-sender reauth throttle, so the
+          // retry's refusal is answered instead of suppressed.
+          this.forceReconnect(REAUTH_RETRY_DELAY_MS);
+          return;
+        }
+      }
+      this.forceReconnect();
     }, confirmTimeoutMs);
   }
 
@@ -480,6 +550,40 @@ export class OcrClient {
     this.lastSeen = Date.now();
     this.awaitingPong = false;
     this.clearHintVerify();
+    this.clearAckWatchdog();
+  }
+
+  // EVAL4-F3b: the op-level liveness probe. With the relay alive and the
+  // daemon dead the socket stays open, so the client sat "paired" until the
+  // 20 s heartbeat noticed (up to ~40-60 s): a message sent in that window
+  // showed a pending bubble with no banner until the 60 s request timeout.
+  // Every op arms this: no sealed frame within ACK_PROBE_MS → one ping; no
+  // sealed pong within ACK_PONG_MS → the socket is dead, reconnect (the op
+  // is replayed with the same id after the next handshake). Liveness itself
+  // still moves only through markAlive() (RT-341 pin).
+  private ackTimer: number | null = null;
+
+  private armAckWatchdog() {
+    if (this.ackTimer !== null || this.status !== "paired" || this.intentionalClose) return;
+    const sentAt = Date.now();
+    this.ackTimer = window.setTimeout(() => {
+      this.ackTimer = null;
+      if (this.status !== "paired" || this.intentionalClose || this.lastSeen >= sentAt) return;
+      this.awaitingPong = true;
+      this.sendControl({ type: "ping" });
+      this.ackTimer = window.setTimeout(() => {
+        this.ackTimer = null;
+        if (this.status !== "paired" || this.intentionalClose || this.lastSeen >= sentAt) return;
+        this.forceReconnect();
+      }, ACK_PONG_MS);
+    }, ACK_PROBE_MS);
+  }
+
+  private clearAckWatchdog() {
+    if (this.ackTimer !== null) {
+      clearTimeout(this.ackTimer);
+      this.ackTimer = null;
+    }
   }
 
   /** Disarm a pending reconnect-hint verification. */
@@ -497,9 +601,14 @@ export class OcrClient {
     const { hello, sessionKey } = await clientHello(this.daemonSpki, identity);
     this.key = sessionKey;
     this.daemonLastSeq = 0;
-    const retrying = [...this.pending.entries()];
-    this.pending.clear();
-    for (const [, p] of retrying) clearTimeout(p.timer);
+    // EVAL4-F3c: in-flight ops are NOT replayed here anymore. The daemon
+    // handles frames unserialized and yields inside serverAccept before it
+    // inserts the session, so a replay sent right behind the hello could land
+    // first, find no session and be dropped — the message sent during an
+    // outage then "vanished" and timed out after 60 s (pwa-live j4a). Their
+    // timers are paused; replayPending() re-issues them (same ids) once the
+    // sealed confirmation proves the session exists.
+    for (const p of this.pending.values()) clearTimeout(p.timer);
     ws.send(
       JSON.stringify({
         room: this.room,
@@ -508,8 +617,14 @@ export class OcrClient {
       }),
     );
     this.helloSent = true;
-    // same op id across replays: the daemon dedupes prompt sends by id, so a
-    // replayed prompt can never reach the agent twice
+  }
+
+  /** EVAL4-F3c: re-issue every op that never got a response on the fresh
+   * session. Same op id across replays: the daemon dedupes prompt sends by
+   * id, so a replayed prompt can never reach the agent twice. */
+  private replayPending() {
+    const retrying = [...this.pending.entries()];
+    this.pending.clear();
     for (const [id, p] of retrying) this.replay(p, id);
   }
 
@@ -517,16 +632,13 @@ export class OcrClient {
    * Bug 1: terminal expiry — stop every timer and reconnect attempt and
    * surface "expired" so the shell can show the pair-again card. Nothing is
    * wiped here; wipeLocalIdentity() runs only on the user's button.
+   * EVAL4-F2: "rejected" takes the same exit. Before, a not-allowed answer
+   * left the confirm watchdog armed, so a revoked tab re-dialed every ~16-30 s
+   * for as long as it lived (the client half of today's pairing loop).
    */
   private expire() {
     this.intentionalClose = true;
-    this.stopHeartbeat();
-    this.clearConfirmWatchdog();
-    this.clearHintVerify();
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.stopAllTimers();
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
       p.reject(new Error(REAUTH_ERROR));
@@ -536,6 +648,48 @@ export class OcrClient {
       this.ws.close();
     } catch {}
     this.setStatus("expired");
+  }
+
+  /** EVAL4-F2: same exit as expire() for a sealed not-allowed answer. */
+  private rejectSession() {
+    this.intentionalClose = true;
+    this.stopAllTimers();
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(REJECTED_ERROR));
+    }
+    this.pending.clear();
+    try {
+      this.ws.close();
+    } catch {}
+    this.setStatus("rejected");
+  }
+
+  /** Every timer that could dial again: heartbeat, confirm watchdog, hint verify, backoff. */
+  private stopAllTimers() {
+    this.reauthPending = false;
+    this.stopHeartbeat();
+    this.clearConfirmWatchdog();
+    this.clearHintVerify();
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  /**
+   * EVAL4-F3: the initial dial gave up (timeout / closed) — this client must
+   * not keep dialing behind the error screen. Before, the relay dial's 15 s
+   * timeout closed the socket and the close handler scheduled a reconnect:
+   * an orphan client kept dialing forever, and could even pair silently
+   * (eating the daemon's bootstrap window) while the screen showed an error.
+   */
+  private abandon() {
+    this.intentionalClose = true;
+    this.stopAllTimers();
+    try {
+      this.ws.close();
+    } catch {}
   }
 
   /**
@@ -571,6 +725,10 @@ export class OcrClient {
     try {
       this.setStatus("connecting");
       await this.sendHello(this.ws);
+      // EVAL4-F3: a rehandshake whose hello is lost (daemon mid-restart,
+      // relay drop) used to sit in "connecting" forever — heartbeat and the
+      // visibility handler both bail while not paired. Same watchdog as a dial.
+      this.armConfirmWatchdog(this.transport === "local" ? 3_000 : 15_000);
     } catch (err) {
       for (const p of this.pending.values()) {
         clearTimeout(p.timer);
@@ -615,12 +773,17 @@ export class OcrClient {
     void seal({ type: "op", req }, this.key, seqAad(this.from, seq)).then((payload) =>
       this.sendFrame({ from: this.from, seq, payload }),
     );
+    this.armAckWatchdog(); // EVAL4-F3b
   }
 
   private setStatus(s: Status) {
+    // EVAL4-F4: stamp the start of an outage once; cleared on the next confirm.
+    if (s === "paired") this.disconnectedAt = 0;
+    else if (this.disconnectedAt === 0) this.disconnectedAt = Date.now();
     this.status = s;
     if (s === "paired") {
       this.reconnectAttempt = 0;
+      this.reauthPending = false;
       // Bug 1: a confirmed handshake clears every refused-hello strike.
       this.reauthStrikes = 0;
       // P1-061: a confirmed handshake proves the current transport works —
@@ -674,16 +837,15 @@ export class OcrClient {
     // as the hint (a forged frame costs one ping). Connecting after our hello
     // → the hello was refused: one fresh dial, then the expired verdict.
     if (verdict === "reauth") {
-      const action = reauthVerdict(this.status, this.reauthStrikes, this.helloSent);
+      const action = reauthFrameAction(this.status, this.helloSent);
       if (action === "verify") {
         this.verifyHint();
-      } else if (action === "retry") {
-        this.reauthStrikes++;
-        this.helloSent = false;
-        this.forceReconnect();
-      } else if (action === "expired") {
-        this.reauthStrikes++;
-        this.expire();
+      } else if (action === "grace") {
+        // EVAL4-F5: never a strike on the frame alone (forgeable). Shorten
+        // the confirm watchdog; the strike lands only if nothing sealed
+        // confirms inside the grace window (armConfirmWatchdog decides).
+        this.reauthPending = true;
+        this.armConfirmWatchdog(REAUTH_CONFIRM_GRACE_MS);
       }
       return;
     }
@@ -703,7 +865,9 @@ export class OcrClient {
             new TextEncoder().encode("ocr-reject"),
           );
           if (check) this.markAlive();
-          if (check?.reason === "not-allowed") this.setStatus("rejected");
+          // EVAL4-F2: sealed not-allowed (proves the daemon) → terminal, no
+          // more dials; the shell shows the "device removed" card.
+          if (check?.reason === "not-allowed") this.rejectSession();
         } else if (confirm.ok && confirm.confirm) {
           const check = await openSealed<{
             ok: boolean;
@@ -713,6 +877,7 @@ export class OcrClient {
             this.markAlive();
             this.caps = check.caps ?? {};
             this.setStatus("paired");
+            this.replayPending(); // EVAL4-F3c: the session provably exists now
           }
         }
       } catch {
@@ -797,6 +962,7 @@ export class OcrClient {
       void seal({ type: "op", req }, this.key, seqAad(this.from, seq)).then((payload) =>
         this.sendFrame({ from: this.from, seq, payload }),
       );
+      this.armAckWatchdog(); // EVAL4-F3b
     });
   }
 
@@ -834,7 +1000,7 @@ export class OcrClient {
         try {
           return await OcrClient.dialLocal(pairing, from, hello, sessionKey, identity, getLocalLink, link);
         } catch (err) {
-          if (err instanceof Error && err.message.startsWith("rejected by daemon")) throw err;
+          if (err instanceof Error && err.message === REJECTED_ERROR) throw err;
           // otherwise: relay as always
         }
       }
@@ -882,10 +1048,7 @@ export class OcrClient {
       };
       const fail = (err: Error) => {
         clearTimeout(timeout);
-        client.intentionalClose = true; // this socket's auto-reconnect is not wanted
-        try {
-          ws.close();
-        } catch {}
+        client.abandon(); // this socket's auto-reconnect is not wanted
         reject(err);
       };
       const timeout = setTimeout(() => fail(new Error("local daemon unreachable")), 3_000);
@@ -895,11 +1058,7 @@ export class OcrClient {
           resolve(client);
         } else if (s === "rejected") {
           clearTimeout(timeout);
-          reject(
-            new Error(
-              "rejected by daemon: this client is not in the allowlist — clear it with `manage.ts revoke-all` and pair again",
-            ),
-          );
+          reject(new Error(REJECTED_ERROR)); // EVAL4-F2: localized by the shell
         } else if (s === "expired") {
           clearTimeout(timeout);
           reject(new Error(REAUTH_ERROR));
@@ -922,10 +1081,28 @@ export class OcrClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(pairing.relay);
 
-      const timeout = setTimeout(() => {
-        ws.close();
-        reject(new Error("pairing timeout — is the daemon running?"));
-      }, 15_000);
+      // EVAL4-F3: the dial timeout re-arms (bounded) while a reauth exchange
+      // is in flight — a refused hello is answered within seconds and must
+      // end in the expired verdict, not in "pairing timeout". On a genuine
+      // timeout the client is abandoned so no orphan keeps dialing behind
+      // the error screen.
+      let extensions = 0;
+      let timeout: ReturnType<typeof setTimeout>;
+      const armTimeout = () => {
+        timeout = setTimeout(() => {
+          if (
+            (client.reauthPending || client.reauthStrikes > 0) &&
+            !client.intentionalClose &&
+            extensions++ < DIAL_TIMEOUT_REAUTH_EXTENSIONS
+          ) {
+            armTimeout();
+            return;
+          }
+          client.abandon();
+          reject(new Error("pairing timeout — is the daemon running?"));
+        }, 15_000);
+      };
+      armTimeout();
 
       ws.onopen = () => {
         // presence + hello in one clear-JSON control frame
@@ -957,11 +1134,7 @@ export class OcrClient {
           resolve(client);
         } else if (s === "rejected") {
           clearTimeout(timeout);
-          reject(
-            new Error(
-              "rejected by daemon: this client is not in the allowlist — clear it with `manage.ts revoke-all` and pair again",
-            ),
-          );
+          reject(new Error(REJECTED_ERROR)); // EVAL4-F2: localized by the shell
         } else if (s === "expired") {
           clearTimeout(timeout);
           reject(new Error(REAUTH_ERROR));

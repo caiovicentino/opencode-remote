@@ -1463,6 +1463,61 @@ end tell`;
     return { id: req.id, status: 200, body: { ok: true } };
   }
 
+  // ── EVAL4-B (fable r4, product track): Mission Control over the sealed
+  // tunnel. The phone had a dead end ("open the app on the host machine"):
+  // the pilot routes only existed on the loopback /api surface. These are the
+  // SAME read-only payloads the desktop pane consumes (pilot-forensic cards +
+  // timeline, pilot-mission spec) plus the mission clear, reachable only by a
+  // paired device over the E2E session — the same trust the chat, files and
+  // artifacts already ride on. No takeover, no shots, no browse (host-only).
+  if (req.path === "/__ocr/pilot-mission" && req.method === "GET") {
+    const spec = readMission().spec;
+    let legacy = "";
+    try {
+      legacy = (JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8")) as { mission?: string })
+        .mission ?? "";
+    } catch {}
+    const modelSubstitutions = activeModelSubstitutions(
+      spec?.models,
+      readModelSubstitutions(defaultModelSubstitutionsFile()),
+    );
+    metrics.inc("ocr_pilot_mission_reads_total");
+    return { id: req.id, status: 200, body: { mission: spec?.prompt ?? legacy, spec, modelSubstitutions } };
+  }
+  if (req.path === "/__ocr/pilot-forensic" && req.method === "GET") {
+    const task = typeof req.query?.task === "string" ? req.query.task : "";
+    const index = readForensicIndex();
+    if (task) {
+      if (!/^(?:[P\d][\w.-]{1,24}|RT-\d{1,8})$/.test(task)) {
+        return { id: req.id, status: 400, body: { error: "task required" } };
+      }
+      const entries = index.timelines.get(task) ?? [];
+      const cards = buildCards(index.timelines, index.titles, { avgDoneMs: avgDoneDuration(index.timelines) });
+      return {
+        id: req.id,
+        status: 200,
+        body: { card: cards.find((c) => c.id === task) ?? null, entries, progress: progressOf(entries), shots: [] },
+      };
+    }
+    const avgDoneMs = avgDoneDuration(index.timelines);
+    const cards = buildCards(index.timelines, index.titles, { avgDoneMs });
+    return {
+      id: req.id,
+      status: 200,
+      body: { cards: cards.map((c) => ({ ...c, progress: progressOf(index.timelines.get(c.id) ?? []), shots: [] })) },
+    };
+  }
+  if (req.path === "/__ocr/mission" && req.method === "DELETE") {
+    try {
+      const r = removeMissionFile();
+      log("info", "mission cleared via tunnel", r);
+      audit("mission.clear", { ...r, via: "tunnel" });
+      return { id: req.id, status: 200, body: { ok: true, ...r } };
+    } catch (err) {
+      return { id: req.id, status: 500, body: { error: String(err instanceof Error ? err.message : err) } };
+    }
+  }
+
   // P1-064: paged history — the client asks ?limit=N&before=<messageID> and
   // gets the tail of the conversation as { rows, hasMore, oldest, total },
   // sized to stay under the relay's 1MB frame. Without those params the

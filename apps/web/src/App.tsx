@@ -13,10 +13,12 @@ import {
   type Pairing,
   type Status,
 } from "./lib/client";
-import { REAUTH_ERROR } from "./lib/reauth";
+import { REAUTH_ERROR, REJECTED_ERROR } from "./lib/reauth";
+import { classifyPairError, pairErrorCopy } from "./lib/pairerror";
 import { activeDrawerRow, hasUnreadDot, recentRows, type DrawerDest, type RecentRow } from "./lib/drawer";
 import Drawer from "./components/Drawer";
 import ReauthView from "./components/ReauthView";
+import ConnStrip from "./components/ConnStrip";
 import MachinePicker from "./components/MachinePicker";
 import type { OpResponse, EventEnvelope } from "@ocr/protocol";
 import { localPairing } from "../../desktop/src/pairing";
@@ -204,6 +206,19 @@ export default function App() {
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [phase, setPhase] = useState<Phase>("unpaired");
   const [error, setError] = useState("");
+  // EVAL4-F1: actionable next step under a pairing error (lib/pairerror.ts)
+  const [errorHint, setErrorHint] = useState("");
+  // EVAL4-F1b: kind of the last pairing failure — a timeout/relay drop on a
+  // STORED pairing is an outage, so the pairing screen counts down and retries
+  // the auto-pair instead of stranding the user on the wall.
+  const [errorKind, setErrorKind] = useState<ReturnType<typeof classifyPairError>>("unknown");
+  // EVAL4-F2: the daemon answered not-allowed on a live session (device
+  // revoked / pairing reset) — same full-screen card family as `expired`.
+  const [rejected, setRejected] = useState(false);
+  // EVAL4-F4: real dials since the drop, for the mobile connection strip
+  // (components/ConnStrip.tsx owns the escalation timer — P2-220 pins
+  // App.tsx to zero timers).
+  const [connAttempts, setConnAttempts] = useState(0);
   const [machineName, setMachineName] = useState("");
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const clientRef = useRef<OcrClient | null>(null);
@@ -394,6 +409,7 @@ export default function App() {
   async function connect(pairing: Pairing, persist: boolean) {
     setPhase("connecting");
     setError("");
+    setErrorHint("");
     try {
       // biometric gate before the identity key may be used
       if (!(await gateVerify())) {
@@ -404,8 +420,11 @@ export default function App() {
       });
       client.onStatus = (s) => {
         setConnStatus(s);
+        setConnAttempts(client.attempts);
         // Bug 1: terminal expiry of a live session (daemon rekeyed under us)
         if (s === "expired") setExpired(true);
+        // EVAL4-F2: terminal rejection of a live session (device revoked)
+        if (s === "rejected") setRejected(true);
       };
       // connect() resolves once already paired — the "paired" status event
       // fired before this handler existed, so sync the current state (P2-055:
@@ -418,7 +437,7 @@ export default function App() {
       }
       (window as unknown as { __ocrClient?: OcrClient }).__ocrClient = client;
       clientRef.current = client;
-      setMachineName(pairing.name ?? "machine");
+      setMachineName(pairing.name ?? t("machineFallbackName")); // EVAL4-F1: was a literal "machine"
       setPhase("paired");
       client.onEvent((evt) => {
         setEvents((prev) => [...prev.slice(-500), evt]);
@@ -440,7 +459,14 @@ export default function App() {
         setExpired(true);
         return;
       }
-      setError(message);
+      // EVAL4-F1: the client's failure messages are English internals (one of
+      // them a CLI instruction) — the screen shows the localized sentence plus
+      // a next step; unknown messages still surface verbatim, never blank.
+      const kind = message === REJECTED_ERROR ? "rejected" : classifyPairError(message);
+      const copy = pairErrorCopy(kind);
+      setError(copy.msgKey ? t(copy.msgKey) : message);
+      setErrorHint(copy.hintKey ? t(copy.hintKey) : "");
+      setErrorKind(kind);
       setPhase("error");
     }
   }
@@ -457,7 +483,32 @@ export default function App() {
     setEvents([]);
     setUnread({});
     setError("");
+    setErrorHint("");
     setExpired(false);
+    setRejected(false);
+    setConnStatus("connecting");
+    dispatchView({ type: "reset" });
+    setPhase("unpaired");
+    tryAutoPair();
+  }
+
+  // EVAL4-F6: the card's PRIMARY action. Forgets only the machine the card is
+  // about (its stale pairing card would otherwise linger as a dead duplicate)
+  // and re-enters the pairing flow with the identity and every other machine
+  // intact. A fresh identity buys nothing: the daemon re-admits this one on
+  // the bootstrap path (or the desktop self-approval) exactly the same way.
+  // pairAgain() above stays as the explained secondary "reset this device".
+  async function forgetAndPair() {
+    clientRef.current?.close();
+    clientRef.current = null;
+    const room = getActiveRoom();
+    if (room) setMachines(removePairing(room));
+    setActiveRoom(null);
+    setEvents([]);
+    setError("");
+    setErrorHint("");
+    setExpired(false);
+    setRejected(false);
     setConnStatus("connecting");
     dispatchView({ type: "reset" });
     setPhase("unpaired");
@@ -931,10 +982,15 @@ export default function App() {
   // Bug 1: the expired-session card owns the whole screen — no banner, no
   // overlay, no chat underneath (the session is dead; the only way forward
   // is the button). Rendered before every other surface on purpose.
-  if (expired) {
+  if (expired || rejected) {
     return (
       <div className="pair-wrap" data-phase={phase} data-expired>
-        <ReauthView onPairAgain={pairAgain} />
+        <ReauthView
+          variant={rejected ? "revoked" : "expired"}
+          machineName={machineName}
+          onPairAgain={forgetAndPair}
+          onResetDevice={pairAgain}
+        />
       </div>
     );
   }
@@ -976,6 +1032,7 @@ export default function App() {
         <PairingView
           phase="unpaired"
           error={error}
+          hint={errorHint}
           onPair={(uri) => {
             setAddingMachine(false);
             const pairing = parsePairingUri(uri);
@@ -1055,6 +1112,10 @@ export default function App() {
           <PairingView
             phase={phase}
             error={error}
+            hint={errorHint}
+            // EVAL4-F1b: stored pairing + unreachable machine → 20 s countdown
+            // into the same onRetry (auto-pair), never a dead pairing wall
+            autoRetryMs={phase === "error" && !!loadState() && (errorKind === "timeout" || errorKind === "closed") ? 20_000 : undefined}
             onPair={(uri) => {
               const pairing = parsePairingUri(uri);
               if (!pairing) {
@@ -1100,6 +1161,11 @@ export default function App() {
       // in-chat .conn-banner say the same sentence — never show both.
       shellBannerVisible={kind === "reconnecting" || kind === "down"}
       getMicAccess={desktopBridge()?.getMicAccess}
+      // EVAL4-F4: real dials + drop instant + "try now" for the in-chat banner
+      // (ChatView declares the three as optional; instance B renders them)
+      connAttempts={connAttempts}
+      connSince={clientRef.current?.disconnectedSince ?? 0}
+      onRetryNow={() => clientRef.current?.retryNow()}
     />
   );
   const settingsNode = (
@@ -1121,7 +1187,8 @@ export default function App() {
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} onOpenInChat={openArtifactInChat} />;
   const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
-  const missionNode = <ErrorBoundary><MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} /></ErrorBoundary>;
+  // EVAL4-B (instance B): `request` is the sealed fallback for the phone (no daemonApi bridge)
+  const missionNode = <ErrorBoundary><MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} request={request} /></ErrorBoundary>;
   const shareNode = share ? (
     <SendToAgentView
       request={request}
@@ -1365,6 +1432,21 @@ export default function App() {
                 <span className="shell-action" aria-hidden />
               )}
             </header>
+          )}
+          {/* EVAL4-F4: outside the chat the phone had NO surface saying the
+              connection was gone (the shell banners need the desktop bridge,
+              the drawer only has a colour dot). One strip, attempts counted
+              as real dials, and after 45 s guidance + the two actions that
+              actually help. Inside the chat ChatView's own .conn-banner
+              speaks (P2-108: never two banners). */}
+          {connStatus !== "paired" && !chatActive && (
+            <ConnStrip
+              machineName={machineName}
+              attempts={connAttempts}
+              since={clientRef.current?.disconnectedSince ?? 0}
+              onRetry={() => clientRef.current?.retryNow()}
+              onPairAgain={() => void forgetAndPair()}
+            />
           )}
           {mainContent ?? homeNode}
           <Drawer
