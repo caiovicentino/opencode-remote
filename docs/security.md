@@ -222,6 +222,29 @@ identity servers, no accounts.
     timeout, one that is not a positive integer, one above the ceiling — or
     when a workflow file is missing, unreadable or unparseable (fail closed).
 
+21. **One aggregate status context — `ci-gate` (P3-352, eval r4).** The
+    branch protection of `main` required **no** status check
+    (`required_status_checks.contexts: []`), and "green" could only be
+    reconstructed from six per-job contexts, four of them scope-gated and
+    therefore absent or `SKIPPED` on most PRs — so on 2026-09-08 every
+    pilot merge landed seconds before its first check started and three of
+    four turned a check red *after* landing (#879, #884, #891). The last
+    job of `ci.yml`, `ci-gate`, always runs (`if: always()`), `needs` every
+    other job and decides through the pure `scripts/cigate.ts` verdict
+    (collector `scripts/check-ci-gate.ts`): `verify` and `scope` must
+    succeed, the scope-gated jobs may be `skipped`, anything else —
+    failure, cancelled, timed out, a job missing from `needs` — is red.
+    `scripts/workflow-yaml.test.ts` pins that the job needs *every* other
+    job of the file and is declared last, so a new job cannot bypass it.
+    It is the single context to require on `main` (operator action, one
+    time, after the job has reported at least once):
+
+        gh api -X PATCH repos/caiovicentino/opencode-remote/branches/main/protection/required_status_checks \
+          --input - <<< '{"strict":false,"contexts":["ci-gate"]}'
+
+    From then on `gh pr merge --auto` only queues until `ci-gate` is green,
+    and the pilot's readiness poll (P3-346) has one stable name to wait for.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and

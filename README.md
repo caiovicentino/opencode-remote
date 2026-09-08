@@ -730,6 +730,13 @@ the same sub-battery locally on any OS:
 
     npm run test:unit-win
 
+Since P3-352 the run ends in one aggregate job, `ci-gate`, that `needs` every
+other job of `ci.yml`, always runs and turns their results into a single
+verdict (`scripts/cigate.ts`): `verify` and `scope` must succeed, the
+scope-gated jobs may be skipped, anything else is red. It is the one status
+context the `main` branch protection should require — see
+`docs/security.md` §21 for the one-time `gh api` command.
+
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
 `package.json` files (repo root and `apps/desktop`) plus `apps/web/src/version.ts`.
 The release workflow runs `scripts/release-preflight.ts` as its first step and

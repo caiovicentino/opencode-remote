@@ -9,7 +9,7 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
-import { deploy, drainForReload, headDrifted, latestDeployableSha, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
+import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDiffCmd, pilotInfraDrifted, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
 import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, needsBacklogSkeleton, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
@@ -135,6 +135,9 @@ async function main() {
   // P1-056 (round 2): when the drift FIRST appeared this tick — bounded
   // patience for the forced busy-reload (see DRIFT_FORCE_RELOAD_MS).
   let driftSince: number | undefined;
+  // P3-351: memo of the last pilot-infra probe per drifted head — one git diff
+  // per head move, not one per 5s tick while a product-only drift persists.
+  let pilotDriftMemo: { headNow: string; drifted: boolean } | undefined;
 
   // P1-006: one workspace clone per slot (pilot/repo-1, repo-2…), created via
   // `git clone --shared` the first time. All other slots inherit slot 1's
@@ -352,7 +355,20 @@ async function main() {
     // a mission set from the chat is applied without any operator action.
     const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
     const missionNow = readMission().hash;
-    const drift = headDrifted(bootHead, headNow) ? "head" : missionDrifted(bootMissionHash, missionNow) ? "mission" : null;
+    // P3-351: a HEAD move is only a reload reason when the range touches
+    // apps/pilot — the same criterion deploy() applies to its own self-reload
+    // ("deployed without pilot-infra changes — fleet keeps running"). Before
+    // this the two disagreed and the probe drained the slots 16min after the
+    // deploy had explicitly decided not to (2026-09-08 18:33 vs 18:49).
+    let headDrift = false;
+    if (headDrifted(bootHead, headNow)) {
+      if (pilotDriftMemo?.headNow !== headNow) {
+        pilotDriftMemo = { headNow, drifted: pilotInfraDrifted(exec(pilotInfraDiffCmd(bootHead!, headNow), { cwd: cfg.repo, allowFail: true })) };
+        if (!pilotDriftMemo.drifted) log("info", "prod HEAD moved without apps/pilot changes — no reload needed", { bootHead: bootHead!.slice(0, 7), headNow: headNow.slice(0, 7) });
+      }
+      headDrift = pilotDriftMemo.drifted;
+    }
+    const drift = headDrift ? "head" : missionDrifted(bootMissionHash, missionNow) ? "mission" : null;
     if (!deployBusy && drift) {
       driftSince ??= Date.now();
       if (running.size === 0) {

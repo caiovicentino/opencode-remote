@@ -210,7 +210,11 @@ export function doctorBranches(
 ): DoctorResult {
   const run = opts.run ?? realRun(ws);
   const gh = opts.gh ?? realRun(ws);
-  const listing = run("git for-each-ref --format=%(refname:short) refs/heads/pilot/*");
+  // P3-349 (eval r4): exec() runs through /bin/sh, where an unquoted `%(...)`
+  // is a syntax error ("unexpected token `('") — the branch doctor failed on
+  // all 4 workspaces at every pass (pilot.log 2026-09-08 16:53:44) and never
+  // pruned a merged pilot/* branch. Both the format and the glob are quoted.
+  const listing = run("git for-each-ref --format='%(refname:short)' 'refs/heads/pilot/*'");
   if (!listing.ok) return { ok: false, changed: false, detail: `cannot list branches: ${listing.output.slice(-120)}` };
   const branches = listing.output.split("\n").map((l) => l.trim()).filter(Boolean);
   const current = run("git rev-parse --abbrev-ref HEAD").output.trim();

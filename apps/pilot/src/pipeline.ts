@@ -26,6 +26,7 @@ export function needsUiEvidence(area: string | undefined, renderTouched: boolean
 export const EVIDENCE_MARKER = "EVIDENCE:";
 export const TASK_DONE_MARKER = "PILOT:TASK-DONE";
 import { detectGateProfile } from "./gateprofile";
+import { doctorDist } from "./doctor";
 import { judgeGate } from "./judge";
 import { specFailureIsInfra, type InfraFailureKind } from "./audit";
 import {
@@ -312,6 +313,23 @@ export function setupTaskBranch(ws: string, id: string, attempts: number | undef
   exec("git fetch origin", { cwd: ws });
   exec("git reset -q --hard", { cwd: ws }); // clear dirt on whatever branch we are on
   exec("git clean -qfd", { cwd: ws });
+  // P3-347 (eval r4): `git clean` without -x keeps IGNORED output, so the
+  // electron-builder tree (apps/desktop/dist, ~1.1GB per packaging run) of
+  // the previous task survives into this one. The hourly idle sweep
+  // (index.ts) only reaches slots that happen to be idle at the tick — with
+  // 4 slots eager-filled that was never repo-2 on 2026-09-08 (1.1GB written
+  // 16:08 still there at 19:20, volume at 3.9GB free < 5GB deploy guard).
+  // A pipeline start is the one moment the slot's build output is provably
+  // stale (the workspace was just reset), so it is removed unconditionally
+  // here (minAgeMs 0). Best-effort: a failed removal is logged, never fatal.
+  try {
+    const dist = doctorDist([ws], { minAgeMs: 0 });
+    if (dist.changed || !dist.ok) {
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: dist.ok ? "info" : "warn", msg: "pipeline start: packaging output swept from the slot", data: { task: id, ...dist } }));
+    }
+  } catch (err) {
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "pipeline start: dist sweep crashed", data: { task: id, err: String(err).slice(0, 200) } }));
+  }
   let resumed = false;
   if (preserveBranch(attempts, branchExists(ws, branch))) {
     resumed = exec(`git checkout -q ${branch}`, { cwd: ws, allowFail: true }).ok;
@@ -2138,8 +2156,18 @@ const CHECK_RED = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED
  *                   at all: a foreign mission repo without CI must still merge)
  * A red check wins over pending ones: one failed job is decisive even while
  * the rest of the run is still going.
+ *
+ * P3-346 (eval r4): an EMPTY rollup is ambiguous. Right after `gh pr create`
+ * GitHub has not scheduled a single check yet, so the snapshot reads "no
+ * checks" and the r3 rule armed the merge at once — every merge of 2026-09-08
+ * landed seconds BEFORE its CI run started (PR #891: merged 21:57:07Z, first
+ * check started 21:57:12Z, desktop-package-win later FAILED). With
+ * `ciExpected` (the workspace's own workflows trigger on pull_request —
+ * `workflowsExpectPrChecks`) an empty rollup is therefore `pending`: the poll
+ * waits for the checks to appear and complete. Without it (foreign mission
+ * repo with no CI) the r3 rule stands: no checks ⇒ merge.
  */
-export function mergeReadiness(snap: unknown): MergeReadiness {
+export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {}): MergeReadiness {
   if (!snap || typeof snap !== "object") return { verdict: "unknown", detail: "malformed PR snapshot" };
   const s = snap as { state?: unknown; mergeable?: unknown; mergeStateStatus?: unknown; statusCheckRollup?: unknown };
   if (s.state === "MERGED") return { verdict: "merge", detail: "already MERGED on GitHub" };
@@ -2151,8 +2179,10 @@ export function mergeReadiness(snap: unknown): MergeReadiness {
   const red: string[] = [];
   const pending: string[] = [];
   let green = 0;
+  let readable = 0;
   for (const item of rollup ?? []) {
     if (!item || typeof item !== "object") continue;
+    readable++;
     const c = item as Record<string, unknown>;
     const name = typeof c.name === "string" ? c.name : typeof c.context === "string" ? c.context : "check";
     // CheckRun: status (QUEUED/IN_PROGRESS/COMPLETED) + conclusion;
@@ -2174,29 +2204,104 @@ export function mergeReadiness(snap: unknown): MergeReadiness {
     green++; // SUCCESS / NEUTRAL / SKIPPED / STALE
   }
   if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}` };
+  // P3-346: CI is expected on this repo but GitHub reported no check yet —
+  // the run is not scheduled, not "green". Never a merge.
+  if (opts.ciExpected && readable === 0) return { verdict: "pending", detail: "no checks reported yet — CI expected (workflows trigger on pull_request)" };
   if (!mergeable || mergeable === "UNKNOWN") return { verdict: "pending", detail: "GitHub still computing mergeability" };
   if (pending.length) return { verdict: "pending", detail: `checks in progress: ${pending.join(", ")}` };
   return { verdict: "merge", detail: green ? `${green} check(s) green` : "no checks reported" };
 }
 
-/** Readiness budget: a green CI run on this repo (lint → unit → build → e2e →
- * real opencode integration) takes ~2min; a "pending" skip re-runs the whole
- * pipeline next cycle, so the ceiling is generous — 10min, one poll per
- * PR_MERGE_CONFIRM_DELAY_MS. Async sleeps only: the main loop keeps feeding
- * the 3min watchdog meanwhile. */
-export const PR_READINESS_POLLS = 120;
+/**
+ * P3-346: does any GitHub Actions workflow in the repo run on pull requests?
+ * Pure scan of the workflow texts — no YAML dependency (constitution: no new
+ * deps), fail-open on garbage (unreadable text ⇒ false ⇒ the r3 "no checks
+ * ⇒ merge" rule). Recognized shapes, all at the top-level `on:` key (`on`,
+ * `"on"`, `'on'`; column 0):
+ *   on: pull_request                      on: [push, pull_request]
+ *   on:\n  pull_request:                   on:\n  - pull_request
+ * `pull_request_target` counts too (it reports checks on the PR). Comments
+ * are stripped first so a commented-out trigger never counts.
+ */
+export function workflowsExpectPrChecks(workflowTexts: readonly string[]): boolean {
+  const trigger = /(^|[\s\[,"'-])pull_request(_target)?(?=$|[\s\]:,"'])/;
+  for (const text of workflowTexts) {
+    if (typeof text !== "string") continue;
+    const lines = text.split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, "$1"));
+    for (let i = 0; i < lines.length; i++) {
+      const m = /^(?:on|"on"|'on')\s*:\s*(.*)$/.exec(lines[i]!);
+      if (!m) continue;
+      const inline = m[1]!.trim();
+      if (inline) {
+        if (trigger.test(inline)) return true;
+        continue;
+      }
+      // block form: every following indented (or blank) line belongs to `on:`
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j]!;
+        if (l.trim() === "") continue;
+        if (!/^[ \t]/.test(l)) break;
+        if (trigger.test(l)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Workflow files of a checkout (`.github/workflows/*.yml|yaml`), read
+ * best-effort: a missing directory or an unreadable file yields nothing. */
+export function readWorkflowTexts(repoDir: string): string[] {
+  const dir = join(repoDir, ".github", "workflows");
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const texts: string[] = [];
+  for (const name of names) {
+    if (!/\.ya?ml$/i.test(name)) continue;
+    try {
+      texts.push(readFileSync(join(dir, name), "utf8"));
+    } catch {
+      // unreadable file: skipped (fail-open — see workflowsExpectPrChecks)
+    }
+  }
+  return texts;
+}
+
+/** Readiness budget: a green CI run on this repo used to take ~2min; today
+ * the PR-scoped jobs (verify ~3min, desktop-package-win up to ~12min while
+ * its smoke-boot step hangs — P3-348) finish in ~12min, and P3-346 makes the
+ * poll WAIT for them instead of merging on an empty rollup. A "pending" skip
+ * re-runs the whole pipeline next cycle, so the ceiling is generous — 20min,
+ * one poll per PR_MERGE_CONFIRM_DELAY_MS. Async sleeps only: the main loop
+ * keeps feeding the 3min watchdog meanwhile. */
+export const PR_READINESS_POLLS = 240;
 
 /**
  * Poll GitHub until the PR is decidable: `merge`/`skip` return at once,
  * `pending` and `unknown` (gh down, malformed JSON) keep polling and the LAST
  * verdict is returned when the budget ends — the caller maps it to an infra
- * skip, never to a merge.
+ * skip, never to a merge. P3-341: with `expectSha` set (right after the
+ * conflict repair pushed a new head) the query also reads `headRefOid` and a
+ * snapshot still reporting the old head stays `pending` — the second probe
+ * then waits for the CI of the NEW head before any merge is armed, so a green
+ * verdict inherited from the old head can never land. Without `expectSha` the
+ * behavior is unchanged (same command, same verdicts). P3-346: `opts.ciExpected`
+ * rides into every classification (empty rollup ⇒ pending, see mergeReadiness).
  */
-export async function awaitMergeReadiness(io: PrMergeIo, prNumber: number, polls = PR_READINESS_POLLS): Promise<MergeReadiness> {
+export async function awaitMergeReadiness(
+  io: PrMergeIo,
+  prNumber: number,
+  polls = PR_READINESS_POLLS,
+  expectSha?: string,
+  opts: { ciExpected?: boolean } = {},
+): Promise<MergeReadiness> {
   let last: MergeReadiness = { verdict: "unknown", detail: "no readable PR snapshot" };
   for (let poll = 0; poll < polls; poll++) {
     if (poll > 0) await io.sleep(PR_MERGE_CONFIRM_DELAY_MS);
-    const view = io.exec(`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,statusCheckRollup`);
+    const view = io.exec(`gh pr view ${prNumber} --json state,mergeable,mergeStateStatus,statusCheckRollup${expectSha ? ",headRefOid" : ""}`);
     if (!view.ok) {
       last = { verdict: "unknown", detail: `gh pr view failed: ${ghTail(view.output)}` };
       continue;
@@ -2208,7 +2313,18 @@ export async function awaitMergeReadiness(io: PrMergeIo, prNumber: number, polls
       last = { verdict: "unknown", detail: "gh pr view returned malformed JSON" };
       continue;
     }
-    last = mergeReadiness(snap);
+    last = mergeReadiness(snap, opts);
+    if (expectSha) {
+      // fail-closed: a snapshot WITHOUT headRefOid cannot prove the head moved
+      // either — it stays pending (honest infra timeout on budget exhaustion,
+      // free retry) instead of arming a merge on an unverified head
+      const headRaw = (snap as { headRefOid?: unknown }).headRefOid;
+      const head = typeof headRaw === "string" ? headRaw : "";
+      if (!head || head !== expectSha) {
+        last = { verdict: "pending", detail: "PR head not yet updated" };
+        continue;
+      }
+    }
     if (last.verdict === "merge" || last.verdict === "skip") return last;
   }
   return last;
@@ -2243,7 +2359,7 @@ export function readinessInfraKind(ready: MergeReadiness): InfraFailureKind {
  */
 export async function mergePrForTask(
   io: PrMergeIo,
-  args: { branch: string; title: string; body: string; pushedSha: string },
+  args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean },
 ): Promise<PrMergeOutcome> {
   const create = io.exec(
     `gh pr create --head ${args.branch} --title ${JSON.stringify(args.title)} --body ${JSON.stringify(args.body)}`,
@@ -2267,7 +2383,9 @@ export async function mergePrForTask(
   // red or conflicting PR is skipped here with the reason — classified infra
   // (free retry: the next cycle rebases/re-runs and probes again; three
   // identical skips in a row become a hard block via the streak breaker).
-  const ready = await awaitMergeReadiness(io, prNumber);
+  // P3-346: `ciExpected` (the repo's workflows run on pull_request) turns an
+  // empty rollup into "pending" — the merge waits for the checks to exist.
+  const ready = await awaitMergeReadiness(io, prNumber, PR_READINESS_POLLS, undefined, { ciExpected: args.ciExpected });
   if (ready.verdict !== "merge") {
     const infra = readinessInfraKind(ready);
     console.log(
@@ -2358,6 +2476,9 @@ async function mergeTask(
       title,
       body: "Autonomous pipeline merge — gatekeeper green (typecheck, build, reconnect, integration, invariants, download).",
       pushedSha: preMergeHead,
+      // P3-346: read from the checkout being merged — a foreign mission repo
+      // without workflows keeps the "no checks ⇒ merge" rule
+      ciExpected: workflowsExpectPrChecks(readWorkflowTexts(ws)),
     },
   );
   if (!outcome.ok) return outcome;

@@ -1735,3 +1735,29 @@ exclusões (`PORTABLE_EXCLUSIONS`) com uma causa documentada — não existe
 terceira opção; `scripts/portablecoverage.ts` (puro, sem I/O) cruza as duas
 listas com a listagem real do diretório e qualquer arquivo sem classificação
 reprova o gate no `test:unit` e no job `verify-win`.
+
+## Readiness de merge espera o CI existir (P3-346, eval r4)
+
+A leitura do `statusCheckRollup` antes do `gh pr merge` (eval r3) tinha um
+buraco: segundos depois do `gh pr create` o GitHub ainda não agendou nenhum
+check-run, o rollup vem vazio e a regra "sem checks ⇒ merge" (pensada para um
+repo de missão sem CI) armava o merge na hora. Em 2026-09-08 os 5 merges
+auditados entraram 4-5s depois do PR, 1-2s ANTES do primeiro check começar —
+4 deles caíram vermelhos no main. Agora `mergeTask` lê os
+`.github/workflows/*.yml` do checkout que está mergeando
+(`workflowsExpectPrChecks`, sem dependência YAML) e, se algum workflow dispara
+em `pull_request`/`pull_request_target`, um rollup vazio é `pending`: o poll
+espera os checks aparecerem e concluírem (orçamento 20min,
+`PR_READINESS_POLLS = 240`). Sem workflows (repo estrangeiro) nada muda. Um
+check vermelho continua `skip/ci-red`, conflito continua decidido antes.
+Complemento manual do lado do GitHub: P3-350 (required status checks no main).
+
+Outros consertos do eval r4 no loop: `setupTaskBranch` remove
+`apps/desktop/dist` no início de cada pipeline (P3-347 — `git clean` sem `-x`
+preservava 1,1GB ignorados por slot e o sweep horário só via slots ociosos); a
+sonda de drift só drena os slots quando o range `bootHead..HEAD` toca
+`apps/pilot` (P3-351 — mesmo critério do deploy, que antes era contrariado
+16min depois); `doctor: branches` finalmente lista branches (P3-349 — o
+`%(refname:short)` sem aspas era erro de sintaxe no `/bin/sh`);
+`scripts/reconnect.test.ts` espera a saída real do daemon antigo antes de subir
+o novo (P3-345, `scripts/procexit.ts`).

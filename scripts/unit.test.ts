@@ -720,7 +720,7 @@ import {
   type AssetProbe,
 } from "../apps/relay/src/webroot";
 
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, readWorkflowTexts, workflowsExpectPrChecks, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
@@ -750,6 +750,9 @@ import {
   ROLLBACK_HEALTH_WINDOW_SEC,
   shouldSelfHealReload,
   shouldForceReload,
+  pilotInfraDiffCmd,
+  pilotInfraDrifted,
+  PILOT_INFRA_PATHSPEC,
   DRIFT_FORCE_RELOAD_MS,
   shouldSelfReload,
   soakFailureRateExceeded,
@@ -949,6 +952,7 @@ import {
 } from "./mac-privacy";
 
 import { touchesDesktop, touchesPortableSuite, touchesRelayImage } from "./ci-scope";
+import { STOP_GRACE_MS, stopAndAwaitExit, type Stoppable } from "./procexit";
 
 import { PORTABLE_TESTS, portableSuitePlan } from "./portable-suite";
 
@@ -5281,6 +5285,15 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   check("P3-101: same sha → not drifted", headDrifted(A, A) === false);
   check("P3-101: undefined boot sha (git failed) → not drifted", headDrifted(undefined, B) === false);
   check("P3-101: undefined current sha → not drifted", headDrifted(A, undefined) === false);
+  // P3-351 (eval r4): drift only counts when the range touches apps/pilot
+  check("P3-351: the probe is the same diff deploy() uses for pilotInfra (name-only, pathspec apps/pilot)", pilotInfraDiffCmd(A, B) === `git diff --name-only ${A} ${B} -- apps/pilot` && PILOT_INFRA_PATHSPEC === "apps/pilot");
+  check("P3-351: product-only range (empty diff) ⇒ not drifted — no drain, fleet keeps running", pilotInfraDrifted({ ok: true, output: "" }) === false && pilotInfraDrifted({ ok: true, output: "  \n" }) === false);
+  check("P3-351: a range touching apps/pilot ⇒ drifted", pilotInfraDrifted({ ok: true, output: "apps/pilot/src/pipeline.ts\n" }) === true);
+  check("P3-351: a failed probe ⇒ drifted (fail-closed, the pre-P3-351 behavior)", pilotInfraDrifted({ ok: false, output: "fatal: bad object" }) === true);
+  {
+    const idx = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+    check("P3-351: index.ts gates the drift on pilotInfraDrifted(exec(pilotInfraDiffCmd(...))) and no longer on headDrifted alone", idx.includes("pilotInfraDrifted(exec(pilotInfraDiffCmd(bootHead!, headNow)") && !idx.includes('const drift = headDrifted(bootHead, headNow) ? "head"'));
+  }
   check(
     "P3-101: malformed shas → not drifted (no restart flapping)",
     headDrifted("", B) === false && headDrifted("nope", B) === false && headDrifted(A, "dirty") === false,
@@ -11166,7 +11179,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       const ran: string[] = [];
       const run: RunFn = (cmd) => {
         ran.push(cmd);
-        if (cmd === "git for-each-ref --format=%(refname:short) refs/heads/pilot/*")
+        if (cmd === "git for-each-ref --format='%(refname:short)' 'refs/heads/pilot/*'")
           return { ok: true, output: "pilot/P9-001\npilot/P9-002\npilot/P9-003\npilot/P9-004\n" };
         if (cmd === "git rev-parse --abbrev-ref HEAD") return { ok: true, output: `${current}\n` };
         return { ok: true, output: "" };
@@ -16784,7 +16797,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "mission: loop self-reload routed through missionDrifted(bootMissionHash, missionNow) on the same drift path",
     pilotIndexSrc.includes("missionDrifted(bootMissionHash, missionNow)") &&
       pilotIndexSrc.includes("const bootMissionHash = missionBoot.hash") &&
-      pilotIndexSrc.includes("headDrifted(bootHead, headNow) ? \"head\" : missionDrifted(bootMissionHash, missionNow)"),
+      // P3-351: the head leg is now gated on the apps/pilot diff (headDrift), the mission leg is unchanged
+      pilotIndexSrc.includes("headDrift ? \"head\" : missionDrifted(bootMissionHash, missionNow)"),
   );
   check(
     "mission: foreign repo gates both deploy paths (pending deploy + post-merge launch)",
@@ -28454,9 +28468,9 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   const ciParsed = parseWorkflowPermissions(ciYml);
   const releaseParsed = parseWorkflowPermissions(releaseYml);
   check(
-    "P2-271: the real ci.yml exposes exactly the six expected jobs",
+    "P2-271: the real ci.yml exposes exactly the seven expected jobs (P3-352 adds the ci-gate aggregator)",
     JSON.stringify(ciParsed.jobs.map((j) => j.job)) ===
-      JSON.stringify(["verify", "scope", "desktop-package", "desktop-package-win", "verify-win", "relay-image"]),
+      JSON.stringify(["verify", "scope", "desktop-package", "desktop-package-win", "verify-win", "relay-image", "ci-gate"]),
   );
   check(
     "P2-271: every job of both real workflows declares permissions",
@@ -31577,7 +31591,7 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   const ciText = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
   const releaseText = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
   const realEntries = [...collectJobTimeouts(ciText, "ci.yml"), ...collectJobTimeouts(releaseText, "release.yml")];
-  check("P2-322: the real workflows expose exactly thirteen jobs to the gate", realEntries.length === 13);
+  check("P2-322: the real workflows expose exactly fourteen jobs to the gate (7 ci.yml incl. ci-gate P3-352 + 7 release.yml)", realEntries.length === 14);
   check(
     "P2-322: real ci.yml + release.yml through the gate — zero problems (every job declares its timeout)",
     jobTimeoutProblems(realEntries).length === 0,
@@ -31845,6 +31859,45 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
       mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [{}] }).verdict === "pending",
   );
   check("readiness: non-string fields behave as absent (external JSON)", mergeReadiness({ mergeable: 7, statusCheckRollup: "not-an-array" }).verdict === "unknown");
+
+  // --- P3-346 (eval r4): an empty rollup right after `gh pr create` is NOT green ---
+  // 2026-09-08: all 5 audited merges landed 4-5s after PR creation, 1-2s BEFORE
+  // the first check-run started (#874 merged 19:03:00Z, verify started
+  // 19:03:02Z); 4 of the 5 then failed CI on main.
+  {
+    const fresh = { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [] };
+    const early = mergeReadiness(fresh, { ciExpected: true });
+    check("P3-346: ciExpected + empty rollup ⇒ pending (checks not scheduled yet), never merge", early.verdict === "pending" && early.detail.includes("no checks reported yet"));
+    check("P3-346: ciExpected + rollup of unreadable items only ⇒ pending too", mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [null, 1, "x"] }, { ciExpected: true }).verdict === "pending");
+    check("P3-346: without ciExpected the r3 rule stands (foreign repo without CI ⇒ merge)", mergeReadiness(fresh).verdict === "merge" && mergeReadiness(fresh, {}).verdict === "merge" && mergeReadiness(fresh, { ciExpected: false }).verdict === "merge");
+    check("P3-346: ciExpected + one green check ⇒ merge (the rule only bites on an EMPTY rollup)", mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] }, { ciExpected: true }).verdict === "merge");
+    check("P3-346: ciExpected + running check ⇒ pending, named", mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "IN_PROGRESS", null)] }, { ciExpected: true }).detail === "checks in progress: verify");
+    check("P3-346: ciExpected never masks a red check", mergeReadiness({ mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE")] }, { ciExpected: true }).verdict === "skip");
+    check("P3-346: ciExpected never masks a conflict (decided first)", mergeReadiness({ mergeable: "CONFLICTING", statusCheckRollup: [] }, { ciExpected: true }).verdict === "skip");
+    check("P3-346: state MERGED still short-circuits with ciExpected", mergeReadiness({ state: "MERGED", statusCheckRollup: [] }, { ciExpected: true }).verdict === "merge");
+    check("P3-346: ciExpected + mergeable UNKNOWN + empty rollup ⇒ pending (either reason)", mergeReadiness({ mergeable: "UNKNOWN", statusCheckRollup: [] }, { ciExpected: true }).verdict === "pending");
+
+    // the pure workflow scan that decides ciExpected
+    const ciYml = "name: CI\n\non:\n  push:\n    branches: [main]\n  pull_request:\n\njobs:\n  verify:\n    runs-on: ubuntu-latest\n";
+    check("P3-346: block-form `on:` with a pull_request key ⇒ expected", workflowsExpectPrChecks([ciYml]));
+    check("P3-346: inline `on: pull_request` and `on: [push, pull_request]` ⇒ expected", workflowsExpectPrChecks(["on: pull_request\njobs: {}\n"]) && workflowsExpectPrChecks(["on: [push, pull_request]\n"]) && workflowsExpectPrChecks(['"on": [ "push", "pull_request" ]\n']));
+    check("P3-346: list-form `on:\\n  - pull_request` ⇒ expected", workflowsExpectPrChecks(["on:\n  - push\n  - pull_request\n"]));
+    check("P3-346: pull_request_target counts (it reports checks on the PR)", workflowsExpectPrChecks(["on:\n  pull_request_target:\n    types: [opened]\n"]));
+    check("P3-346: push-only / tag-only workflows ⇒ not expected", !workflowsExpectPrChecks(["on:\n  push:\n    tags: [\"v*\"]\n"]) && !workflowsExpectPrChecks(["on: push\n"]) && !workflowsExpectPrChecks(["on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 3 * * *'\n"]));
+    check("P3-346: a commented-out trigger never counts", !workflowsExpectPrChecks(["on:\n  push:\n  # pull_request:\n"]) && !workflowsExpectPrChecks(["on: push # not pull_request\n"]));
+    check("P3-346: `pull_request` outside the on: block (a job name, a step) never counts", !workflowsExpectPrChecks(["on: push\njobs:\n  pull_request:\n    runs-on: x\n    steps:\n      - run: echo pull_request\n"]));
+    check("P3-346: `pull_request_review` / `pull_requests` are different events", !workflowsExpectPrChecks(["on:\n  pull_request_review:\n"]) && !workflowsExpectPrChecks(["on: pull_requests\n"]));
+    check("P3-346: no workflows / garbage ⇒ not expected (fail-open keeps the foreign-repo rule)", !workflowsExpectPrChecks([]) && !workflowsExpectPrChecks(["", "::: not yaml", "on"]) && !workflowsExpectPrChecks([42 as unknown as string]));
+    check("P3-346: CRLF workflows scan the same", workflowsExpectPrChecks(["on:\r\n  pull_request:\r\n"]));
+    check("P3-346: the REAL ci.yml of this repo expects PR checks — the rule is live for the pilot's own merges", workflowsExpectPrChecks(readWorkflowTexts(join(import.meta.dirname, ".."))));
+    check("P3-346: readWorkflowTexts on a dir without .github ⇒ [] (foreign repo path)", readWorkflowTexts(mkdtempSync(join(tmpdir(), "ocr-nowf-"))).length === 0);
+    const wfDir = mkdtempSync(join(tmpdir(), "ocr-wf-"));
+    mkdirSync(join(wfDir, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(wfDir, ".github", "workflows", "a.yml"), "on: push\n");
+    writeFileSync(join(wfDir, ".github", "workflows", "b.yaml"), "on:\n  pull_request:\n");
+    writeFileSync(join(wfDir, ".github", "workflows", "README.md"), "on: pull_request\n");
+    check("P3-346: readWorkflowTexts reads .yml and .yaml only", readWorkflowTexts(wfDir).length === 2 && workflowsExpectPrChecks(readWorkflowTexts(wfDir)));
+  }
   check(
     "readinessInfraKind: skip carries its own kind, pending ⇒ timeout, unknown ⇒ network",
     readinessInfraKind({ verdict: "skip", infra: "ci-red", detail: "" }) === "ci-red" &&
@@ -31852,7 +31905,7 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
       readinessInfraKind({ verdict: "pending", detail: "" }) === "timeout" &&
       readinessInfraKind({ verdict: "unknown", detail: "" }) === "network",
   );
-  check("readiness budget: 120 polls × 5s = 10min", PR_READINESS_POLLS * PR_MERGE_CONFIRM_DELAY_MS === 600_000);
+  check("readiness budget (P3-346): 240 polls × 5s = 20min — long enough for the PR-scoped jobs to exist AND finish", PR_READINESS_POLLS * PR_MERGE_CONFIRM_DELAY_MS === 1_200_000);
 
   // the polling wrapper: a gh outage → still computing → checks running →
   // green resolves on the green poll; every non-decisive verdict keeps polling
@@ -31901,6 +31954,29 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     check("awaitMergeReadiness: malformed JSON throughout ⇒ unknown, never merge", garbage.verdict === "unknown" && garbage.detail.includes("malformed"));
     const red1 = await awaitMergeReadiness({ exec: () => ({ ok: true, output: JSON.stringify({ mergeable: "UNKNOWN", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE")] }) }), sleep: () => Promise.resolve() }, 7, 50);
     check("awaitMergeReadiness: a red check is decisive on the first poll, even with mergeability still unknown", red1.verdict === "skip" && red1.infra === "ci-red");
+    // P3-346: the poll survives the empty-rollup window and resolves on the real verdict
+    {
+      const seq2: unknown[] = [
+        { mergeable: "MERGEABLE", statusCheckRollup: [] },
+        { mergeable: "MERGEABLE", statusCheckRollup: [] },
+        { mergeable: "MERGEABLE", statusCheckRollup: [run("scope", "COMPLETED", "SUCCESS"), run("verify", "IN_PROGRESS", null)] },
+        { mergeable: "MERGEABLE", statusCheckRollup: [run("scope", "COMPLETED", "SUCCESS"), run("verify", "COMPLETED", "SUCCESS")] },
+      ];
+      let k = 0;
+      const out2 = await awaitMergeReadiness({ exec: () => ({ ok: true, output: JSON.stringify(seq2[Math.min(k++, seq2.length - 1)]) }), sleep: () => Promise.resolve() }, 9, 50, undefined, { ciExpected: true });
+      check("P3-346: awaitMergeReadiness waits through empty → running → green (4 polls, not 1)", out2.verdict === "merge" && k === 4);
+      let k2 = 0;
+      const out3 = await awaitMergeReadiness({ exec: () => ({ ok: true, output: JSON.stringify(seq2[Math.min(k2++, seq2.length - 1)]) }), sleep: () => Promise.resolve() }, 9, 50);
+      check("P3-346: without ciExpected the same sequence still merges on poll 1 (foreign-repo behavior preserved)", out3.verdict === "merge" && k2 === 1);
+      let k3 = 0;
+      const starved = await awaitMergeReadiness({ exec: () => { k3++; return { ok: true, output: JSON.stringify({ mergeable: "MERGEABLE", statusCheckRollup: [] }) }; }, sleep: () => Promise.resolve() }, 9, 6, undefined, { ciExpected: true });
+      check("P3-346: CI expected but never scheduled ⇒ pending for the whole budget (infra timeout, never a merge)", starved.verdict === "pending" && k3 === 6 && readinessInfraKind(starved) === "timeout");
+      // P3-341 head pin (main's signature, adopted here so both branches converge)
+      let k4 = 0;
+      const heads = ["a".repeat(40), "a".repeat(40), "b".repeat(40)];
+      const pinned = await awaitMergeReadiness({ exec: (cmd) => { const h = heads[Math.min(k4++, heads.length - 1)]; return { ok: true, output: JSON.stringify({ mergeable: "MERGEABLE", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")], headRefOid: cmd.includes("headRefOid") ? h : undefined }) }; }, sleep: () => Promise.resolve() }, 9, 10, "b".repeat(40));
+      check("P3-341/P3-346: expectSha keeps a green snapshot of the OLD head pending until headRefOid matches", pinned.verdict === "merge" && k4 === 3);
+    }
   }
 
   // wiring: mergePrForTask reads the verdict and never arms `gh pr merge` on a
@@ -31937,6 +32013,16 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     const greenIo = mk(() => ({ state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] }));
     const greenOut = await mergePrForTask(greenIo.io, args);
     check("merge wiring: green ⇒ merge armed by PR number and confirmed with our head", greenOut.ok === true && greenIo.calls.some((c) => c.startsWith("gh pr merge 77 ")));
+    // P3-346: wiring — ciExpected rides from mergePrForTask args into the probe
+    {
+      let views = 0;
+      const emptyIo = mk(() => { views++; return { state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [] }; });
+      const emptyOut = await mergePrForTask(emptyIo.io, { ...args, ciExpected: true });
+      check("P3-346 wiring: ciExpected + rollup empty for the whole budget ⇒ infra=timeout, `gh pr merge` never executed", emptyOut.ok === false && emptyOut.infra === "timeout" && views === PR_READINESS_POLLS && !emptyIo.calls.some((c) => c.startsWith("gh pr merge")));
+      const emptyForeign = mk(() => ({ state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [] }));
+      const foreignOut = await mergePrForTask(emptyForeign.io, args);
+      check("P3-346 wiring: no ciExpected (foreign repo) + empty rollup ⇒ merges as before", foreignOut.ok === true && emptyForeign.calls.some((c) => c.startsWith("gh pr merge 77 ")));
+    }
     check("merge wiring: the readiness probe runs after the PR number is resolved and before the merge", greenIo.calls.findIndex((c) => c.includes("statusCheckRollup")) > greenIo.calls.findIndex((c) => c.startsWith("gh pr list")) && greenIo.calls.findIndex((c) => c.includes("statusCheckRollup")) < greenIo.calls.findIndex((c) => c.startsWith("gh pr merge")));
     const deadIo = mk(() => null);
     const deadOut = await mergePrForTask(deadIo.io, args);
@@ -31953,6 +32039,103 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   }
 }
 
+
+// --- P3-347 (eval r4): pipeline start sweeps the slot's IGNORED packaging output ---
+// `git clean -qfd` (no -x) keeps gitignored trees: repo-2 carried 1.1GB of
+// apps/desktop/dist from 16:08 to 19:20 on 2026-09-08 while the volume sat at
+// 3.9GB free (< the 5GB deploy guard) — the hourly idle sweep never saw a
+// busy slot. setupTaskBranch removes it unconditionally at pipeline start.
+{
+  const originDir = mkdtempSync(join(tmpdir(), "ocr-distorigin-"));
+  const wsRepo = mkdtempSync(join(tmpdir(), "ocr-distws-"));
+  try {
+    execSync(`git init -q --bare ${JSON.stringify(originDir)}`, { stdio: ["ignore", "pipe", "pipe"] });
+    const g = (c: string) => execSync(c, { cwd: wsRepo, stdio: ["ignore", "pipe", "pipe"] });
+    g("git init -q -b main .");
+    g("git config user.email t@t.local");
+    g("git config user.name t");
+    writeFileSync(join(wsRepo, ".gitignore"), "apps/desktop/dist\n");
+    writeFileSync(join(wsRepo, "README.md"), "base\n");
+    g("git add . && git commit -qm base");
+    g(`git remote add origin ${JSON.stringify(originDir)}`);
+    g("git push -q origin main");
+    const dist = join(wsRepo, DIST_SWEEP_REL);
+    mkdirSync(join(dist, "mac-arm64"), { recursive: true });
+    writeFileSync(join(dist, "mac-arm64", "app.zip"), "x".repeat(4096));
+    writeFileSync(join(dist, "builder-debug.yml"), "y\n");
+    const untracked = join(wsRepo, "scratch.txt");
+    writeFileSync(untracked, "u\n");
+    // sanity: plain git clean keeps the ignored dist (the very gap this closes)
+    g("git clean -qfd");
+    check("P3-347: `git clean -qfd` alone keeps the ignored packaging tree (the gap)", existsSync(dist) && !existsSync(untracked));
+    setupTaskBranch(wsRepo, "P3-347T", 0);
+    check("P3-347: setupTaskBranch removes apps/desktop/dist at pipeline start (fresh path)", !existsSync(dist) && existsSync(join(wsRepo, "README.md")));
+    mkdirSync(dist, { recursive: true });
+    writeFileSync(join(dist, "again.bin"), "z");
+    // the fresh path above created pilot/P3-347T at origin/main and left the
+    // workspace on it; park on main so the resume path checks it out again
+    g("git checkout -q main");
+    setupTaskBranch(wsRepo, "P3-347T", 1);
+    check("P3-347: the resume path (attempts>0, branch preserved) sweeps too", !existsSync(dist));
+    setupTaskBranch(wsRepo, "P3-347T", 2);
+    check("P3-347: no dist ⇒ no-op, no crash", !existsSync(dist));
+  } finally {
+    rmSync(originDir, { recursive: true, force: true });
+    rmSync(wsRepo, { recursive: true, force: true });
+  }
+}
+
+// --- P3-345 (eval r4): reconnect.test waits for the old daemon's REAL exit ---
+// The fixed 1s sleep raced the daemon's ≤3s graceful drain: two daemons in one
+// relay room, frames round-robined, the message post hit the zombie ⇒ 410.
+{
+  const fakeChild = (behavior: { exitAfterMs?: number; ignoreTerm?: boolean; immortal?: boolean; alreadyExited?: boolean }) => {
+    const listeners: Array<(code: number | null, signal: string | null) => void> = [];
+    const kills: string[] = [];
+    const child: Stoppable & { kills: string[] } = {
+      exitCode: behavior.alreadyExited ? 0 : null,
+      signalCode: null,
+      kills,
+      once: (_e, l) => listeners.push(l),
+      kill: (sig) => {
+        kills.push(sig ?? "SIGTERM");
+        const fire = (code: number | null, signal: string | null) => setTimeout(() => { child.exitCode = code; child.signalCode = signal; for (const l of listeners.splice(0)) l(code, signal); }, behavior.exitAfterMs ?? 0);
+        if (sig === "SIGKILL") {
+          if (!behavior.immortal) fire(null, "SIGKILL");
+        } else if (!behavior.ignoreTerm) {
+          fire(0, null);
+        }
+        return true;
+      },
+    };
+    return child;
+  };
+  check("P3-345: default grace before SIGKILL is 10s (longer than the daemon's 3s drain, shorter than the gate's patience)", STOP_GRACE_MS === 10_000);
+  const slow = fakeChild({ exitAfterMs: 120 }); // slower than the old 1s sleep would be at scale — the point is: we WAIT
+  const t0 = Date.now();
+  const slowOut = await stopAndAwaitExit(slow, { graceMs: 2_000 });
+  check("P3-345: a slow graceful exit is awaited, not skipped — SIGTERM only, forced:false, exit code reported", !slowOut.forced && slowOut.code === 0 && slow.kills.join(",") === "SIGTERM" && Date.now() - t0 >= 100);
+  const stubborn = fakeChild({ ignoreTerm: true });
+  const stubbornOut = await stopAndAwaitExit(stubborn, { graceMs: 60 });
+  check("P3-345: a process ignoring SIGTERM is SIGKILLed after the grace and reported forced:true", stubbornOut.forced && stubbornOut.signal === "SIGKILL" && stubborn.kills.join(",") === "SIGTERM,SIGKILL");
+  let immortalErr = "";
+  try {
+    await stopAndAwaitExit(fakeChild({ ignoreTerm: true, immortal: true }), { graceMs: 40 });
+  } catch (e) {
+    immortalErr = (e as Error).message;
+  }
+  check("P3-345: still alive after SIGKILL + grace ⇒ rejects loudly (never a silent pass)", immortalErr.includes("still alive"));
+  const gone = fakeChild({ alreadyExited: true });
+  const goneOut = await stopAndAwaitExit(gone, { graceMs: 40 });
+  check("P3-345: an already-exited child resolves at once without any signal", !goneOut.forced && gone.kills.length === 0 && goneOut.code === 0);
+  const custom = fakeChild({});
+  await stopAndAwaitExit(custom, { signal: "SIGINT", graceMs: 40 });
+  check("P3-345: the polite signal is configurable", custom.kills[0] === "SIGINT");
+  const src = readFileSync(join(import.meta.dirname, "reconnect.test.ts"), "utf8");
+  check("P3-345: reconnect.test.ts restarts via stopAndAwaitExit and no longer sleeps a fixed 1s between SIGTERM and startDaemon", src.includes("await stopAndAwaitExit(daemon") && !/daemon\.kill\("SIGTERM"\);\s*\n\s*await new Promise\(\(r\) => setTimeout\(r, 1000\)\);/.test(src));
+  const helper = readFileSync(join(import.meta.dirname, "procexit.ts"), "utf8");
+  check("P3-345: procexit.ts is pure over the injected child (no child_process, no fs, no net import)", !/from "node:(child_process|fs|net|http)"/.test(helper));
+}
 
 // --- eval r3: doctor dist sweep — stale electron-builder output leaves idle slots ---
 {

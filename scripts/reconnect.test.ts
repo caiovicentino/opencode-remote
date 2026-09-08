@@ -10,6 +10,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { stopAndAwaitExit } from "./procexit";
 import {
   b64,
   clientHello,
@@ -227,8 +228,15 @@ const daemonAnnounce = new Promise<void>((resolve, reject) => {
   };
   ws.on("message", onMsg);
 });
-daemon.kill("SIGTERM");
-await new Promise((r) => setTimeout(r, 1000));
+// P3-345: wait for the OLD daemon's real exit before spawning the new one.
+// The fixed 1s sleep raced the daemon's ≤3s graceful drain
+// (apps/daemon/src/shutdown.ts DRAIN_MS): two daemons in one relay room,
+// frames round-robined between them — the upload landed on the new one, the
+// message post on the zombie, which answered 410 "attachment expired"
+// (CI run 34281044412). SIGKILL after 10s keeps a wedged process from
+// hanging the gate; the retry loop below stays for the cold-start gap only.
+const stopped = await stopAndAwaitExit(daemon, { graceMs: 10_000 });
+if (stopped.forced) console.error("old daemon ignored SIGTERM for 10s — SIGKILLed before restart");
 daemon = startDaemon();
 await daemonAnnounce;
 

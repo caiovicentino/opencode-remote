@@ -423,3 +423,46 @@ jobs:
           done
           CONTAINER_USER="$(docker exec relay-smoke whoami)"
           npx --yes tsx@4.23.12 scripts/relay-image-smoke.ts "http://127.0.0.1:${PORT}" "$CONTAINER_USER"
+
+  # P3-352 (eval r4): ONE aggregate verdict for the whole pull-request run.
+  # Every merge of 2026-09-08 landed seconds before its first check started,
+  # and two of them turned main red on desktop-package-win with the pilot's
+  # readiness poll blind to it: with no required status check configured on
+  # main (branch protection: contexts []), "green" had to be reconstructed
+  # from six per-job contexts, half of them scope-gated and therefore absent
+  # or SKIPPED on most PRs. This job is the single stable context the branch
+  # protection can require (docs/security.md — P3-350) and the one name the
+  # pilot's mergeReadiness can key on. It always runs (if: always()), waits
+  # for every other job and decides through the pure scripts/cigate.ts
+  # verdict, fail-closed:
+  #   - verify and scope are unconditional — anything but success is red
+  #     (a skipped verify means the run was cancelled or the graph broke);
+  #   - the scope-gated jobs (desktop-package, desktop-package-win,
+  #     verify-win, relay-image) pass on success OR skipped — skipped is the
+  #     scope job's own decision that the diff cannot affect that surface;
+  #   - failure, cancelled, timed_out and a job missing from `needs` are red.
+  # No install, no secret, no artifact, nothing published: the verdict is
+  # computed from the `needs` context alone (toJSON(needs)); the checkout
+  # only provides the script, run through the same pinned tsx the scope job
+  # already uses.
+  ci-gate:
+    runs-on: ubuntu-latest
+    # P2-322: job-level timeout, coherent with the work (docs/security.md).
+    timeout-minutes: 5
+    # P2-271: least-privilege declaration, documented in scripts/workflow-scopes.json.
+    permissions:
+      contents: read
+    needs: [verify, scope, desktop-package, desktop-package-win, verify-win, relay-image]
+    if: always()
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Aggregate the run verdict (unconditional jobs must succeed, scope-gated jobs may be skipped)
+        shell: bash
+        timeout-minutes: 3
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$NEEDS_JSON" > "$RUNNER_TEMP/needs.json"
+          npx --yes tsx@4.23.12 scripts/check-ci-gate.ts "$RUNNER_TEMP/needs.json"

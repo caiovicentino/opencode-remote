@@ -6,6 +6,7 @@
     "ci.yml/desktop-package-win": ["contents:read"],
     "ci.yml/verify-win": ["contents:read"],
     "ci.yml/relay-image": ["contents:read"],
+    "ci.yml/ci-gate": ["contents:read"],
     "release.yml/release": ["contents:write"],
     "release.yml/desktop-dmg": ["contents:write"],
     "release.yml/desktop-win": ["contents:write"],
@@ -15,6 +16,7 @@
     "release.yml/release-publish": ["contents:write"]
   },
   "conditions": {
+    "ci.yml/ci-gate": "Always runs (if: always()) after every other ci.yml job and aggregates their results through scripts/cigate.ts (P3-352): verify and scope must succeed, the scope-gated jobs may be skipped, anything else is red. It is the single status context the main branch protection should require (P3-350) and the one name the pilot readiness poll can key on.",
     "ci.yml/verify-win": "Runs when the scope job's desktop OR portable-suite output is true (P2-317): the portable Windows battery also exercises apps/daemon and apps/relay path logic, so a PR touching those runs it too, while docs-only or media-only changes never do."
   }
 }
