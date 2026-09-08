@@ -165,7 +165,13 @@ candidatas de layout vêm do módulo puro `packaged-boot-layout.mjs` e
 `resolveExecutable` segue sendo o único ponto do script que toca disco. O
 veredito vive numa função pura (`bootVerdict`) com motivos `binary-missing`,
 `load-failed`, `blank-window`, `console-capture-broken` e `console-error`;
-Playwright ausente falha fechado. O smoke de boot também fica **fora do gate
+Playwright ausente falha fechado. Desde a P3-343, no Windows o binário é
+reconhecido pelo sufixo `.exe` e não por bits de execução — libuv nunca os
+define em `st_mode` no win32, e foi isso que produziu o falso
+`binary-missing` do run 34275463862 — e o boot salva um screenshot da janela
+real (`OCR_PACKAGED_BOOT_SHOT`, best-effort que nunca muda o veredito),
+enviado como artifact do run pelos dois jobs de empacotamento Windows. O
+smoke de boot também fica **fora do gate
 por design** — é etapa de distribuição: roda no workflow de release (nos dois
 jobs de empacotamento) e localmente contra um pacote já construído (README).
 Desde a P2-242 o mesmo boot real do pacote roda também no CI além do release
