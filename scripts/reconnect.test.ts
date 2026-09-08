@@ -19,6 +19,7 @@ import {
   seqAad,
   type OpResponse,
 } from "@ocr/protocol";
+import { isRetriableOp, waitForChildExit } from "./daemonrestart";
 
 // P2-055 (reviewer finding): the hardcoded port collided with whatever process
 // happened to be listening on it — the probe then read a plain HTTP 200 from a
@@ -202,18 +203,26 @@ function request(method: string, path: string, body?: unknown): Promise<OpRespon
 }
 
 // the relay is a blind router: an op addressed to a room the restarted daemon
-// has not rejoined yet is dropped silently — every post-restart op gets the
-// same bounded retry, not only the first one (the upload steps died on this
-// race while the transcribe step's dedicated retry loop masked it)
-async function withRetry(label: string, op: () => Promise<OpResponse>): Promise<OpResponse> {
+// has not rejoined yet is dropped silently — every post-restart op goes through
+// send() below, not only the first one (the upload steps died on this race
+// while the transcribe step's dedicated retry loop masked it)
+async function send(method: string, path: string, body?: unknown): Promise<OpResponse> {
+  // P3-345: the retry verdict is not the caller's choice. Only staging-chunk
+  // routes are idempotent (re-staging the same idx replaces the copy); ops
+  // that consume state server-side — /__ocr/upload/complete does
+  // uploadChunks.delete, POST /session/*/message does uploads.delete — are
+  // sent exactly once: a retry after a processed-but-lost reply would
+  // fabricate the very 404/410 it was meant to mask.
+  if (!isRetriableOp(method, path)) return request(method, path, body);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await op();
+      // each attempt builds a fresh frame id inside request() (lesson P3-337)
+      return await request(method, path, body);
     } catch (e) {
       if ((e as Error).message !== "request timeout") throw e;
       lastErr = e;
-      console.error(`${label}: retry ${attempt + 1}/2 (frame dropped while the daemon rejoins)`);
+      console.error(`${path}: retry ${attempt + 1}/2 (frame dropped while the daemon rejoins)`);
     }
   }
   throw lastErr;
@@ -273,58 +282,65 @@ const daemonAnnounce = new Promise<void>((resolve, reject) => {
   };
   ws.on("message", onMsg);
 });
-daemon.kill("SIGTERM");
-await new Promise((r) => setTimeout(r, 1000));
+// P3-345: wait for the REAL exit of the old process, never a fixed sleep. A
+// fixed 1s left two daemons in the relay room whenever the drain ran long
+// (slow unload/flush): the blind router then delivered frames to both, and the
+// message post could land on the OLD daemon — 410 "attachment expired" or a
+// stale-key frame the client cannot open. The listener inside
+// waitForChildExit is registered before the kill, so no exit is ever lost.
+const old = daemon;
+const exited = waitForChildExit(old);
+old.kill("SIGTERM");
+const { waitedMs, forced } = await exited;
+console.log(`old daemon exited after ${waitedMs}ms (forced=${forced})`);
 daemon = startDaemon();
 await daemonAnnounce;
 
-res = await withRetry("post-restart op", () =>
-  request("POST", "/__ocr/transcribe/chunk", { id: "t2", idx: 0, data: "" }),
-);
+res = await send("POST", "/__ocr/transcribe/chunk", { id: "t2", idx: 0, data: "" });
 if (res.status !== 200) throw new Error(`post-restart op failed: ${res.status}`);
 console.log("op after daemon restart (auto re-handshake): OK");
 
 // --- image upload + data URL substitution ----------------------------------
-res = await withRetry("upload chunk", () => request("POST", "/__ocr/upload/chunk", {
+res = await send("POST", "/__ocr/upload/chunk", {
   id: "u1",
   idx: 0,
   data: Buffer.from("hello-image").toString("base64"),
-}));
+});
 if (res.status !== 200) throw new Error(`upload chunk failed: ${res.status}`);
-res = await withRetry("upload complete", () => request("POST", "/__ocr/upload/complete", {
+res = await send("POST", "/__ocr/upload/complete", {
   id: "u1",
   mime: "image/jpeg",
   filename: "t.jpg",
-}));
+});
 if (res.status !== 200) throw new Error(`upload complete failed: ${res.status}`);
 if ((res.body as { url?: string }).url !== "ocr-upload://u1") {
   throw new Error(`unexpected upload url: ${JSON.stringify(res.body)}`);
 }
-res = await withRetry("message substitution", () => request("POST", "/session/ses_x/message", {
+res = await send("POST", "/session/ses_x/message", {
   parts: [{ type: "file", url: "ocr-upload://u1", mime: "image/jpeg", filename: "t.jpg" }],
-}));
+});
 // daemon reaches opencode (down => 502) only if substitution succeeded
 if (res.status !== 502) throw new Error(`expected 502 (opencode down), got ${res.status}`);
 console.log("image attachment substitution: OK");
-res = await withRetry("message expired", () => request("POST", "/session/ses_x/message", {
+res = await send("POST", "/session/ses_x/message", {
   parts: [{ type: "file", url: "ocr-upload://gone", mime: "image/jpeg", filename: "t.jpg" }],
-}));
+});
 if (res.status !== 410) throw new Error(`expected 410 for expired upload, got ${res.status}`);
 console.log("expired attachment rejection: OK");
 
 // --- file-kind upload (e.g. video) persisted for agent tools ---------------
-res = await withRetry("file chunk", () => request("POST", "/__ocr/upload/chunk", {
+res = await send("POST", "/__ocr/upload/chunk", {
   id: "f1",
   idx: 0,
   data: Buffer.from("fake-video-bytes").toString("base64"),
-}));
+});
 if (res.status !== 200) throw new Error(`file chunk failed: ${res.status}`);
-res = await withRetry("file complete", () => request("POST", "/__ocr/upload/complete", {
+res = await send("POST", "/__ocr/upload/complete", {
   id: "f1",
   mime: "video/mp4",
   filename: "v.mp4",
   kind: "file",
-}));
+});
 if (res.status !== 200) throw new Error(`file complete failed: ${res.status}`);
 const filePath = (res.body as { path?: string }).path;
 if (!filePath || !existsSync(filePath)) throw new Error(`file not persisted: ${filePath}`);
