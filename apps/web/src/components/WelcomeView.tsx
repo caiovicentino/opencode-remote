@@ -21,6 +21,10 @@ interface Props {
   /** P1-056 (fable #2): leave the ceremony — turns remote pairing OFF so
    * "do this later" never resurrects the QR overlay after onboarding. */
   onCancelPairRemote?: () => void;
+  /** P3-329: labeled escape to the manual paste-code ceremony, offered on
+   * the QR error branch — a stuck wait must never dead-end a first-time
+   * user on a spinner whose only alternative hides one screen earlier. */
+  onPairManually?: () => void;
   /** Finish (or skip) — App stamps the flag and unmounts the onboarding. */
   onDone: () => void;
 }
@@ -32,11 +36,13 @@ function InlinePair({
   phonePaired,
   onPairRemote,
   onCancelPairRemote,
+  onPairManually,
 }: {
   qrDataUrl?: string | null;
   phonePaired?: boolean;
   onPairRemote: () => void;
   onCancelPairRemote?: () => void;
+  onPairManually?: () => void;
 }) {
   const t = useT();
   // fable #2/#3: mount-only ceremony — the App passes a NEW inline arrow per
@@ -102,14 +108,27 @@ function InlinePair({
       ) : verdict === "error" ? (
         <div className="welcome-qr-error" role="alert">
           <p className="welcome-qr-error-title">{t("welcomeQrError")}</p>
-          <button className="welcome-qr-retry" onClick={retry}>
-            {t("welcomeQrRetry")}
-          </button>
+          {/* P3-329: name the dependency — the QR is minted from the local
+              agent's pairing credential; with the agent down nothing loads. */}
+          <p className="muted welcome-qr-hint">{t("welcomeQrErrorHint")}</p>
+          <div className="welcome-qr-actions">
+            <button className="welcome-qr-retry" onClick={retry}>
+              {t("welcomeQrRetry")}
+            </button>
+            {onPairManually && (
+              <button className="welcome-qr-manual" onClick={onPairManually}>
+                {t("welcomeQrManual")}
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div className="welcome-qr-wait" role="status">
           <div className="skel welcome-qr-skel" aria-hidden="true" />
           <p className="muted">{t("welcomeQrWait")}</p>
+          {/* P3-329: even the healthy wait says where the QR comes from — a
+              first-time user with a dead agent is never left guessing. */}
+          <p className="muted welcome-qr-hint">{t("welcomeQrWaitHint")}</p>
         </div>
       )}
     </section>
@@ -122,7 +141,7 @@ function InlinePair({
  * banner per P2-108), step 3 invites pairing a phone with an explicit "do
  * this later". Zero emoji (P2-107), P3-083 tokens only, 150–300ms motion
  * that dies under prefers-reduced-motion (P3-087). */
-export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onDone }: Props) {
+export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onPairManually, onDone }: Props) {
   const t = useT();
   const [step, setStep] = useState(1);
 
@@ -213,6 +232,7 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
                 phonePaired={phonePaired}
                 onPairRemote={onPairRemote}
                 onCancelPairRemote={onCancelPairRemote}
+                onPairManually={onPairManually}
               />
             )}
             {!onPairRemote && (
