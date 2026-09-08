@@ -10,13 +10,15 @@
  *   branches  — delete pilot/* branches with no open PR (gh-verified)
  *   state     — normalize state.json to the current schema + defaults
  *   tierb     — probe the tier-B claude binary (`claude --version`) (P2-114)
+ *   dist      — sweep stale apps/desktop/dist trees from idle slot workspaces
  *
  * The pilot calls runDoctor() after every boot (apps/pilot/src/index.ts) and
  * operators can run any subcommand manually:
- *   tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|all>
+ *   tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|dist|all>
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { basename, join } from "node:path";
+import { formatGb } from "./disk";
 import { nowLocalISO } from "./log";
 import { exec } from "./runner";
 import { emit } from "./events";
@@ -330,6 +332,137 @@ export function doctorTierB(models: ModelsConfig | undefined, run: RunFn): Docto
   return { ok: false, changed: false, detail: `tier-B binary unusable: claude --version failed — ${r.output.slice(-120)}` };
 }
 
+// ── dist: sweep stale electron-builder output from idle slot workspaces ──────
+
+/** Packaged-app output every slot accumulates (electron-builder `dist`, ~1.5GB
+ * per workspace). Never a runtime input: dist-electron/dist-daemon are the
+ * bundles the app runs from, `dist` only ever feeds a release upload. */
+export const DIST_SWEEP_REL = join("apps", "desktop", "dist");
+/** A dist tree is only swept once nothing wrote into it for this long. */
+export const DIST_SWEEP_MIN_AGE_MS = 60 * 60_000;
+/** The recurring sweep fires at most this often (boot pass + loop ticks). */
+export const DIST_SWEEP_EVERY_MS = 60 * 60_000;
+
+/** Injectable filesystem for doctorDist (the unit battery swaps in a fake). */
+export interface DistFs {
+  /** Recursive byte total + newest mtime (dir itself included) under `dir`;
+   * null when it is missing or not a directory. */
+  walk: (dir: string) => { bytes: number; newestMtimeMs: number } | null;
+  rm: (dir: string) => void;
+}
+
+/** Real filesystem: lstat-based walk (symlinks are never followed). */
+export function nodeDistFs(): DistFs {
+  return {
+    walk: (dir) => {
+      let top;
+      try {
+        top = lstatSync(dir);
+      } catch {
+        return null;
+      }
+      if (!top.isDirectory()) return null;
+      let bytes = 0;
+      let newestMtimeMs = top.mtimeMs;
+      const stack = [dir];
+      while (stack.length) {
+        const cur = stack.pop()!;
+        let entries;
+        try {
+          entries = readdirSync(cur);
+        } catch {
+          continue;
+        }
+        for (const name of entries) {
+          const p = join(cur, name);
+          let s;
+          try {
+            s = lstatSync(p);
+          } catch {
+            continue;
+          }
+          if (s.mtimeMs > newestMtimeMs) newestMtimeMs = s.mtimeMs;
+          if (s.isDirectory()) stack.push(p);
+          else bytes += s.size;
+        }
+      }
+      return { bytes, newestMtimeMs };
+    },
+    rm: (dir) => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+export interface DistSweepResult extends DoctorResult {
+  /** Bytes actually released this pass (0 when nothing was removed). */
+  freedBytes: number;
+}
+
+/**
+ * Eval r3: electron-builder output piled up in every slot workspace until the
+ * volume hit 100% — ~30 deploy refusals and 50h without a deploy. Remove
+ * `apps/desktop/dist` from each given workspace when (1) the caller does not
+ * report the slot busy, (2) the tree exists and (3) nothing under it was
+ * written for `minAgeMs` (newest mtime, so a packaging run still writing deep
+ * inside the tree is never pulled from under it). Idempotent: a second pass
+ * finds nothing and reports changed:false. A removal that leaves the tree in
+ * place is a failure (ok:false), never a silent success.
+ */
+export function doctorDist(
+  workspaces: string[],
+  opts: { fs?: DistFs; now?: number; minAgeMs?: number; busy?: (ws: string) => boolean } = {},
+): DistSweepResult {
+  const fs = opts.fs ?? nodeDistFs();
+  const now = opts.now ?? Date.now();
+  const minAgeMs = opts.minAgeMs ?? DIST_SWEEP_MIN_AGE_MS;
+  const removed: string[] = [];
+  const skipped: string[] = [];
+  let freedBytes = 0;
+  let failed = false;
+  for (const ws of workspaces) {
+    const label = basename(ws) || ws;
+    const dir = join(ws, DIST_SWEEP_REL);
+    if (opts.busy?.(ws)) {
+      skipped.push(`${label} (pipeline running)`);
+      continue;
+    }
+    const info = fs.walk(dir);
+    if (!info) continue; // nothing to sweep
+    const ageMs = now - info.newestMtimeMs;
+    if (ageMs < minAgeMs) {
+      skipped.push(`${label} (written ${Math.max(0, Math.round(ageMs / 60_000))}min ago)`);
+      continue;
+    }
+    try {
+      fs.rm(dir);
+    } catch (err) {
+      skipped.push(`${label} (rm failed: ${String(err).slice(0, 80)})`);
+      failed = true;
+      continue;
+    }
+    if (fs.walk(dir)) {
+      skipped.push(`${label} (still present after rm)`);
+      failed = true;
+      continue;
+    }
+    removed.push(`${label} (${formatGb(info.bytes)}gb)`);
+    freedBytes += info.bytes;
+  }
+  const parts: string[] = [];
+  if (removed.length) parts.push(`freed ${formatGb(freedBytes)}gb: ${removed.join(", ")}`);
+  if (skipped.length) parts.push(`skipped: ${skipped.join(", ")}`);
+  return {
+    ok: !failed,
+    changed: removed.length > 0,
+    freedBytes,
+    detail: parts.length ? parts.join(" | ") : "no stale dist output",
+  };
+}
+
+/** Throttle for the recurring sweep: due when never run or `everyMs` elapsed. */
+export function distSweepDue(lastAt: number | null, now: number, everyMs = DIST_SWEEP_EVERY_MS): boolean {
+  return lastAt === null || now - lastAt >= everyMs;
+}
+
 // ── orchestration ────────────────────────────────────────────────────────────
 
 export function doctorLog(level: string, msg: string, data?: unknown): void {
@@ -401,8 +534,18 @@ export function runDoctor(
     return r.ok;
   });
 
+  // Disk hygiene (eval r3): at boot every slot is idle, so every workspace is
+  // eligible; the loop repeats the sweep hourly on idle slots (index.ts).
+  let dist: DistSweepResult;
+  try {
+    dist = doctorDist(workspaces);
+  } catch (err) {
+    dist = { ok: false, changed: false, freedBytes: 0, detail: `dist crashed: ${String(err).slice(0, 200)}` };
+  }
+  log(dist.ok ? "info" : "warn", "doctor: dist", dist);
+
   log("info", "doctor pass complete", {
-    ok: refsResults.every(Boolean) && stateResult.ok && backlog.ok && tierB.ok && branchResults.every(Boolean),
+    ok: refsResults.every(Boolean) && stateResult.ok && backlog.ok && tierB.ok && branchResults.every(Boolean) && dist.ok,
   });
 }
 
@@ -414,7 +557,7 @@ function safe(fn: () => DoctorResult, what: string): DoctorResult {
   }
 }
 
-// ── CLI: tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|all> ─
+// ── CLI: tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|dist|all> ─
 
 function main() {
   const cfg = loadConfig();
@@ -461,11 +604,17 @@ function main() {
       ok = r.ok;
       break;
     }
+    case "dist": {
+      const r = doctorDist([cfg.workspace]);
+      log(r.ok ? "info" : "warn", "doctor: dist", { ws: cfg.workspace, ...r });
+      ok = r.ok;
+      break;
+    }
     case "all":
       runDoctor(cfg, [cfg.workspace]);
       break;
     default:
-      console.error(`usage: tsx apps/pilot/src/doctor.ts <refs|attempts --clear [id]|backlog|branches|state|tierb|all>`);
+      console.error(`usage: tsx apps/pilot/src/doctor.ts <refs|attempts --clear [id]|backlog|branches|state|tierb|dist|all>`);
       process.exitCode = 1;
       return;
   }

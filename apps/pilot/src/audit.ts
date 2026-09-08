@@ -59,8 +59,11 @@ export function recordCycle(st: PilotState, ok: boolean, task?: string, now = Da
 /** P1-074: kind of infrastructure failure behind a pipeline outcome. P2-134:
  * "conflict" = the task PR is blocked by a merge conflict with main (caused by
  * another slot's merge) — infra, not merit: the next cycle rebases the
- * preserved branch and retries at zero attempt cost. */
-export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network" | "conflict" | "spec-format";
+ * preserved branch and retries at zero attempt cost. "ci-red" = GitHub reports
+ * a failed check on the task PR, so the merge was skipped instead of landing
+ * red code (mergeReadiness in pipeline.ts) — the streak breaker turns three
+ * consecutive red cycles into a hard block with that exact reason. */
+export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network" | "conflict" | "spec-format" | "ci-red";
 
 /** Every INFRA_DOCTOR_EVERY-th infra failure wakes the doctor (a diagnostic
  * pass without entering audit mode). */

@@ -53,9 +53,12 @@ import {
 } from "./state";
 import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
 import { recordLessonImpact } from "./metrics";
-import { runDoctor } from "./doctor";
+import { distSweepDue, doctorDist, runDoctor } from "./doctor";
 
 let deployBusy = false;
+/** Disk hygiene (eval r3): when the stale-dist sweep last ran — the boot
+ * doctor pass counts as a run; the loop repeats it hourly on idle slots. */
+let lastDistSweep: number | null = null;
 /** Consecutive same-kind deploy refusals (dirty prod, disk, prod ahead) — arms
  * the pending-deploy hold (deploybackoff.ts). In-memory: a restart looks again. */
 let deployBackoff: DeployBackoff | null = null;
@@ -167,6 +170,7 @@ async function main() {
   // P1-030: deterministic repair pass on every boot — refs/state/backlog/
   // branches, each idempotent and logged; never blocks the loop from starting.
   runDoctor(cfg, slotNumbers.map((s) => slotCfg.get(s)!.workspace));
+  lastDistSweep = Date.now();
 
   const once = process.argv.includes("--once");
   log("info", "pilot started", {
@@ -428,6 +432,21 @@ async function main() {
         if (once) return;
         await sleep(5_000);
         continue;
+      }
+    }
+
+    // Disk hygiene (eval r3): electron-builder output (apps/desktop/dist,
+    // ~1.5GB per slot) piled up until the volume hit 100% and the deploy disk
+    // guard refused for 50h. Hourly sweep of the IDLE slots' stale trees
+    // (>1h since the last write inside them); the boot pass covered hour 0.
+    if (distSweepDue(lastDistSweep, Date.now())) {
+      lastDistSweep = Date.now();
+      const idle = slotNumbers.filter((s) => !running.has(s)).map((s) => slotCfg.get(s)!.workspace);
+      try {
+        const sweep = doctorDist(idle);
+        log(sweep.ok ? "info" : "warn", "doctor: dist", sweep);
+      } catch (err) {
+        log("warn", "doctor: dist crashed", { err: String(err).slice(0, 200) });
       }
     }
 

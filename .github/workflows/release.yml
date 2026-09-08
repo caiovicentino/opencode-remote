@@ -326,7 +326,10 @@ jobs:
           CONTAINER_USER="$(docker exec relay-smoke whoami)"
           npx --yes tsx@4.23.12 scripts/relay-image-smoke.ts "http://127.0.0.1:${PORT}" "$CONTAINER_USER"
 
-      - name: Push both references (opt-in: PUBLISH_RELAY_IMAGE=true)
+      # Quoted on purpose: an unquoted `: ` inside a plain scalar starts a new
+      # mapping key and makes the whole workflow file unparseable (every
+      # release run died in 0s after P2-151 — scripts/workflow-yaml.test.ts).
+      - name: "Push both references (opt-in: PUBLISH_RELAY_IMAGE=true)"
         if: vars.PUBLISH_RELAY_IMAGE == 'true'
         shell: bash
         run: |
