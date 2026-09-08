@@ -92,7 +92,7 @@ export default function PairingView({ phase, error, onPair, onRetry, onPairRemot
   return (
     <div className="screen pair-screen">
       <header>
-        <h1 style={{ fontSize: "1rem", margin: 0 }}>OpenCode Remote</h1>
+        <h1 className="brand-wordmark">OpenCode Remote</h1>
       </header>
       <p className="muted pair-intro">{t("pairIntro")}</p>
       {ceremony && (

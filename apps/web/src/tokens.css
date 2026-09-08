@@ -61,6 +61,8 @@
   --font-size-md: 0.95rem;
   --font-size-body: var(--font-size-md); /* 15.2px conversation body */
   --font-size-lg: 1.15rem;
+  --font-size-xl: 1.35rem; /* brand/display: the serif wordmark on first screens */
+  --font-serif: ui-serif, Georgia, "Times New Roman", serif;
   --line-height-body: 1.65; /* PRODUCT.md: 1.6–1.7 */
   --line-height-tight: 1.35;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;

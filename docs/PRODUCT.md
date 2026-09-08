@@ -32,6 +32,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   central (~640px) com toggle Chat/Cowork + seletor de modelo + mic, e 3 ideias
   clicáveis que pré-preenchem a primeira mensagem — o estado vazio deixa de ser
   um beco (P1-071: todo fluxo alcançável no primeiro boot)
+- Marca do produto com escala tipográfica própria (P3-336): o h1 "OpenCode
+  Remote" das telas de primeiro contato (boas-vindas, pareamento, jornada
+  degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo
+  display da escala de tokens (`--font-size-xl`) — em vez de estilo inline a
+  1rem (tamanho de corpo)
 - Painel de artifact com animação de entrada/saída e backdrop
 - Gauge de contexto e recap (P1-079) no rodapé do chat, discretos
 - Rotinas agendadas visíveis ("Programado"), com histórico de execução por
