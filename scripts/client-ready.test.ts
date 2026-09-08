@@ -5,7 +5,7 @@
  *
  * Run: npx tsx scripts/client-ready.test.ts
  */
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -40,10 +40,18 @@ check(
 // --- writeCrashReport: write + retention --------------------------------------
 function fakeCrashFs(existing: string[] = []) {
   const files = new Set(existing);
+  // Windows: production paths come from path.join (backslashes) while the
+  // fixtures below use "/" — match on a normalized form so readdir is
+  // platform-agnostic (P3-342)
+  const norm = (p: string) => p.split(/[\\/]/).join("/");
   const fs = {
     existsSync: (f: string) => (files.has(f) ? true : false),
     mkdirSync: (d: string) => void files.add(d + "/"),
-    readdirSync: (d: string) => [...files].filter((f) => f.startsWith(d + "/")).map((f) => f.slice((d + "/").length)),
+    readdirSync: (d: string) =>
+      [...files]
+        .map(norm)
+        .filter((f) => f.startsWith(norm(d) + "/"))
+        .map((f) => f.slice((norm(d) + "/").length)),
     unlinkSync: (f: string) => void files.delete(f),
     appendFileSync: (f: string, data: string) => void files.add(f),
     list: files,
@@ -67,7 +75,7 @@ check(
     .readdirSync(dir)
     .filter((f) => f.startsWith("crash-"))
     .sort()
-    .join("|") === paths.slice(5).map((p) => p.split("/").pop()).sort().join("|"),
+    .join("|") === paths.slice(5).map((p) => p.split(/[\\/]/).pop()).sort().join("|"),
 );
 check(
   "writeCrashReport: detail carries the reason",
@@ -208,10 +216,16 @@ check("diagnostics: null portReason omits the reason (no junk in the bundle)", (
 import { resolveUpdatePath, UPDATE_CONTENT_TYPES, updatesDir } from "../apps/daemon/src/updates";
 
 const base = join(sep, "home", "u", ".opencode-remote", "updates");
-check("resolveUpdatePath: root feed.json", resolveUpdatePath(base, "/feed.json") === join(base, "feed.json"));
+// resolveUpdatePath returns an absolute path via path.resolve — on Windows that
+// prefixes the cwd drive, so the expected side must be resolve()d too (P3-342)
+check(
+  "resolveUpdatePath: root feed.json",
+  resolveUpdatePath(base, "/feed.json") === resolve(join(base, "feed.json")),
+);
 check(
   "resolveUpdatePath: versioned artifact",
-  resolveUpdatePath(base, "/0.2.1/OpenCode Remote-0.2.1-mac.zip") === join(base, "0.2.1", "OpenCode Remote-0.2.1-mac.zip"),
+  resolveUpdatePath(base, "/0.2.1/OpenCode Remote-0.2.1-mac.zip") ===
+    resolve(join(base, "0.2.1", "OpenCode Remote-0.2.1-mac.zip")),
 );
 check("resolveUpdatePath: encoded space decodes", resolveUpdatePath(base, "/0.2.1/OpenCode%20Remote-0.2.1-mac.zip") !== null);
 check("resolveUpdatePath: empty → null", resolveUpdatePath(base, "/") === null);

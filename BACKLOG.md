@@ -5,6 +5,7 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
+- [x] (P3-342) [P1] client-ready.test falha no Windows (verify-win vermelho) — writeCrashReport retention comparava paths com '/' literal contra paths de path.join (backslash) e resolveUpdatePath comparava resultado de path.resolve (com drive no Windows) contra join puro; fix: fake fs normaliza separadores, split de basename aceita [\\/], esperado do resolveUpdatePath passa por resolve(); criterio: verify-win verde em PR real. — built by operator 2026-09-08 (PR #878)
 
 **Title:** PWA client accepts unauthenticated clear control frames ("reconnect"/"pong") from any room member — forced rehandshake loop and fake-liveness freeze
 
