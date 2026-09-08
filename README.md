@@ -1500,6 +1500,13 @@ chat, command palette) surfaces a transient toast on the gate screen itself —
 app's language, auto-clearing after 4s and never blocking the pairing
 ceremony.
 
+**When the local engine wedges alive, the same calm card says the app is on
+it (P2-324)**: while the shell watches a daemon that stopped answering and
+reanimates it automatically, the card shows a quiet "restarting it
+automatically — nothing to do for now" line (and an honest "automatic
+restart is paused" if the recovery budget is spent), in the same band and
+tone as the exit notice.
+
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and

@@ -354,6 +354,10 @@ remoto, zero confiança**.
   responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
   funcionando, dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
   pareamento manual a um clique
+- **Motor local travado vivo (P2-324)** — enquanto o shell observa um daemon que
+  parou de responder e o reanima sozinho, o mesmo cartão calmo avisa o que está
+  acontecendo ("reanimando automaticamente — nada para fazer por agora"; ou "reinício
+  automático suspenso" com o orçamento gasto), na mesma faixa e tom do aviso de saída
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
