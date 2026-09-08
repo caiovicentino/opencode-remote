@@ -10715,6 +10715,31 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-330: the degraded gate centers its brand header like the wizard -------
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const at = css.indexOf(".screen.degraded > header");
+  const rule = at === -1 ? "" : css.slice(at, css.indexOf("}", at));
+  // Same grammar as the wizard/pairing headers: drop the .screen > header
+  // space-between flex (flex items ignore text-align) and center the wordmark.
+  check(
+    "P3-330: the degraded gate centers its brand header on the wizard's axis",
+    rule.includes("display: block") && rule.includes("text-align: center"),
+  );
+  // Scoped to the degraded screen only — DegradedView is the sole .screen.degraded
+  // root, so chat/settings/scanner headers reusing .screen keep their flex row.
+  const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const others = ["ChatView.tsx", "SettingsView.tsx", "QrScanner.tsx", "PairingView.tsx"]
+    .map((f) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", f), "utf8"))
+    .filter((src) => /className="screen[^"]*degraded/.test(src));
+  check(
+    "P3-330: the centered-header override stays scoped to .screen.degraded",
+    rule.startsWith(".screen.degraded > header") &&
+      /className="screen degraded"/.test(degradedSrc) &&
+      others.length === 0,
+  );
+}
+
 // --- P3-338: one labeled exit on the welcome's final step ---------------------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");

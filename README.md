@@ -1473,7 +1473,11 @@ met, never a red "daemon fell" alert — explains that conversations, files and
 artifacts sync as soon as the daemon answers, shows the automatic retry, and
 keeps the purely-local data (language, theme) working. "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
-stays one click away.
+stays one click away. The gate sits on the same brand axis as the welcome
+wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered
+above the vertically centered card stack, so the post-wizard screen reads as
+the same intentional ceremony instead of a flush-left column floating in dead
+space at desktop sizes.
 
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
