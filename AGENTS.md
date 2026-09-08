@@ -282,6 +282,12 @@ NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, intera�
 órfãos electron/daemon/relay de runs anteriores — só processos com marker
 argv E env `ocr-*`/`OCR_*` de teste; argv sozinho nunca mata) e todos os
 servers e2e sobem em portas efêmeras com diagnóstico `lsof` no timeout.
+P3-345: restart de daemon em e2e espera o `exit` REAL do processo velho via
+`waitForChildExit` (`scripts/daemonrestart.ts`, escalando para SIGKILL após
+grace) — nunca sleep fixo, senão dois daemons dividem a sala do relay e o
+relay roteia frames pro processo morto; e retry de op e2e (`send`) só vale
+para as rotas de chunk — op que consome estado no servidor
+(`upload/complete`, `POST /session/*/message`) não se reenvia.
 P2-117 adicionou os beats da tela Scan-QR: boot camera-blocked
 (`OCR_DESKTOP_CAMERA_BLOCK=1`) prova o estado indisponível com CTA de colar
 código e boot com câmera fake (`OCR_DESKTOP_MEDIA_FAKE=1`, switches
