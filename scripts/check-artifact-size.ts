@@ -17,9 +17,12 @@
  * app binary must never be mistaken for the NSIS installer. Files with an
  * unknown suffix are ignored by the pure verdict.
  *
- * The `--expect dmg,zip,exe` flag (release-style full packaging) turns a
- * type that never appeared into its own problem; the ci.yml --dir jobs
- * produce no installers, so they run without --expect.
+ * The `--expect <types>` flag turns a known type that never appeared into
+ * its own problem — that is how the release.yml packaging jobs enforce the
+ * ceilings on the real installers (`--expect dmg,zip` on desktop-dmg,
+ * `--expect exe` on desktop-win, after packaging and before upload). The
+ * ci.yml jobs package dir targets only — no installers — so they run
+ * without --expect as a standing fail-closed guard on the packaging output.
  *
  * Every problem is printed in a single run. Exit codes: 1 only when there is
  * at least one problem; zero problems exit 0. Ceilings live in

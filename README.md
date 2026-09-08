@@ -790,13 +790,15 @@ sidecar bundle must stay under their ceilings or the job fails before anything
 is packaged — a fat dependency can no longer turn into a silent slow download.
 Measure locally after a build with `npx tsx scripts/bundle-budget.ts`; raise a
 ceiling only on purpose, bumping `BUNDLE_BUDGETS` with the justification in the
-commit message. After the smoke check, the same jobs also enforce the
-distributable artifact budgets of `scripts/artifactbudget.ts` (P2-325): the DMG,
-the per-arch Squirrel.Mac zip and the NSIS installer found in `apps/desktop/dist`
-must each stay under their documented 180 MB ceilings (`npm run
-check:artifact-size`, fail-closed on a missing or empty packaging output) — raise
-a ceiling only on purpose, bumping `ARTIFACT_BUDGETS` with the justification in
-the commit message.
+commit message. The distributable artifacts get their own budgets
+(`scripts/artifactbudget.ts`, P2-325): at release time the packaging jobs run
+`npm run check:artifact-size -- --expect dmg,zip` (mac) / `-- --expect exe`
+(Windows) after packaging and before upload, so a DMG, a per-arch Squirrel.Mac
+zip or an NSIS installer above its documented 180 MB ceiling — or an expected
+type missing from the packaging output — aborts the release (fail-closed on a
+missing or empty packaging output); the ci.yml packaging jobs run the same
+collector as a standing guard. Raise a ceiling only on purpose, bumping
+`ARTIFACT_BUDGETS` with the justification in the commit message.
 
 **What each release must carry** (P2-153): the source tarball
 (`opencode-remote-<tag>.tar.gz`) from the `release` job; the macOS side from

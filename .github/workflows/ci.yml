@@ -197,14 +197,13 @@ jobs:
       - name: Smoke-check the packaged bundle (installer checks skipped)
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
 
-      # P2-325: the distributables get the same fail-closed size gate the
-      # build output has had since P2-162 — any DMG/Squirrel zip/NSIS file in
-      # the packaging output above its documented ceiling
-      # (scripts/artifactbudget.ts) fails the PR, and a missing or empty
-      # output dir fails closed instead of approving silently. The --dir
-      # targets produce no installers, so no --expect here; the gate still
-      # runs on every PR so an installer target added later is born covered.
-      # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson).
+      # P2-325: fail-closed guard on the packaging output — a missing or
+      # empty dir fails, and any DMG/Squirrel zip/NSIS file that appears here
+      # must sit under its documented ceiling (scripts/artifactbudget.ts).
+      # The --dir targets below produce no installers: the ceilings on the
+      # real distributables are enforced by release.yml's desktop-dmg and
+      # desktop-win jobs, which pass --expect after packaging. shell: bash
+      # (P2-126 lesson) and its own timeout (P2-245 lesson).
       - name: Check artifact sizes
         shell: bash
         timeout-minutes: 5
@@ -295,10 +294,10 @@ jobs:
         timeout-minutes: 10
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
 
-      # P2-325: same artifact-size gate as the mac job — the unpacked
-      # win-unpacked payload is skipped by the collector, so the app's own
-      # .exe binary is never mistaken for the NSIS installer, and any real
-      # installer above its ceiling (scripts/artifactbudget.ts) fails the PR.
+      # P2-325: same fail-closed guard as the mac job — the --dir target
+      # produces no installers (the NSIS exe is size-gated with --expect by
+      # release.yml's desktop-win), but a missing or empty packaging output
+      # fails here and any known-type artifact must respect its ceiling.
       # shell: bash (P2-126 lesson) and its own timeout (P2-245 lesson).
       - name: Check artifact sizes
         shell: bash

@@ -220,12 +220,11 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-// --- real-repo assertion: ci.yml declares the step in both packaging jobs --------
+// --- real-repo assertion: ci.yml declares the standing guard --------------------
 
-const ci = readFileSyncSafe(join(repoRoot(), ".github", "workflows", "ci.yml"));
-const lines = ci.split(/\r?\n/);
+const ciLines = readFileSyncSafe(join(repoRoot(), ".github", "workflows", "ci.yml")).split(/\r?\n/);
 
-function jobBlock(jobKey: string): string[] {
+function jobBlock(lines: string[], jobKey: string): string[] {
   const start = lines.findIndex((l) => l === `  ${jobKey}:`);
   if (start < 0) return [];
   const end = lines.findIndex((l, i) => i > start && /^ {2}[A-Za-z0-9_.-]+:\s*$/.test(l));
@@ -233,8 +232,9 @@ function jobBlock(jobKey: string): string[] {
 }
 
 const STEP_NAME = "Check artifact sizes";
+
 for (const job of ["desktop-package", "desktop-package-win"]) {
-  const block = jobBlock(job);
+  const block = jobBlock(ciLines, job);
   check(`ci.yml: job ${job} exists`, block.length > 0);
   const nameIdx = block.map((l) => l.trim()).indexOf(`- name: ${STEP_NAME}`);
   check(`ci.yml: ${job} declares the "${STEP_NAME}" step exactly once`, nameIdx > 0 && block.filter((l) => l.trim() === `- name: ${STEP_NAME}`).length === 1);
@@ -254,6 +254,45 @@ for (const job of ["desktop-package", "desktop-package-win"]) {
   const runIdx = block.findIndex((l) => l.trim() === "run: npm run check:artifact-size");
   check(`ci.yml: ${job} gate invokes npm run check:artifact-size`, runIdx > 0, `run at ${runIdx}`);
 }
+
+// --- real-repo assertion: release.yml ENFORCES the ceilings on the real installers
+
+const releaseLines = readFileSyncSafe(join(repoRoot(), ".github", "workflows", "release.yml")).split(/\r?\n/);
+
+const EXPECTATIONS: Record<string, string> = { "desktop-dmg": "--expect dmg,zip", "desktop-win": "--expect exe" };
+for (const [job, expectFlag] of Object.entries(EXPECTATIONS)) {
+  const block = jobBlock(releaseLines, job);
+  check(`release.yml: job ${job} exists`, block.length > 0);
+  const nameIdx = block.map((l) => l.trim()).indexOf(`- name: ${STEP_NAME}`);
+  check(
+    `release.yml: ${job} declares the "${STEP_NAME}" step exactly once`,
+    nameIdx > 0 && block.filter((l) => l.trim() === `- name: ${STEP_NAME}`).length === 1,
+  );
+  const after = block.slice(nameIdx, nameIdx + 6).map((l) => l.trim());
+  check(`release.yml: ${job} step declares shell: bash`, after.includes("shell: bash"), after.join(" | "));
+  check(
+    `release.yml: ${job} step declares its own timeout-minutes`,
+    after.some((l) => /^timeout-minutes: \d+$/.test(l)),
+    after.join(" | "),
+  );
+  const runLine = block.slice(nameIdx).find((l) => l.trim().startsWith("run: npm run check:artifact-size"))?.trim() ?? "";
+  check(
+    `release.yml: ${job} gate demands its platform's installer types (${expectFlag})`,
+    runLine === `run: npm run check:artifact-size -- ${expectFlag}`,
+    runLine,
+  );
+  const smokeIdx = block.findIndex((l) => l.trim() === "run: npm run dist:smoke --workspace @ocr/desktop");
+  const uploadIdx = block.findIndex((l) => l.includes("gh release upload"));
+  check(
+    `release.yml: ${job} gate sits after the bundle smoke and before the upload`,
+    smokeIdx > 0 && nameIdx > smokeIdx && uploadIdx > nameIdx,
+    `smoke ${smokeIdx} < gate ${nameIdx} < upload ${uploadIdx}`,
+  );
+}
+check(
+  "release.yml: the artifact-size gate appears exactly twice (one per packaging job)",
+  releaseLines.filter((l) => l.trim() === `- name: ${STEP_NAME}`).length === 2,
+);
 
 // package.json wiring
 const pkg = JSON.parse(readFileSyncSafe(join(repoRoot(), "package.json")));

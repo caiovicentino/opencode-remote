@@ -55,8 +55,8 @@ export function knownArtifactTypes(budgets: Readonly<Record<string, number>> = A
 
 /**
  * The type of one artifact file name: its lowercased suffix without the dot,
- * or null when the name carries no suffix a budget could key on (dotfiles
- * like ".yml" count as suffix "yml" — unknown — and are ignored downstream).
+ * or null when the name carries nothing a budget could key on — suffixless
+ * names and bare dotfiles (".yml") alike, which are ignored downstream.
  */
 export function artifactTypeOf(name: string): string | null {
   const base = name.split(/[\\/]/).pop() ?? name;
