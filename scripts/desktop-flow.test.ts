@@ -2332,16 +2332,28 @@ try {
               );
               if (!rowProbe) {
                 // P3-374: fail-open diagnostic for the documented board-hang
-                // flake ("request de listagem nunca resolve", 77d717d): did the
-                // fake backend ever see the board's GET /session? One line,
-                // best-effort, never a new failure mode.
+                // flake ("request de listagem nunca resolve", 77d717d): what
+                // the fake backend actually saw + what the page still shows.
+                // One line each, best-effort, never a new failure mode.
                 try {
                   const hits = (await (await fetch(`${fakeUrl}/__hits`)).json()) as { method: string; path: string }[];
-                  const listing = hits.filter((h) => h.path === "/session").length;
-                  console.log(`     P1-089 diagnostic: fake backend saw ${hits.length} hits, ${listing} GET /session`);
+                  const byPath = new Map<string, number>();
+                  for (const h of hits) byPath.set(h.path, (byPath.get(h.path) ?? 0) + 1);
+                  const summary = [...byPath.entries()].map(([p, n]) => `${p}×${n}`).join(" ");
+                  console.log(`     P1-089 diagnostic: fake backend saw ${hits.length} hits — ${summary}`);
                 } catch (err) {
                   console.log(`     P1-089 diagnostic: /__hits unreachable: ${String(err).slice(0, 80)}`);
                 }
+                const state = run(
+                  "P1-089: board state dump (diagnostic)",
+                  [
+                    "ipc",
+                    "(() => { const b = document.body; return JSON.stringify({ skel: b.querySelectorAll('.skel').length, err: (b.innerText.match(/Erro[^\\n]*/i)?.[0] ?? '').slice(0, 60), banner: document.querySelector('[role=\"alert\"], .degraded-status')?.textContent?.slice(0, 60) ?? '', rows: document.querySelectorAll('.convo-row,.session-card').length }); })()",
+                  ],
+                  15_000,
+                  localEnv2,
+                );
+                if (state.ok) console.log(`     P1-089 diagnostic: board state — ${state.stdout.trim().slice(0, 200)}`);
               }
               const row = run("P1-089: click the session row", ["click", '.convo-row[data-session="ses-reentry-check"]'], 15_000, localEnv2);
               if (row.ok) {
