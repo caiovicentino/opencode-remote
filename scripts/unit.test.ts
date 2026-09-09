@@ -1661,6 +1661,8 @@ check("the only rehandshake() call comes from the hint-verify timer callback", l
 // P3-374: ops caught mid-rehandshake keep a bounded grace timer instead of
 // sitting timer-less until the next confirm replays them — a handshake churning
 // on backoff must never hold a surface (the board) on eternal skeletons.
+// Review round 2: the bound equals the default op timeout (60 s) — nothing
+// rejects earlier than an ordinary request would, preserving EVAL4-F3c.
 const sendHelloAt = clientSource.indexOf("private async sendHello");
 const replayPendingDefAt = clientSource.indexOf("private replayPending()");
 const helloBlock = clientSource.slice(sendHelloAt, replayPendingDefAt);
@@ -1669,7 +1671,18 @@ check(
   helloBlock.includes("PENDING_REHANDSHAKE_GRACE_MS") &&
     helloBlock.includes("if (p.graced) continue;") &&
     helloBlock.includes("this.pending.get(id) !== p") &&
-    clientSource.includes("const PENDING_REHANDSHAKE_GRACE_MS = 8_000"),
+    clientSource.includes("const PENDING_REHANDSHAKE_GRACE_MS = 60_000"),
+);
+
+// P3-374 (review round 2): the transport-vitals global is test instrumentation
+// — it must never ship unconditionally. Dev builds and the desktop harness
+// (?ocrDebug=1 appended by the shell under OCR_DESKTOP_SESSION) get it; the
+// production PWA and packaged app expose nothing.
+check(
+  "client.ts gates window.__ocrDebug behind dev/harness markers",
+  clientSource.includes('has("ocrDebug")') &&
+    clientSource.includes("env?.DEV ||") &&
+    (clientSource.match(/__ocrDebug = \(\)/g) ?? []).length === 1,
 );
 
 

@@ -209,7 +209,12 @@ remoto, zero confiança**.
   atividade (`5m`, `2h`, `3d`); sessões ficam ordenadas da mais recente
   para a mais antiga. A listagem é uma operação com limite: pedido dropado
   tem um retry silencioso (poucos segundos) antes do card calmo de erro com
-  botão "Tentar de novo" — sem skeleton de um minuto
+  botão "Tentar de novo" — sem skeleton de um minuto. O mesmo envelope limita
+  qualquer pedido pego no meio de um rehandshake de conexão: ele sobrevive à
+  churn (re-autenticação E2E, backoff de rediscagem) e resolve com a
+  confirmação replayed da sessão nova, ou rejeita com timeout comum após 60 s —
+  o mesmo teto que todo pedido já tem — então um rehandshake lento nunca falha
+  um op antes que um pedido normal falharia
 - **Chrome móvel rebaixado (P2-108)** — abaixo do breakpoint desktop, o título
   do shell vira uma overline maiúscula e discreta (o "Conversas" entre o
   drawer e o botão de nova conversa), no mesmo padrão do indicador de passo

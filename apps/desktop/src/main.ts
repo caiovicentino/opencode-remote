@@ -2912,13 +2912,19 @@ function createWindow(): BrowserWindow {
 function loadUi(win: BrowserWindow): void {
   // Dev override: OCR_WEB_URL=http://localhost:5173 npm start
   const devUrl = process.env.OCR_WEB_URL;
+  // P3-374 (review round 2): harness sessions get the web client's transport
+  // vitals (?ocrDebug=1 → window.__ocrDebug) for hermetic-flow autopsies;
+  // production windows load the UI without the marker and ship no globals.
+  const harnessQuery = HERMETIC_E2E ? { query: { ocrDebug: "1" } } : undefined;
   if (devUrl) {
-    void win.loadURL(devUrl);
+    void win.loadURL(
+      HERMETIC_E2E ? `${devUrl}${devUrl.includes("?") ? "&" : "?"}ocrDebug=1` : devUrl,
+    );
     return;
   }
   const html = webDistIndex();
   if (html) {
-    void win.loadFile(html);
+    void win.loadFile(html, harnessQuery);
   } else {
     void win.loadURL(
       "data:text/html," +

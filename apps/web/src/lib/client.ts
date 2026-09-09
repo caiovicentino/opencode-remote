@@ -51,11 +51,13 @@ const DIAL_TIMEOUT_REAUTH_EXTENSIONS = 2;
 const ACK_PROBE_MS = 4_000;
 const ACK_PONG_MS = 2_500;
 
-/** P3-374: how long an op caught mid-rehandshake waits for the fresh
- * confirmation (and its replay) before rejecting like any timeout. Short
- * enough that a caller's retry lands inside a normal interaction, long
- * enough to ride out a single local re-dial. */
-const PENDING_REHANDSHAKE_GRACE_MS = 8_000;
+/** P3-374: how long an op caught mid-rehandshake may stay in limbo before
+ * rejecting like any timeout. Review round 2: the bound must NOT tighten the
+ * EVAL4-F3c contract below — an op whose rehandshake churns through legit
+ * backoffs (relay caps at 30 s) still succeeds, so the grace matches the
+ * default op timeout (60 s): nothing fails earlier than an ordinary request
+ * would, and nothing waits forever either. */
+const PENDING_REHANDSHAKE_GRACE_MS = 60_000;
 
 /** P1-061: which wire the client is currently dialed on. */
 export type Transport = "local" | "relay";
@@ -349,17 +351,25 @@ export class OcrClient {
       // P3-358 round 3: hermetic-flow autopsies need the transport's vitals at
       // probe-failure time (board stuck on the loading skeleton while the
       // daemon saw a healthy socket). Kept tiny and side-effect free.
-      (window as unknown as Record<string, unknown>).__ocrDebug = () => ({
-        status: this.status,
-        transport: this.transport,
-        pending: this.pending.size,
-        pendingPaths: [...this.pending.values()].map((p) => `${p.args.method} ${p.args.path}`),
-        sendSeq: this.sendSeq,
-        daemonLastSeq: this.daemonLastSeq,
-        lastSeenAgeMs: Date.now() - this.lastSeen,
-        guardDrops: this.guardDrops,
-        sealFails: this.sealFails,
-      });
+      // P3-374 (review round 2): test instrumentation never ships — the
+      // vitals closure exists only for vite dev servers and for the desktop
+      // harness (the shell appends ?ocrDebug=1 under OCR_DESKTOP_SESSION);
+      // the phone PWA and the packaged app expose nothing. Optional-chain
+      // access because plain-node consumers (localws.test) have no env.
+      const env = (import.meta as unknown as { env?: { DEV?: boolean } }).env;
+      if (env?.DEV || new URLSearchParams(window.location.search).has("ocrDebug")) {
+        (window as unknown as Record<string, unknown>).__ocrDebug = () => ({
+          status: this.status,
+          transport: this.transport,
+          pending: this.pending.size,
+          pendingPaths: [...this.pending.values()].map((p) => `${p.args.method} ${p.args.path}`),
+          sendSeq: this.sendSeq,
+          daemonLastSeq: this.daemonLastSeq,
+          lastSeenAgeMs: Date.now() - this.lastSeen,
+          guardDrops: this.guardDrops,
+          sealFails: this.sealFails,
+        });
+      }
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "visible" || this.status !== "paired") return;
         if (Date.now() - this.lastSeen > 30_000) this.forceReconnect();
@@ -639,9 +649,11 @@ export class OcrClient {
     // skeletons for the whole window (desktop-flow P1-089 evidence: the
     // backend saw the request, the client never answered). Arm a bounded
     // grace ONCE per limbo epoch — re-arming on every hello would push the
-    // deadline out as long as the churn lasts. If the confirm+replay doesn't
-    // resolve the op in time, it rejects like any timeout and the caller's
-    // error/retry path takes over.
+    // deadline out as long as the churn lasts. The bound is the same 60 s
+    // envelope every op already carries (see the constant): the EVAL4-F3c
+    // contract holds — the op survives until the sealed confirm replays it,
+    // through backoffs longer than any real churn — while a truly wedged
+    // session still rejects to the caller's error/retry path.
     for (const [id, p] of this.pending.entries()) {
       if (p.graced) continue;
       clearTimeout(p.timer);

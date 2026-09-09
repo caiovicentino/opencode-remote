@@ -214,7 +214,12 @@ private. That is the product: **local power, remote control, zero trust**.
   last-activity time (`5m`, `2h`, `3d`); sessions are sorted by most recent
   activity first. The listing itself is a bounded operation: a dropped
   request retries once silently (a few seconds) before the calm error card
-  with its Retry button shows up — no minute-long skeleton limbo
+  with its Retry button shows up — no minute-long skeleton limbo. The same
+  envelope bounds any request caught mid-connection-rehandshake: it survives
+  the churn (E2E re-auth, redial backoff) and resolves with the fresh
+  session's replayed confirmation, or rejects with an ordinary timeout after
+  60 s — the same ceiling every request already carries — so a slow
+  rehandshake never fails an op earlier than a normal request would
 - **Demoted mobile chrome (P2-108)** — below the desktop breakpoint the shell
   header reads as a muted uppercase overline (the "Conversas" line between the
   drawer and new-chat buttons), matching the wizard's step indicator instead
