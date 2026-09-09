@@ -1606,9 +1606,10 @@ sections — **Pair a phone with this machine** (host entry) first and
 (P3-334): on the desktop, pairing a phone is the primary story, so the host
 entry leads and the client ceremony reads as the secondary option (the phone's
 own screen is unchanged — it never renders the host entry). The host entry
-(also in Settings) reads as a button: a trailing chevron and a hover that lifts
-the background, border and chevron together (P3-335) — it is the only
-host-pairing action, so it must be discoverable at a glance. An invalid pairing code
+(also in Settings) reads as a button: a trailing chevron and a hover that
+fills the row (P3-335) — it is the only host-pairing action, so it must be
+discoverable at a glance. It carries no inner border (P3-370): one container
+per idea, the section card is the only frame. An invalid pairing code
 renders a styled error block with an inline helper showing the expected
 `opencode-remote://pair?…` format (announced to screen readers), and on the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
