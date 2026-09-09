@@ -122,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           npx tsx scripts/reconnect.test.ts || {
-            echo "reconnect.test.ts failed once — retrying (lost-frame race, P3-337)"
+            echo "reconnect.test.ts failed once — retrying (lost-frame race, P3-372)"
             npx tsx scripts/reconnect.test.ts
           }
 

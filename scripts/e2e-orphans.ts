@@ -56,15 +56,20 @@ export interface OrphanCandidate {
  * cascade). A hermetic process belongs to this checkout when its command line
  * carries the absolute repo path (electron + helpers are launched with
  * absolute paths) or its inherited PWD equals the repo root (the keeper and
- * the tsx children are spawned with relative argv from the repo cwd). An
- * unreadable PWD fails safe: the candidate is spared, never killed.
+ * the tsx children are spawned with relative argv from the repo cwd). The
+ * argv match must end at a PATH BOUNDARY (`repoRoot + sep`): a bare
+ * `includes(repoRoot)` also matches a sibling checkout whose name merely
+ * extends the root string (`/x/tmp/repo-3-sibling` contains `/x/tmp/repo-3`),
+ * scoping another slot's live instance IN — the exact incident this factor
+ * exists to prevent. An unreadable PWD fails safe: the candidate is spared,
+ * never killed.
  */
 export function sameRepoScope(
   command: string,
   env: Record<string, string | undefined>,
   repoRoot: string,
 ): boolean {
-  if (command.includes(repoRoot)) return true;
+  if (command.includes(`${repoRoot}/`)) return true;
   return env.PWD === repoRoot;
 }
 

@@ -163,6 +163,10 @@ check(
   "sameRepoScope: mere substring of a longer path does not match",
   sameRepoScope("node tools/desktop.mjs", { PWD: join(TMP, "repo-3-sibling") }, REPO) === false,
 );
+check(
+  "sameRepoScope: argv path merely extending the root (repo-3-sibling) is another checkout → false",
+  sameRepoScope(join(TMP, "repo-3-sibling", "apps", "desktop"), {}, REPO) === false,
+);
 
 check(
   "killOrphans: repoScope spares a hermetic sibling-slot instance (P3-372)",
@@ -170,6 +174,20 @@ check(
     await killOrphans({
       candidates: [{ pid: 99, command: "node tools/desktop.mjs", marker: "desktop" }],
       readEnv: () => ({ ...markedEnv, PWD: join(TMP, "repo-4") }),
+      envMarked: () => true,
+      isAlive: () => false,
+      kill: () => {},
+      repoScope: (c, env) => sameRepoScope(c.command, env, REPO),
+      graceMs: 10,
+    })
+  ).spared[0]?.reason === "another repo checkout",
+);
+check(
+  "killOrphans: repoScope spares a sibling whose argv path extends the root (argv branch)",
+  (
+    await killOrphans({
+      candidates: [{ pid: 103, command: join(TMP, "repo-3-sibling", "apps", "desktop"), marker: "desktop" }],
+      readEnv: () => ({ ...markedEnv }),
       envMarked: () => true,
       isAlive: () => false,
       kill: () => {},
