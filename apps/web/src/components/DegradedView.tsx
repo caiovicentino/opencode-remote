@@ -1,8 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
+import { applyTheme, type ThemeChoice } from "../lib/theme";
 import { retryLineParts } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
+import PaneMap from "./PaneMap";
+
+// P3-368: the offline card's copy promises "language and theme" — the theme
+// control ships here too, persisting to the same ocr_theme key Settings reads
+// and reapplying through the shared applyTheme().
+const THEME_KEY = "ocr_theme";
+
+function readTheme(): ThemeChoice {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    return stored === "dark" || stored === "light" ? stored : "system";
+  } catch {
+    return "system";
+  }
+}
 
 interface Props {
   kind: DegradedKind;
@@ -76,6 +92,8 @@ function RetryLine({ attempts }: { attempts?: number }) {
 export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
+  const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
+
 
   const title = busy
     ? t("localConnecting")
@@ -146,19 +164,40 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
       <div className="degraded-local">
         <h3>{t("degradedLocalTitle")}</h3>
         <p className="muted">{t("degradedLocalHint")}</p>
-        <select
-          aria-label={t("degradedLocalTitle")}
-          value={lang}
-          onChange={(e) => {
-            const next = e.target.value as Lang;
-            setLang(next);
-            setLangState(next);
-          }}
-        >
-          <option value="en">English</option>
-          <option value="pt">Português</option>
-        </select>
+        <div className="degraded-local-prefs">
+          <select
+            aria-label={t("language")}
+            value={lang}
+            onChange={(e) => {
+              const next = e.target.value as Lang;
+              setLang(next);
+              setLangState(next);
+            }}
+          >
+            <option value="en">English</option>
+            <option value="pt">Português</option>
+          </select>
+          <select
+            aria-label={t("themeLabel")}
+            value={theme}
+            onChange={(e) => {
+              const next = e.target.value as ThemeChoice;
+              setThemeState(next);
+              try {
+                localStorage.setItem(THEME_KEY, next);
+              } catch {}
+              applyTheme();
+            }}
+          >
+            <option value="system">{t("themeSystem")}</option>
+            <option value="dark">{t("themeDark")}</option>
+            <option value="light">{t("themeLight")}</option>
+          </select>
+        </div>
       </div>
+      {/* P3-364: the offline card above is what works NOW; this is what
+          pairing unlocks — the standing map the gate toast only flashes. */}
+      <PaneMap />
       <button className="degraded-manual" onClick={onPairManually}>
         {t("degradedPairManually")}
       </button>

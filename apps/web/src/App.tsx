@@ -43,7 +43,6 @@ import HomeView from "./components/HomeView";
 import GateHint from "./components/GateHint";
 import { setDraft } from "./lib/drafts";
 import SettingsView, {
-  applyTheme,
   type RelaySetting,
   type RelaySettingWriteResult,
   type WebAppSetting,
@@ -51,6 +50,7 @@ import SettingsView, {
   type ProxySetting,
   type ProxySettingWriteResult,
 } from "./components/SettingsView";
+import { applyTheme } from "./lib/theme";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
@@ -1308,6 +1308,10 @@ export default function App() {
               phase={phase}
               error={error}
               hint={errorHint}
+              // P3-366: the desktop manual-ceremony escapes (degraded journey's
+              // "pair manually", wizard escape) land here too — paste must lead
+              // on desktop exactly like the "add machine" path (P2-117).
+              preferPaste={!!desktopBridge()}
               // EVAL4-F1b: stored pairing + unreachable machine → 20 s countdown
               // into the same onRetry (auto-pair), never a dead pairing wall
               autoRetryMs={phase === "error" && !!loadState() && (errorKind === "timeout" || errorKind === "closed") ? 20_000 : undefined}

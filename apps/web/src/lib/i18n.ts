@@ -437,6 +437,13 @@ export const dict = {
     // P3-367: inline escape inside the gate toast — jumps to the manual
     // pairing ceremony instead of leaving the user to find the link above.
     pairFirstAction: "Pair now",
+    // P3-364: the gate's persistent pane map — what pairing unlocks. Labels
+    // ride the nav* keys so the map names match the real rail verbatim.
+    paneMapTitle: "After pairing",
+    paneMapChat: "Chat with the agent on your machine",
+    paneMapArtifacts: "Documents and files the agent produces, ready to open",
+    paneMapBrowser: "See and steer the machine's browser",
+    paneMapMission: "Live dashboard of the autonomous fleet",
     // chat composer + header (P2-049)
     send: "Send",
     messagePlaceholder: "Message the agent…",
@@ -1115,6 +1122,13 @@ export const dict = {
     // P3-367: escape inline dentro do aviso do portão — pula direto pro
     // ceremony manual de pareamento em vez de caçar o link acima.
     pairFirstAction: "Parear agora",
+    // P3-364: o mapa persistente do portão — o que parear desbloqueia. Os
+    // rótulos usam as chaves nav* pra o mapa falar igual à barra lateral.
+    paneMapTitle: "Depois de parear",
+    paneMapChat: "Converse com o agente da sua máquina",
+    paneMapArtifacts: "Documentos e arquivos que o agente produz, prontos para abrir",
+    paneMapBrowser: "Veja e controle o navegador da máquina",
+    paneMapMission: "Painel ao vivo da frota autônoma",
     // chat composer + header (P2-049)
     send: "Enviar",
     messagePlaceholder: "Mensagem pro agente…",

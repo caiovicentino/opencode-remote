@@ -616,6 +616,25 @@ try {
     500,
   );
   run("P2-112: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000);
+  // P3-366: the degraded journey's manual escape lands on the ceremony with
+  // the desktop paste-first hierarchy intact — "Pair" is the primary button
+  // and the scan entry is the quiet option (P2-117's rule, locale-proof).
+  await waitProbe(
+    "P3-366: ceremony rendered after the escape",
+    "!!document.querySelector('.pair-submit')",
+    (v) => /true/.test(v),
+    cliEnv,
+    10,
+    500,
+  );
+  const pasteFirst = run(
+    "P3-366: paste-first classes on the escape path",
+    ["ipc", "[document.querySelector('.pair-submit')?.classList.contains('primary'), document.querySelector('.pair-scan-entry')?.classList.contains('primary')].join('|')"],
+    15_000,
+  );
+  if (pasteFirst.ok) {
+    check("P3-366: paste is primary, scan is secondary on the escape", /^true\|false$/.test(pasteFirst.stdout.replace(/"/g, "").trim()), pasteFirst.stdout);
+  }
 
   // --- P2-106: benchmark pairing journey — 4 evidence states ------------------
   // (1) two titled sections on the ceremony screen, (2) scanner route,

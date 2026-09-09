@@ -6464,6 +6464,20 @@ check(
       cssSource.includes(".pair-gate-hint-action:hover"),
   );}
 
+// --- P3-366: desktop paste-first holds on every PairingView call site -----------
+{
+  // P2-117's rule is global to the desktop shell: whatever path reaches the
+  // manual ceremony (add machine, wizard escape, degraded journey's "pair
+  // manually"), the paste form must lead and the scanner stays the option.
+  const appSource = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const pairingSites = appSource.split("<PairingView").slice(1);
+  check(
+    "P3-366: every PairingView call site passes preferPaste (desktop paste-first)",
+    pairingSites.length === 2 &&
+      pairingSites.every((s) => s.slice(0, s.indexOf("/>")).includes("preferPaste={")),
+  );
+}
+
 
 // --- P2-276: shell language (apps/desktop/src/shelllang.ts) ---------------------
 {
@@ -11195,6 +11209,64 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-374: stepper centered under the wordmark, skip in the card's row ------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // P3-330's lesson: assert the COMBINATION in the real source — the header
+  // must center text AND not be a flex row (flex items ignore text-align, so
+  // either assertion alone can pass while the sparse corner row lives on).
+  const headerAt = css.indexOf(".welcome header {");
+  const headerRule = css.slice(headerAt, css.indexOf("}", headerAt));
+  check(
+    "P3-374: the brand header centers text and is not a space-between flex row",
+    headerAt > 0 &&
+      headerRule.includes("text-align: center") &&
+      !headerRule.includes("display: flex") &&
+      !headerRule.includes("justify-content"),
+  );
+  const metaAt = css.indexOf(".welcome-meta {");
+  const metaRule = css.slice(metaAt, css.indexOf("}", metaAt));
+  check(
+    "P3-374: .welcome-meta is a plain centered block, not one end of a sparse row",
+    metaAt > 0 &&
+      !metaRule.includes("flex") &&
+      !metaRule.includes("position: absolute") &&
+      !metaRule.includes("justify-content"),
+  );
+  // Brand order in the markup: wordmark first, step indicator after, both
+  // inside the header that precedes the first step card.
+  const wordmarkAt = src.indexOf('className="brand-wordmark"');
+  const metaMarkAt = src.indexOf('className="welcome-meta"');
+  const step1At = src.indexOf("step === 1 && (");
+  const step2At = src.indexOf("step === 2 && (");
+  const step3At = src.indexOf("step === 3 && (");
+  check(
+    "P3-374: the step indicator renders under the wordmark, before the step cards",
+    wordmarkAt > 0 &&
+      metaMarkAt > wordmarkAt &&
+      metaMarkAt < step1At,
+  );
+  // Steps 1 and 2 mount the skip inside .welcome-actions, after the row opens
+  // — escape and progress read as one unit (step 3 keeps welcome-later, the
+  // single in-context exit asserted by the P3-338 block above).
+  const row = (s: string) =>
+    s.indexOf('className="welcome-actions"') > -1 &&
+    s.indexOf("welcome-skip") > s.indexOf('className="welcome-actions"');
+  check(
+    "P3-374: steps 1 and 2 mount the quiet skip inside the card's action row",
+    step1At > 0 && step2At > step1At && step3At > step2At &&
+      row(src.slice(step1At, step2At)) &&
+      row(src.slice(step2At, step3At)),
+  );
+  const actionsAt = css.indexOf(".welcome-actions {");
+  const actionsRule = css.slice(actionsAt, css.indexOf("}", actionsAt));
+  check(
+    "P3-374: .welcome-actions is the card's flex action row",
+    actionsAt > 0 && actionsRule.includes("display: flex"),
+  );
+}
+
 // --- P3-374 round 2: demoted mobile chrome + board listing watchdog -----------
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
@@ -11272,6 +11344,100 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         src.slice(markAt, markEnd).includes('aria-hidden="true"'),
     );
   }
+}
+
+// --- P3-368: the offline card ships the theme control its copy promises -------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  // Count-based (P3-337's lesson): the card must carry EXACTLY two controls —
+  // the language select it always had and the theme select the copy promised.
+  const localAt = src.indexOf('className="degraded-local"');
+  const controls = src.slice(localAt, src.indexOf('className="degraded-manual"', localAt));
+  const selectCount = (controls.match(/<select/g) ?? []).length;
+  check(
+    "P3-368: the offline card renders exactly two controls (language + theme)",
+    localAt > 0 && selectCount === 2 &&
+      controls.includes('t("themeLabel")') &&
+      controls.includes("applyTheme") &&
+      controls.includes("localStorage.setItem(THEME_KEY"),
+  );
+  // P3-329's lesson: every key the card renders must resolve in EVERY locale
+  // (result ≠ raw key, never "") — the theme keys ride the same dict Settings uses.
+  const cardKeys = ["degradedLocalTitle", "degradedLocalHint", "language", "themeLabel", "themeSystem", "themeDark", "themeLight"];
+  check(
+    "P3-368: the offline card's keys resolve in both locales (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      cardKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ) && translate("pt", "themeLabel") === "Tema" && translate("en", "themeLabel") === "Theme",
+  );
+  // The control persists to the SAME key Settings reads, so the choice carries
+  // into the Appearance section instead of diverging into a second store.
+  const settingsSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"), "utf8");
+  const themeLibSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "theme.ts"), "utf8");
+  check(
+    "P3-368: the offline card writes the theme key Settings reads (one store)",
+    src.includes('THEME_KEY') &&
+      settingsSrc.includes('THEME_KEY') &&
+      themeLibSrc.includes('export const THEME_KEY = "ocr_theme";'),
+  );
+}
+
+// --- P3-364: the gate carries a persistent map of the panes pairing unlocks ----
+// The P3-328 toast is a 4s flash; Artifacts/Browser/Mission Control were
+// invisible until connection, leaving a first-time user no answer to "why
+// pair at all?". PaneMap is the standing affordance on both gate screens.
+{
+  const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
+  const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // Four rows, named exactly like the rail (nav* keys), each with a one-line
+  // description and the per-row lock glyph.
+  const rowKeys = ["navConversations", "navArtifacts", "navBrowser", "navMission"];
+  const descKeys = ["paneMapChat", "paneMapArtifacts", "paneMapBrowser", "paneMapMission"];
+  check(
+    "P3-364: PaneMap lists the four locked panes with descriptions and lock glyphs",
+    rowKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
+      descKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
+      mapSrc.includes('t("paneMapTitle")') &&
+      (mapSrc.match(/<IconLock/g) ?? []).length === 1,
+  );
+  // Own class names on purpose: P2-106/P3-334 pin the ceremony's
+  // .pair-section count (2) and .pair-section-title order — reusing them here
+  // would read as a third pairing section (P3-334 lesson).
+  check(
+    "P3-364: PaneMap stays off the pinned pair-section classes",
+    mapSrc.includes('className="pane-map"') &&
+      mapSrc.includes('className="pane-map-title"') &&
+      !mapSrc.includes('className="pair-section'),
+  );
+  check(
+    "P3-364: both gate screens mount the map (manual ceremony + degraded first boot)",
+    pairingSrc.includes("<PaneMap />") && degradedSrc.includes("<PaneMap />"),
+  );
+  // Copy resolves in every locale, carries no emoji (design bar), and the
+  // descriptions are real sentences, not the raw key.
+  const allKeys = ["paneMapTitle", ...descKeys];
+  check(
+    "P3-364: pane-map keys resolve in both locales, no emoji",
+    (["en", "pt"] as const).every((lang) =>
+      allKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "" && !/\p{Extended_Pictographic}/u.test(s);
+      }),
+    ),
+  );
+  // The card rides the shared flat-card tokens (no new colors/radii).
+  check(
+    "P3-364: .pane-map styles come from the shared tokens",
+    css.includes(".pane-map {") &&
+      css.includes(".pane-map-title {") &&
+      /\.pane-map\s*\{[^}]*var\(--surface\)/.test(css) &&
+      /\.pane-map-title\s*\{[^}]*text-transform: uppercase/.test(css),
+  );
 }
 
 // --- P3-334: the desktop pairing screen leads with the host section ----------
@@ -32541,6 +32707,15 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   check("readiness: no checks at all (foreign mission repo without CI) ⇒ merge", noChecks.verdict === "merge" && noChecks.detail.includes("no checks"));
   const red = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE"), run("scope", "COMPLETED", "SUCCESS"), run("desktop-package", "IN_PROGRESS", null)] });
   check("readiness: one FAILURE ⇒ skip ci-red, even while other checks still run", red.verdict === "skip" && red.infra === "ci-red" && red.detail === "CI red: verify=FAILURE");
+  // P3-348: the ci-gate aggregate is the ONE verdict — a green aggregate
+  // overrules per-job red (the advisory win smoke), a red aggregate is
+  // decisive, and an unfinished one is always "wait".
+  const gateGreenWinRed = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("ci-gate", "COMPLETED", "SUCCESS"), run("desktop-package-win", "COMPLETED", "FAILURE"), run("verify", "COMPLETED", "SUCCESS")] });
+  check("readiness: ci-gate green overrules the advisory win failure ⇒ merge", gateGreenWinRed.verdict === "merge" && gateGreenWinRed.detail.includes("ci-gate green"));
+  const gateRed = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("ci-gate", "COMPLETED", "FAILURE"), run("verify", "COMPLETED", "SUCCESS")] });
+  check("readiness: ci-gate red ⇒ skip ci-red, named as the aggregate", gateRed.verdict === "skip" && gateRed.detail === "CI red: ci-gate aggregate failed");
+  const gateRunning = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", statusCheckRollup: [run("ci-gate", "IN_PROGRESS", null), run("desktop-package-win", "COMPLETED", "FAILURE")] });
+  check("readiness: ci-gate still running ⇒ pending (never decide from partial jobs)", gateRunning.verdict === "pending" && gateRunning.detail.includes("waiting for the ci-gate aggregate"));
   const conflict = mergeReadiness({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] });
   check("readiness: CONFLICTING/DIRTY ⇒ skip conflict, decided before the checks", conflict.verdict === "skip" && conflict.infra === "conflict" && conflict.detail.includes("CONFLICTING"));
   check("readiness: DIRTY alone is a conflict too", mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "DIRTY", statusCheckRollup: [] }).verdict === "skip");

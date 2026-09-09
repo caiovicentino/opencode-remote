@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import QrScanner, { type CameraAccessVerdict } from "./QrScanner";
 import PairRetry from "./PairRetry";
+import PaneMap from "./PaneMap";
 import { useT } from "../lib/i18n";
 
 interface Props {
@@ -199,6 +200,9 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
         </div>
       )}
+      {/* P3-364: the standing answer to "why pair at all?" — the panes the
+          gate hides, listed where the gate toast (P3-328) is only a flash. */}
+      <PaneMap />
       {onBack && (
         <button className="pair-back" onClick={onBack}>
           {t("pairBack")}
