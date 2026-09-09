@@ -2412,7 +2412,7 @@ button.desk-new:hover:not(:disabled) {
    textarea. Mono type matches the opencode-remote:// URI it receives, the
    resize grip is off (two rows hold the URI; nothing to grow into) and the
    recessed canvas fill keeps it readable as an input on the raised card.
-   Same 8px radius as the other pairing controls. */
+   Same 8px radius as the other pairing controls; long URIs wrap anywhere. */
 .pair-code {
   padding: 8px 10px;
   border-radius: 8px;
@@ -2421,6 +2421,7 @@ button.desk-new:hover:not(:disabled) {
   font-size: 0.8rem;
   line-height: 1.5;
   resize: none;
+  overflow-wrap: anywhere;
   transition: border-color var(--motion-fast) var(--ease-out);
 }
 .pair-code:focus {
