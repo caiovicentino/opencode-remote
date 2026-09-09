@@ -47,7 +47,11 @@ export function viewReducer(state: ViewState, action: ViewAction): ViewState {
       const top = state.stack[state.stack.length - 1];
       if (!top) return state;
       const stack = state.stack.slice(0, -1);
-      // Popping the chat slot closes the conversation with it.
+      // Popping the chat slot closes the conversation with it. When the chat
+      // was the whole stack (deep link, or the list it came from — openChat
+      // replaces the history), the board is the chat's parent surface: back
+      // lands there, never on the empty home (P2-123's default surface).
+      if (top === "chat" && stack.length === 0) return { stack: ["chats"], chatSession: null };
       return { stack, chatSession: top === "chat" ? null : state.chatSession };
     }
     case "replace": {

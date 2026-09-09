@@ -219,6 +219,11 @@ private. That is the product: **local power, remote control, zero trust**.
   header reads as a muted uppercase overline (the "Conversas" line between the
   drawer and new-chat buttons), matching the wizard's step indicator instead
   of a full-size page title
+- **Back lands on the board (P3-374)** — on the phone layout, leaving a
+  conversation with the ← button always shows the conversations list (even
+  when the chat was opened by a deep link, which replaces the navigation
+  history); the home stays the app's default surface and one more ← from the
+  list returns to it
 - **Session filters** — chips above the search (All / With badge / No badge)
   narrow the board to sessions with or without an unread badge
 - **Fast session switching (P1-064)** — opening a conversation fetches only

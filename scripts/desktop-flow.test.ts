@@ -2333,14 +2333,20 @@ try {
               const rowProbe = await waitProbe(
                 "P1-089: session row rendered on the board",
                 "document.body.innerText.includes('Reentry check') + '|STATE:' + (document.body.innerText.match(/(Nenhuma conversa|no sessions|Erro[^\\n]*)/i)?.[1] ?? 'rows-or-other') + '|TXT:' + (document.querySelector('.sess-rows,.convo-rows')?.parentElement?.innerText ?? '').slice(0, 180).replace(/\\n/g, '/')",
-                (v) => v.startsWith("true"),
+                (v) =>
+                  // the ipc bridge JSON-stringifies results — a string value
+                  // arrives quoted, so strip the wrapping quotes first
+                  v.trim().replace(/^"|"$/g, "").startsWith("true"),
                 localEnv2,
                 12,
                 1_000,
                 // P3-374: a trailing app event can legitimately replace the
                 // visible surface right after chat-back — silent re-navigation
                 // (probe, never run: reclaims must not add failure noise).
-                () => probe(["menu-click", "go-pane-chat"], 15_000, localEnv2),
+                // The reclaim re-clicks ← when a chat is up: the Go menu's
+                // pane action resets to the home when no chat is active, so
+                // menu-click would fight the board this beat waits for.
+                () => probe(["ipc", "document.querySelector('.chat-back')?.click() ?? 'noop'"], 15_000, localEnv2),
               );
               if (!rowProbe) {
                 // P3-374: fail-open diagnostic for the documented board-hang
@@ -2847,9 +2853,10 @@ try {
                 12,
                 1_000,
                 // P3-374: same trailing-event hijack as P1-089's board probe —
-                // silent reclaim (Go menu), then re-open the row's action sheet.
+                // silent reclaim (← re-click, see above), then re-open the
+                // row's action sheet.
                 () => {
-                  probe(["menu-click", "go-pane-chat"], 15_000, localEnv2);
+                  probe(["ipc", "document.querySelector('.chat-back')?.click() ?? 'noop'"], 15_000, localEnv2);
                   probe(["ipc", "document.querySelector('.convo-row[data-session=\"ses-reentry-check\"] .convo-row-menu')?.click() ?? 'MISS'"], 15_000, localEnv2);
                 },
               );
