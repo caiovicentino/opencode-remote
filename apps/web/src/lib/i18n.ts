@@ -432,6 +432,9 @@ export const dict = {
     // P3-328: Go-menu pane actions stay enabled at the pairing gate — pressing
     // one now surfaces this hint instead of silently doing nothing.
     pairFirstHint: "Pair with your machine first — the panes unlock once connected.",
+    // P3-367: inline escape inside the gate toast — jumps to the manual
+    // pairing ceremony instead of leaving the user to find the link above.
+    pairFirstAction: "Pair now",
     // chat composer + header (P2-049)
     send: "Send",
     messagePlaceholder: "Message the agent…",
@@ -1105,6 +1108,9 @@ export const dict = {
     // P3-328: ações de painel do menu Go ficam habilitadas no portão de
     // pareamento — apertar uma agora mostra este aviso em vez de não fazer nada.
     pairFirstHint: "Pareie com sua máquina primeiro — os painéis ficam disponíveis depois de conectar.",
+    // P3-367: escape inline dentro do aviso do portão — pula direto pro
+    // ceremony manual de pareamento em vez de caçar o link acima.
+    pairFirstAction: "Parear agora",
     // chat composer + header (P2-049)
     send: "Enviar",
     messagePlaceholder: "Mensagem pro agente…",

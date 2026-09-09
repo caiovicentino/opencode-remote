@@ -2855,6 +2855,31 @@ button.desk-new:hover:not(:disabled) {
   z-index: 210;
 }
 
+/* P3-367: labeled exit inside the gate toast — quiet accent text button,
+   same register as the other inline recovery actions (pair-reach-retry,
+   welcome-skip): existing tokens only, no new colors or radii. */
+.pair-gate-hint-action {
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  margin-left: var(--space-3);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+.pair-gate-hint-action:hover {
+  text-decoration: underline;
+}
+.pair-gate-hint-action:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ── side-by-side artifact preview (P2-062): chat left, artifact right ── */
 /* row wrapper around the chat column; the preview pane and divider join it
    while an artifact is open on a wide (≥ 900px) viewport */
