@@ -2627,6 +2627,17 @@ button.desk-new:hover:not(:disabled) {
   margin: 0 0 8px;
   font-size: var(--font-size-sm);
 }
+/* P3-368: language and theme side by side — the copy promises both, so both
+   controls share one row on the flat surface, wrapping at phone widths. */
+.degraded-local-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.degraded-local-controls select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .degraded-manual {
   background: transparent;
   border: none;
