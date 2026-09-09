@@ -32499,6 +32499,15 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   check("readiness: no checks at all (foreign mission repo without CI) ⇒ merge", noChecks.verdict === "merge" && noChecks.detail.includes("no checks"));
   const red = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("verify", "COMPLETED", "FAILURE"), run("scope", "COMPLETED", "SUCCESS"), run("desktop-package", "IN_PROGRESS", null)] });
   check("readiness: one FAILURE ⇒ skip ci-red, even while other checks still run", red.verdict === "skip" && red.infra === "ci-red" && red.detail === "CI red: verify=FAILURE");
+  // P3-348: the ci-gate aggregate is the ONE verdict — a green aggregate
+  // overrules per-job red (the advisory win smoke), a red aggregate is
+  // decisive, and an unfinished one is always "wait".
+  const gateGreenWinRed = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("ci-gate", "COMPLETED", "SUCCESS"), run("desktop-package-win", "COMPLETED", "FAILURE"), run("verify", "COMPLETED", "SUCCESS")] });
+  check("readiness: ci-gate green overrules the advisory win failure ⇒ merge", gateGreenWinRed.verdict === "merge" && gateGreenWinRed.detail.includes("ci-gate green"));
+  const gateRed = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("ci-gate", "COMPLETED", "FAILURE"), run("verify", "COMPLETED", "SUCCESS")] });
+  check("readiness: ci-gate red ⇒ skip ci-red, named as the aggregate", gateRed.verdict === "skip" && gateRed.detail === "CI red: ci-gate aggregate failed");
+  const gateRunning = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", statusCheckRollup: [run("ci-gate", "IN_PROGRESS", null), run("desktop-package-win", "COMPLETED", "FAILURE")] });
+  check("readiness: ci-gate still running ⇒ pending (never decide from partial jobs)", gateRunning.verdict === "pending" && gateRunning.detail.includes("waiting for the ci-gate aggregate"));
   const conflict = mergeReadiness({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] });
   check("readiness: CONFLICTING/DIRTY ⇒ skip conflict, decided before the checks", conflict.verdict === "skip" && conflict.infra === "conflict" && conflict.detail.includes("CONFLICTING"));
   check("readiness: DIRTY alone is a conflict too", mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "DIRTY", statusCheckRollup: [] }).verdict === "skip");

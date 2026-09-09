@@ -2212,6 +2212,7 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
   const pending: string[] = [];
   let green = 0;
   let readable = 0;
+  let ciGate: { status: string; outcome: string } | null = null;
   for (const item of rollup ?? []) {
     if (!item || typeof item !== "object") continue;
     readable++;
@@ -2221,6 +2222,7 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
     // StatusContext (legacy commit status): a single state field.
     const status = typeof c.status === "string" ? c.status : "";
     const outcome = typeof c.conclusion === "string" ? c.conclusion : typeof c.state === "string" ? c.state : "";
+    if (name === "ci-gate") ciGate = { status, outcome };
     if (status && status !== "COMPLETED") {
       pending.push(name);
       continue;
@@ -2234,6 +2236,24 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
       continue;
     }
     green++; // SUCCESS / NEUTRAL / SKIPPED / STALE
+  }
+  // P3-352/P3-348: `ci-gate` is the run's ONE verdict — it already weighed
+  // the per-job results (including the desktop-package-win advisory). When it
+  // completed, decide from it alone: a green aggregate overrules per-job red
+  // (the win smoke hang must not block merges while advisory), and a red
+  // aggregate is decisive even with green siblings. Absent or unfinished,
+  // fall through to the legacy per-job scan below.
+  if (ciGate) {
+    const gateGreen = ciGate.outcome === "SUCCESS" || ciGate.outcome === "NEUTRAL";
+    const gateDone = ciGate.status === "COMPLETED" || (ciGate.status === "" && ciGate.outcome !== "");
+    if (ciGate.status && ciGate.status !== "COMPLETED") {
+      return { verdict: "pending", detail: "waiting for the ci-gate aggregate" };
+    }
+    if (gateDone && gateGreen) {
+      if (!mergeable || mergeable === "UNKNOWN") return { verdict: "pending", detail: "GitHub still computing mergeability" };
+      return { verdict: "merge", detail: `ci-gate green (${green} check(s) reported)` };
+    }
+    if (gateDone && !gateGreen) return { verdict: "skip", infra: "ci-red", detail: "CI red: ci-gate aggregate failed" };
   }
   if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}` };
   // P3-346: CI is expected on this repo but GitHub reported no check yet —
