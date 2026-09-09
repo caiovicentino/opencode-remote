@@ -983,6 +983,14 @@ button.desk-new:hover:not(:disabled) {
   height: auto;
   min-height: 0;
 }
+/* P3-365: unpaired gate shell — the conversations slot is a quiet hint until
+   a daemon answers; the skeleton keeps the paired column rhythm */
+.gate-side-hint {
+  margin: 0;
+  padding: 12px 12px 6px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
 .desk-nav {
   display: flex;
   flex-direction: column;

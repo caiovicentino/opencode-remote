@@ -1076,6 +1076,101 @@ export default function App() {
 
 
 
+  // P3-365: pane nodes live ABOVE the gate returns — the unpaired gate shell
+  // mounts the same panes the paired shell does, so Mission Control, the
+  // artifact list and Settings are reachable on first boot (P1-071) with no
+  // daemon client yet.
+  function settingsView(req: Parameters<typeof SettingsView>[0]["request"]) {
+    return (
+      <SettingsView
+        request={req}
+        onBack={goBack}
+        transport={clientRef.current?.transport}
+        getDiagnostics={desktopBridge()?.getDiagnostics}
+        onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+        getRelaySetting={desktopBridge()?.getRelaySetting}
+        setRelayUrl={desktopBridge()?.setRelayUrl}
+        getWebAppUrl={desktopBridge()?.getWebAppUrl}
+        setWebAppUrl={desktopBridge()?.setWebAppUrl}
+        getProxySetting={desktopBridge()?.getProxySetting}
+        setProxyChoice={desktopBridge()?.setProxyChoice}
+        upstream={upstream}
+      />
+    );
+  }
+  const settingsNode = settingsView(request);
+  // P2-138's quiet stub: every daemon-backed fetch becomes a no-op while the
+  // purely-local settings (language, theme) keep working.
+  const gateSettingsNode = settingsView(() => Promise.resolve({ status: 0, body: {} }));
+  const filesNode = <FilesView request={request} onBack={goBack} />;
+  const artifactsNode = <ArtifactsView request={request} onBack={goBack} onOpenInChat={openArtifactInChat} />;
+  const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
+  // EVAL4-B (instance B): `request` is the sealed fallback for the phone (no daemonApi bridge)
+  const missionNode = <ErrorBoundary><MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} request={request} /></ErrorBoundary>;
+  const shareNode = share ? (
+    <SendToAgentView
+      request={request}
+      payload={share}
+      onBack={goBack}
+      onOpenSession={(id) => {
+        setShare(null);
+        dispatchView({ type: "openChat", sessionId: id });
+      }}
+    />
+  ) : null;
+  // P2-220: the calm install hint — verdict recomputed from state that is
+  // already in React (machines, dismissed flag); the environment probes it
+  // wraps were read once at mount. ?installhint=1 forces it on for the
+  // deterministic screenshot evidence, whatever the verdict says.
+  const hint = installHintVerdict({
+    userAgent: installHintEnv.userAgent,
+    maxTouchPoints: installHintEnv.maxTouchPoints,
+    standalone: installHintEnv.standalone,
+    desktopShell: installHintEnv.desktopShell,
+    hasPairing: machines.length > 0,
+    dismissed: installHintDismissed,
+  });
+  // P2-220 reviewer round 3 (BLOCKING): the copy must follow the app locale —
+  // the verdict's pt-BR message stays a pure-module constant; what renders is
+  // the dict key (dict.pt.installHintBody is exactly that constant).
+  const installHint = installHintEnv.forced || hint.show ? t("installHintBody") : null;
+  function dismissInstallHint() {
+    setInstallHintDismissed(true);
+    try {
+      localStorage.setItem(INSTALL_HINT_DISMISSED_KEY, serializeInstallHintDismissed());
+    } catch {}
+  }
+
+  const sessionsNode = (
+    <SessionsView
+      request={request}
+      events={events}
+      unread={unread}
+      onOpen={(id) => {
+        setNavDir("fwd");
+        dispatchView({ type: "openChat", sessionId: id });
+      }}
+      installHint={installHint}
+      onDismissInstallHint={dismissInstallHint}
+      tick={tick}
+      creating={creating}
+      onCreateSession={createSession}
+      variant={isDesktop ? "rows" : "list"}
+      activeSession={session}
+    />
+  );
+
+  // P1-056: Claude-Desktop-style menu — vertical, quiet, no dead entries.
+  // "files" left the rail (dead weight); "phone" opens the PWA pairing
+  // ceremony (the pocket dispatch).
+  const railButtons: { slot: Slot; label: string; icon: ReactNode; beta?: boolean }[] = [
+    { slot: "chat", label: t("navConversations"), icon: <IconChat /> },
+    { slot: "artifacts", label: t("navArtifacts"), icon: <IconLayers /> },
+    { slot: "browser", label: t("navBrowser"), icon: <IconGlobe /> },
+    { slot: "mission", label: t("navMission"), icon: <IconRadar />, beta: true },
+    { slot: "settings", label: t("navSettings"), icon: <IconSettings /> },
+  ];
+
   // P2-148: first-run onboarding — a single full-screen surface with no
   // banners and no pairing overlay (P2-108 single-surface rule). It covers
   // every phase: the local daemon may finish auto-connecting in the
@@ -1174,70 +1269,160 @@ export default function App() {
     // is no shell status to degrade on).
     const degraded =
       !!desktopBridge() && !pairManual && pairingState?.mode !== "remote" && !loadState();
+    // P3-365: everything that is not the first-boot desktop journey keeps the
+    // classic centered screen below (narrow windows, manual ceremony, remote
+    // mode, stored-pairing errors).
+    if (!degraded || !isDesktop) {
+      return (
+        <div
+          className={(degraded ? mismatchBanner : banner) ? "pair-wrap has-daemon-down" : "pair-wrap"}
+          data-phase={phase}
+        >
+          {degraded ? mismatchBanner : banner}
+          {pairingOverlay}
+          {gateHintNode}
+          {degraded ? (
+            <DegradedView
+              kind={kind}
+              busy={phase === "connecting"}
+              reconnectAttempts={pairingState?.reconnectAttempts}
+              reconnect={reconnectBtn}
+              onPairManually={() => setPairManual(true)}
+              upstream={upstream}
+              onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
+              sidecarExit={sidecarExit}
+              sidecarWedge={sidecarWedge}
+            />
+          ) : (
+            <PairingView
+              // Round 2 (review): the degraded journey's "pair manually" escape
+              // must always show the paste/scan ceremony — the sticky localMode
+              // alone would render the auto-connect card with no way to type a
+              // remote code (the P3-332 dead-end class, one screen later).
+              // P3-329: reaching this screen through pairManual IS explicit
+              // manual intent (wizard escape or degraded escape) — the local
+              // auto-connect mode must never swallow the paste/scan ceremony
+              // (same rule as "add machine", P3-332).
+              localMode={localMode && !pairManual}
+              onBack={pairManual ? () => setPairManual(false) : undefined}
+              phase={phase}
+              error={error}
+              hint={errorHint}
+              // EVAL4-F1b: stored pairing + unreachable machine → 20 s countdown
+              // into the same onRetry (auto-pair), never a dead pairing wall
+              autoRetryMs={phase === "error" && !!loadState() && (errorKind === "timeout" || errorKind === "closed") ? 20_000 : undefined}
+              getCamAccess={desktopBridge()?.getCamAccess}
+              onPair={(uri) => {
+                const pairing = parsePairingUri(uri);
+                if (!pairing) {
+                  setError(t("invalidCode"));
+                  setPhase("error");
+                  return;
+                }
+                void connect(pairing, true);
+              }}
+              onRetry={() => {
+                // Round 2 (review): a stored pairing reconnects verbatim — the
+                // PWA has no auto-pair to re-arm (tryAutoPair is a no-op without
+                // the shell bridge), so Retry must never lose this path.
+                // P3-332: with no stored pairing the retry re-arms the auto-pair
+                // (local link / deep link) — the live card's only way forward.
+                const stored = loadState();
+                if (stored) void connect(stored.pairing, false);
+                else {
+                  setPhase("unpaired");
+                  tryAutoPair();
+                }
+              }}
+              onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+            />
+          )}
+        </div>
+      );
+    }
+
+    // P3-365: on a wide viewport the degraded journey renders the REAL shell
+    // skeleton instead of a full-screen wall — the calm status card stays the
+    // hero of the main column, while the sidebar and the offline-capable
+    // panes (Mission Control, artifact list, Settings) stay reachable, so
+    // first boot no longer dead-ends on one screen (P1-071).
     return (
       <div
-        className={(degraded ? mismatchBanner : banner) ? "pair-wrap has-daemon-down" : "pair-wrap"}
+        className={mismatchBanner ? "app-root has-daemon-down" : "app-root"}
+        data-nav={navDir}
         data-phase={phase}
+        style={{ height: "100%" }}
       >
-        {degraded ? mismatchBanner : banner}
-        {pairingOverlay}
+        {mismatchBanner}
+        <div className="desk">
+          <aside className="desk-side">
+            <div className="desk-side-top">
+              <button className="primary desk-new" disabled>
+                {t("newShort")}
+              </button>
+              <nav className="desk-nav">
+                {railButtons.map((b) => (
+                  <button
+                    key={b.slot}
+                    className={slots.has(b.slot) ? "active" : ""}
+                    onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
+                    data-pane={b.slot}
+                    title={b.label}
+                  >
+                    {b.icon}
+                    <span>{b.label}</span>
+                    {b.beta && <span className="beta-pill">Beta</span>}
+                  </button>
+                ))}
+              </nav>
+            </div>
+            <div className="desk-side-scroll">
+              <p className="muted gate-side-hint">{t("gateSessionsHint")}</p>
+            </div>
+            {/* P3-365: no account footer at the gate — the mode label would
+                claim a pairing nothing has proven yet (P3-331's sticky local
+                verdict needs a live daemon), and the hero card below already
+                carries the labeled manual-pairing escape (P3-338: one exit
+                per screen). */}
+          </aside>
+          <main className="desk-chat">
+            <DegradedView
+              kind={kind}
+              busy={phase === "connecting"}
+              reconnectAttempts={pairingState?.reconnectAttempts}
+              reconnect={reconnectBtn}
+              onPairManually={() => setPairManual(true)}
+              upstream={upstream}
+              onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
+              sidecarExit={sidecarExit}
+              sidecarWedge={sidecarWedge}
+            />
+          </main>
+          <section className="desk-pane" style={{ display: isPaneOpen(view) ? "block" : "none" }}>
+            {(browseFn || top === "browser") && (
+              <div style={{ display: top === "browser" ? "block" : "none", height: "100%" }}>
+                <BrowserView
+                  browse={browseFn}
+                  onBack={goBack}
+                  previewUrl={previewUrl}
+                  maximized={browserMaximized}
+                  onToggleMaximize={() => setBrowserMaximized((v) => !v)}
+                />
+              </div>
+            )}
+            {top !== "browser" && top !== "mission" && (
+              <div className="pane-view" key={top}>
+                {top === "artifacts" && artifactsNode}
+                {top === "files" && filesNode}
+                {top === "settings" && gateSettingsNode}
+                {top === "share" && shareNode}
+              </div>
+            )}
+            {top === "mission" && missionNode}
+          </section>
+        </div>
         {gateHintNode}
-        {degraded ? (
-          <DegradedView
-            kind={kind}
-            busy={phase === "connecting"}
-            reconnectAttempts={pairingState?.reconnectAttempts}
-            reconnect={reconnectBtn}
-            onPairManually={() => setPairManual(true)}
-            upstream={upstream}
-            onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
-            sidecarExit={sidecarExit}
-            sidecarWedge={sidecarWedge}
-          />
-        ) : (
-          <PairingView
-            // Round 2 (review): the degraded journey's "pair manually" escape
-            // must always show the paste/scan ceremony — the sticky localMode
-            // alone would render the auto-connect card with no way to type a
-            // remote code (the P3-332 dead-end class, one screen later).
-            // P3-329: reaching this screen through pairManual IS explicit
-            // manual intent (wizard escape or degraded escape) — the local
-            // auto-connect mode must never swallow the paste/scan ceremony
-            // (same rule as "add machine", P3-332).
-            localMode={localMode && !pairManual}
-            onBack={pairManual ? () => setPairManual(false) : undefined}
-            phase={phase}
-            error={error}
-            hint={errorHint}
-            // EVAL4-F1b: stored pairing + unreachable machine → 20 s countdown
-            // into the same onRetry (auto-pair), never a dead pairing wall
-            autoRetryMs={phase === "error" && !!loadState() && (errorKind === "timeout" || errorKind === "closed") ? 20_000 : undefined}
-            getCamAccess={desktopBridge()?.getCamAccess}
-            onPair={(uri) => {
-              const pairing = parsePairingUri(uri);
-              if (!pairing) {
-                setError(t("invalidCode"));
-                setPhase("error");
-                return;
-              }
-              void connect(pairing, true);
-            }}
-            onRetry={() => {
-              // Round 2 (review): a stored pairing reconnects verbatim — the
-              // PWA has no auto-pair to re-arm (tryAutoPair is a no-op without
-              // the shell bridge), so Retry must never lose this path.
-              // P3-332: with no stored pairing the retry re-arms the auto-pair
-              // (local link / deep link) — the live card's only way forward.
-              const stored = loadState();
-              if (stored) void connect(stored.pairing, false);
-              else {
-                setPhase("unpaired");
-                tryAutoPair();
-              }
-            }}
-            onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-          />
-        )}
+        {pairingOverlay}
       </div>
     );
   }
@@ -1265,79 +1450,9 @@ export default function App() {
       onRetryNow={() => clientRef.current?.retryNow()}
     />
   );
-  const settingsNode = (
-    <SettingsView
-      request={request}
-      onBack={goBack}
-      transport={clientRef.current?.transport}
-      getDiagnostics={desktopBridge()?.getDiagnostics}
-      onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
-      getRelaySetting={desktopBridge()?.getRelaySetting}
-      setRelayUrl={desktopBridge()?.setRelayUrl}
-      getWebAppUrl={desktopBridge()?.getWebAppUrl}
-      setWebAppUrl={desktopBridge()?.setWebAppUrl}
-      getProxySetting={desktopBridge()?.getProxySetting}
-      setProxyChoice={desktopBridge()?.setProxyChoice}
-      upstream={upstream}
-    />
-  );
-  const filesNode = <FilesView request={request} onBack={goBack} />;
-  const artifactsNode = <ArtifactsView request={request} onBack={goBack} onOpenInChat={openArtifactInChat} />;
-  const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
-  // EVAL4-B (instance B): `request` is the sealed fallback for the phone (no daemonApi bridge)
-  const missionNode = <ErrorBoundary><MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} request={request} /></ErrorBoundary>;
-  const shareNode = share ? (
-    <SendToAgentView
-      request={request}
-      payload={share}
-      onBack={goBack}
-      onOpenSession={(id) => {
-        setShare(null);
-        dispatchView({ type: "openChat", sessionId: id });
-      }}
-    />
-  ) : null;
-  // P2-220: the calm install hint — verdict recomputed from state that is
-  // already in React (machines, dismissed flag); the environment probes it
-  // wraps were read once at mount. ?installhint=1 forces it on for the
-  // deterministic screenshot evidence, whatever the verdict says.
-  const hint = installHintVerdict({
-    userAgent: installHintEnv.userAgent,
-    maxTouchPoints: installHintEnv.maxTouchPoints,
-    standalone: installHintEnv.standalone,
-    desktopShell: installHintEnv.desktopShell,
-    hasPairing: machines.length > 0,
-    dismissed: installHintDismissed,
-  });
-  // P2-220 reviewer round 3 (BLOCKING): the copy must follow the app locale —
-  // the verdict's pt-BR message stays a pure-module constant; what renders is
-  // the dict key (dict.pt.installHintBody is exactly that constant).
-  const installHint = installHintEnv.forced || hint.show ? t("installHintBody") : null;
-  function dismissInstallHint() {
-    setInstallHintDismissed(true);
-    try {
-      localStorage.setItem(INSTALL_HINT_DISMISSED_KEY, serializeInstallHintDismissed());
-    } catch {}
-  }
-
-  const sessionsNode = (
-    <SessionsView
-      request={request}
-      events={events}
-      unread={unread}
-      onOpen={(id) => {
-        setNavDir("fwd");
-        dispatchView({ type: "openChat", sessionId: id });
-      }}
-      installHint={installHint}
-      onDismissInstallHint={dismissInstallHint}
-      tick={tick}
-      creating={creating}
-      onCreateSession={createSession}
-      variant={isDesktop ? "rows" : "list"}
-      activeSession={session}
-    />
-  );
+  // (P3-365: settingsNode/filesNode/artifactsNode/browseNode/missionNode/
+  // shareNode/sessionsNode and railButtons are defined above the gate returns
+  // — the unpaired gate shell mounts the same nodes.)
 
   // Mobile keeps a single main surface driven by the top of the view stack.
   const mainContent = chatActive
@@ -1381,17 +1496,6 @@ export default function App() {
       variant="mobile"
     />
   );
-
-  // P1-056: Claude-Desktop-style menu — vertical, quiet, no dead entries.
-  // "files" left the rail (dead weight); "phone" opens the PWA pairing
-  // ceremony (the pocket dispatch).
-  const railButtons: { slot: Slot; label: string; icon: ReactNode; beta?: boolean }[] = [
-    { slot: "chat", label: t("navConversations"), icon: <IconChat /> },
-    { slot: "artifacts", label: t("navArtifacts"), icon: <IconLayers /> },
-    { slot: "browser", label: t("navBrowser"), icon: <IconGlobe /> },
-    { slot: "mission", label: t("navMission"), icon: <IconRadar />, beta: true },
-    { slot: "settings", label: t("navSettings"), icon: <IconSettings /> },
-  ];
 
   return (
     <div

@@ -81,6 +81,8 @@ export const dict = {
     filterTitle: "Filter",
     loadingSessions: "Loading conversations…",
     noSessions: "No conversations yet.",
+    // P3-365: unpaired gate shell's sidebar placeholder
+    gateSessionsHint: "Conversations appear here once this machine connects.",
     ready: "ready",
     working: "working…",
     waitingApproval: "waiting for your approval",
@@ -763,6 +765,8 @@ export const dict = {
     filterTitle: "Filtrar",
     loadingSessions: "Carregando conversas…",
     noSessions: "Nenhuma conversa ainda.",
+    // P3-365: placeholder da sidebar no shell sem pareamento
+    gateSessionsHint: "As conversas aparecem aqui quando a máquina conectar.",
     ready: "pronto",
     working: "trabalhando…",
     waitingApproval: "esperando sua aprovação",
