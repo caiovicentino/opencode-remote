@@ -3532,6 +3532,15 @@ button.desk-new:hover:not(:disabled) {
     border-bottom: 1px solid var(--border);
     max-height: 40%;
   }
+  /* P2-108: the shell title is the demoted mobile chrome — a muted overline in
+     the house pattern (.welcome-step-of), not a full-size title squeezed
+     between the drawer and action buttons. */
+  .shell-title {
+    font-size: var(--font-size-xs);
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
 }
 
 /* ── P2-323: the one calm confirmation dialog (rename / delete / rewind) ──

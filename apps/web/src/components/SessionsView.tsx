@@ -27,6 +27,7 @@ interface Props {
     path: string,
     body?: unknown,
     query?: Record<string, string>,
+    timeoutMs?: number,
   ) => Promise<{ status: number; body: unknown }>;
   onOpen: (sessionId: string) => void;
   tick: number;
@@ -149,7 +150,17 @@ export default function SessionsView({
     setLoading(true);
     setError("");
     try {
-      const res = await request("GET", "/session");
+      // P3-374: the listing is the board's front door — a one-off dropped op
+      // used to spin skeletons for the client's full 60s watchdog. One
+      // bounded attempt, then a single silent retry; only a second failure
+      // surfaces the calm error card with its Retry button.
+      const list = (ms: number) => request("GET", "/session", undefined, undefined, ms);
+      let res;
+      try {
+        res = await list(5_000);
+      } catch {
+        res = await list(8_000);
+      }
       if (res.status !== 200) throw new Error(`GET /session -> ${res.status}`);
       setSessions((res.body as Session[]) ?? []);
     } catch (err) {

@@ -11146,6 +11146,35 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-374 round 2: demoted mobile chrome + board listing watchdog -----------
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // P2-108's contract, as probed by the desktop-flow battery: at phone widths
+  // the shell title renders as the demoted overline (≤14px), not the full
+  // 0.95rem title. Scoped to the ≤1023px block — the desktop rail has no
+  // .shell-title.
+  const mobile = css.indexOf("@media (max-width: 1023px)");
+  const titleAt = css.indexOf(".shell-title {", mobile);
+  const rule = css.slice(titleAt, css.indexOf("}", titleAt));
+  check(
+    "P3-374: the mobile shell title is the demoted P2-108 overline (xs token, scoped ≤1023px)",
+    mobile > 0 &&
+      titleAt > mobile &&
+      rule.includes("font-size: var(--font-size-xs)") &&
+      rule.includes("text-transform: uppercase") &&
+      css.indexOf(".shell-title {", titleAt + 1) > titleAt,
+  );
+  const sessions = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SessionsView.tsx"), "utf8");
+  // The listing op is bounded and retried once silently — a dropped op may
+  // cost seconds, never the full 60s client watchdog of skeletons.
+  check(
+    "P3-374: the board listing is a bounded op with one silent retry",
+    sessions.includes("await list(5_000)") &&
+      sessions.includes("await list(8_000)") &&
+      !/request\("GET", "\/session"\);/.test(sessions),
+  );
+}
+
 // --- P3-336: brand title on a token-based scale, no inline font sizes ---------
 {
   const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");

@@ -207,7 +207,13 @@ remoto, zero confiança**.
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
   atividade (`5m`, `2h`, `3d`); sessões ficam ordenadas da mais recente
-  para a mais antiga
+  para a mais antiga. A listagem é uma operação com limite: pedido dropado
+  tem um retry silencioso (poucos segundos) antes do card calmo de erro com
+  botão "Tentar de novo" — sem skeleton de um minuto
+- **Chrome móvel rebaixado (P2-108)** — abaixo do breakpoint desktop, o título
+  do shell vira uma overline maiúscula e discreta (o "Conversas" entre o
+  drawer e o botão de nova conversa), no mesmo padrão do indicador de passo
+  do wizard, em vez de título de página em tamanho cheio
 - **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
   filtram o painel pelas conversas com ou sem badge de não-lidas
 - **Troca rápida de sessão (P1-064)** — abrir uma conversa busca só as últimas
