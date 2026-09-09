@@ -489,6 +489,9 @@ jobs:
   #     verify-win, relay-image) pass on success OR skipped — skipped is the
   #     scope job's own decision that the diff cannot affect that surface;
   #   - failure, cancelled, timed_out and a job missing from `needs` are red.
+  #   - P3-348 exception: desktop-package-win carries an advisoryUntil date in
+  #     scripts/cigate.ts — while it is open, its failure is a loud WARN that
+  #     does not gate (rot-proof: expired advisory falls back to the hard gate).
   # No install, no secret, no artifact, nothing published: the verdict is
   # computed from the `needs` context alone (toJSON(needs)); the checkout
   # only provides the script, run through the same pinned tsx the scope job
