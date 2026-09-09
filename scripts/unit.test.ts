@@ -357,7 +357,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
-import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, shouldEscalateRetry, escalationMinutes, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -10365,6 +10365,35 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       const s = translate(lang, k);
       return s !== k && s.trim() !== "";
     })),
+  );
+  // --- P3-363: the sustained-retry escalation (pure logic + copy) --------------
+  // A permanent silent retry loop is indistinguishable from a hang: after a
+  // minute of cumulative auto-retrying the card must escalate to a diagnostic
+  // path. Time-based — a first contact has no attempt counter to key off.
+  check(
+    "P3-363: escalation is false before the threshold and true from it on",
+    shouldEscalateRetry(0) === false &&
+      shouldEscalateRetry(RETRY_ESCALATE_AFTER_SEC - 1) === false &&
+      shouldEscalateRetry(RETRY_ESCALATE_AFTER_SEC) === true &&
+      shouldEscalateRetry(RETRY_ESCALATE_AFTER_SEC * 25) === true,
+  );
+  check(
+    "P3-363: escalation minutes clamp to 1 (no 'há 0 min' first paint)",
+    escalationMinutes(0) === 1 &&
+      escalationMinutes(RETRY_ESCALATE_AFTER_SEC - 1) === 1 &&
+      escalationMinutes(RETRY_ESCALATE_AFTER_SEC) === 1 &&
+      escalationMinutes(RETRY_ESCALATE_AFTER_SEC * 3 + 30) === 3,
+  );
+  check(
+    "P3-363: escalation copy resolves per locale, interpolates the minutes and names the doctor command",
+    (["en", "pt"] as const).every((lang) => {
+      const title = translate(lang, "degradedEscalateTitle", { m: 2 });
+      const detail = translate(lang, "degradedEscalateDetail");
+      const action = translate(lang, "degradedEscalateDiagnostics");
+      return title.includes("2") && !title.includes("{m}") &&
+        detail.includes("opencode-remote doctor") &&
+        action.trim() !== "" && action !== "degradedEscalateDiagnostics";
+    }),
   );
 }
 

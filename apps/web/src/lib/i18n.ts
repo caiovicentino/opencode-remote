@@ -298,6 +298,12 @@ export const dict = {
     degradedLocalTitle: "Available offline",
     degradedLocalHint: "Language and theme live on this machine — they work right now.",
     degradedPairManually: "Pair another device manually",
+    // P3-363: the escalation after a minute of silent retrying — the loop is
+    // patient by design, but it must never be indistinguishable from a hang.
+    degradedEscalateTitle: "No answer from the local daemon for {m} min",
+    degradedEscalateDetail:
+      "The app keeps trying on its own. To check this machine's side, run “opencode-remote doctor” in a terminal — or pair another device manually below.",
+    degradedEscalateDiagnostics: "Open diagnostics",
     // P2-138: upstream (opencode) notice inside the calm card + the Settings
     // help section it links to. Four classifier states, honest and calm — the
     // daemon's own reason/hint render below as secondary text detail.
@@ -987,6 +993,12 @@ export const dict = {
     degradedLocalTitle: "Disponível offline",
     degradedLocalHint: "Idioma e tema ficam nesta máquina — funcionam agora.",
     degradedPairManually: "Parear outro dispositivo manualmente",
+    // P3-363: a escalada depois de um minuto de retry silencioso — o laço é
+    // paciente por design, mas nunca pode parecer um congelamento.
+    degradedEscalateTitle: "Sem resposta do daemon local há {m} min",
+    degradedEscalateDetail:
+      "O app continua tentando sozinho. Para conferir o lado desta máquina, rode “opencode-remote doctor” no terminal — ou pareie outro dispositivo manualmente abaixo.",
+    degradedEscalateDiagnostics: "Abrir diagnósticos",
     // P2-138: aviso do upstream (opencode) dentro do card calmo + seção de
     // ajuda das Configurações. Quatro states do classificador, tom honesto e
     // calmo — reason/hint do daemon entram só como detalhe secundário em texto.
