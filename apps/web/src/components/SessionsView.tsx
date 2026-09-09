@@ -157,9 +157,9 @@ export default function SessionsView({
       const list = (ms: number) => request("GET", "/session", undefined, undefined, ms);
       let res;
       try {
-        res = await list(5_000);
+        res = await list(4_000);
       } catch {
-        res = await list(8_000);
+        res = await list(4_000);
       }
       if (res.status !== 200) throw new Error(`GET /session -> ${res.status}`);
       setSessions((res.body as Session[]) ?? []);

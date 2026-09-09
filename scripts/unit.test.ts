@@ -11154,7 +11154,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // 0.95rem title. Scoped to the ≤1023px block — the desktop rail has no
   // .shell-title.
   const mobile = css.indexOf("@media (max-width: 1023px)");
-  const titleAt = css.indexOf(".shell-title {", mobile);
+  const titleAt = css.indexOf(".shell-bar .shell-title {", mobile);
   const rule = css.slice(titleAt, css.indexOf("}", titleAt));
   check(
     "P3-374: the mobile shell title is the demoted P2-108 overline (xs token, scoped ≤1023px)",
@@ -11162,6 +11162,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       titleAt > mobile &&
       rule.includes("font-size: var(--font-size-xs)") &&
       rule.includes("text-transform: uppercase") &&
+      // two classes on purpose: the base .shell-title rule sits later in the
+      // file, so an equal-specificity override would lose the cascade
       css.indexOf(".shell-title {", titleAt + 1) > titleAt,
   );
   const sessions = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SessionsView.tsx"), "utf8");
@@ -11169,8 +11171,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // cost seconds, never the full 60s client watchdog of skeletons.
   check(
     "P3-374: the board listing is a bounded op with one silent retry",
-    sessions.includes("await list(5_000)") &&
-      sessions.includes("await list(8_000)") &&
+    sessions.includes("await list(4_000)") &&
       !/request\("GET", "\/session"\);/.test(sessions),
   );
 }
