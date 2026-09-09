@@ -111,9 +111,10 @@ jobs:
           sleep 3
           npx tsx scripts/smoke.ts
 
-      # P3-372: the run exercises the daemon restart race end to end (blind
-      # relay, room re-join, re-handshake) and one lost frame in N CI runs
-      # used to red the whole verify job. One bounded retry — the same
+      # gate-flaky (CI mirror; infra that landed via the P3-372 pipeline, not
+      # the task's scope): the run exercises the daemon restart race end to
+      # end (blind relay, room re-join, re-handshake) and one lost frame in N
+      # CI runs used to red the whole verify job. One bounded retry — the same
       # fail-flaky-once policy the local gatekeeper applies to e2e steps —
       # keeps the signal (a persistent failure still fails the job) without
       # a genuine regression being masked by a single dropped frame.
@@ -122,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           npx tsx scripts/reconnect.test.ts || {
-            echo "reconnect.test.ts failed once — retrying (lost-frame race, P3-372)"
+            echo "reconnect.test.ts failed once — retrying (lost-frame race, gate-flaky)"
             npx tsx scripts/reconnect.test.ts
           }
 

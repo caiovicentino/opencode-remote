@@ -148,7 +148,7 @@ check(
   ).killed[0].forced === true && survivorKills.join() === "7:SIGTERM,7:SIGKILL",
 );
 
-// --- sameRepoScope + the third kill factor (P3-372) -----------------------------
+// --- sameRepoScope + the third kill factor (gate-infra, via the P3-372 pipeline) -----------------
 // Concurrent gate slots share the box: a sibling slot's hermetic instances
 // carry the same argv+env markers, so the scope must discriminate by checkout.
 const REPO = join(TMP, "repo-3");

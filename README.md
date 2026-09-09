@@ -1511,8 +1511,9 @@ line is no longer frozen static copy. It now carries the feedback the
 component always promised: seconds tick since the current attempt started
 ("há 12s · tentativa 3" / "12s · attempt 3"), resetting on every new attempt
 so the number doubles as a quiet countdown to the next probe, and the shell's
-attempt counter rides along once it exists. The ticking segment uses tabular
-numerals (no per-second jitter) and is hidden from screen readers so the
+attempt counter rides along once it exists. The ticking segment appears from
+the first full second (no awkward "há 0s" first paint) and uses tabular
+numerals (no per-second jitter); it is hidden from screen readers so the
 status live region is not re-announced every second.
 
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop

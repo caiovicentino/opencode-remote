@@ -9,7 +9,8 @@
  *      one of the OCR_* test hatches). The symmetry rule is mandatory: every
  *      marker needs the second env factor — argv substring alone could match
  *      the operator's REAL dev app and must never be enough to kill.
- *      P3-372 adds the THIRD factor, repo scoping (sameRepoScope): the
+ *      Gate-infra side-fix (landed via the P3-372 pipeline, not the task's
+ *      scope) adds the THIRD factor, repo scoping (sameRepoScope): the
  *      pipeline runs gate slots concurrently on one box, and a sibling slot's
  *      live instances carry the same argv+env markers — without the scope the
  *      pre-flight SIGKILLed another gate's electron mid-run. Only processes
@@ -26,7 +27,7 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 /** argv markers for the three e2e component kinds. Match = substring of the
@@ -48,7 +49,8 @@ export interface OrphanCandidate {
 }
 
 /**
- * P3-372: the THIRD kill factor — repo scoping. The pipeline runs gate slots
+ * Gate-infra side-fix (landed via the P3-372 pipeline, not the task's scope):
+ * the THIRD kill factor — repo scoping. The pipeline runs gate slots
  * concurrently on one box (one workspace clone per slot), and every slot's
  * pre-flight must never reap ANOTHER slot's live gate instances: those carry
  * the same argv markers and OCR_* env hatches, so the box-wide match used to
@@ -69,7 +71,8 @@ export function sameRepoScope(
   env: Record<string, string | undefined>,
   repoRoot: string,
 ): boolean {
-  if (command.includes(`${repoRoot}/`)) return true;
+  const rootPrefix = repoRoot.endsWith(sep) ? repoRoot : repoRoot + sep;
+  if (command.includes(rootPrefix)) return true;
   return env.PWD === repoRoot;
 }
 

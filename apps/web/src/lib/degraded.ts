@@ -40,16 +40,20 @@ export function degradedKind(state: DegradedState | null, everSeen: boolean): De
 /** P3-372: the live segment of the auto-retry line — seconds since the
  * current attempt started plus the shell's attempt counter once it exists
  * ("há 12s · tentativa 3"). Pure so the eval battery can pin the contract:
- * negative elapsed clamps to 0, and an absent/zero attempt hides the counter
- * segment (a first contact has no attempt to count yet). The seconds reset
- * whenever the shell bumps its counter, so the number doubles as a quiet
- * countdown to the next probe. */
+ * negative elapsed clamps to 0, the elapsed segment only appears from the
+ * first FULL second (a "há 0s" first paint reads broken in pt-BR — round-2
+ * review nit) and an absent/zero attempt hides the counter segment (a first
+ * contact has no attempt to count yet). The seconds reset whenever the shell
+ * bumps its counter, so the number doubles as a quiet countdown to the next
+ * probe. */
 export function retryLineParts(
   elapsedSec: number,
   attempts: number | undefined,
   t: (key: string, vars?: Record<string, string | number>) => string,
 ): string {
-  const parts = [t("retryElapsed", { s: Math.max(0, Math.floor(elapsedSec)) })];
+  const parts: string[] = [];
+  const s = Math.max(0, Math.floor(elapsedSec));
+  if (s >= 1) parts.push(t("retryElapsed", { s }));
   if (typeof attempts === "number" && attempts > 0) parts.push(t("retryAttempt", { n: attempts }));
   return parts.join(" · ");
 }

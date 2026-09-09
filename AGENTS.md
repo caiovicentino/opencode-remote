@@ -282,7 +282,8 @@ NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, intera�
 órfãos electron/daemon/relay de runs anteriores — só processos com marker
 argv E env `ocr-*`/`OCR_*` de teste; argv sozinho nunca mata) e todos os
 servers e2e sobem em portas efêmeras com diagnóstico `lsof` no timeout.
-P3-372: o reaper ganhou um terceiro fator, escopo por checkout — os slots do
+Infra do gate (side-fix que chegou pela fila do P3-372, fora do escopo da
+tarefa): o reaper ganhou um terceiro fator, escopo por checkout — os slots do
 pipeline rodam gates concorrentes na mesma máquina e o pre-flight de um slot
 estava SIGKILLando as instâncias herméticas do slot vizinho (mesmos markers
 argv+env; a morte silenciosa derrubava o gate com "Target page … has been
