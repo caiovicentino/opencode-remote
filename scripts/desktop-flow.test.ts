@@ -2193,8 +2193,14 @@ try {
         localDaemon2.stdout?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
         localDaemon2.stderr?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
         localDaemon2.on("exit", (code, signal) => {
-          const ws = createWriteStream(daemon2Log, { flags: "a" });
-          ws.end(`\n=== daemon EXITED code=${code} signal=${signal} at ${new Date().toISOString()}\n`);
+          // P3-374: strictly fail-open (P3-343 lesson) — the finally-block
+          // rmSync can beat this handler when the daemon dies to SIGKILL, and
+          // the async ENOENT on the tombstone write must never crash the flow.
+          try {
+            const ws = createWriteStream(daemon2Log, { flags: "a" });
+            ws.on("error", () => {});
+            ws.end(`\n=== daemon EXITED code=${code} signal=${signal} at ${new Date().toISOString()}\n`);
+          } catch {}
         });
         const killDaemon2 = (signal: NodeJS.Signals = "SIGTERM"): void => {
           if (!localDaemon2.pid) return;
