@@ -518,6 +518,23 @@ try {
       retryLine.stdout,
     );
   }
+  // P3-372: the line is LIVE copy, not a frozen string — the meta segment
+  // ("há 12s · tentativa 3") renders and ticks with the 1s interval. One
+  // page-side promise reads it twice 2.2s apart; with no shell counter bump
+  // in this window the second read must differ. en renders "12s", pt "há 12s".
+  const metaTick = run(
+    "P3-372: live meta read twice",
+    ["ipc", "new Promise(r => { const el = () => document.querySelector('.degraded-retry-meta')?.textContent ?? ''; const a = el(); setTimeout(() => r(a + '|' + el()), 2200); })"],
+    15_000,
+  );
+  if (metaTick.ok) {
+    const [first, second] = metaTick.stdout.replace(/"/g, "").split("|");
+    // The first read can legitimately be empty (the meta only speaks from the
+    // first full second — no "há 0s"), so liveness is proven by the SECOND
+    // read: 2.2s later it must show elapsed seconds and differ from the first.
+    check("P3-372: live meta segment renders elapsed seconds (en|pt)", /(?:há )?\d+s/.test(second ?? ""), metaTick.stdout);
+    check("P3-372: meta ticks with the 1s interval", !!second && first !== second, metaTick.stdout);
+  }
   run("P2-112: calm status really visible on screen", ["see", "Conectando pela primeira vez"], 15_000);
   const dshot1440 = join(shotsDir, "P2-112-firstboot-degraded.png");
   const dshot390 = join(shotsDir, "P2-112-firstboot-degraded-390.png");
