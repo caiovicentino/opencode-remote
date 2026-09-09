@@ -852,6 +852,8 @@ body.dragging-files::after {
   gap: 1px;
 }
 .composer-menu-head {
+  flex-shrink: 0; /* EVAL4-R5: a flex column with max-height must never
+                     squeeze rows — squeezed buttons slice their text */
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -859,6 +861,8 @@ body.dragging-files::after {
   padding: 6px 8px 3px;
 }
 .composer-menu-item {
+  flex-shrink: 0; /* EVAL4-R5: keep every row at its natural height — the
+                     menu scrolls, it never compresses */
   background: transparent;
   border: none;
   color: var(--text);
@@ -880,6 +884,22 @@ body.dragging-files::after {
 }
 .composer-menu-item.selected {
   color: var(--accent);
+}
+/* EVAL4-R5 (phone): the selector chip sits near the right edge, so a
+   left-anchored menu runs off-screen; anchor right there and let long model
+   names wrap on real 44px rows instead of ellipsizing mid-word. */
+@media (max-width: 640px) {
+  .composer-menu {
+    left: auto;
+    right: 0;
+    max-width: calc(100vw - 24px);
+  }
+  .composer-menu-item {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    white-space: normal;
+  }
 }
 .composer-send {
   width: 32px;
