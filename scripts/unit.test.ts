@@ -1658,6 +1658,19 @@ const lastRehandshakeAt = clientSource.indexOf("lastRehandshakeAt = Date.now()")
 const rehandshakeCall = clientSource.indexOf("this.rehandshake()");
 check("the only rehandshake() call comes from the hint-verify timer callback", lastRehandshakeAt > -1 && rehandshakeCall > lastRehandshakeAt);
 
+// P3-374: ops caught mid-rehandshake keep a bounded grace timer instead of
+// sitting timer-less until the next confirm replays them — a handshake churning
+// on backoff must never hold a surface (the board) on eternal skeletons.
+const sendHelloAt = clientSource.indexOf("private async sendHello");
+const replayPendingDefAt = clientSource.indexOf("private replayPending()");
+const helloBlock = clientSource.slice(sendHelloAt, replayPendingDefAt);
+check(
+  "client.ts re-arms a bounded grace timer for pending ops on every hello",
+  helloBlock.includes("PENDING_REHANDSHAKE_GRACE_MS") &&
+    helloBlock.includes("this.pending.get(id) !== p") &&
+    clientSource.includes("const PENDING_REHANDSHAKE_GRACE_MS = 8_000"),
+);
+
 
 
 // --- mime map ---------------------------------------------------------------
