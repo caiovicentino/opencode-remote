@@ -139,6 +139,11 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
   return (
     <div className="screen pair-screen">
       <header>
+        {/* P3-373: same glyph language as the welcome wizard — the first
+            three screens of the journey share one brand header. */}
+        <div className="welcome-mark" aria-hidden="true">
+          ✻
+        </div>
         <h1 className="brand-wordmark">OpenCode Remote</h1>
       </header>
       {/* EVAL4-F1: the phone (no host section, scan-first) must not read the

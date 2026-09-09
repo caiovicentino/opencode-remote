@@ -1330,7 +1330,10 @@ button.desk-new:hover:not(:disabled) {
 .welcome header {
   text-align: center;
 }
-/* P3-340: product identity — same glyph language as the P2-123 home mark */
+/* P3-340: product identity — same glyph language as the P2-123 home mark.
+   P3-373: kept unscoped on purpose — the welcome wizard, the pairing screen
+   and the degraded journey all open their centered brand header with this
+   one shared mark, so the first three screens read as one ceremony. */
 .welcome-mark {
   display: inline-flex;
   color: var(--accent);

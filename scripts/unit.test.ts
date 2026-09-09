@@ -11144,6 +11144,32 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-373: the brand glyph leads every first-contact header ----------------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const markAt = css.indexOf(".welcome-mark {");
+  const markRule = css.slice(markAt, css.indexOf("}", markAt));
+  check(
+    "P3-373: .welcome-mark stays an unscoped shared class (accent glyph on tokens)",
+    markAt >= 0 && markRule.includes("color: var(--accent)"),
+  );
+  // Every first-contact screen opens its centered brand header with the same
+  // glyph before the wordmark — the wizard's mark language, nothing per-view.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+    const src = read(join("components", view));
+    const headerAt = src.indexOf("<header>");
+    const markAt = src.indexOf('className="welcome-mark"', headerAt);
+    const markEnd = src.indexOf("</div>", markAt);
+    const wordmarkAt = src.indexOf('className="brand-wordmark"', markAt);
+    check(
+      `P3-373: ${view} opens its brand header with the glyph (aria-hidden) before the wordmark`,
+      headerAt >= 0 && markAt > headerAt && wordmarkAt > markEnd &&
+        src.slice(markAt, markEnd).includes('aria-hidden="true"'),
+    );
+  }
+}
+
 // --- P3-334: the desktop pairing screen leads with the host section ----------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");

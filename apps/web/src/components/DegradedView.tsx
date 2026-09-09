@@ -57,6 +57,11 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   return (
     <div className="screen degraded" data-degraded-kind={busy ? "connecting" : kind}>
       <header>
+        {/* P3-373: same glyph language as the welcome wizard — the first
+            three screens of the journey share one brand header. */}
+        <div className="welcome-mark" aria-hidden="true">
+          ✻
+        </div>
         <h1 className="brand-wordmark">OpenCode Remote</h1>
       </header>
       <div className="degraded-status">

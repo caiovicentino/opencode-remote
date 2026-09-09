@@ -1496,7 +1496,9 @@ stays one click away. The gate sits on the same brand axis as the welcome
 wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered
 above the vertically centered card stack, so the post-wizard screen reads as
 the same intentional ceremony instead of a flush-left column floating in dead
-space at desktop sizes.
+space at desktop sizes. The accent glyph from the wizard's opening screen now
+sits above the wordmark here too (P3-373), so the whole first-contact journey
+shares one brand header.
 
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
@@ -1531,7 +1533,8 @@ three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and
 the phone-pairing invitation with an explicit "do this later". It opens with
 the product identity (P3-340) — the accent glyph above the serif "OpenCode
-Remote" wordmark, the same mark language as the P2-123 home greeting. The
+Remote" wordmark, the same mark language as the P2-123 home greeting, a mark
+the pairing and degraded first-contact screens now share (P3-373). The
 pairing step asks only once (P3-337): the card heading is the single title,
 and the inline section beneath it carries just the live QR/status. While the
 QR is being minted that section shows a shimmer skeleton instead of a bare
@@ -1581,7 +1584,7 @@ renders a styled error block with an inline helper showing the expected
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
 primary element on that screen. The brand header sits centered on the same
 axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
-as one product.
+as one product, accent glyph included (P3-373).
 
 **Live auto-connect state (P3-332)**: in local mode the pairing screen no
 longer sits idle while the copy promises the shell "connects by itself" — a

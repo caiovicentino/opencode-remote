@@ -353,7 +353,10 @@ remoto, zero confiança**.
   visto) explica que conversas, arquivos e artifacts sincronizam quando o daemon
   responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
   funcionando, dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
-  pareamento manual a um clique
+  pareamento manual a um clique. O header de marca fica centrado no mesmo eixo do
+  wizard de boas-vindas e agora abre com o glifo de destaque do wizard (P3-373),
+  junto do wordmark serifado — as três primeiras telas da jornada compartilham o
+  mesmo tratamento de marca
 - **Motor local travado vivo (P2-324)** — enquanto o shell observa um daemon que
   parou de responder e o reanima sozinho, o mesmo cartão calmo avisa o que está
   acontecendo ("reanimando automaticamente — nada para fazer por agora"; ou "reinício
