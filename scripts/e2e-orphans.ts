@@ -9,6 +9,12 @@
  *      one of the OCR_* test hatches). The symmetry rule is mandatory: every
  *      marker needs the second env factor — argv substring alone could match
  *      the operator's REAL dev app and must never be enough to kill.
+ *      Gate-infra side-fix (landed via the P3-372 pipeline, not the task's
+ *      scope) adds the THIRD factor, repo scoping (sameRepoScope): the
+ *      pipeline runs gate slots concurrently on one box, and a sibling slot's
+ *      live instances carry the same argv+env markers — without the scope the
+ *      pre-flight SIGKILLed another gate's electron mid-run. Only processes
+ *      of THIS checkout (absolute repo path in argv or PWD=repo root) die.
  *   2. A child server booted on a reserved-then-closed port can lose the race
  *      to a port thief: the thief answers the readiness probe and the test
  *      trusts it. bootOnEphemeralPort() only trusts a readiness answer while
@@ -21,8 +27,8 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join, sep } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 /** argv markers for the three e2e component kinds. Match = substring of the
  * full `ps` command line. Never kill on these alone (see envHasTempMarker). */
@@ -40,6 +46,34 @@ export interface OrphanCandidate {
   pid: number;
   command: string;
   marker: string;
+}
+
+/**
+ * Gate-infra side-fix (landed via the P3-372 pipeline, not the task's scope):
+ * the THIRD kill factor — repo scoping. The pipeline runs gate slots
+ * concurrently on one box (one workspace clone per slot), and every slot's
+ * pre-flight must never reap ANOTHER slot's live gate instances: those carry
+ * the same argv markers and OCR_* env hatches, so the box-wide match used to
+ * SIGKILL a sibling gate mid-run (the silent "Target page … has been closed"
+ * cascade). A hermetic process belongs to this checkout when its command line
+ * carries the absolute repo path (electron + helpers are launched with
+ * absolute paths) or its inherited PWD equals the repo root (the keeper and
+ * the tsx children are spawned with relative argv from the repo cwd). The
+ * argv match must end at a PATH BOUNDARY (`repoRoot + sep`): a bare
+ * `includes(repoRoot)` also matches a sibling checkout whose name merely
+ * extends the root string (`/x/tmp/repo-3-sibling` contains `/x/tmp/repo-3`),
+ * scoping another slot's live instance IN — the exact incident this factor
+ * exists to prevent. An unreadable PWD fails safe: the candidate is spared,
+ * never killed.
+ */
+export function sameRepoScope(
+  command: string,
+  env: Record<string, string | undefined>,
+  repoRoot: string,
+): boolean {
+  const rootPrefix = repoRoot.endsWith(sep) ? repoRoot : repoRoot + sep;
+  if (command.includes(rootPrefix)) return true;
+  return env.PWD === repoRoot;
 }
 
 /**
@@ -161,6 +195,9 @@ export async function killOrphans(opts: {
   envMarked: (env: Record<string, string | undefined>) => boolean;
   isAlive: (pid: number) => boolean;
   kill: (pid: number, signal: NodeJS.Signals) => void;
+  /** P3-372: third kill factor (same repo checkout) — injected by main();
+   * absent (unit tests, importers) the historical argv+env behavior holds. */
+  repoScope?: (candidate: OrphanCandidate, env: Record<string, string>) => boolean;
   graceMs?: number;
   onLog?: (line: string) => void;
 }): Promise<KillReport> {
@@ -177,6 +214,13 @@ export async function killOrphans(opts: {
       // The operator's REAL dev app shares the argv shape — never touch it.
       opts.onLog?.(`spare pid=${candidate.pid} (${candidate.marker}): argv matches but env has no hermetic marker`);
       report.spared.push({ candidate, reason: "no env marker" });
+      continue;
+    }
+    if (opts.repoScope && !opts.repoScope(candidate, env)) {
+      // Another slot's live gate shares the markers — reaping it would kill
+      // a running pipeline's instance (P3-372 incident).
+      opts.onLog?.(`spare pid=${candidate.pid} (${candidate.marker}): hermetic but belongs to another repo checkout`);
+      report.spared.push({ candidate, reason: "another repo checkout" });
       continue;
     }
     victims.push(candidate);
@@ -295,6 +339,11 @@ async function main(): Promise<void> {
     console.error(`e2e-orphans: ps failed (status ${ps.status}) — pre-flight skipped`);
     return;
   }
+  // P3-372: this script's own checkout (not process.cwd()) — the repo root the
+  // gate protects. Concurrent slots share the box; the scope below keeps the
+  // reaper from touching a sibling slot's live instances. The trailing slash
+  // from the URL resolution is stripped so the PWD equality holds.
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url)).replace(/\/+$/, "");
   const candidates = collectCandidates(ps.stdout);
   if (candidates.length === 0) {
     console.log("e2e-orphans: 0 candidates (no argv matches)");
@@ -304,6 +353,7 @@ async function main(): Promise<void> {
     candidates,
     readEnv: readProcessEnv,
     envMarked: envHasTempMarker,
+    repoScope: (candidate, env) => sameRepoScope(candidate.command, env, repoRoot),
     isAlive: (pid) => {
       try {
         process.kill(pid, 0);

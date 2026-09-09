@@ -19,6 +19,7 @@ import {
   killOrphans,
   readProcessEnv,
   settled,
+  sameRepoScope,
   type OrphanCandidate,
 } from "./e2e-orphans";
 
@@ -145,6 +146,82 @@ check(
       graceMs: 10,
     })
   ).killed[0].forced === true && survivorKills.join() === "7:SIGTERM,7:SIGKILL",
+);
+
+// --- sameRepoScope + the third kill factor (gate-infra, via the P3-372 pipeline) -----------------
+// Concurrent gate slots share the box: a sibling slot's hermetic instances
+// carry the same argv+env markers, so the scope must discriminate by checkout.
+const REPO = join(TMP, "repo-3");
+check("sameRepoScope: absolute repo path in argv → true", sameRepoScope(`/Users/x/${REPO}/apps/desktop --flag`, {}, REPO));
+check("sameRepoScope: PWD equal to the repo root → true", sameRepoScope("node tools/desktop.mjs", { PWD: REPO }, REPO));
+check(
+  "sameRepoScope: relative argv + foreign PWD → false (another slot)",
+  sameRepoScope("node tools/desktop.mjs", { PWD: join(TMP, "repo-4") }, REPO) === false,
+);
+check("sameRepoScope: no PWD at all → false (fail-safe: spare)", sameRepoScope("node tools/desktop.mjs", {}, REPO) === false);
+check(
+  "sameRepoScope: mere substring of a longer path does not match",
+  sameRepoScope("node tools/desktop.mjs", { PWD: join(TMP, "repo-3-sibling") }, REPO) === false,
+);
+check(
+  "sameRepoScope: argv path merely extending the root (repo-3-sibling) is another checkout → false",
+  sameRepoScope(join(TMP, "repo-3-sibling", "apps", "desktop"), {}, REPO) === false,
+);
+
+check(
+  "killOrphans: repoScope spares a hermetic sibling-slot instance (P3-372)",
+  (
+    await killOrphans({
+      candidates: [{ pid: 99, command: "node tools/desktop.mjs", marker: "desktop" }],
+      readEnv: () => ({ ...markedEnv, PWD: join(TMP, "repo-4") }),
+      envMarked: () => true,
+      isAlive: () => false,
+      kill: () => {},
+      repoScope: (c, env) => sameRepoScope(c.command, env, REPO),
+      graceMs: 10,
+    })
+  ).spared[0]?.reason === "another repo checkout",
+);
+check(
+  "killOrphans: repoScope spares a sibling whose argv path extends the root (argv branch)",
+  (
+    await killOrphans({
+      candidates: [{ pid: 103, command: join(TMP, "repo-3-sibling", "apps", "desktop"), marker: "desktop" }],
+      readEnv: () => ({ ...markedEnv }),
+      envMarked: () => true,
+      isAlive: () => false,
+      kill: () => {},
+      repoScope: (c, env) => sameRepoScope(c.command, env, REPO),
+      graceMs: 10,
+    })
+  ).spared[0]?.reason === "another repo checkout",
+);
+check(
+  "killOrphans: repoScope still kills the same-checkout instance",
+  (
+    await killOrphans({
+      candidates: [{ pid: 100, command: "node tools/desktop.mjs", marker: "desktop" }],
+      readEnv: () => ({ ...markedEnv, PWD: REPO }),
+      envMarked: () => true,
+      isAlive: () => false,
+      kill: () => {},
+      repoScope: (c, env) => sameRepoScope(c.command, env, REPO),
+      graceMs: 10,
+    })
+  ).killed.length === 1,
+);
+check(
+  "killOrphans: without repoScope the historical argv+env behavior holds",
+  (
+    await killOrphans({
+      candidates: [{ pid: 101, command: "node tools/desktop.mjs", marker: "desktop" }],
+      readEnv: () => ({ ...markedEnv, PWD: join(TMP, "repo-4") }),
+      envMarked: () => true,
+      isAlive: () => false,
+      kill: () => {},
+      graceMs: 10,
+    })
+  ).killed.length === 1,
 );
 
 // --- bootOnEphemeralPort -------------------------------------------------------

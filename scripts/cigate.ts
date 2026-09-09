@@ -48,6 +48,10 @@ export interface CiGateJob {
   name: string;
   /** true when the job carries an `if:` on the scope outputs — skipped passes. */
   scopeGated: boolean;
+  /** P3-348: advisory while a known flake is open — a failure here warns
+   * instead of gating the verdict, until this ISO date (inclusive). Rot-proof:
+   * an expired advisory falls back to the hard gate (fail-closed). */
+  advisoryUntil?: string;
 }
 
 /** The ci.yml graph as of P3-352 — the real-workflow assertion pins it. */
@@ -55,7 +59,11 @@ export const CI_GATE_SPEC: readonly CiGateJob[] = [
   { name: "verify", scopeGated: false },
   { name: "scope", scopeGated: false },
   { name: "desktop-package", scopeGated: true },
-  { name: "desktop-package-win", scopeGated: true },
+  // P3-348: the Windows smoke boot hangs the runner (~11min, then the job
+  // timeout) with no repo-side signal — 5+ merges blocked on it in one day
+  // while every repo-level check stayed green. Advisory until the flake is
+  // fixed; the job keeps running and its failure stays visible in the log.
+  { name: "desktop-package-win", scopeGated: true, advisoryUntil: "2026-10-01" },
   { name: "verify-win", scopeGated: true },
   { name: "relay-image", scopeGated: true },
 ];
@@ -73,7 +81,7 @@ export interface CiGateVerdict {
  * Decide the aggregate verdict from the raw `toJSON(needs)` value: an object
  * keyed by job name whose values carry `result` (and `outputs`, ignored).
  */
-export function ciGateVerdict(needs: unknown, spec: readonly CiGateJob[] = CI_GATE_SPEC): CiGateVerdict {
+export function ciGateVerdict(needs: unknown, spec: readonly CiGateJob[] = CI_GATE_SPEC, now = new Date()): CiGateVerdict {
   if (!needs || typeof needs !== "object" || Array.isArray(needs)) {
     return { verdict: "red", lines: ["ci-gate: RED — needs context unreadable (not an object)"] };
   }
@@ -91,6 +99,9 @@ export function ciGateVerdict(needs: unknown, spec: readonly CiGateJob[] = CI_GA
     const green = result === "success" || (job.scopeGated && result === "skipped");
     if (green) {
       lines.push(`ci-gate: ok ${job.name}=${result}${result === "skipped" ? " (scope-gated, skipped by the scope job)" : ""}`);
+    } else if (job.advisoryUntil && new Date(`${job.advisoryUntil}T23:59:59Z`) >= now) {
+      // P3-348: advisory failure — loud, but it does not gate the verdict.
+      lines.push(`ci-gate: WARN ${job.name}=${result} — advisory until ${job.advisoryUntil} (known flake, does not gate)`);
     } else {
       lines.push(`ci-gate: RED ${job.name}=${result}${!job.scopeGated && result === "skipped" ? " (unconditional job skipped — cancelled run or broken graph)" : ""}`);
       red = true;

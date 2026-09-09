@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
+import { retryLineParts } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
 
@@ -24,6 +25,45 @@ interface Props {
    * when both verdicts exist at once the exit notice wins — a daemon that
    * actually died is the stronger story than one being revived. */
   sidecarWedge?: SidecarWedgeNotice | null;
+}
+
+/** P3-372: the auto-retry line with live feedback — seconds tick since the
+ * current attempt started and the shell's attempt counter rides along (the
+ * counter the component docstring below promises; it used to appear only in
+ * the reconnecting title). Elapsed resets when the shell bumps its counter,
+ * so the number doubles as a quiet countdown to the next probe. P3-333's
+ * lesson applied verbatim: a restart resets the started-at ref AND bumps a
+ * state sitting in the interval effect's deps — zeroing the elapsed state
+ * alone would leave the already-cleared interval and the ticker would never
+ * re-arm. The live segment is aria-hidden: role="status" on the line would
+ * otherwise re-announce it to screen readers every second. */
+function RetryLine({ attempts }: { attempts?: number }) {
+  const t = useT();
+  const [elapsed, setElapsed] = useState(0);
+  const startedAtRef = useRef(Date.now());
+  const [tickEpoch, setTickEpoch] = useState(0);
+
+  useEffect(() => {
+    startedAtRef.current = Date.now();
+    setElapsed(0);
+    setTickEpoch((e) => e + 1);
+  }, [attempts]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setElapsed(Math.round((Date.now() - startedAtRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [tickEpoch]);
+
+  return (
+    <>
+      {t("degradedRetrying")}
+      <span className="degraded-retry-meta" aria-hidden="true">
+        {retryLineParts(elapsed, attempts, t)}
+      </span>
+    </>
+  );
 }
 
 /** P2-112: first-boot degraded journey (desktop shell). With the local daemon
@@ -97,7 +137,7 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
       )}
       {autoRetry && (
         <p className="degraded-retry" role="status">
-          {t("degradedRetrying")}
+          <RetryLine attempts={reconnectAttempts} />
         </p>
       )}
       <div className="degraded-actions">

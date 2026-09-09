@@ -2558,6 +2558,14 @@ button.desk-new:hover:not(:disabled) {
   color: var(--status-wait);
   text-align: left;
 }
+/* P3-372: live segment of the auto-retry line ("há 12s · tentativa 3") —
+   tabular numerals keep the per-second tick from jittering, slightly dimmed
+   under the base copy so the emphasis stays on the action, not the clock. */
+.degraded-retry-meta {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
 .degraded-actions {
   display: flex;
   justify-content: flex-start;
