@@ -1434,8 +1434,9 @@ try {
         // --- P2-108: mobile chrome demoted to an overline -----------------------
         // P3-358 round 2: build 5 replaced the tab bar with the slide-in
         // drawer — the Go menu path (menu-click) is the locale-independent way
-        // back to the chats board; the demoted chrome is now the shell title.
-        const chatsTab = run("P2-108: back to the Chats board (Go menu)", ["menu-click", "go-pane-chat"], 15_000, localEnv);
+        // back from Settings; the board itself is raised by the same drawer
+        // path a mobile user takes (hamburger → Conversas).
+        const chatsTab = run("P2-108: out of Settings (Go menu)", ["menu-click", "go-pane-chat"], 15_000, localEnv);
         if (chatsTab.ok) {
           // P3-358 round 3: with no open chat the Go-menu action lands on the
           // home (the living dashboard — P2-123 pins that), so the board's
