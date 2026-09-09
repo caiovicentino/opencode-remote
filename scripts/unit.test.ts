@@ -11437,6 +11437,34 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-371: the degraded CTA is a neutral solid; warn stays on the status ----
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const ruleFor = (sel: string): string => {
+    const at = css.indexOf(sel);
+    return at === -1 ? "" : css.slice(at, css.indexOf("}", at));
+  };
+  // ReconnectButton is rendered with ONLY the override class (the default
+  // .daemon-reconnect-btn pill does not apply), so these rules are the whole
+  // styling surface. Assert the COMBINATION (P3-339 lesson): a single
+  // declaration proves nothing when sibling rules could repaint it.
+  const base = ruleFor(".degraded-reconnect-btn {");
+  // Everything the button wears (base + hover + disabled) must stay out of
+  // the warn family — reverting to the old `--warn` ghost fails this.
+  const ctaAll = css.slice(css.indexOf(".degraded-reconnect-btn"), css.indexOf(".degraded-local"));
+  check(
+    "P3-371: the degraded reconnect CTA is a solid neutral (inverted fg/bg)",
+    base.includes("background: var(--fg)") && base.includes("color: var(--bg)") && !ctaAll.includes("--warn"),
+  );
+  // The split — not a de-saturated screen — is the fix: the status side keeps
+  // the warm chroma (pulsing dot + "Tentando sozinho…" retry label).
+  check(
+    "P3-371: the warn tone stays on the status side (dot + retry label)",
+    ruleFor(".degraded-retry").includes("color: var(--status-wait)") &&
+      ruleFor(".degraded-dot {").includes("background: var(--status-wait)"),
+  );
+}
+
 // --- P3-338: one labeled exit on the welcome's final step ---------------------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");

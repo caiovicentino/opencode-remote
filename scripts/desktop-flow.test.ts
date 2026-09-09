@@ -605,6 +605,15 @@ try {
   if (d2.ok) check("P2-112: 390 shot is a real PNG", pngSize(dshot390)[0] === 390);
   const reconnBtn = run("P2-112: reconnect button in the degraded view", ["ipc", "!!document.querySelector('.degraded-reconnect-btn')"], 15_000);
   if (reconnBtn.ok) check("P2-112: reconnect button present", /true/.test(reconnBtn.stdout));
+  // P3-371: presence alone proves nothing about the paint — the CTA must be
+  // the neutral solid (bg === --fg, color === --bg) and never the warn family,
+  // so the eye separates the state from the action on this calm screen.
+  const ctaPaint = run(
+    "P3-371: reconnect CTA wears the neutral solid",
+    ["ipc", "(() => { const b = document.querySelector('.degraded-reconnect-btn'); if (!b) return 'ABSENT'; const cs = getComputedStyle(b); const p = document.createElement('i'); p.style.color = 'var(--fg)'; document.body.appendChild(p); const fg = getComputedStyle(p).color; p.style.color = 'var(--bg)'; const bg = getComputedStyle(p).color; p.style.color = 'var(--warn)'; const warn = getComputedStyle(p).color; p.remove(); return 'bgIsFg:' + (cs.backgroundColor === fg) + '|colorIsBg:' + (cs.color === bg) + '|notWarn:' + (cs.backgroundColor !== warn && cs.color !== warn); })()"],
+    15_000,
+  );
+  if (ctaPaint.ok) check("P3-371: computed CTA paint is the neutral solid, not warn", /bgIsFg:true\|colorIsBg:true\|notWarn:true/.test(ctaPaint.stdout), ctaPaint.stdout);
 
   // "Reconnect now" must give real feedback: trying state (spinner, ≥2s) and
   // then a result toast. Hermetically the restart is an honest no-op (no
