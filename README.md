@@ -1522,6 +1522,16 @@ space at desktop sizes. The accent glyph from the wizard's opening screen now
 sits above the wordmark here too (P3-373), so the whole first-contact journey
 shares one brand header.
 
+**Live auto-retry line (P3-372)**: that calm card's "Retrying automatically…"
+line is no longer frozen static copy. It now carries the feedback the
+component always promised: seconds tick since the current attempt started
+("há 12s · tentativa 3" / "12s · attempt 3"), resetting on every new attempt
+so the number doubles as a quiet countdown to the next probe, and the shell's
+attempt counter rides along once it exists. The ticking segment appears from
+the first full second (no awkward "há 0s" first paint) and uses tabular
+numerals (no per-second jitter); it is hidden from screen readers so the
+status live region is not re-announced every second.
+
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
 for the whole session — poll gaps and degraded states no longer resurrect the
@@ -1607,7 +1617,10 @@ host-pairing action, so it must be discoverable at a glance. An invalid pairing 
 renders a styled error block with an inline helper showing the expected
 `opencode-remote://pair?…` format (announced to screen readers), and on the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
-primary element on that screen. The brand header sits centered on the same
+primary element on that screen. The paste field reads as the same care
+(P3-369): a compact two-row mono box with the resize grip removed, sized for
+the one `opencode-remote://` URI it receives instead of a raw four-row
+browser textarea. The brand header sits centered on the same
 axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
 as one product, accent glyph included (P3-373).
 

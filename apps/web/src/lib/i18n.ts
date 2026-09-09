@@ -288,6 +288,9 @@ export const dict = {
     firstContactHint:
       "Conversations, files and artifacts sync as soon as the local daemon answers. Nothing is lost — this screen keeps trying on its own.",
     degradedRetrying: "Retrying automatically…",
+    // P3-372: live segment of the auto-retry line — "12s · attempt 3".
+    retryElapsed: "{s}s",
+    retryAttempt: "attempt {n}",
     degradedDownHint:
       "Automatic retries stopped. Use Reconnect now — or just wait: the app reconnects by itself when the daemon is back.",
     degradedLocalTitle: "Available offline",
@@ -958,6 +961,9 @@ export const dict = {
     firstContactHint:
       "Conversas, arquivos e artifacts sincronizam assim que o daemon local responder. Nada se perde — esta tela segue tentando sozinha.",
     degradedRetrying: "Tentando sozinho…",
+    // P3-372: segmento vivo da linha de retry — "há 12s · tentativa 3".
+    retryElapsed: "há {s}s",
+    retryAttempt: "tentativa {n}",
     degradedDownHint:
       "As tentativas automáticas pararam. Use Reconectar agora — ou espere: quando o daemon voltar, o app reconecta sozinho.",
     degradedLocalTitle: "Disponível offline",

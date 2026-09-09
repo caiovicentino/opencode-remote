@@ -282,6 +282,13 @@ NÃO mostra janela (`showMainWindow` no-op + `paintWhenInitiallyHidden`, intera�
 órfãos electron/daemon/relay de runs anteriores — só processos com marker
 argv E env `ocr-*`/`OCR_*` de teste; argv sozinho nunca mata) e todos os
 servers e2e sobem em portas efêmeras com diagnóstico `lsof` no timeout.
+Infra do gate (side-fix que chegou pela fila do P3-372, fora do escopo da
+tarefa): o reaper ganhou um terceiro fator, escopo por checkout — os slots do
+pipeline rodam gates concorrentes na mesma máquina e o pre-flight de um slot
+estava SIGKILLando as instâncias herméticas do slot vizinho (mesmos markers
+argv+env; a morte silenciosa derrubava o gate com "Target page … has been
+closed"). Só morre processo DESTE repo: caminho absoluto do repo no argv ou
+`PWD` igual à raiz do repo; PWD ausente/estrangeiro poupa (fail-safe).
 P3-345: restart de daemon em e2e espera o `exit` REAL do processo velho via
 `waitForChildExit` (`scripts/daemonrestart.ts`, escalando para SIGKILL após
 grace) — nunca sleep fixo, senão dois daemons dividem a sala do relay e o

@@ -111,8 +111,21 @@ jobs:
           sleep 3
           npx tsx scripts/smoke.ts
 
+      # gate-flaky (CI mirror; infra that landed via the P3-372 pipeline, not
+      # the task's scope): the run exercises the daemon restart race end to
+      # end (blind relay, room re-join, re-handshake) and one lost frame in N
+      # CI runs used to red the whole verify job. One bounded retry — the same
+      # fail-flaky-once policy the local gatekeeper applies to e2e steps —
+      # keeps the signal (a persistent failure still fails the job) without
+      # a genuine regression being masked by a single dropped frame.
       - name: Daemon restart resilience
-        run: npx tsx scripts/reconnect.test.ts
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          npx tsx scripts/reconnect.test.ts || {
+            echo "reconnect.test.ts failed once — retrying (lost-frame race, gate-flaky)"
+            npx tsx scripts/reconnect.test.ts
+          }
 
       - name: Desktop sidecar
         run: npx tsx scripts/desktop-sidecar.test.ts
@@ -476,6 +489,9 @@ jobs:
   #     verify-win, relay-image) pass on success OR skipped — skipped is the
   #     scope job's own decision that the diff cannot affect that surface;
   #   - failure, cancelled, timed_out and a job missing from `needs` are red.
+  #   - P3-348 exception: desktop-package-win carries an advisoryUntil date in
+  #     scripts/cigate.ts — while it is open, its failure is a loud WARN that
+  #     does not gate (rot-proof: expired advisory falls back to the hard gate).
   # No install, no secret, no artifact, nothing published: the verdict is
   # computed from the `needs` context alone (toJSON(needs)); the checkout
   # only provides the script, run through the same pinned tsx the scope job

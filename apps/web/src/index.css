@@ -2408,6 +2408,28 @@ button.desk-new:hover:not(:disabled) {
   margin: 0;
   font-size: 0.78rem;
 }
+/* P3-369: the URI paste target — one quiet, compact field, not a raw browser
+   textarea. Mono type matches the opencode-remote:// URI it receives, the
+   resize grip is off (two rows hold the URI; nothing to grow into) and the
+   recessed canvas fill keeps it readable as an input on the raised card.
+   Same 8px radius as the other pairing controls. */
+.pair-code {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  resize: none;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+.pair-code:focus {
+  border-color: var(--border-strong);
+}
+.pair-code:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 /* ── P3-332: live auto-connect state (local mode) ───────────────────────────
    The intro promises the shell connects itself, so the local-mode screen shows
    the attempt in flight: pulsing status dot + phase copy + retry. Same flat
@@ -2567,6 +2589,14 @@ button.desk-new:hover:not(:disabled) {
   font-size: var(--font-size-sm);
   color: var(--status-wait);
   text-align: left;
+}
+/* P3-372: live segment of the auto-retry line ("há 12s · tentativa 3") —
+   tabular numerals keep the per-second tick from jittering, slightly dimmed
+   under the base copy so the emphasis stays on the action, not the clock. */
+.degraded-retry-meta {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 .degraded-actions {
   display: flex;

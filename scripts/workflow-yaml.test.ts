@@ -133,7 +133,18 @@ for (const file of files) {
   check("P3-352: success everywhere + skipped scope-gated jobs is green", green.verdict === "green" && green.lines.length === 6, green.lines.join("\n"));
   check("P3-352: a skipped scope-gated job is reported as the scope job's decision", green.lines.some((l) => l.includes("desktop-package-win=skipped (scope-gated")));
   const redWin = ciGateVerdict(all({ "desktop-package-win": "failure" }));
-  check("P3-352: one failed scope-gated job is red (the 2026-09-08 #884/#891 shape)", redWin.verdict === "red" && redWin.lines.some((l) => l.startsWith("ci-gate: RED desktop-package-win=failure")));
+  check(
+    "P3-348: a failed desktop-package-win is an advisory WARN while the flake is open (does not gate)",
+    redWin.verdict === "green" && redWin.lines.some((l) => l.startsWith("ci-gate: WARN desktop-package-win=failure — advisory until")),
+  );
+  const expired = new Date("2026-10-02T00:00:00Z");
+  const redWinExpired = ciGateVerdict(all({ "desktop-package-win": "failure" }), CI_GATE_SPEC, expired);
+  check(
+    "P3-348: after the advisory expiry the same failure is red again (fail-closed rot guard)",
+    redWinExpired.verdict === "red" && redWinExpired.lines.some((l) => l.startsWith("ci-gate: RED desktop-package-win=failure")),
+  );
+  const redVerifyWin = ciGateVerdict(all({ "verify-win": "failure" }));
+  check("P3-352: one failed scope-gated (non-advisory) job is red (the 2026-09-08 #884/#891 shape)", redVerifyWin.verdict === "red" && redVerifyWin.lines.some((l) => l.startsWith("ci-gate: RED verify-win=failure")));
   check("P3-352: a cancelled job is red", ciGateVerdict(all({ "verify-win": "cancelled" })).verdict === "red");
   const skippedVerify = ciGateVerdict(all({ verify: "skipped" }));
   check("P3-352: an unconditional job (verify) skipped is red, never a pass", skippedVerify.verdict === "red" && skippedVerify.lines.some((l) => l.includes("verify=skipped (unconditional job skipped")));

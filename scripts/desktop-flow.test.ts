@@ -2190,8 +2190,16 @@ try {
           detached: true,
         });
         const daemon2Log = join(daemonHome2, "daemon-stdio.log");
-        localDaemon2.stdout?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
-        localDaemon2.stderr?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
+        // P3-358 round 3: the pipes outlive the tmpdir — the gate's cleanup
+        // rmSync's the dir while a flush can still be pending, and an
+        // unhandled 'error' event kills the whole run (ENOENT crash observed
+        // at the P2-138 beat).
+        const daemon2WsA = createWriteStream(daemon2Log, { flags: "a" });
+        const daemon2WsB = createWriteStream(daemon2Log, { flags: "a" });
+        daemon2WsA.on("error", () => {});
+        daemon2WsB.on("error", () => {});
+        localDaemon2.stdout?.pipe(daemon2WsA);
+        localDaemon2.stderr?.pipe(daemon2WsB);
         localDaemon2.on("exit", (code, signal) => {
           // P3-374: strictly fail-open (P3-343 lesson) — the finally-block
           // rmSync can beat this handler when the daemon dies to SIGKILL, and
@@ -2372,28 +2380,18 @@ try {
                 // budget on a box under load.
                 30,
                 1_000,
-                // P3-374: a trailing app event can legitimately replace the
-                // visible surface right after chat-back — silent re-navigation
-                // (probe, never run: reclaims must not add failure noise).
-                // Re-enter the board through the drawer (build 5 mobile nav),
-                // adaptively across probes: a chat up means the drawer rows
-                // are not mounted yet, so each pass advances one step —
-                // open the drawer, then click the chats destination.
-                () =>
-                  probe(
-                    [
-                      "ipc",
-                      `(() => {
-                        if (document.querySelector('.sess-rows,.convo-rows')) return 'board';
-                        const dest = document.querySelector('.drawer-row[data-dest="chats"]');
-                        if (dest) { dest.click(); return 'dest'; }
-                        document.querySelector('.shell-menu')?.click();
-                        return 'menu';
-                      })()`,
-                    ],
-                    15_000,
-                    localEnv2,
-                  ),
+                // P3-374: a trailing app event (artifact auto-open on idle,
+                // P2-090) can legitimately replace the visible surface right
+                // after chat-back — reclaim the board on each re-probe, silent
+                // (probes, never run: reclaims must not add failure noise).
+                // The drawer path is the honest reclaim: it works from any
+                // surface — including the board itself showing only skeletons,
+                // where a container-presence check would wrongly stand down —
+                // while .chat-back only exists while a chat is up.
+                () => {
+                  probe(["click", ".shell-menu"], 15_000, localEnv2);
+                  probe(["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv2);
+                },
               );
               if (!rowProbe) {
                 // P3-374: fail-open diagnostic for the documented board-hang
