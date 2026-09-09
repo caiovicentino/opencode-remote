@@ -13,7 +13,7 @@
  *
  * Run: npx tsx scripts/desktop-flow.test.ts
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -1296,6 +1296,11 @@ try {
         // back to the chats board; the demoted chrome is now the shell title.
         const chatsTab = run("P2-108: back to the Chats board (Go menu)", ["menu-click", "go-pane-chat"], 15_000, localEnv);
         if (chatsTab.ok) {
+          // P3-358 round 3: with no open chat the Go-menu action lands on the
+          // home (the living dashboard — P2-123 pins that), so the board's
+          // demoted chrome needs the drawer path from there.
+          run("P2-108: open the drawer", ["click", ".shell-menu"], 15_000, localEnv);
+          run("P2-108: chats destination", ["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv);
           const overlineProbe = run(
             "P2-108: mobile overline chrome probe",
             ["ipc", "(() => { const h = document.querySelector('.shell-bar .shell-title'); return (!!h && parseFloat(getComputedStyle(h).fontSize) <= 14) + '|TITLE:' + (h ? getComputedStyle(h).fontSize + '@' + h.textContent : 'ABSENT') + '|HASH:' + location.hash; })()"],
@@ -2171,10 +2176,19 @@ try {
             OCR_METRICS_PORT: String(port2),
             RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
             OPENCODE_URL: fakeUrl,
-            OCR_LOG_LEVEL: "error",
+            // P3-358 debug: capture the daemon's full trace — the stuck-loading
+            // board flake (P1-089 row probe false ×12) needs the request trace.
+            OCR_LOG_LEVEL: "debug",
           },
-          stdio: ["ignore", "ignore", "ignore"],
+          stdio: ["ignore", "pipe", "pipe"],
           detached: true,
+        });
+        const daemon2Log = join(daemonHome2, "daemon-stdio.log");
+        localDaemon2.stdout?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
+        localDaemon2.stderr?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
+        localDaemon2.on("exit", (code, signal) => {
+          const ws = createWriteStream(daemon2Log, { flags: "a" });
+          ws.end(`\n=== daemon EXITED code=${code} signal=${signal} at ${new Date().toISOString()}\n`);
         });
         const killDaemon2 = (signal: NodeJS.Signals = "SIGTERM"): void => {
           if (!localDaemon2.pid) return;
@@ -2324,6 +2338,11 @@ try {
             const back = run("P1-089: back to the conversation list", ["click", ".chat-back"], 15_000, localEnv2);
             if (back.ok) {
               await waitProbe("P1-089: board rendered (chat unmounted)", "!!document.querySelector('.messages')", (v) => /false/.test(v), localEnv2);
+              // P3-358 round 3: build 5's mobile nav — back from the chat lands
+              // on the home (greeting + composer); the conversations board is a
+              // drawer destination now.
+              run("P1-089: open the drawer", ["click", ".shell-menu"], 15_000, localEnv2);
+              run("P1-089: chats destination", ["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv2);
               await waitProbe(
                 "P1-089: session row rendered on the board",
                 "document.body.innerText.includes('Reentry check') + '|STATE:' + (document.body.innerText.match(/(Nenhuma conversa|no sessions|Erro[^\\n]*)/i)?.[1] ?? 'rows-or-other') + '|TXT:' + (document.querySelector('.sess-rows,.convo-rows')?.parentElement?.innerText ?? '').slice(0, 180).replace(/\\n/g, '/')",
@@ -2332,6 +2351,11 @@ try {
                 // every sibling probe (startsWith("true") never held).
                 (v) => /true/.test(v),
                 localEnv2,
+                // P3-358 round 3: the list request rides the desktop WS — if
+                // the socket is mid-reconnect the client's backoff (capped at
+                // 15 s) plus the replayed-op round trip can exceed the old 12 s
+                // budget on a box under load.
+                30,
               );
               const row = run("P1-089: click the session row", ["click", '.convo-row[data-session="ses-reentry-check"]'], 15_000, localEnv2);
               if (row.ok) {
@@ -2776,13 +2800,17 @@ try {
             // phone-width evidence: the board's card action opens the same dialog
             run("P2-323: drop to phone width", ["shot", join(shotsDir, "P2-323-390-prep.png"), "390", "844"], 15_000, localEnv2);
             run("P2-323: leave the chat for the board", ["click", ".chat-back"], 15_000, localEnv2);
+            // P3-358 round 3: back at 390px lands on the home — the board is a
+            // drawer destination (build 5 mobile nav).
+            run("P2-323: open the drawer", ["click", ".shell-menu"], 15_000, localEnv2);
+            run("P2-323: chats destination", ["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv2);
             // P3-358 round 2: the desktop board card became the mobile list row
             // (build 5) — rename at 390 goes through the row's action sheet.
             const p323Card = run("P2-323: open the row action sheet", ["ipc", "document.querySelector('.convo-row[data-session=\"ses-reentry-check\"] .convo-row-menu')?.click() ?? 'MISS'"], 15_000, localEnv2);
             if (p323Card.ok) {
               const p323Sheet = await waitProbe(
                 "P2-323: action sheet rendered at 390",
-                "!!document.querySelector('.sheet') + '|ROWS:' + document.querySelectorAll('.convo-row').length + '|MENU:' + !!document.querySelector('.convo-row-menu')",
+                "!!document.querySelector('.sheet') + '|ROWS:' + document.querySelectorAll('.convo-row').length + '|MENU:' + !!document.querySelector('.convo-row-menu') + '|DBG:' + JSON.stringify(window.__ocrDebug?.() ?? null)",
                 (v) => /true/.test(v),
                 localEnv2,
               );

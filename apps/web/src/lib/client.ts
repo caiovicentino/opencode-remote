@@ -291,6 +291,8 @@ export class OcrClient {
   private from: string;
   private sendSeq = 0;
   private daemonLastSeq = 0;
+  private guardDrops = 0;
+  private sealFails = 0;
   private pending = new Map<
     string,
     {
@@ -335,6 +337,20 @@ export class OcrClient {
 
     this.attach(ws);
     if (typeof document !== "undefined") {
+      // P3-358 round 3: hermetic-flow autopsies need the transport's vitals at
+      // probe-failure time (board stuck on the loading skeleton while the
+      // daemon saw a healthy socket). Kept tiny and side-effect free.
+      (window as unknown as Record<string, unknown>).__ocrDebug = () => ({
+        status: this.status,
+        transport: this.transport,
+        pending: this.pending.size,
+        pendingPaths: [...this.pending.values()].map((p) => `${p.args.method} ${p.args.path}`),
+        sendSeq: this.sendSeq,
+        daemonLastSeq: this.daemonLastSeq,
+        lastSeenAgeMs: Date.now() - this.lastSeen,
+        guardDrops: this.guardDrops,
+        sealFails: this.sealFails,
+      });
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "visible" || this.status !== "paired") return;
         if (Date.now() - this.lastSeen > 30_000) this.forceReconnect();
@@ -747,6 +763,7 @@ export class OcrClient {
     p: {
       resolve: (r: OpResponse) => void;
       reject: (e: Error) => void;
+      timer: number;
       args: {
         method: OpRequestMethod;
         path: string;
@@ -764,6 +781,10 @@ export class OcrClient {
       body: p.args.body,
       query: p.args.query,
     };
+    // P3-358 round 3: the previous attempt's timeout must not fire under the
+    // replayed one — a stale timer deletes the fresh pending entry and rejects
+    // a promise the caller already considers in flight on the new socket.
+    window.clearTimeout(p.timer);
     const timer = window.setTimeout(() => {
       this.pending.delete(req.id);
       p.reject(new Error("request timeout"));
@@ -888,12 +909,18 @@ export class OcrClient {
 
     // replay guard: daemon frames must be fresh
     const seq = frame.seq ?? 0;
-    if (seq <= this.daemonLastSeq) return;
+    if (seq <= this.daemonLastSeq) {
+      this.guardDrops++;
+      return;
+    }
 
     const env = await openSealed<
       { type: "res"; res: OpResponse } | { type: "res-chunk"; chunk: ResChunk } | { type: "event"; event: EventEnvelope } | { type: "pong" }
     >(frame.payload, this.key, seqAad(frame.from, seq));
-    if (!env) return;
+    if (!env) {
+      this.sealFails++;
+      return;
+    }
     this.daemonLastSeq = seq;
     this.markAlive();
     if (env.type === "pong") return;
