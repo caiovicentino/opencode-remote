@@ -2184,10 +2184,19 @@ try {
           detached: true,
         });
         const daemon2Log = join(daemonHome2, "daemon-stdio.log");
-        localDaemon2.stdout?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
-        localDaemon2.stderr?.pipe(createWriteStream(daemon2Log, { flags: "a" }));
+        // P3-358 round 3: the pipes outlive the tmpdir — the gate's cleanup
+        // rmSync's the dir while a flush can still be pending, and an
+        // unhandled 'error' event kills the whole run (ENOENT crash observed
+        // at the P2-138 beat).
+        const daemon2WsA = createWriteStream(daemon2Log, { flags: "a" });
+        const daemon2WsB = createWriteStream(daemon2Log, { flags: "a" });
+        daemon2WsA.on("error", () => {});
+        daemon2WsB.on("error", () => {});
+        localDaemon2.stdout?.pipe(daemon2WsA);
+        localDaemon2.stderr?.pipe(daemon2WsB);
         localDaemon2.on("exit", (code, signal) => {
           const ws = createWriteStream(daemon2Log, { flags: "a" });
+          ws.on("error", () => {});
           ws.end(`\n=== daemon EXITED code=${code} signal=${signal} at ${new Date().toISOString()}\n`);
         });
         const killDaemon2 = (signal: NodeJS.Signals = "SIGTERM"): void => {
