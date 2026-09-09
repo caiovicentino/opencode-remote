@@ -7,6 +7,7 @@ import {
   IconChevronDown,
   IconFolder,
   IconLayers,
+  IconPin,
   IconPlus,
   IconRadar,
   IconSettings,
@@ -28,6 +29,8 @@ type Props = {
   onNavigate: (dest: DrawerDest) => void;
   recents: RecentRow[];
   onOpenSession: (id: string) => void;
+  /** P3-357b: toggle a recent row's pin (next state already computed). */
+  onPinToggle: (id: string, pinned: boolean) => void;
   onNewChat: () => void;
   creating: boolean;
   machineName: string;
@@ -49,6 +52,7 @@ export default function Drawer({
   onNavigate,
   recents,
   onOpenSession,
+  onPinToggle,
   onNewChat,
   creating,
   machineName,
@@ -117,7 +121,7 @@ export default function Drawer({
             <div className="drawer-section">{t("drawerRecents")}</div>
             <ul>
               {recents.map((r) => (
-                <li key={r.id}>
+                <li key={r.id} className={r.pinned ? "drawer-recent-item pinned" : "drawer-recent-item"}>
                   <button
                     className={`drawer-recent${r.active ? " active" : ""}`}
                     data-session={r.id}
@@ -129,7 +133,17 @@ export default function Drawer({
                     }}
                   >
                     <span className={`drawer-dot${r.unread ? " unread" : ""}`} aria-hidden />
+                    {r.pinned && <IconPin size={12} aria-hidden />}
                     <span className="drawer-recent-title">{r.title}</span>
+                  </button>
+                  <button
+                    className="drawer-recent-pin"
+                    aria-label={r.pinned ? t("unpin") : t("pin")}
+                    aria-pressed={r.pinned}
+                    title={r.pinned ? t("unpin") : t("pin")}
+                    onClick={() => onPinToggle(r.id, !r.pinned)}
+                  >
+                    <IconPin size={16} />
                   </button>
                 </li>
               ))}

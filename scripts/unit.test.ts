@@ -6385,11 +6385,16 @@ check(
     "P3-328: the hint renders on every gate surface (welcome, add machine, help, pairing/degraded)",
     (appSource.match(/\{gateHintNode\}/g) ?? []).length >= 4,
   );
-  // The toast must auto-clear and a stale trigger must never re-show after a
-  // remount (pair → disconnect → gate would otherwise toast with no action).
+  // The toast must auto-clear after 4s (P3-358 round 2: the window is derived
+  // from the bump's timestamp, so a gate phase-churn remount mid-window re-
+  // shows the remaining time instead of swallowing the bump — the failure the
+  // desktop-flow P3-328 probes caught on main).
   check(
-    "P3-328: gate hint auto-clears after 4s and never re-shows a stale trigger",
-    hintSource.includes("setTimeout(() => setVisible(false), 4_000)") && hintSource.includes("useRef(trigger)"),
+    "P3-328: gate hint auto-clears after 4s and survives gate remounts",
+    hintSource.includes("WINDOW_MS = 4_000") &&
+      hintSource.includes("now - at < WINDOW_MS") &&
+      appSource.includes("setGateHintAt(Date.now())") &&
+      appSource.includes("at={gateHintAt}"),
   );
   // r2 review: the hint must stack ABOVE the pairing overlay (z-index 200) —
   // behind it, a Go-menu press during the QR ceremony stays invisible even

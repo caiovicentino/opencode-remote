@@ -4,7 +4,7 @@ import { humanizeError } from "../lib/errors";
 import { timeAgo, sessionUpdatedTs } from "../lib/time";
 import { groupByRecency } from "../lib/recency";
 import { loadArchived, saveArchived, toggleArchived } from "../lib/archive";
-import { isPinned, loadPinned, savePinned, togglePinned } from "../lib/pins";
+import { isPinned, loadPinned, notifyPins, savePinned, togglePinned } from "../lib/pins";
 import type { EventEnvelope } from "@ocr/protocol";
 import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
 import { dropCachedSession } from "../lib/sessionCache";
@@ -205,6 +205,7 @@ export default function SessionsView({
     const next = togglePinned(pinnedIds, id, pinned);
     setPinnedIds(next);
     savePinned(next);
+    notifyPins(next);
   }
 
   function restoreConversation(id: string) {

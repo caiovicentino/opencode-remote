@@ -15,7 +15,8 @@ import {
 } from "./lib/client";
 import { REAUTH_ERROR, REJECTED_ERROR } from "./lib/reauth";
 import { classifyPairError, pairErrorCopy } from "./lib/pairerror";
-import { activeDrawerRow, hasUnreadDot, recentRows, type DrawerDest, type RecentRow } from "./lib/drawer";
+import { activeDrawerRow, hasUnreadDot, RECENTS_LIMIT, recentRows, type DrawerDest, type RecentRow } from "./lib/drawer";
+import { loadPinned, notifyPins, savePinned, subscribePins, togglePinned } from "./lib/pins";
 import Drawer from "./components/Drawer";
 import ReauthView from "./components/ReauthView";
 import ConnStrip from "./components/ConnStrip";
@@ -257,6 +258,11 @@ export default function App() {
   // explains why (the timer lives in the component; p2-220 keeps timers out
   // of App).
   const [gateHintTick, setGateHintTick] = useState(0);
+  const [gateHintAt, setGateHintAt] = useState(0);
+  // P3-357b: the drawer's Recents pin against the same device-local set —
+  // kept live through the pins pub-sub so a SessionsView toggle reorders here.
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => loadPinned());
+  useEffect(() => subscribePins(setPinnedIds), []);
   const appRootRef = useRef<HTMLDivElement>(null);
   const swipe = useRef({ x: 0, y: 0, dx: 0, active: false });
   const [unread, setUnread] = useState<Record<string, number>>(() => {
@@ -857,6 +863,7 @@ export default function App() {
       if (phase !== "paired") {
         // P3-328: no client yet — nothing to open, but never silent.
         setGateHintTick((n) => n + 1);
+        setGateHintAt(Date.now());
         return;
       }
       if (id === "newChat") {
@@ -1037,7 +1044,9 @@ export default function App() {
 
   // P3-328: dropped Go-menu action on ANY gate screen (welcome, add machine,
   // help, pairing/degraded) — the GateHint toast says why nothing opened.
-  const gateHintNode = <GateHint trigger={gateHintTick} />;
+  // P3-358 round 2: the bump carries its wall-clock timestamp so the 4s
+  // window survives a GateHint remount (gate phase churn used to swallow it).
+  const gateHintNode = <GateHint trigger={gateHintTick} at={gateHintAt} />;
 
 
 
@@ -1177,6 +1186,7 @@ export default function App() {
             // EVAL4-F1b: stored pairing + unreachable machine → 20 s countdown
             // into the same onRetry (auto-pair), never a dead pairing wall
             autoRetryMs={phase === "error" && !!loadState() && (errorKind === "timeout" || errorKind === "closed") ? 20_000 : undefined}
+            getCamAccess={desktopBridge()?.getCamAccess}
             onPair={(uri) => {
               const pairing = parsePairingUri(uri);
               if (!pairing) {
@@ -1330,7 +1340,7 @@ export default function App() {
     if (dest === "settings") setTick((t) => t + 1);
   }
   const drawerActive = activeDrawerRow(top, !!session);
-  const recents: RecentRow[] = recentRows(recentSessions, unread, session);
+  const recents: RecentRow[] = recentRows(recentSessions, unread, session, RECENTS_LIMIT, pinnedIds);
   const unreadDot = hasUnreadDot(unread, session);
   // The shell bar (hamburger + title) shows on the home and the chats list;
   // every other mobile surface keeps its own header with a back button.
@@ -1519,6 +1529,12 @@ export default function App() {
             onOpenSession={(id) => {
               setNavDir("fwd");
               dispatchView({ type: "openChat", sessionId: id });
+            }}
+            onPinToggle={(id, pinned) => {
+              const next = togglePinned(pinnedIds, id, pinned);
+              setPinnedIds(next);
+              savePinned(next);
+              notifyPins(next);
             }}
             onNewChat={() => void createSession()}
             creating={creating}

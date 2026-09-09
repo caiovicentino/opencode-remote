@@ -49,6 +49,14 @@ check("recents: limit is honored", recentRows(sessions, {}, null, 2).length === 
 check("recents: negative limit yields nothing", recentRows(sessions, {}, null, -1).length === 0);
 check("recents: empty input", recentRows([], {}, null).length === 0);
 
+// --- P3-357b: pins ride above the recency order --------------------------------
+const pinnedRows = recentRows(sessions, {}, null, RECENTS_LIMIT, ["old"]);
+check("recents: pinned session floats to the top even when oldest", pinnedRows[0].id === "old" && pinnedRows[0].pinned === true);
+check("recents: unpinned rows keep the recency order after the pinned block", pinnedRows.slice(1).map((r) => r.id).join(",") === "new,untitled,mid");
+check("recents: pinning does not count against the limit", recentRows(sessions, {}, null, 2, ["old"]).map((r) => r.id).join(",") === "old,new,untitled");
+check("recents: pinned flag is false for the rest", pinnedRows.slice(1).every((r) => r.pinned === false));
+check("recents: unknown pin ids are inert", recentRows(sessions, {}, null, 8, ["ghost"]).every((r) => r.id !== "ghost"));
+
 // --- unread dot -----------------------------------------------------------------
 check("dot: no unread → no dot", !hasUnreadDot({}, null));
 check("dot: unread only on the open session → no dot", !hasUnreadDot({ a: 3 }, "a"));

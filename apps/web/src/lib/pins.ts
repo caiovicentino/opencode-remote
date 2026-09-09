@@ -33,3 +33,23 @@ export function savePinned(ids: string[]): void {
 export function isPinned(ids: string[], id: string): boolean {
   return ids.includes(id);
 }
+
+// P3-357b: pins are read by more than one surface (SessionsView, the drawer's
+// Recents). localStorage alone leaves those views stale after a toggle, so a
+// toggle notifies its subscribers — the same shape as the drafts/sessionCache
+// precedents, minus the Map.
+type PinsListener = (ids: string[]) => void;
+
+const pinsListeners: PinsListener[] = [];
+
+export function subscribePins(fn: PinsListener): () => void {
+  pinsListeners.push(fn);
+  return () => {
+    const i = pinsListeners.indexOf(fn);
+    if (i >= 0) pinsListeners.splice(i, 1);
+  };
+}
+
+export function notifyPins(ids: string[]): void {
+  for (const l of [...pinsListeners]) l(ids);
+}
