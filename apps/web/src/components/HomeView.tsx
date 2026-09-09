@@ -3,7 +3,7 @@ import type { OpResponse } from "@ocr/protocol";
 import { useT, getLang } from "../lib/i18n";
 import { markSendOnOpen } from "../lib/drafts";
 import { greetingKey, homeIdeas, timeGreetingKey, type HomeIdeaIcon } from "../lib/home";
-import { composerSelectorLabel } from "../lib/composer";
+import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
 import { useModelSelector } from "../lib/models";
 import { transcribeBlob, useSttStatus } from "../lib/transcribe";
 import { useModelStatus } from "../lib/modelstatus";
@@ -51,6 +51,19 @@ export default function HomeView({ machineName, request, voice, creating, onStar
   const t = useT();
   const mobile = variant === "mobile";
   const [input, setInput] = useState("");
+
+  // P3-086 auto-grow, home twin of the ChatView effect: the home composer
+  // grows with its content up to ~6 lines, then scrolls internally. Without
+  // it the box stays one line tall and the user cannot reread long dictation.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    const cs = getComputedStyle(el);
+    const lh = parseFloat(cs.lineHeight) || 20;
+    const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    el.style.height = "auto";
+    el.style.height = `${clampComposerHeight(el.scrollHeight, lh, padY)}px`;
+  }, [input]);
   const [error, setError] = useState(""); // dict copy only — never raw bodies
   const { models, model, pickModel } = useModelSelector(request);
   const [modelMenu, setModelMenu] = useState(false);
