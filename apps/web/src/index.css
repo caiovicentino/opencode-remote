@@ -1706,6 +1706,15 @@ button.desk-new:hover:not(:disabled) {
   color: var(--fg);
   background: var(--border);
 }
+.row-actions button.row-pin.active {
+  color: var(--accent);
+}
+
+/* P3-357: pinned group head rides the same .sess-group-head chrome; the
+   data-group hook only colors today/yesterday/earlier, keep pinned neutral. */
+.sess-group-head[data-group="pinned"] {
+  color: var(--accent);
+}
 
 /* P2-108: badge filters live in a menu attached to the search — one quiet
    affordance instead of a chip row above the list. */

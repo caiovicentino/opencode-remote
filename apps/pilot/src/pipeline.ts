@@ -2130,6 +2130,22 @@ function ghTail(output: string): string {
   return output.trim().slice(-PR_MERGE_TAIL);
 }
 
+/** P3-358: single-quote for the shell, the metapush.ts precedent. The previous
+ * JSON.stringify(args.x) interpolation was NOT shell quoting: a `$(`, backtick
+ * or quote inside a builder-authored title/body broke the gh invocation (P3-354:
+ * word-split fragments executed, "head: is: No such file or directory") and
+ * GitHub's GraphQL rejects titles longer than 256 chars outright. */
+export function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** GraphQL "Title is too long (maximum: 256 characters)" — keep a margin. */
+export const PR_TITLE_MAX = 200;
+
+export function prTitle(title: string): string {
+  return title.length <= PR_TITLE_MAX ? title : `${title.slice(0, PR_TITLE_MAX)}…`;
+}
+
 /**
  * P2-134: classify a `gh pr view` snapshot as blocked by a merge conflict with
  * main. Pure — the poll loop stays exactly as before unless the snapshot says
@@ -2467,7 +2483,7 @@ export async function mergePrForTask(
   args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean },
 ): Promise<PrMergeOutcome> {
   const create = io.exec(
-    `gh pr create --head ${args.branch} --title ${JSON.stringify(args.title)} --body ${JSON.stringify(args.body)}`,
+    `gh pr create --head ${args.branch} --title ${shq(prTitle(args.title))} --body ${shq(args.body)}`,
   );
   // Operator-merge races and transient gh/API failures can leave the PR already
   // open from a previous cycle — resolve its NUMBER instead of failing forever
