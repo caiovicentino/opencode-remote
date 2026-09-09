@@ -20,6 +20,10 @@ import {
   type OpResponse,
 } from "@ocr/protocol";
 import { isRetriableOp, waitForChildExit } from "./daemonrestart";
+// P3-373 r2: the P3-345 exit-wait call sites reference stopAndAwaitExit, but
+// the helper lives in ./procexit and was never imported here — tsx only
+// surfaced the ReferenceError at run time (the file sits outside tsc's
+// project), so the gate's reconnect step crashed before its first assertion.
 import { stopAndAwaitExit } from "./procexit";
 
 // P2-055 (reviewer finding): the hardcoded port collided with whatever process

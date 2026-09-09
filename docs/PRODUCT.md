@@ -37,6 +37,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo
   display da escala de tokens (`--font-size-xl`) — em vez de estilo inline a
   1rem (tamanho de corpo)
+- Glifo da marca em todas as telas de primeiro contato (P3-373): o glifo de
+  destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
+  boas-vindas, do pareamento e da jornada degradada — as três primeiras telas
+  da jornada compartilham a mesma linguagem de marca, em vez de o glifo
+  aparecer só no wizard
 - Painel de artifact com animação de entrada/saída e backdrop
 - Gauge de contexto e recap (P1-079) no rodapé do chat, discretos
 - Rotinas agendadas visíveis ("Programado"), com histórico de execução por

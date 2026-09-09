@@ -9755,10 +9755,17 @@ check(
     "p1-046 back() to chat keeps the session",
     topSlot(backToChat) === "chat" && backToChat.chatSession === "s1",
   );
-  const backHome = viewReducer(backToChat, { type: "back" });
+  const backFromChat = viewReducer(backToChat, { type: "back" });
   check(
-    "p1-046 back() from chat closes the conversation and lands on the board (P3-374)",
-    backHome.chatSession === null && topSlot(backHome) === "chats" && isPaneOpen(backHome) === false,
+    "p1-046 back() from chat closes the conversation and lands on the sessions board",
+    backFromChat.chatSession === null &&
+      backFromChat.stack.length === 1 &&
+      topSlot(backFromChat) === "chats" &&
+      isPaneOpen(backFromChat) === false,
+  );
+  check(
+    "p1-046 back() from the board reaches the home (empty stack)",
+    viewReducer(backFromChat, { type: "back" }).stack.length === 0,
   );
   // P3-374: a deep-linked chat replaces the history — back must still reach the
   // board instead of dead-ending on the home (the desktop-flow P1-089 repro).
@@ -11195,6 +11202,32 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     check(
       `P3-336: ${view} brand h1 uses .brand-wordmark (no inline fontSize)`,
       h1s.length > 0 && h1s.every((h) => h.includes('className="brand-wordmark"') && !h.includes("style=")),
+    );
+  }
+}
+
+// --- P3-373: the brand glyph leads every first-contact header ----------------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const markAt = css.indexOf(".welcome-mark {");
+  const markRule = css.slice(markAt, css.indexOf("}", markAt));
+  check(
+    "P3-373: .welcome-mark stays an unscoped shared class (accent glyph on tokens)",
+    markAt >= 0 && markRule.includes("color: var(--accent)"),
+  );
+  // Every first-contact screen opens its centered brand header with the same
+  // glyph before the wordmark — the wizard's mark language, nothing per-view.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+    const src = read(join("components", view));
+    const headerAt = src.indexOf("<header>");
+    const markAt = src.indexOf('className="welcome-mark"', headerAt);
+    const markEnd = src.indexOf("</div>", markAt);
+    const wordmarkAt = src.indexOf('className="brand-wordmark"', markAt);
+    check(
+      `P3-373: ${view} opens its brand header with the glyph (aria-hidden) before the wordmark`,
+      headerAt >= 0 && markAt > headerAt && wordmarkAt > markEnd &&
+        src.slice(markAt, markEnd).includes('aria-hidden="true"'),
     );
   }
 }
