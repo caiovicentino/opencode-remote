@@ -161,30 +161,34 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
   return (
     <div className="welcome" data-welcome-step={step}>
       <div className="welcome-col">
+        {/* P3-374: progress reads as part of the brand block — the step
+            indicator sits centered under the wordmark instead of one end of a
+            sparse space-between row detached from the card it governs. */}
         <header>
           <div className="welcome-mark" aria-hidden="true">
             ✻
           </div>
           <h1 className="brand-wordmark">OpenCode Remote</h1>
+          <div className="welcome-meta">
+            <span className="welcome-step-of">{t("welcomeStepOf", { n: step })}</span>
+          </div>
         </header>
-        <div className="welcome-meta">
-          <span className="welcome-step-of">{t("welcomeStepOf", { n: step })}</span>
-          {/* P3-338: one labeled exit per screen — the final step already ends
-              with the in-context "do this later"/"done" button, so the global
-              skip would be a second, differently-labeled way out. */}
-          {step < 3 && (
-            <button className="welcome-skip" onClick={onDone}>
-              {t("welcomeSkip")}
-            </button>
-          )}
-        </div>
         {step === 1 && (
           <div className="welcome-step welcome-intro">
             <h2 className="welcome-step-title">{t("welcomeStep1Title")}</h2>
             <p className="muted">{t("welcomeStep1Body")}</p>
-            <button className="primary welcome-next" onClick={() => setStep(2)}>
-              {t("welcomeStart")}
-            </button>
+            {/* P3-374: escape and progress read as one unit — the quiet skip
+                sits in the card's action row next to the primary action
+                (P3-338: the final step keeps "do this later" as its single,
+                in-context exit, so no global skip renders there). */}
+            <div className="welcome-actions">
+              <button className="primary welcome-next" onClick={() => setStep(2)}>
+                {t("welcomeStart")}
+              </button>
+              <button className="welcome-skip" onClick={onDone}>
+                {t("welcomeSkip")}
+              </button>
+            </div>
           </div>
         )}
         {step === 2 && (
@@ -211,9 +215,14 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
               </div>
             )}
             <ReconnectButton className="welcome-retry" reconnect={reconnect} />
-            <button className="primary welcome-next" onClick={() => setStep(3)}>
-              {t("welcomeNext")}
-            </button>
+            <div className="welcome-actions">
+              <button className="primary welcome-next" onClick={() => setStep(3)}>
+                {t("welcomeNext")}
+              </button>
+              <button className="welcome-skip" onClick={onDone}>
+                {t("welcomeSkip")}
+              </button>
+            </div>
           </div>
         )}
         {step === 3 && (
