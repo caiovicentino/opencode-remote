@@ -1612,7 +1612,10 @@ host-pairing action, so it must be discoverable at a glance. An invalid pairing 
 renders a styled error block with an inline helper showing the expected
 `opencode-remote://pair?…` format (announced to screen readers), and on the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
-primary element on that screen. The brand header sits centered on the same
+primary element on that screen. The paste field reads as the same care
+(P3-369): a compact two-row mono box with the resize grip removed, sized for
+the one `opencode-remote://` URI it receives instead of a raw four-row
+browser textarea. The brand header sits centered on the same
 axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
 as one product, accent glyph included (P3-373).
 
