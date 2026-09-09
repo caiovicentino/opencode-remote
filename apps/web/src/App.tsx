@@ -1047,7 +1047,32 @@ export default function App() {
   // help, pairing/degraded) — the GateHint toast says why nothing opened.
   // P3-358 round 2: the bump carries its wall-clock timestamp so the 4s
   // window survives a GateHint remount (gate phase churn used to swallow it).
-  const gateHintNode = <GateHint trigger={gateHintTick} at={gateHintAt} />;
+  // P3-367: the toast carries its own labeled exit into the manual pairing
+  // ceremony — per surface, the same jump its screen's own manual escape
+  // makes. On "add machine" the paste/scan ceremony IS the screen, so no
+  // action (a button that navigates nowhere is the dead-end class again).
+  const gateHintNode = (
+    <GateHint
+      trigger={gateHintTick}
+      at={gateHintAt}
+      onDismiss={() => setGateHintAt(0)}
+      onPairNow={
+        showWelcome
+          ? () => {
+              finishWelcome();
+              setPairManual(true);
+            }
+          : helpOpen
+            ? () => {
+                setHelpOpen(false);
+                setPairManual(true);
+              }
+            : addingMachine
+              ? undefined
+              : () => setPairManual(true)
+      }
+    />
+  );
 
 
 

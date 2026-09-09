@@ -6438,7 +6438,31 @@ check(
     "P3-328 r2: .pair-gate-hint z-index stacks above the pairing overlay",
     Number.isFinite(hintZ) && Number.isFinite(overlayZ) && hintZ > overlayZ,
   );
-}
+
+  // P3-367: the toast is not a dead end — it carries its own labeled exit
+  // into the manual pairing ceremony (P3-329 lesson: the escape lives on the
+  // stuck screen itself). The App wiring must route every gate surface to
+  // setPairManual(true) (welcome goes through finishWelcome, help closes the
+  // settings detour first; "add machine" IS the ceremony, so no action).
+  const pairNowAt = appSource.indexOf("onPairNow={");
+  const pairNowSlice = pairNowAt > -1 ? appSource.slice(pairNowAt, pairNowAt + 420) : "";
+  check(
+    "P3-367: gate toast carries an inline pair-now action into the manual ceremony",
+    hintSource.includes("onPairNow?: () => void") &&
+      hintSource.includes('className="pair-gate-hint-action"') &&
+      hintSource.includes("onPairNow()") &&
+      hintSource.includes("onDismiss?.()") &&
+      hintSource.includes('t("pairFirstAction")') &&
+      pairNowSlice.includes("setPairManual(true)") &&
+      pairNowSlice.includes("finishWelcome()") &&
+      pairNowSlice.includes("setHelpOpen(false)") &&
+      appSource.includes("onDismiss={() => setGateHintAt(0)}"),
+  );
+  check(
+    "P3-367: the toast action is styled as a quiet accent text button",
+    cssSource.includes(".pair-gate-hint-action") &&
+      cssSource.includes(".pair-gate-hint-action:hover"),
+  );}
 
 
 // --- P2-276: shell language (apps/desktop/src/shelllang.ts) ---------------------
@@ -10191,6 +10215,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "camDenied", "camNotFound", "camBusy", "camInterrupted", "camUnavailable",
     "homeGreeting", "homeGreetingAnon", "homePlaceholder", "homeIdeasTitle", "homeStartError",
     "pairFirstHint",
+    "pairFirstAction",
   ];
   const resolved = (lang: "en" | "pt") => connKeys.map((k) => translate(lang, k));
   check(
@@ -10205,15 +10230,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       translate("pt", "scanPairingTitle").includes("Escanear") &&
       translate("pt", "scanPointCamera").includes("câmera") &&
       translate("pt", "homePlaceholder").includes("Como posso ajudar") &&
-      translate("pt", "pairFirstHint").includes("Pareie com sua máquina"),
+      translate("pt", "pairFirstHint").includes("Pareie com sua máquina") &&
+      translate("pt", "pairFirstAction") === "Parear agora",
   );
   // en: same screen, English copy — no pt leakage.
   check(
     "i18n conn en: banner, recovery action and scanner copy are English",
     translate("en", "daemonDown").includes("Local daemon is down") &&
-      translate("en", "reconnectNow") === "Reconnect now" &&
-      translate("en", "scanPairingTitle") === "Scan pairing code" &&
-      translate("en", "homePlaceholder") === "How can I help you today?",
+    translate("en", "reconnectNow") === "Reconnect now" &&
+    translate("en", "scanPairingTitle") === "Scan pairing code" &&
+    translate("en", "homePlaceholder") === "How can I help you today?" &&
+    translate("en", "pairFirstAction") === "Pair now",
   );
   // homeGreeting interpolates the machine name the same way in both locales.
   check(

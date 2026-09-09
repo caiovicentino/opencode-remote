@@ -16,7 +16,24 @@ import { useT } from "../lib/i18n";
  * mounting within 4s of the last bump shows the remaining window. */
 const WINDOW_MS = 4_000;
 
-export default function GateHint({ trigger, at }: { trigger: number; at: number }) {
+/** P3-367: when App passes onPairNow, the toast carries its own labeled exit
+ * (P3-329 lesson: the manual escape lives on the stuck screen itself) — an
+ * inline "Parear agora" that jumps straight into the manual pairing
+ * ceremony instead of leaving the user to find the small link above.
+ * onDismiss zeroes the App-owned timestamp: closing must survive the
+ * branch-switch remount (a local flag would be re-seeded and the toast
+ * would resurrect over the ceremony it just left). */
+export default function GateHint({
+  trigger,
+  at,
+  onPairNow,
+  onDismiss,
+}: {
+  trigger: number;
+  at: number;
+  onPairNow?: () => void;
+  onDismiss?: () => void;
+}) {
   const t = useT();
   // `now` freezes while the window is open; the timeout only fires the
   // re-render that closes it. Bumps recompute it from the wall clock.
@@ -34,6 +51,19 @@ export default function GateHint({ trigger, at }: { trigger: number; at: number 
   return (
     <div className="ocr-toast pair-gate-hint" role="status">
       {t("pairFirstHint")}
+      {onPairNow && (
+        <button
+          type="button"
+          className="pair-gate-hint-action"
+          onClick={() => {
+            // close the toast in App state (remount-proof), then route
+            onDismiss?.();
+            onPairNow();
+          }}
+        >
+          {t("pairFirstAction")}
+        </button>
+      )}
     </div>
   );
 }

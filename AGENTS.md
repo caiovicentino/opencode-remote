@@ -273,6 +273,10 @@ P3-328 adicionou o beat do aviso no portão de pareamento: o clique real num
 item de painel do menu Go (go-pane-artifacts) com o app não pareado agora
 mostra o toast "Pareie com sua máquina primeiro…" (`.pair-gate-hint`, acima
 do `.pair-overlay`) no próprio portão, em vez de a ação sumir sem feedback;
+P3-367 transformou o toast em caminho de saída: um "Parear agora" inline
+(`.pair-gate-hint-action`) pula direto pro ceremony manual de pareamento
+(`setPairManual(true)`) — no "adicionar máquina" o toast segue sem ação, pois
+o ceremony já está na tela;
 use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
