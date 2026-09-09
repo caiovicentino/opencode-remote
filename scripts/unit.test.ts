@@ -1658,6 +1658,20 @@ const lastRehandshakeAt = clientSource.indexOf("lastRehandshakeAt = Date.now()")
 const rehandshakeCall = clientSource.indexOf("this.rehandshake()");
 check("the only rehandshake() call comes from the hint-verify timer callback", lastRehandshakeAt > -1 && rehandshakeCall > lastRehandshakeAt);
 
+// P3-374: ops caught mid-rehandshake keep a bounded grace timer instead of
+// sitting timer-less until the next confirm replays them — a handshake churning
+// on backoff must never hold a surface (the board) on eternal skeletons.
+const sendHelloAt = clientSource.indexOf("private async sendHello");
+const replayPendingDefAt = clientSource.indexOf("private replayPending()");
+const helloBlock = clientSource.slice(sendHelloAt, replayPendingDefAt);
+check(
+  "client.ts re-arms a bounded grace timer for pending ops on every hello",
+  helloBlock.includes("PENDING_REHANDSHAKE_GRACE_MS") &&
+    helloBlock.includes("if (p.graced) continue;") &&
+    helloBlock.includes("this.pending.get(id) !== p") &&
+    clientSource.includes("const PENDING_REHANDSHAKE_GRACE_MS = 8_000"),
+);
+
 
 
 // --- mime map ---------------------------------------------------------------
@@ -9771,6 +9785,14 @@ check(
     "p1-046 back() from the board reaches the home (empty stack)",
     viewReducer(backFromChat, { type: "back" }).stack.length === 0,
   );
+  // P3-374: a deep-linked chat replaces the history — back must still reach the
+  // board instead of dead-ending on the home (the desktop-flow P1-089 repro).
+  const deepLinked = viewReducer(base, { type: "openChat", sessionId: "dl" });
+  const backToBoard = viewReducer(deepLinked, { type: "back" });
+  check(
+    "p3-374 back() from a deep-linked chat lands on the sessions board",
+    backToBoard.chatSession === null && topSlot(backToBoard) === "chats",
+  );
   check(
     "p1-046 topSlot falls back to chat on the home screen",
     topSlot(base) === "chat" && activeSlots(base).has("chat"),
@@ -11134,15 +11156,45 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 // --- P3-338: one labeled exit on the welcome's final step ---------------------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
-  const metaAt = src.indexOf('className="welcome-meta"');
-  const guardAt = src.indexOf("{step < 3 && (", metaAt);
-  const skipAt = src.indexOf('className="welcome-skip"', metaAt);
-  const laterAt = src.indexOf('className="welcome-later"');
-  // The global skip renders only while the step card has no in-context exit;
-  // the pairing step keeps "do this later" as the single way out.
+  // P3-374: the skip lives inside the step-1/2 cards' action rows (they only
+  // mount for steps 1–2); the pairing card — the last step block in the file —
+  // must carry the in-context "do this later" as the single way out, with no
+  // global skip rendering on the final step.
+  const pairAt = src.indexOf("step === 3 && (");
+  const laterAt = src.indexOf('className="welcome-later"', pairAt);
   check(
     "P3-338: the global welcome skip is hidden on the final step (welcome-later is the one exit)",
-    metaAt >= 0 && guardAt >= 0 && skipAt > guardAt && laterAt > 0,
+    pairAt > 0 && laterAt > 0 && src.indexOf("welcome-skip", pairAt) === -1,
+  );
+}
+
+// --- P3-374 round 2: demoted mobile chrome + board listing watchdog -----------
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // P2-108's contract, as probed by the desktop-flow battery: at phone widths
+  // the shell title renders as the demoted overline (≤14px), not the full
+  // 0.95rem title. Scoped to the ≤1023px block — the desktop rail has no
+  // .shell-title.
+  const mobile = css.indexOf("@media (max-width: 1023px)");
+  const titleAt = css.indexOf(".shell-bar .shell-title {", mobile);
+  const rule = css.slice(titleAt, css.indexOf("}", titleAt));
+  check(
+    "P3-374: the mobile shell title is the demoted P2-108 overline (xs token, scoped ≤1023px)",
+    mobile > 0 &&
+      titleAt > mobile &&
+      rule.includes("font-size: var(--font-size-xs)") &&
+      rule.includes("text-transform: uppercase") &&
+      // two classes on purpose: the base .shell-title rule sits later in the
+      // file, so an equal-specificity override would lose the cascade
+      css.indexOf(".shell-title {", titleAt + 1) > titleAt,
+  );
+  const sessions = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SessionsView.tsx"), "utf8");
+  // The listing op is bounded and retried once silently — a dropped op may
+  // cost seconds, never the full 60s client watchdog of skeletons.
+  check(
+    "P3-374: the board listing is a bounded op with one silent retry",
+    sessions.includes("await list(4_000)") &&
+      !/request\("GET", "\/session"\);/.test(sessions),
   );
 }
 

@@ -207,7 +207,18 @@ remoto, zero confiança**.
 - **Painel ao vivo** — estado de cada sessão: trabalhando, esperando aprovação,
   fez pergunta, pronto, erro; cards mostram o tempo relativo da última
   atividade (`5m`, `2h`, `3d`); sessões ficam ordenadas da mais recente
-  para a mais antiga
+  para a mais antiga. A listagem é uma operação com limite: pedido dropado
+  tem um retry silencioso (poucos segundos) antes do card calmo de erro com
+  botão "Tentar de novo" — sem skeleton de um minuto
+- **Chrome móvel rebaixado (P2-108)** — abaixo do breakpoint desktop, o título
+  do shell vira uma overline maiúscula e discreta (o "Conversas" entre o
+  drawer e o botão de nova conversa), no mesmo padrão do indicador de passo
+  do wizard, em vez de título de página em tamanho cheio
+- **Voltar cai no painel (P3-374)** — no layout de telefone, sair de uma
+  conversa pelo botão ← sempre mostra a lista de conversas (mesmo quando a
+  conversa foi aberta por deep link, que substitui o histórico de navegação);
+  a home segue como superfície padrão do app, e mais um ← na lista volta pra
+  ela
 - **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
   filtram o painel pelas conversas com ou sem badge de não-lidas
 - **Troca rápida de sessão (P1-064)** — abrir uma conversa busca só as últimas
@@ -364,9 +375,11 @@ remoto, zero confiança**.
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
-  parear um celular com a opção explícita de "fazer isso depois". Os dois primeiros
-  passos têm o atalho global "Pular" na linha de metadados; o passo final tem uma
-  única saída, no próprio cartão — "Fazer isso depois" (ou "Pronto" depois de parear)
+  parear um celular com a opção explícita de "fazer isso depois". O indicador de
+  passo fica centralizado sob a marca, e os dois primeiros passos têm o "Pular"
+  discreto dentro da linha de ações do cartão, ao lado da ação principal — fuga e
+  progresso leem-se como uma coisa só (P3-374); o passo final tem uma
+  única saída, no próprio cartão — "Fazer isso depois" (ou "Pronto" depois de pareado)
   — para a mesma ação nunca mostrar duas rotas com nomes diferentes (P3-338). Concluir
   ou pular grava a flag no localStorage do renderer (sem IPC, sem tocar o processo
   main), então quem já usa o app — incluindo todo mundo que atualizar com pareamento

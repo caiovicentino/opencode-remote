@@ -51,6 +51,12 @@ const DIAL_TIMEOUT_REAUTH_EXTENSIONS = 2;
 const ACK_PROBE_MS = 4_000;
 const ACK_PONG_MS = 2_500;
 
+/** P3-374: how long an op caught mid-rehandshake waits for the fresh
+ * confirmation (and its replay) before rejecting like any timeout. Short
+ * enough that a caller's retry lands inside a normal interaction, long
+ * enough to ride out a single local re-dial. */
+const PENDING_REHANDSHAKE_GRACE_MS = 8_000;
+
 /** P1-061: which wire the client is currently dialed on. */
 export type Transport = "local" | "relay";
 
@@ -306,6 +312,9 @@ export class OcrClient {
         query?: Record<string, string>;
         timeoutMs: number;
       };
+      /** P3-374: the rehandshake grace was armed for this entry (arm once —
+       * later hellos in the same churn must not push the deadline out). */
+      graced?: boolean;
     }
   >();
   private listeners = new Set<Handler>();
@@ -624,7 +633,27 @@ export class OcrClient {
     // outage then "vanished" and timed out after 60 s (pwa-live j4a). Their
     // timers are paused; replayPending() re-issues them (same ids) once the
     // sealed confirmation proves the session exists.
-    for (const p of this.pending.values()) clearTimeout(p.timer);
+    // P3-374: "paused" used to mean timer-less — an op caught mid-rehandshake
+    // (its response lost under the old session key) had NO deadline while the
+    // handshake churned through backoffs, and a listing op sat on the board's
+    // skeletons for the whole window (desktop-flow P1-089 evidence: the
+    // backend saw the request, the client never answered). Arm a bounded
+    // grace ONCE per limbo epoch — re-arming on every hello would push the
+    // deadline out as long as the churn lasts. If the confirm+replay doesn't
+    // resolve the op in time, it rejects like any timeout and the caller's
+    // error/retry path takes over.
+    for (const [id, p] of this.pending.entries()) {
+      if (p.graced) continue;
+      clearTimeout(p.timer);
+      p.graced = true;
+      p.timer = window.setTimeout(() => {
+        // identity guard: replay() replaces the map entry for the same id —
+        // only the stale grace timer must die with it
+        if (this.pending.get(id) !== p) return;
+        this.pending.delete(id);
+        p.reject(new Error("request timeout"));
+      }, PENDING_REHANDSHAKE_GRACE_MS);
+    }
     ws.send(
       JSON.stringify({
         room: this.room,

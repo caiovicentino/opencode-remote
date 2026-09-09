@@ -212,7 +212,18 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Live board** — every session's state at a glance: working, waiting for
   your approval, asked a question, done, errored; cards show relative
   last-activity time (`5m`, `2h`, `3d`); sessions are sorted by most recent
-  activity first
+  activity first. The listing itself is a bounded operation: a dropped
+  request retries once silently (a few seconds) before the calm error card
+  with its Retry button shows up — no minute-long skeleton limbo
+- **Demoted mobile chrome (P2-108)** — below the desktop breakpoint the shell
+  header reads as a muted uppercase overline (the "Conversas" line between the
+  drawer and new-chat buttons), matching the wizard's step indicator instead
+  of a full-size page title
+- **Back lands on the board (P3-374)** — on the phone layout, leaving a
+  conversation with the ← button always shows the conversations list (even
+  when the chat was opened by a deep link, which replaces the navigation
+  history); the home stays the app's default surface and one more ← from the
+  list returns to it
 - **Session filters** — chips above the search (All / With badge / No badge)
   narrow the board to sessions with or without an unread badge
 - **Fast session switching (P1-064)** — opening a conversation fetches only
@@ -1564,10 +1575,13 @@ paste-code ceremony (the path that used to hide behind the unlabeled link on
 the previous screen), and explicit manual intent forces the local
 auto-connect mode off there so the paste form can never be swallowed
 (P3-332 rule).
-The first
-two steps carry a global "Skip" in the top meta row; the final step has a
-single, in-context way out — "Do this later" (or "Done" once paired) — so one
-action never shows two differently-labeled exits (P3-338). Finishing or
+The step
+indicator reads as part of the brand block — centered under the wordmark — and
+the first two steps carry their quiet "Skip" inside the card's action row,
+right beside the primary action, so escape and progress read as one unit
+(P3-374); the final step has a single, in-context way out — "Do this later"
+(or "Done" once paired) — so one action never shows two differently-labeled
+exits (P3-338). Finishing or
 skipping stamps a flag in the renderer's localStorage (no IPC, no
 main-process change), so existing users — including everyone upgrading with a
 stored pairing — never see it. It renders as a single full-screen surface: no

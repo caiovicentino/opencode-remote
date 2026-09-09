@@ -1351,11 +1351,11 @@ button.desk-new:hover:not(:disabled) {
   letter-spacing: -0.01em;
   color: var(--fg);
 }
+/* P3-374: the step indicator reads as part of the brand block — a plain
+   centered line under the wordmark (.welcome header centers text), not one
+   end of a space-between row stretched across the whole column. */
 .welcome-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 .welcome-step-of {
   font-size: var(--font-size-xs);
@@ -1481,7 +1481,17 @@ button.desk-new:hover:not(:disabled) {
   margin: 0;
   font-size: var(--font-size-body);
 }
-.welcome-step .welcome-next {
+/* P3-374: the card's action row pairs the primary step action with the quiet
+   skip — one unit, left-aligned with the card content; the row (not the inner
+   button) carries the step's extra breathing room. */
+.welcome-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+/* the paired step's "Done" is the one next-button outside an action row */
+.welcome-pair .welcome-next {
   margin-top: var(--space-1);
 }
 /* the agent step hosts the degraded-journey status card and upstream block —
@@ -3529,6 +3539,17 @@ button.desk-new:hover:not(:disabled) {
     border-right: none;
     border-bottom: 1px solid var(--border);
     max-height: 40%;
+  }
+  /* P2-108: the shell title is the demoted mobile chrome — a muted overline in
+     the house pattern (.welcome-step-of), not a full-size title squeezed
+     between the drawer and action buttons. Two classes on purpose: the base
+     .shell-title rule sits later in this file, so equal specificity would
+     let the 0.95rem title win. */
+  .shell-bar .shell-title {
+    font-size: var(--font-size-xs);
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 }
 
