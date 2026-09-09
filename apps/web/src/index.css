@@ -2694,12 +2694,12 @@ button.desk-new:hover:not(:disabled) {
 }
 /* P3-368: language and theme side by side — the copy promises both, so both
    controls share one row on the flat surface, wrapping at phone widths. */
-.degraded-local-controls {
+.degraded-local-prefs {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-.degraded-local-controls select {
+.degraded-local-prefs select {
   flex: 1 1 auto;
   min-width: 0;
 }

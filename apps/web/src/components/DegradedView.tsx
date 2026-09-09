@@ -1,18 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
+import { applyTheme, type ThemeChoice } from "../lib/theme";
 import { retryLineParts } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
 import PaneMap from "./PaneMap";
-import { applyTheme } from "./SettingsView";
 
 // P3-368: the offline card's copy promises "language and theme" — the theme
 // control ships here too, persisting to the same ocr_theme key Settings reads
 // and reapplying through the shared applyTheme().
-type ThemeChoice = "dark" | "light" | "system";
 const THEME_KEY = "ocr_theme";
 
-function storedTheme(): ThemeChoice {
+function readTheme(): ThemeChoice {
   try {
     const stored = localStorage.getItem(THEME_KEY);
     return stored === "dark" || stored === "light" ? stored : "system";
@@ -93,7 +92,8 @@ function RetryLine({ attempts }: { attempts?: number }) {
 export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
-  const [theme, setThemeState] = useState<ThemeChoice>(storedTheme);
+  const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
+
 
   const title = busy
     ? t("localConnecting")
@@ -164,7 +164,7 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
       <div className="degraded-local">
         <h3>{t("degradedLocalTitle")}</h3>
         <p className="muted">{t("degradedLocalHint")}</p>
-        <div className="degraded-local-controls">
+        <div className="degraded-local-prefs">
           <select
             aria-label={t("language")}
             value={lang}

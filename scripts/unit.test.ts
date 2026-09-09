@@ -11376,9 +11376,12 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // The control persists to the SAME key Settings reads, so the choice carries
   // into the Appearance section instead of diverging into a second store.
   const settingsSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"), "utf8");
+  const themeLibSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "theme.ts"), "utf8");
   check(
     "P3-368: the offline card writes the theme key Settings reads (one store)",
-    src.includes('const THEME_KEY = "ocr_theme";') && settingsSrc.includes('const THEME_KEY = "ocr_theme";'),
+    src.includes('THEME_KEY') &&
+      settingsSrc.includes('THEME_KEY') &&
+      themeLibSrc.includes('export const THEME_KEY = "ocr_theme";'),
   );
 }
 
