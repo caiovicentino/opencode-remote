@@ -7,6 +7,7 @@ import {
 } from "../lib/artifacts";
 import { isSplitViewport } from "../lib/split";
 import { useExitAnimation } from "../lib/motion";
+import { humanizeError } from "../lib/errors";
 import type { OcrRequest } from "../lib/files";
 import ArtifactViewer from "./ArtifactViewer";
 import { ArtifactIcon } from "./icons";
@@ -81,7 +82,9 @@ export default function ArtifactsView({
         </button>
       </header>
       <div className="list">
-        {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+        {/* P3-365: the pane is reachable from the unpaired gate shell — a
+            "not connected" raw throw becomes the humanized not-paired copy. */}
+        {error && <p style={{ color: "var(--danger)" }}>{humanizeError(error, t)}</p>}
         {artifacts.length === 0 && !error && (
           <p className="muted">{t("artifactsEmpty")}</p>
         )}

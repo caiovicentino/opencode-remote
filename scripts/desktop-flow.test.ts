@@ -490,6 +490,46 @@ try {
   if (welcomeGone.ok) check("P2-148: .welcome unmounted after skip", /false/.test(welcomeGone.stdout));
   const homeBack = run("P2-148: home rendered after skip", ["ipc", "!!document.querySelector('.degraded')"], 15_000);
   if (homeBack.ok) check("P2-148: .degraded home after the onboarding", /true/.test(homeBack.stdout));
+  // --- P3-365: the gate renders the REAL shell skeleton ------------------------
+  // The first-boot journey at 1440x900 is the .desk skeleton (sidebar +
+  // offline-capable panes), not a full-screen wall. These beats run against the
+  // UNPAIRED boot — the .desk-side assertions further down guard the PAIRED
+  // shell (localEnv2) and cannot guard P1-071's "reachable from first boot".
+  // The welcome block above left the window at 390px (its 390 shot); the
+  // resize back to the desktop viewport IS the gate-shell evidence shot.
+  const gateShot = join(shotsDir, "P3-365-gate-shell-1440.png");
+  const gateResize = run("P3-365: 1440x900 gate-shell shot (resize)", ["shot", gateShot, "1440", "900"], 15_000);
+  if (gateResize.ok) check("P3-365: gate-shell 1440x900 shot is a real PNG", pngSize(gateShot).join("x") === "1440x900");
+  const gateSide = run(
+    "P3-365: sidebar skeleton while unpaired",
+    ["ipc", "(document.querySelector('.desk-side') ? 'side=true' : 'side=false') + '|phase=' + (document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? '')"],
+    15_000,
+  );
+  if (gateSide.ok) check("P3-365: .desk-side present while not paired", /side=true\|phase=(unpaired|connecting|error)/.test(gateSide.stdout), gateSide.stdout);
+  run("P3-365: open Mission Control from the rail", ["click", 'button[data-pane="mission"]'], 15_000);
+  const gateMission = run(
+    "P3-365: Mission Control renders behind the gate",
+    ["ipc", "(() => { const p = document.querySelector('.desk-pane'); return 'pane:' + (p ? getComputedStyle(p).display : 'none') + '|mission:' + !!document.querySelector('.desk-pane .mission'); })()"],
+    15_000,
+  );
+  if (gateMission.ok) check("P3-365: mission pane visible while unpaired", /pane:block\|mission:true/.test(gateMission.stdout), gateMission.stdout);
+  run("P3-365: open Artifacts from the rail", ["click", 'button[data-pane="artifacts"]'], 15_000);
+  const gateArtifacts = run(
+    "P3-365: artifact list renders behind the gate",
+    ["ipc", "(() => { const v = document.querySelector('.desk-pane .pane-view .list'); return 'list:' + (v ? getComputedStyle(v).display : 'none'); })()"],
+    15_000,
+  );
+  if (gateArtifacts.ok) check("P3-365: artifact list visible while unpaired", /list:(block|flex)/.test(gateArtifacts.stdout), gateArtifacts.stdout);
+  // Restore the hero composition for the P2-112 beats below (the gate rail's
+  // Conversas slot is disabled — the pane's own back button is the way back).
+  // The selector must scope .pane-view: the hidden BrowserView wrapper also
+  // renders a .screen with a header inside .desk-pane. The stack holds
+  // [mission, artifacts] at this point, so two pops reach the hero.
+  run("P3-365: close the pane via its back button", ["click", ".desk-pane .pane-view .screen > header > button:first-child"], 15_000);
+  run("P3-365: close the stacked pane beneath it", ["click", ".desk-pane .screen.mission > header > button:first-child"], 15_000);
+  const gateHeroBack = run("P3-365: hero back after the panes close", ["ipc", "(() => { const p = document.querySelector('.desk-pane'); return 'pane:' + (p ? getComputedStyle(p).display : 'gone'); })()"], 15_000);
+  if (gateHeroBack.ok) check("P3-365: pane closed returns to the hero", /pane:none|pane:gone/.test(gateHeroBack.stdout), gateHeroBack.stdout);
+
   // --- P2-112: first boot with a dead daemon degrades, never dead-ends --------
   // The old journey stranded a first-time user on the pairing wall with a red
   // "daemon fell" alert for a daemon this machine had never met. Now the

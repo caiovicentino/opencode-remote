@@ -30,6 +30,12 @@ interface Props {
    * when both verdicts exist at once the exit notice wins — a daemon that
    * actually died is the stronger story than one being revived. */
   sidecarWedge?: SidecarWedgeNotice | null;
+  /** P3-365: the hero sits inside the first-boot shell skeleton whose rail
+   * already opens Artifacts/Browser/Mission — the pane map then retitles to
+   * "before pairing" and keeps the lock glyph only on Conversations. The
+   * classic centered screen (narrow window, stored-pairing errors) keeps the
+   * fully locked map. */
+  panesReachable?: boolean;
 }
 
 /** P3-372: the auto-retry line with live feedback — seconds tick since the
@@ -78,7 +84,7 @@ function RetryLine({ attempts }: { attempts?: number }) {
  * "daemon fell" for a daemon the machine never met), a visible auto-retry
  * line with the attempt counter, a reconnect action with real feedback, the
  * purely-local data that keeps working, and manual pairing one click away. */
-export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge }: Props) {
+export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
@@ -185,8 +191,10 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
         </div>
       </div>
       {/* P3-364: the offline card above is what works NOW; this is what
-          pairing unlocks — the standing map the gate toast only flashes. */}
-      <PaneMap />
+          pairing unlocks — the standing map the gate toast only flashes.
+          P3-365: inside the shell skeleton three of those panes are already
+          one rail-click away, so the map drops their locks. */}
+      <PaneMap reachable={panesReachable} />
       <button className="degraded-manual" onClick={onPairManually}>
         {t("degradedPairManually")}
       </button>

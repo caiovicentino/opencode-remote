@@ -32,6 +32,15 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   central (~640px) com toggle Chat/Cowork + seletor de modelo + mic, e 3 ideias
   clicáveis que pré-preenchem a primeira mensagem — o estado vazio deixa de ser
   um beco (P1-071: todo fluxo alcançável no primeiro boot)
+- Primeiro boot com shell real (P3-365): a jornada degradada renderiza o
+  esqueleto do shell desktop — sidebar com rail funcional e panes
+  offline-capables (Mission Control, lista de artifacts, Ajustes) — em vez de
+  uma tela cheia; o card calmo "Conectando pela primeira vez…" segue como herói
+  da coluna principal, e o mapa de panes do herói troca pra variante "Antes de
+  parear" (cadeado só em Conversas) pra não contradizer o rail ao lado
+  (P1-071: todo fluxo alcançável no primeiro boot). Janela
+  estreita, cerimônia manual e erros de pareamento guardado continuam na tela
+  clássica centrada
 - Marca do produto com escala tipográfica própria (P3-336): o h1 "OpenCode
   Remote" das telas de primeiro contato (boas-vindas, pareamento, jornada
   degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo

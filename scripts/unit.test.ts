@@ -11402,7 +11402,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P3-364: PaneMap lists the four locked panes with descriptions and lock glyphs",
     rowKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
       descKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
-      mapSrc.includes('t("paneMapTitle")') &&
+      // P3-365: the title key became reachable-conditional (both spellings).
+      mapSrc.includes('"paneMapTitle"') &&
+      mapSrc.includes('"paneMapTitleBefore"') &&
       (mapSrc.match(/<IconLock/g) ?? []).length === 1,
   );
   // Own class names on purpose: P2-106/P3-334 pin the ceremony's
@@ -11416,7 +11418,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-364: both gate screens mount the map (manual ceremony + degraded first boot)",
-    pairingSrc.includes("<PaneMap />") && degradedSrc.includes("<PaneMap />"),
+    pairingSrc.includes("<PaneMap />") && /<PaneMap\b[^/]*reachable/.test(degradedSrc),
   );
   // Copy resolves in every locale, carries no emoji (design bar), and the
   // descriptions are real sentences, not the raw key.
@@ -11437,6 +11439,50 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       css.includes(".pane-map-title {") &&
       /\.pane-map\s*\{[^}]*var\(--surface\)/.test(css) &&
       /\.pane-map-title\s*\{[^}]*text-transform: uppercase/.test(css),
+  );
+}
+
+// --- P3-365: the skeleton hero's pane map cannot contradict the rail ---------
+// On the first-boot shell skeleton the rail opens Artifacts/Browser/Mission
+// pre-pairing; the hero's map (P3-364) then retitles and drops those locks —
+// a screen claiming a lock the rail disproves is the P3-332 bug class.
+{
+  const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
+  const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  // The reachable variant exists and is opt-in, keyed by the skeleton hero.
+  check(
+    "P3-365: PaneMap reachable variant swaps the title and keeps locks conditional",
+    mapSrc.includes("reachable = false") &&
+      mapSrc.includes('reachable ? "paneMapTitleBefore" : "paneMapTitle"') &&
+      mapSrc.includes("p.locked && <IconLock"),
+  );
+  // Only Conversations stays locked in the reachable variant (the chat rail
+  // slot is the disabled one; the other three are one rail-click away).
+  check(
+    "P3-365: reachable variant locks only Conversations",
+    (mapSrc.match(/locked: true/g) ?? []).length === 1 &&
+      (mapSrc.match(/locked: !reachable/g) ?? []).length === 3,
+  );
+  // DegradedView forwards the flag; App passes it ONLY on the skeleton hero
+  // (the classic centered screen keeps the fully locked map).
+  const heroBlock = appSrc.slice(
+    Math.max(0, appSrc.indexOf('className="desk-chat"')),
+    Math.max(0, appSrc.indexOf('className="desk-pane"')),
+  );
+  check(
+    "P3-365: skeleton hero passes panesReachable, classic screen does not",
+    degradedSrc.includes("<PaneMap reachable={panesReachable} />") &&
+      heroBlock.includes("panesReachable") &&
+      (appSrc.match(/panesReachable/g) ?? []).length === 1,
+  );
+  // The variant title resolves in both locales, no emoji (design bar).
+  check(
+    "P3-365: paneMapTitleBefore resolves in both locales, no emoji",
+    (["en", "pt"] as const).every((lang) => {
+      const s = translate(lang, "paneMapTitleBefore");
+      return s !== "paneMapTitleBefore" && s.trim() !== "" && !/\p{Extended_Pictographic}/u.test(s);
+    }),
   );
 }
 
