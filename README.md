@@ -1404,7 +1404,10 @@ decision lands as one mode-plus-origin-and-reason `proxy:` line in
 Since P1-046 the window is a real two-column cockpit: the conversation stays
 open in the left column while Artifacts, Browser, Files or Settings open in a
 contextual pane on the right (switching panes never destroys the chat), and
-the whole navigation lives behind a single view stack. Keyboard shortcuts
+the whole navigation lives behind a single view stack. On the phone width the
+back button out of a conversation lands on the conversations board, not the
+greeting home (P3-373; a second back — or the boot state — is the home), so
+the list is always one tap away. Keyboard shortcuts
 (also in the **Ir** menu): `Cmd+T` new conversation (**Nova conversa**),
 `Cmd+K` command palette (**Paleta de comandos** — searches conversations and
 actions), `Cmd+1..6` switch to chat / Artifacts / Browser / Files / Settings /

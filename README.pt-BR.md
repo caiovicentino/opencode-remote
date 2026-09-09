@@ -1211,7 +1211,10 @@ origem e motivo) no `desktop.log`, nunca o endereço nem credenciais.
 Desde o P1-046 a janela é um cockpit de duas colunas de verdade: a conversa
 fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou
 Configurações abrem num pane contextual à direita (trocar de pane nunca
-destrói o chat), e toda a navegação vive numa única view stack. Atalhos de
+destrói o chat), e toda a navegação vive numa única view stack. Na largura de
+telefone, o botão de voltar dentro de uma conversa cai na lista de conversas,
+não na home de saudação (P3-373; uma segunda volta — ou o boot — é a home),
+então a lista fica sempre a um toque. Atalhos de
 teclado (também no menu **Ir**): `Cmd+T` nova conversa, `Cmd+K` paleta de
 comandos (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
 Browser / Arquivos / Configurações / Mission Control. O menu nativo fala

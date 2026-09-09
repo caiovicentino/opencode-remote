@@ -9741,10 +9741,17 @@ check(
     "p1-046 back() to chat keeps the session",
     topSlot(backToChat) === "chat" && backToChat.chatSession === "s1",
   );
-  const backHome = viewReducer(backToChat, { type: "back" });
+  const backFromChat = viewReducer(backToChat, { type: "back" });
   check(
-    "p1-046 back() from chat closes the conversation and lands home",
-    backHome.chatSession === null && backHome.stack.length === 0 && isPaneOpen(backHome) === false,
+    "p1-046 back() from chat closes the conversation and lands on the sessions board",
+    backFromChat.chatSession === null &&
+      backFromChat.stack.length === 1 &&
+      topSlot(backFromChat) === "chats" &&
+      isPaneOpen(backFromChat) === false,
+  );
+  check(
+    "p1-046 back() from the board reaches the home (empty stack)",
+    viewReducer(backFromChat, { type: "back" }).stack.length === 0,
   );
   check(
     "p1-046 topSlot falls back to chat on the home screen",
