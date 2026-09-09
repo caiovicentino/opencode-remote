@@ -792,10 +792,11 @@ export default function App() {
     path: string,
     body?: unknown,
     query?: Record<string, string>,
+    timeoutMs?: number,
   ): Promise<OpResponse> {
     const client = clientRef.current;
     if (!client) throw new Error("not connected");
-    return client.request(method as "GET", path, body, query);
+    return client.request(method as "GET", path, body, query, timeoutMs);
   }
 
   // P1-046: session creation lifted out of SessionsView so Cmd+T and the
