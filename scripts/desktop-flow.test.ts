@@ -241,6 +241,26 @@ async function waitForDaemonStateFile(stateFile: string, port: number): Promise<
 
 /** Poll a harness ipc expression until `predicate` holds (or the tries run
  * out); one final verdict is recorded by the caller. */
+/** P3-371 r2: raise the Conversas board the way a mobile user does
+ * (hamburger → Conversas) and VERIFY it actually raised, retrying the pair
+ * of clicks. Both clicks used to be fire-and-forget: under gate-machine load
+ * one swallowed click (drawer still animating, renderer busy) left the board
+ * unraised and the following waitProbe died its full 12-probe course with
+ * empty values. The board's rows container is the raised-board marker. */
+async function raiseConversasBoard(label: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    run(`${label}: open the drawer (attempt ${attempt})`, ["click", ".shell-menu"], 15_000, env);
+    run(`${label}: raise the board`, ["click", '.drawer-row[data-dest="chats"]'], 15_000, env);
+    const res = probe(["ipc", "!!document.querySelector('.convo-rows,.sess-rows')"], 15_000, env);
+    if (res.ok && /true/.test(res.stdout)) {
+      check(`${label}: board raised`, true);
+      return true;
+    }
+  }
+  check(`${label}: board raised`, false, "the Conversas board never raised via the drawer path");
+  return false;
+}
+
 async function waitProbe(
   name: string,
   expr: string,
@@ -1450,8 +1470,7 @@ try {
           // P3-358 round 3: with no open chat the Go-menu action lands on the
           // home (the living dashboard — P2-123 pins that), so the board's
           // demoted chrome needs the drawer path from there.
-          run("P2-108: open the drawer", ["click", ".shell-menu"], 15_000, localEnv);
-          run("P2-108: chats destination", ["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv);
+          await raiseConversasBoard("P2-108: drawer", localEnv);
           const overlineProbe = run(
             "P2-108: mobile overline chrome probe",
             ["ipc", "(() => { const h = document.querySelector('.shell-bar .shell-title'); return (!!h && parseFloat(getComputedStyle(h).fontSize) <= 14) + '|TITLE:' + (h ? getComputedStyle(h).fontSize + '@' + h.textContent : 'ABSENT') + '|HASH:' + location.hash; })()"],
@@ -2500,9 +2519,8 @@ try {
               await waitProbe("P1-089: board rendered (chat unmounted)", "!!document.querySelector('.messages')", (v) => /false/.test(v), localEnv2);
               // P3-358 round 3: build 5's mobile nav — back from the chat lands
               // on the home (greeting + composer); the conversations board is a
-              // drawer destination now.
-              run("P1-089: open the drawer", ["click", ".shell-menu"], 15_000, localEnv2);
-              run("P1-089: chats destination", ["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv2);
+              // drawer destination now (raised with verification + retries).
+              await raiseConversasBoard("P1-089: drawer", localEnv2);
               const rowProbe = await waitProbe(
                 "P1-089: session row rendered on the board",
                 "document.body.innerText.includes('Reentry check') + '|STATE:' + (document.body.innerText.match(/(Nenhuma conversa|no sessions|Erro[^\\n]*)/i)?.[1] ?? 'rows-or-other') + '|TXT:' + (document.querySelector('.sess-rows,.convo-rows')?.parentElement?.innerText ?? '').slice(0, 180).replace(/\\n/g, '/')",
@@ -3022,9 +3040,8 @@ try {
             run("P2-323: drop to phone width", ["shot", join(shotsDir, "P2-323-390-prep.png"), "390", "844"], 15_000, localEnv2);
             run("P2-323: leave the chat for the board", ["click", ".chat-back"], 15_000, localEnv2);
             // P3-358 round 3: back at 390px lands on the home — the board is a
-            // drawer destination (build 5 mobile nav).
-            run("P2-323: open the drawer", ["click", ".shell-menu"], 15_000, localEnv2);
-            run("P2-323: chats destination", ["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv2);
+            // drawer destination (build 5 mobile nav, raised with verification).
+            await raiseConversasBoard("P2-323: drawer", localEnv2);
             // P3-358 round 2: the desktop board card became the mobile list row
             // (build 5) — rename at 390 goes through the row's action sheet.
             const p323Card = run("P2-323: open the row action sheet", ["ipc", "document.querySelector('.convo-row[data-session=\"ses-reentry-check\"] .convo-row-menu')?.click() ?? 'MISS'"], 15_000, localEnv2);
