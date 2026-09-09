@@ -20,6 +20,7 @@ import {
   type OpResponse,
 } from "@ocr/protocol";
 import { isRetriableOp, waitForChildExit } from "./daemonrestart";
+import { stopAndAwaitExit } from "./procexit";
 
 // P2-055 (reviewer finding): the hardcoded port collided with whatever process
 // happened to be listening on it — the probe then read a plain HTTP 200 from a
