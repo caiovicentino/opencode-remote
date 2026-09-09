@@ -414,6 +414,11 @@ private. That is the product: **local power, remote control, zero trust**.
   Scheduled routines and the Security log all translate, with a unit-test drift
   lock that fails when a literal English phrase is written back into the
   component
+- **Pairing gate with a map (P3-364)** — the unpaired screens (manual ceremony and the
+  degraded first boot) carry a persistent "After pairing" card listing the panes that stay
+  locked until connection — Conversations, Artifacts, Browser, Mission Control — each with a
+  one-line description and a lock glyph, so a first-time user sees what pairing unlocks
+  instead of a transient toast flashing the only explanation away
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
   shell title included (P3-373: the build-5 token bump had briefly promoted it

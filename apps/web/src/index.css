@@ -2406,6 +2406,73 @@ button.desk-new:hover:not(:disabled) {
   margin: 0;
   font-size: 0.78rem;
 }
+/* ── P3-364: the gate's persistent pane map ──────────────────────────────────
+   The panes stay invisible until connection; this card is the standing map
+   the transient gate toast can only flash. Deliberately NOT .pair-section:
+   the P2-106/P3-334 battery pins that class's count and title order on the
+   ceremony screen. Same flat card language, tokens only. */
+.pane-map {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: left;
+}
+.pane-map-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pane-map-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pane-map-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+}
+.pane-map-row + .pane-map-row {
+  border-top: 1px solid var(--border);
+}
+.pane-map-icon {
+  flex: none;
+  display: inline-flex;
+  margin-top: 2px;
+  color: var(--muted);
+}
+.pane-map-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pane-map-copy b {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--fg);
+}
+.pane-map-copy .muted {
+  font-size: var(--font-size-sm);
+}
+.pane-map-lock {
+  flex: none;
+  margin-top: 3px;
+  color: var(--muted);
+  opacity: 0.7;
+}
 /* P3-369: the URI paste target — one quiet, compact field, not a raw browser
    textarea. Mono type matches the opencode-remote:// URI it receives, the
    resize grip is off (two rows hold the URI; nothing to grow into) and the

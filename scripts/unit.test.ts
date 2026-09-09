@@ -11324,6 +11324,61 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-364: the gate carries a persistent map of the panes pairing unlocks ----
+// The P3-328 toast is a 4s flash; Artifacts/Browser/Mission Control were
+// invisible until connection, leaving a first-time user no answer to "why
+// pair at all?". PaneMap is the standing affordance on both gate screens.
+{
+  const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
+  const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // Four rows, named exactly like the rail (nav* keys), each with a one-line
+  // description and the per-row lock glyph.
+  const rowKeys = ["navConversations", "navArtifacts", "navBrowser", "navMission"];
+  const descKeys = ["paneMapChat", "paneMapArtifacts", "paneMapBrowser", "paneMapMission"];
+  check(
+    "P3-364: PaneMap lists the four locked panes with descriptions and lock glyphs",
+    rowKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
+      descKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
+      mapSrc.includes('t("paneMapTitle")') &&
+      (mapSrc.match(/<IconLock/g) ?? []).length === 1,
+  );
+  // Own class names on purpose: P2-106/P3-334 pin the ceremony's
+  // .pair-section count (2) and .pair-section-title order — reusing them here
+  // would read as a third pairing section (P3-334 lesson).
+  check(
+    "P3-364: PaneMap stays off the pinned pair-section classes",
+    mapSrc.includes('className="pane-map"') &&
+      mapSrc.includes('className="pane-map-title"') &&
+      !mapSrc.includes('className="pair-section'),
+  );
+  check(
+    "P3-364: both gate screens mount the map (manual ceremony + degraded first boot)",
+    pairingSrc.includes("<PaneMap />") && degradedSrc.includes("<PaneMap />"),
+  );
+  // Copy resolves in every locale, carries no emoji (design bar), and the
+  // descriptions are real sentences, not the raw key.
+  const allKeys = ["paneMapTitle", ...descKeys];
+  check(
+    "P3-364: pane-map keys resolve in both locales, no emoji",
+    (["en", "pt"] as const).every((lang) =>
+      allKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "" && !/\p{Extended_Pictographic}/u.test(s);
+      }),
+    ),
+  );
+  // The card rides the shared flat-card tokens (no new colors/radii).
+  check(
+    "P3-364: .pane-map styles come from the shared tokens",
+    css.includes(".pane-map {") &&
+      css.includes(".pane-map-title {") &&
+      /\.pane-map\s*\{[^}]*var\(--surface\)/.test(css) &&
+      /\.pane-map-title\s*\{[^}]*text-transform: uppercase/.test(css),
+  );
+}
+
 // --- P3-334: the desktop pairing screen leads with the host section ----------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
