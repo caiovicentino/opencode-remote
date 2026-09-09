@@ -1512,10 +1512,10 @@ first launch, the app no longer dead-ends on the pairing screen. A calm status
 card — "Connecting for the first time…" for a daemon this machine has never
 met, never a red "daemon fell" alert — explains that conversations, files and
 artifacts sync as soon as the daemon answers, shows the automatic retry, and
-keeps the purely-local data working: the "Available offline" card carries both
-the language and the theme selects (P3-368), persisting to the same keys the
-Settings → Appearance section reads, so a choice made offline survives the
-reconnect. "Reconnect now" gives
+keeps the purely-local data (language, theme) working — both selects sit right
+on the card and apply instantly (P3-368: the theme control shares the same
+stored choice and apply path as the Settings appearance card, so the copy and
+the card never disagree). "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
 stays one click away. The gate sits on the same brand axis as the welcome
 wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered

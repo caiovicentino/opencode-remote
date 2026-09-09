@@ -8,6 +8,7 @@ import { IconChevronDown } from "./icons";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
+import { applyTheme, FONT_KEY, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
  * apps/desktop/src/preload.ts). origin says where the effective address comes
@@ -132,8 +133,6 @@ interface McpServer {
 }
 
 const VOICE_KEY = "ocr_voice";
-const THEME_KEY = "ocr_theme";
-const FONT_KEY = "ocr_font";
 
 export function getVoiceSettings(): { autoSend: boolean; lang: string } {
   try {
@@ -143,34 +142,9 @@ export function getVoiceSettings(): { autoSend: boolean; lang: string } {
   }
 }
 
-/** Persisted theme choice: explicit override or follow the OS (P1-047). */
-type ThemeChoice = "dark" | "light" | "system";
-
-/** MediaQueryList of the active `(prefers-color-scheme: light)` probe while
- * the theme is "system", so a live OS switch flips the shell without reload.
- * Re-calling applyTheme() always drops the previous listener — no leaks. */
-let schemeQuery: MediaQueryList | null = null;
-
-function onSchemeChange() {
-  document.documentElement.dataset.theme = schemeQuery?.matches ? "light" : "dark";
-}
-
-export function applyTheme() {
-  const theme = (localStorage.getItem(THEME_KEY) as ThemeChoice | null) ?? "system";
-  const font = localStorage.getItem(FONT_KEY) ?? "normal";
-  if (schemeQuery) {
-    schemeQuery.removeEventListener("change", onSchemeChange);
-    schemeQuery = null;
-  }
-  if (theme === "dark" || theme === "light") {
-    document.documentElement.dataset.theme = theme;
-  } else {
-    schemeQuery = window.matchMedia("(prefers-color-scheme: light)");
-    onSchemeChange();
-    schemeQuery.addEventListener("change", onSchemeChange);
-  }
-  document.documentElement.style.fontSize = font === "small" ? "14px" : font === "large" ? "19px" : "16.5px";
-}
+/** Persisted theme choice: explicit override or follow the OS (P1-047).
+ * P3-368: the type and the apply/persist logic moved to lib/theme.ts so the
+ * offline card's theme select shares the exact same path. */
 
 /** P2-287/P2-297: deterministic-evidence hatch (the P2-218 lesson, web
  * edition) — localStorage overrides force capability verdicts for
@@ -232,12 +206,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [newMcp, setNewMcp] = useState({ name: "", type: "local", value: "" });
   const [voice, setVoice] = useState(getVoiceSettings());
   const [style, setStyle] = useState<Record<string, unknown>>({});
-  const [theme, setTheme] = useState<ThemeChoice>(
-    (() => {
-      const stored = localStorage.getItem(THEME_KEY);
-      return stored === "dark" || stored === "light" ? stored : "system";
-    })(),
-  );
+  const [theme, setTheme] = useState<ThemeChoice>(readTheme);
   const [font, setFont] = useState(localStorage.getItem(FONT_KEY) ?? "normal");
   const [msg, setMsg] = useState("");
   const [pushTesting, setPushTesting] = useState(false);

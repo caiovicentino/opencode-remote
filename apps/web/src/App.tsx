@@ -43,7 +43,6 @@ import HomeView from "./components/HomeView";
 import GateHint from "./components/GateHint";
 import { setDraft } from "./lib/drafts";
 import SettingsView, {
-  applyTheme,
   type RelaySetting,
   type RelaySettingWriteResult,
   type WebAppSetting,
@@ -51,6 +50,7 @@ import SettingsView, {
   type ProxySetting,
   type ProxySettingWriteResult,
 } from "./components/SettingsView";
+import { applyTheme } from "./lib/theme";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
