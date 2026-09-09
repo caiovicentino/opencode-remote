@@ -1506,6 +1506,15 @@ space at desktop sizes. The accent glyph from the wizard's opening screen now
 sits above the wordmark here too (P3-373), so the whole first-contact journey
 shares one brand header.
 
+**Live auto-retry line (P3-372)**: that calm card's "Retrying automatically…"
+line is no longer frozen static copy. It now carries the feedback the
+component always promised: seconds tick since the current attempt started
+("há 12s · tentativa 3" / "12s · attempt 3"), resetting on every new attempt
+so the number doubles as a quiet countdown to the next probe, and the shell's
+attempt counter rides along once it exists. The ticking segment uses tabular
+numerals (no per-second jitter) and is hidden from screen readers so the
+status live region is not re-announced every second.
+
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
 for the whole session — poll gaps and degraded states no longer resurrect the
