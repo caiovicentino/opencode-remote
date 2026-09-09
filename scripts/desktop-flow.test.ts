@@ -796,6 +796,37 @@ try {
     gateHint.stdout,
   );
 
+  // --- P3-367: the hint is not a dead end --------------------------------------
+  // A real click on the toast's inline action must dismiss the toast and leave
+  // the manual paste/scan ceremony visible (this gate surface IS that
+  // ceremony, so "still here" proves the exit). The 4s window is re-armed
+  // first so the beat never races the expiry under gate load. Probes return
+  // join('|') lists — never JSON.stringify: the ipc harness JSON-wraps the
+  // eval result, so in-page JSON comes back with \" escapes that no
+  // quote-strip resuscitates (the red P3-367 gate run false-failed on it).
+  run("P3-367: re-arm the gate hint", ["menu-click", "go-pane-artifacts"], 15_000);
+  const hintAction = run(
+    "P3-367: re-armed hint carries the pair-now action",
+    ["ipc", "[!!document.querySelector('.pair-gate-hint'), !!document.querySelector('.pair-gate-hint-action')].join('|')"],
+    15_000,
+  );
+  if (hintAction.ok) {
+    check("P3-367: toast shows with its inline pair-now exit", /^true\|true$/.test(hintAction.stdout.replace(/"/g, "").trim()), hintAction.stdout);
+  }
+  run("P3-367: real click on the pair-now action", ["click", ".pair-gate-hint-action"], 15_000);
+  const afterPairNow = run(
+    "P3-367: state after the pair-now click",
+    ["ipc", "[!!document.querySelector('.pair-gate-hint'), !!document.querySelector('.pair-code'), !!document.querySelector('.pair-section-title')].join('|')"],
+    15_000,
+  );
+  if (afterPairNow.ok) {
+    check(
+      "P3-367: pair-now click dismisses the toast with the manual ceremony visible",
+      /^false\|true\|true$/.test(afterPairNow.stdout.replace(/"/g, "").trim()),
+      afterPairNow.stdout,
+    );
+  }
+
   // --- P3-053: dock unread badge bridge ----------------------------------------
   // The paired chat UI can't render hermetically (see the P1-051 note above),
   // but the badge WIRING is fully observable: the preload exposes sendUnread
