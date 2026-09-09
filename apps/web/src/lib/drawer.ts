@@ -32,6 +32,8 @@ export interface RecentRow {
   title: string;
   unread: boolean;
   active: boolean;
+  /** P3-357b: pinned conversations ride above the recency order. */
+  pinned: boolean;
 }
 
 interface SessionLike {
@@ -45,23 +47,32 @@ interface SessionLike {
  * Newest `limit` user conversations (autonomous-pilot sessions never crowd
  * the drawer), title falling back to a short id. Unread marks every session
  * with a pending badge except the one on screen; truncation is CSS.
+ * P3-357b: pinned conversations come first regardless of recency (newest
+ * first among themselves) and never count against the limit — a pin must be
+ * visible even when it is old.
  */
 export function recentRows(
   sessions: readonly SessionLike[],
   unread: Record<string, number>,
   activeSession: string | null,
   limit: number = RECENTS_LIMIT,
+  pinnedIds: readonly string[] = [],
 ): RecentRow[] {
-  return [...sessions]
+  const pinnedSet = new Set(pinnedIds);
+  const newest = [...sessions]
     .filter((s) => !isPilotTitle(s.title))
-    .sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a))
-    .slice(0, Math.max(0, limit))
-    .map((s) => ({
-      id: s.id,
-      title: s.title?.trim() || s.id.slice(0, 12),
-      unread: s.id !== activeSession && (unread[s.id] ?? 0) > 0,
-      active: s.id === activeSession,
-    }));
+    .sort((a, b) => sessionUpdatedTs(b) - sessionUpdatedTs(a));
+  const picked = [
+    ...newest.filter((s) => pinnedSet.has(s.id)),
+    ...newest.filter((s) => !pinnedSet.has(s.id)).slice(0, Math.max(0, limit)),
+  ];
+  return picked.map((s) => ({
+    id: s.id,
+    title: s.title?.trim() || s.id.slice(0, 12),
+    unread: s.id !== activeSession && (unread[s.id] ?? 0) > 0,
+    active: s.id === activeSession,
+    pinned: pinnedSet.has(s.id),
+  }));
 }
 
 /** Hamburger dot: something unread exists outside the open conversation. */

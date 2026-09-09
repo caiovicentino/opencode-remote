@@ -201,7 +201,7 @@ export default function ArtifactViewer({
         borderBottom: "1px solid var(--border)",
       }}
     >
-      <button onClick={onClose} aria-label={t("back")}>
+      <button className="pane-close" onClick={onClose} aria-label={t("back")}>
         ←
       </button>
       <span

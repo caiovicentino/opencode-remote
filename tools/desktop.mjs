@@ -334,6 +334,20 @@ async function keeperMain() {
     env,
   });
   const page = await electronApp.firstWindow();
+  // P3-358 debug (operator): mirror renderer errors into keeper.log — the
+  // desktop-flow gate cannot see a white-screen React crash otherwise.
+  page.on("pageerror", (err) => {
+    let info = String(err?.stack ?? err);
+    if (!info.trim()) {
+      try {
+        info = JSON.stringify({ name: err?.name, message: err?.message, cause: String(err?.cause ?? "") });
+      } catch {}
+    }
+    keeperLog("RENDERER PAGEERROR:", info.slice(0, 600));
+  });
+  page.on("console", (m) => {
+    if (m.type() === "error" || m.type() === "warning") keeperLog(`RENDERER ${m.type()}:`, m.text());
+  });
   try {
     await page.waitForSelector("#root > *", { timeout: 30_000 });
   } catch {

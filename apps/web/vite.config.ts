@@ -8,6 +8,10 @@ const key = process.env.VITE_TLS_KEY;
 
 export default defineConfig({
   plugins: [react()],
+  // P3-358: the app bundle is ~570 kB minified (~180 kB gzip) by design — the
+  // whole PWA is one screen tree. The default 500 kB warning flooded the
+  // gate's evidence tails and made cited build outputs diverge on every run.
+  build: { chunkSizeWarningLimit: 700 },
   // VITE_BASE=./ for the desktop shell (file:// can't load absolute
   // /assets paths); default "/" for the phone/dev server
   base: process.env.VITE_BASE ?? "/",

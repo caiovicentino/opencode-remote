@@ -3977,6 +3977,38 @@ button.desk-new:hover:not(:disabled) {
   border-radius: var(--radius-md);
   transition: background var(--motion-fast) var(--ease-out);
 }
+/* P3-357b: the recents row carries its own pin toggle — 44px target, parked
+   at the right edge; the pinned marker tints the row's own icon. */
+.drawer-recent-item {
+  position: relative;
+}
+.drawer-recent-pin {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  translate: 0 -50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.drawer-recent-pin:active {
+  transform: none;
+}
+.drawer-recent-pin.active,
+.drawer-recent-pin[aria-pressed="true"] {
+  color: var(--accent);
+}
+.drawer-recent-item.pinned .drawer-recent svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
 .drawer-row:active,
 .drawer-recent:active {
   transform: none;

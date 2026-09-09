@@ -1290,15 +1290,19 @@ try {
         // The 390 shot above left the shell on Settings — go back to Chats so
         // the sessions board (and its demoted header) is the visible surface,
         // then probe the 0.72rem overline (≤ 12px at the default root).
-        const chatsTab = run("P2-108: back to the Chats tab", ["click", '.tabbar button[aria-label="Chats"]'], 15_000, localEnv);
+        // --- P2-108: mobile chrome demoted to an overline -----------------------
+        // P3-358 round 2: build 5 replaced the tab bar with the slide-in
+        // drawer — the Go menu path (menu-click) is the locale-independent way
+        // back to the chats board; the demoted chrome is now the shell title.
+        const chatsTab = run("P2-108: back to the Chats board (Go menu)", ["menu-click", "go-pane-chat"], 15_000, localEnv);
         if (chatsTab.ok) {
           const overlineProbe = run(
             "P2-108: mobile overline chrome probe",
-            ["ipc", "(() => { const h = document.querySelector('.sess-mobile-head .sess-overline'); return !!h && parseFloat(getComputedStyle(h).fontSize) <= 12; })()"],
+            ["ipc", "(() => { const h = document.querySelector('.shell-bar .shell-title'); return (!!h && parseFloat(getComputedStyle(h).fontSize) <= 14) + '|TITLE:' + (h ? getComputedStyle(h).fontSize + '@' + h.textContent : 'ABSENT') + '|HASH:' + location.hash; })()"],
             15_000,
             localEnv,
           );
-          if (overlineProbe.ok) check("P2-108: mobile machine name renders as a 0.72rem overline", /true/.test(overlineProbe.stdout), overlineProbe.stdout);
+          if (overlineProbe.ok) check("P2-108: mobile chats chrome renders demoted (≤14px title)", /true/.test(overlineProbe.stdout), overlineProbe.stdout);
           run("P2-108: mobile overline evidence shot", ["shot", join(shotsDir, "P2-108-overline-390.png"), "390", "844"], 15_000, localEnv);
         }
 
@@ -2322,11 +2326,11 @@ try {
               await waitProbe("P1-089: board rendered (chat unmounted)", "!!document.querySelector('.messages')", (v) => /false/.test(v), localEnv2);
               await waitProbe(
                 "P1-089: session row rendered on the board",
-                "document.body.innerText.includes('Reentry check')",
-                (v) => /true/.test(v),
+                "document.body.innerText.includes('Reentry check') + '|STATE:' + (document.body.innerText.match(/(Nenhuma conversa|no sessions|Erro[^\\n]*)/i)?.[1] ?? 'rows-or-other') + '|TXT:' + (document.querySelector('.sess-rows,.convo-rows')?.parentElement?.innerText ?? '').slice(0, 180).replace(/\\n/g, '/')",
+                (v) => v.startsWith("true"),
                 localEnv2,
               );
-              const row = run("P1-089: click the session row", ["click", ".session-card"], 15_000, localEnv2);
+              const row = run("P1-089: click the session row", ["click", '.convo-row[data-session="ses-reentry-check"]'], 15_000, localEnv2);
               if (row.ok) {
                 await waitProbe(
                   "P1-089: board re-entry stays at row count",
@@ -2381,7 +2385,7 @@ try {
             }
             // manual choice wins: closing the pane keeps it closed on the next
             // idle, even though the artifact changed again
-            run("P2-090: user closes the auto pane", ["click", '.artifact-pane button[aria-label="Close"]'], 15_000, localEnv2);
+            run("P2-090: user closes the auto pane", ["click", ".artifact-pane .pane-close"], 15_000, localEnv2);
             const closed = await waitProbe("P2-090: pane closed by the user", "!!document.querySelector('.artifact-pane')", (v) => /false/.test(v), localEnv2);
             if (closed) {
               writeFileSync(join(artDir, "index.html"), "<h1>v2</h1>");
@@ -2489,7 +2493,7 @@ try {
                 if (backToChat) {
                   run("P2-091: list→split evidence shot", ["shot", join(shotsDir, "P2-091-list-split-1440.png"), "1440", "900"], 15_000, localEnv2);
                   // fix 4: the viewer's back arrow returns to the chat context
-                  run("P2-091: viewer back arrow closes the pane", ["click", '.artifact-pane button[aria-label="Close"]'], 15_000, localEnv2);
+                  run("P2-091: viewer back arrow closes the pane", ["click", ".artifact-pane .pane-close"], 15_000, localEnv2);
                   await waitProbe(
                     "P2-091: pane closed, chat stays",
                     "!!document.querySelector('.artifact-pane')",
@@ -2769,20 +2773,31 @@ try {
             // phone-width evidence: the board's card action opens the same dialog
             run("P2-323: drop to phone width", ["shot", join(shotsDir, "P2-323-390-prep.png"), "390", "844"], 15_000, localEnv2);
             run("P2-323: leave the chat for the board", ["click", ".chat-back"], 15_000, localEnv2);
-            const p323Card = run("P2-323: open rename from a session card", ["ipc", "document.querySelector('.session-card .card-rename')?.click() ?? 'MISS'"], 15_000, localEnv2);
+            // P3-358 round 2: the desktop board card became the mobile list row
+            // (build 5) — rename at 390 goes through the row's action sheet.
+            const p323Card = run("P2-323: open the row action sheet", ["ipc", "document.querySelector('.convo-row[data-session=\"ses-reentry-check\"] .convo-row-menu')?.click() ?? 'MISS'"], 15_000, localEnv2);
             if (p323Card.ok) {
-              const p323Narrow = await waitProbe(
-                "P2-323: rename dialog rendered at 390",
-                "!!document.querySelector('.ask-dialog')",
+              const p323Sheet = await waitProbe(
+                "P2-323: action sheet rendered at 390",
+                "!!document.querySelector('.sheet') + '|ROWS:' + document.querySelectorAll('.convo-row').length + '|MENU:' + !!document.querySelector('.convo-row-menu')",
                 (v) => /true/.test(v),
                 localEnv2,
               );
-              if (p323Narrow) {
-                run("P2-323: rename dialog narrow evidence shot", ["shot", join(shotsDir, "P2-323-rename-390.png"), "390", "844"], 15_000, localEnv2);
-                run("P2-323: close the narrow dialog", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))"], 15_000, localEnv2);
-              } else {
-                const p323Dump = run("P2-323: board state on failure", ["ipc", "JSON.stringify({ phase: document.querySelector('.app-root')?.getAttribute('data-phase'), hash: location.hash, cards: document.querySelectorAll('.session-card').length, dialog: !!document.querySelector('.ask-dialog'), board: !!document.querySelector('.session-grid'), chat: !!document.querySelector('.messages') })"], 15_000, localEnv2);
-                if (p323Dump.ok) check("P2-323: board state dump", true, p323Dump.stdout);
+              if (p323Sheet) {
+                run("P2-323: open rename from the sheet", ["click", '.sheet [data-action="rename"]'], 15_000, localEnv2);
+                const p323Narrow = await waitProbe(
+                  "P2-323: rename dialog rendered at 390",
+                  "!!document.querySelector('.ask-dialog')",
+                  (v) => /true/.test(v),
+                  localEnv2,
+                );
+                if (p323Narrow) {
+                  run("P2-323: rename dialog narrow evidence shot", ["shot", join(shotsDir, "P2-323-rename-390.png"), "390", "844"], 15_000, localEnv2);
+                  run("P2-323: close the narrow dialog", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))"], 15_000, localEnv2);
+                } else {
+                  const p323Dump = run("P2-323: board state on failure", ["ipc", "JSON.stringify({ phase: document.querySelector('.app-root')?.getAttribute('data-phase'), hash: location.hash, rows: document.querySelectorAll('.convo-row').length, sheet: !!document.querySelector('.sheet'), dialog: !!document.querySelector('.ask-dialog'), chat: !!document.querySelector('.messages') })"], 15_000, localEnv2);
+                  if (p323Dump.ok) check("P2-323: board state dump", true, p323Dump.stdout);
+                }
               }
             }
             // restore the chat surface: P3-085 expects its session on screen
@@ -3094,7 +3109,7 @@ try {
           localBooted = false;
           killDaemon2("SIGKILL");
           killFake();
-          rmSync(daemonHome2, { recursive: true, force: true });
+          if (process.env.OCR_FLOW_KEEP !== "1") rmSync(daemonHome2, { recursive: true, force: true });
         }
       }
     }
