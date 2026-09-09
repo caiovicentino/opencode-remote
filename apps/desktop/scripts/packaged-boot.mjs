@@ -23,6 +23,7 @@
  *
  * Usage: node scripts/packaged-boot.mjs <path to .app bundle | win-unpacked dir>
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -30,6 +31,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bootVerdict, CANARY } from "./packaged-boot-verdict.mjs";
 import { candidatePaths, isExecutableEntry } from "./packaged-boot-layout.mjs";
+import { exitPlan, runExitPlan } from "./packaged-boot-exit.mjs";
 
 const BOOT_TIMEOUT_MS = 120_000;
 const LOAD_TIMEOUT_MS = 45_000;
@@ -112,9 +114,10 @@ function loadElectronLauncher() {
 
 let watchdog = null;
 let activeApp = null;
+let verdictPrinted = false;
 
 function finish(verdict, appPath, consoleErrors) {
-  if (watchdog) clearTimeout(watchdog);
+  verdictPrinted = true;
   if (verdict.ok) {
     console.log(`packaged-boot: OK ${appPath}`);
     console.log(`  ${verdict.message}`);
@@ -191,16 +194,26 @@ async function main() {
     return;
   }
 
+  // P3-348: the watchdog is never disarmed by finish() anymore — it is the
+  // backstop for the POST-verdict path too (a finally that hangs on a stuck
+  // Electron/Playwright pipe). unref()'d so it is never itself the handle
+  // keeping the loop alive.
   watchdog = setTimeout(() => {
-    console.error(`packaged-boot: FAIL — boot smoke exceeded ${BOOT_TIMEOUT_MS}ms, killing the app`);
+    console.error(
+      verdictPrinted
+        ? "packaged-boot: FAIL — travou após o veredito, forçando a saída"
+        : `packaged-boot: FAIL — boot smoke exceeded ${BOOT_TIMEOUT_MS}ms, killing the app`,
+    );
     try {
       activeApp?.process().kill("SIGKILL");
     } catch {}
     process.exit(1);
   }, BOOT_TIMEOUT_MS);
+  watchdog.unref?.();
 
   let electronApp = null;
   let bootedPage = null;
+  let launchedPid = null;
   // Launch the PACKAGED binary itself (not the electron npm package): the
   // bundle carries its own runtime, asar and extraResources.
   const facts = { executableFound: true, loadFinished: false, rootEmpty: true, canarySeen: false, consoleErrors: [] };
@@ -212,6 +225,12 @@ async function main() {
       env: hermeticBootEnv(),
     });
     activeApp = electronApp;
+    // P3-348: remember the pid right after the launch — after close() the
+    // handle may not expose the child anymore, and the exit plan needs it
+    // for the win32 kill-tree.
+    try {
+      launchedPid = electronApp.process()?.pid ?? null;
+    } catch {}
     // Collect from the earliest moment Playwright offers: the "window" event
     // fires at page creation, before firstWindow() resolves, so the first
     // document's early boot errors land in the collector too. The injected
@@ -272,6 +291,24 @@ async function main() {
     finish(verdict, appPath, facts.consoleErrors);
   } finally {
     await closeApp(electronApp);
+    // P3-348: deterministic exit — finish() only set process.exitCode, and
+    // on win32 the Electron tree / Playwright pipe can keep the loop alive
+    // past closeApp(). Kill the whole tree best-effort (taskkill /T /F) when
+    // the child is still alive, then exit with the verdict code for real.
+    let childAlive = false;
+    try {
+      childAlive = typeof electronApp?.process === "function" && electronApp.process()?.exitCode === null;
+    } catch {}
+    runExitPlan(
+      exitPlan({ platform: process.platform, exitCode: process.exitCode, pid: launchedPid, childAlive }),
+      {
+        kill: (pid) => {
+          console.log(`packaged-boot: kill-tree pid=${pid}`);
+          spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", timeout: 5_000 });
+        },
+        exit: (code) => process.exit(code),
+      },
+    );
   }
 }
 

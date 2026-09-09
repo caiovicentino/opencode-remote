@@ -178,7 +178,13 @@ Desde a P2-242 o mesmo boot real do pacote roda também no CI além do release
 (passo `Smoke-boot the packaged app` nos dois jobs de empacotamento do ci.yml,
 depois do smoke de inspeção, com `shell: bash` explícito e timeout próprio —
 paridade guardada por `scripts/bootsmokeparity.ts` em `scripts/unit.test.ts`) e
-segue FORA do gate determinístico por design. Desde a P2-251 os dois jobs de
+segue FORA do gate determinístico por design. Desde a P3-348 o script sai de
+forma determinística depois do veredito — no win32 derruba a árvore Electron
+inteira com `taskkill /T /F` (best-effort) antes de `process.exit` com o
+código do veredito, e o watchdog de `BOOT_TIMEOUT_MS` também cobre o caminho
+pós-veredito — porque no win32 a árvore de processos sobrevivia ao `close()` e
+mantinha o node vivo até o timeout do runner; o passo win do ci.yml acompanha
+com teto próprio de 4 minutos. Desde a P2-251 os dois jobs de
 empacotamento do release também executam o lado que o boot smoke desliga de
 propósito — o passo `Smoke the packaged daemon sidecar`
 (`apps/desktop/scripts/packaged-daemon-smoke.mjs`, depois do boot do pacote e
