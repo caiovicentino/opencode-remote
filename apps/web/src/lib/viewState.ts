@@ -47,8 +47,12 @@ export function viewReducer(state: ViewState, action: ViewAction): ViewState {
       const top = state.stack[state.stack.length - 1];
       if (!top) return state;
       const stack = state.stack.slice(0, -1);
-      // Popping the chat slot closes the conversation with it.
-      return { stack, chatSession: top === "chat" ? null : state.chatSession };
+      // Popping the chat slot closes the conversation with it — and lands on
+      // the sessions board (P3-373): openChat replaces the stack, so a plain
+      // pop would strand the user on the home greeting with no path to the
+      // list. A second back from the board still reaches the home.
+      if (top === "chat") return { stack: ["chats"], chatSession: null };
+      return { stack, chatSession: state.chatSession };
     }
     case "replace": {
       // Swap the visible slot in place (tab semantics: settings <-> files).

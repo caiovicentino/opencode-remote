@@ -353,7 +353,10 @@ remoto, zero confiança**.
   visto) explica que conversas, arquivos e artifacts sincronizam quando o daemon
   responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
   funcionando, dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
-  pareamento manual a um clique
+  pareamento manual a um clique. O header de marca fica centrado no mesmo eixo do
+  wizard de boas-vindas e agora abre com o glifo de destaque do wizard (P3-373),
+  junto do wordmark serifado — as três primeiras telas da jornada compartilham o
+  mesmo tratamento de marca
 - **Motor local travado vivo (P2-324)** — enquanto o shell observa um daemon que
   parou de responder e o reanima sozinho, o mesmo cartão calmo avisa o que está
   acontecendo ("reanimando automaticamente — nada para fazer por agora"; ou "reinício
@@ -1208,7 +1211,10 @@ origem e motivo) no `desktop.log`, nunca o endereço nem credenciais.
 Desde o P1-046 a janela é um cockpit de duas colunas de verdade: a conversa
 fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou
 Configurações abrem num pane contextual à direita (trocar de pane nunca
-destrói o chat), e toda a navegação vive numa única view stack. Atalhos de
+destrói o chat), e toda a navegação vive numa única view stack. Na largura de
+telefone, o botão de voltar dentro de uma conversa cai na lista de conversas,
+não na home de saudação (P3-373; uma segunda volta — ou o boot — é a home),
+então a lista fica sempre a um toque. Atalhos de
 teclado (também no menu **Ir**): `Cmd+T` nova conversa, `Cmd+K` paleta de
 comandos (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
 Browser / Arquivos / Configurações / Mission Control. O menu nativo fala

@@ -2327,7 +2327,10 @@ try {
               await waitProbe(
                 "P1-089: session row rendered on the board",
                 "document.body.innerText.includes('Reentry check') + '|STATE:' + (document.body.innerText.match(/(Nenhuma conversa|no sessions|Erro[^\\n]*)/i)?.[1] ?? 'rows-or-other') + '|TXT:' + (document.querySelector('.sess-rows,.convo-rows')?.parentElement?.innerText ?? '').slice(0, 180).replace(/\\n/g, '/')",
-                (v) => v.startsWith("true"),
+                // P3-373: the keeper prints ipc results JSON-encoded, so the
+                // boolean prefix arrives quoted — match it quote-proof like
+                // every sibling probe (startsWith("true") never held).
+                (v) => /true/.test(v),
                 localEnv2,
               );
               const row = run("P1-089: click the session row", ["click", '.convo-row[data-session="ses-reentry-check"]'], 15_000, localEnv2);
