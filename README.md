@@ -1526,7 +1526,11 @@ on the card and apply instantly (P3-368: the theme control shares the same
 stored choice and apply path as the Settings appearance card, so the copy and
 the card never disagree). "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
-stays one click away. The gate sits on the same brand axis as the welcome
+stays one click away. Status and action wear different clothes (P3-371): the
+warning orange stays on the pulsing dot and the retry label — the screen's
+only chroma — while the "Reconnect now" button is a solid neutral
+(inverted foreground/background fill, theme-aware), so the eye separates the
+state from the thing you can do. The gate sits on the same brand axis as the welcome
 wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered
 above the vertically centered card stack, so the post-wizard screen reads as
 the same intentional ceremony instead of a flush-left column floating in dead

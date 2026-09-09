@@ -2686,12 +2686,22 @@ button.desk-new:hover:not(:disabled) {
   justify-content: flex-start;
   padding-left: 22px;
 }
+/* P3-371: state vs action — the warn tone stays on the status dot + retry
+   label (this screen's only chroma); the primary action is a solid neutral
+   (inverted fg/bg fill, theme-aware) so it reads as the thing you can do,
+   not a second warning. */
 .degraded-reconnect-btn {
-  color: var(--warn);
-  border-color: var(--warn);
+  color: var(--bg);
+  background: var(--fg);
+  border: none;
+  font-weight: var(--font-weight-medium);
 }
-.degraded-reconnect-btn:hover {
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+.degraded-reconnect-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 85%, var(--bg));
+}
+.degraded-reconnect-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 /* ── P3-360: offline first-message queue on the calm card ───────────────────
    Same flat-surface language as .degraded-local (bordered panel on the gray
