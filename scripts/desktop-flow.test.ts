@@ -248,9 +248,15 @@ async function waitProbe(
   env: NodeJS.ProcessEnv,
   tries = 12,
   delayMs = 1_000,
+  between?: () => void,
 ): Promise<string | null> {
   let last = "";
   for (let i = 0; i < tries; i++) {
+    // P3-374: an optional reclaim action (re-navigation) for probes whose
+    // surface can be legitimately hijacked by a trailing app event (the
+    // P2-090 artifact auto-open fires on idle and replaces the visible pane)
+    // — the board did load; the view just moved on before the probe looked.
+    if (i > 0) between?.();
     const res = probe(["ipc", expr], 15_000, env);
     if (res.ok && predicate(res.stdout)) {
       check(name, true);
@@ -2329,6 +2335,12 @@ try {
                 "document.body.innerText.includes('Reentry check') + '|STATE:' + (document.body.innerText.match(/(Nenhuma conversa|no sessions|Erro[^\\n]*)/i)?.[1] ?? 'rows-or-other') + '|TXT:' + (document.querySelector('.sess-rows,.convo-rows')?.parentElement?.innerText ?? '').slice(0, 180).replace(/\\n/g, '/')",
                 (v) => v.startsWith("true"),
                 localEnv2,
+                12,
+                1_000,
+                // P3-374: a trailing app event (artifact auto-open on idle,
+                // P2-090) can legitimately replace the visible surface right
+                // after chat-back — reclaim the board on each re-probe.
+                () => run("P1-089: reclaim the board (Go menu)", ["menu-click", "go-pane-chat"], 15_000, localEnv2),
               );
               if (!rowProbe) {
                 // P3-374: fail-open diagnostic for the documented board-hang
@@ -2387,7 +2399,18 @@ try {
             localEnv2,
           );
           if (resized.ok) {
-            await waitProbe("P2-090: desk chat remounted at 1440px", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            // P3-374: a trailing session.artifact auto-open (P2-090 behavior,
+            // triggered by the beat's own writes) can replace the chat right
+            // after the resize — reclaim the chat on each re-probe.
+            await waitProbe(
+              "P2-090: desk chat remounted at 1440px",
+              "!!document.querySelector('.messages')",
+              (v) => /true/.test(v),
+              localEnv2,
+              12,
+              1_000,
+              () => run("P2-090: reclaim the chat (close auto pane)", ["click", ".artifact-pane .pane-close"], 15_000, localEnv2),
+            );
             run("P2-090: open the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
             await waitProbe("P2-090: session chat rendered without the pane", "!!document.querySelector('.artifact-pane')", (v) => /false/.test(v), localEnv2);
             mkdirSync(artDir, { recursive: true });
@@ -2807,6 +2830,14 @@ try {
                 "!!document.querySelector('.sheet') + '|ROWS:' + document.querySelectorAll('.convo-row').length + '|MENU:' + !!document.querySelector('.convo-row-menu')",
                 (v) => /true/.test(v),
                 localEnv2,
+                12,
+                1_000,
+                // P3-374: same trailing-event hijack as P1-089's board probe —
+                // reclaim the board, then re-open the row's action sheet.
+                () => {
+                  run("P2-323: reclaim the board (Go menu)", ["menu-click", "go-pane-chat"], 15_000, localEnv2);
+                  run("P2-323: re-open the row action sheet", ["ipc", "document.querySelector('.convo-row[data-session=\"ses-reentry-check\"] .convo-row-menu')?.click() ?? 'MISS'"], 15_000, localEnv2);
+                },
               );
               if (p323Sheet) {
                 run("P2-323: open rename from the sheet", ["click", '.sheet [data-action="rename"]'], 15_000, localEnv2);
