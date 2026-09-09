@@ -276,7 +276,10 @@ do `.pair-overlay`) no próprio portão, em vez de a ação sumir sem feedback;
 P3-367 transformou o toast em caminho de saída: um "Parear agora" inline
 (`.pair-gate-hint-action`) pula direto pro ceremony manual de pareamento
 (`setPairManual(true)`) — no "adicionar máquina" o toast segue sem ação, pois
-o ceremony já está na tela;
+o ceremony já está na tela; o beat P3-367 do desktop-flow rearma o hint, clica
+de verdade no "Parear agora" e prova a saída (toast dispensado + ceremony
+manual visível) — probes em `join('|')` porque `JSON.stringify` dentro do
+`ipc` volta com escape `\"` do harness e false-faila no regex;
 P3-366 estendeu a regra paste-first do desktop (P2-117) ao escape manual do
 degradado: o PairingView alcançado por "Parear outro dispositivo manualmente"
 (e pelo escape do wizard) recebe `preferPaste={!!desktopBridge()}` — "Parear"
