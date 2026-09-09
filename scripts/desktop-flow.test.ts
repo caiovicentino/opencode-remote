@@ -2886,7 +2886,7 @@ try {
             if (p323Card.ok) {
               const p323Sheet = await waitProbe(
                 "P2-323: action sheet rendered at 390",
-                "!!document.querySelector('.sheet') + '|ROWS:' + document.querySelectorAll('.convo-row').length + '|MENU:' + !!document.querySelector('.convo-row-menu') + '|DBG:' + JSON.stringify(window.__ocrDebug?.() ?? null)",
+                "!!document.querySelector('.sheet') + '|ROWS:' + document.querySelectorAll('.convo-row').length + '|MENU:' + !!document.querySelector('.convo-row-menu')",
                 (v) => /true/.test(v),
                 localEnv2,
                 12,
