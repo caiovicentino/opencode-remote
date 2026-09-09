@@ -6410,6 +6410,24 @@ check(
       appSource.includes("setGateHintAt(Date.now())") &&
       appSource.includes("at={gateHintAt}"),
   );
+
+  // --- P3-358 round 3: in-flight ops survive the reconnect --------------------
+  // The board's session list was sent into a wedged socket; EVAL4-F3c's
+  // replayPending() re-issues it once the fresh session confirms — but the
+  // replay kept the STALE attempt timer, which fired under the fresh attempt
+  // and rejected a promise the caller considers in flight.
+  {
+    const clientSource = readFileSync(new URL("../apps/web/src/lib/client.ts", import.meta.url), "utf8");
+    check(
+      "P3-358: the confirmed session replays pending ops (EVAL4-F3c wiring intact)",
+      clientSource.includes("this.setStatus(\"paired\");") &&
+        clientSource.includes("this.replayPending(); // EVAL4-F3c"),
+    );
+    check(
+      "P3-358: replay clears the stale attempt timer",
+      /private replay\(\s*p:[\s\S]*?window\.clearTimeout\(p\.timer\);/.test(clientSource),
+    );
+  }
   // r2 review: the hint must stack ABOVE the pairing overlay (z-index 200) —
   // behind it, a Go-menu press during the QR ceremony stays invisible even
   // though the element is in the DOM.
