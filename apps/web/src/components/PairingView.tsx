@@ -78,6 +78,10 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
         value={code}
         onChange={(e) => setCode(e.target.value)}
         disabled={busy}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        autoComplete="off"
       />
       <button
         className={preferPaste ? "pair-submit primary" : "pair-submit"}
