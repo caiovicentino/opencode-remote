@@ -310,6 +310,9 @@ export class OcrClient {
         query?: Record<string, string>;
         timeoutMs: number;
       };
+      /** P3-374: the rehandshake grace was armed for this entry (arm once —
+       * later hellos in the same churn must not push the deadline out). */
+      graced?: boolean;
     }
   >();
   private listeners = new Set<Handler>();
@@ -618,11 +621,15 @@ export class OcrClient {
     // (its response lost under the old session key) had NO deadline while the
     // handshake churned through backoffs, and a listing op sat on the board's
     // skeletons for the whole window (desktop-flow P1-089 evidence: the
-    // backend saw the request, the client never answered). Re-arm a bounded
-    // grace instead: if the confirm+replay doesn't resolve the op in time, it
-    // rejects like any timeout and the caller's error/retry path takes over.
+    // backend saw the request, the client never answered). Arm a bounded
+    // grace ONCE per limbo epoch — re-arming on every hello would push the
+    // deadline out as long as the churn lasts. If the confirm+replay doesn't
+    // resolve the op in time, it rejects like any timeout and the caller's
+    // error/retry path takes over.
     for (const [id, p] of this.pending.entries()) {
+      if (p.graced) continue;
       clearTimeout(p.timer);
+      p.graced = true;
       p.timer = window.setTimeout(() => {
         // identity guard: replay() replaces the map entry for the same id —
         // only the stale grace timer must die with it

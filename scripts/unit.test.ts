@@ -1667,6 +1667,7 @@ const helloBlock = clientSource.slice(sendHelloAt, replayPendingDefAt);
 check(
   "client.ts re-arms a bounded grace timer for pending ops on every hello",
   helloBlock.includes("PENDING_REHANDSHAKE_GRACE_MS") &&
+    helloBlock.includes("if (p.graced) continue;") &&
     helloBlock.includes("this.pending.get(id) !== p") &&
     clientSource.includes("const PENDING_REHANDSHAKE_GRACE_MS = 8_000"),
 );
