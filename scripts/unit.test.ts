@@ -11288,6 +11288,42 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-368: the offline card ships the theme control its copy promises -------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  // Count-based (P3-337's lesson): the card must carry EXACTLY two controls —
+  // the language select it always had and the theme select the copy promised.
+  const localAt = src.indexOf('className="degraded-local"');
+  const controls = src.slice(localAt, src.indexOf('className="degraded-manual"', localAt));
+  const selectCount = (controls.match(/<select/g) ?? []).length;
+  check(
+    "P3-368: the offline card renders exactly two controls (language + theme)",
+    localAt > 0 && selectCount === 2 &&
+      controls.includes('t("themeLabel")') &&
+      controls.includes("applyTheme") &&
+      controls.includes("localStorage.setItem(THEME_KEY"),
+  );
+  // P3-329's lesson: every key the card renders must resolve in EVERY locale
+  // (result ≠ raw key, never "") — the theme keys ride the same dict Settings uses.
+  const cardKeys = ["degradedLocalTitle", "degradedLocalHint", "language", "themeLabel", "themeSystem", "themeDark", "themeLight"];
+  check(
+    "P3-368: the offline card's keys resolve in both locales (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      cardKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ) && translate("pt", "themeLabel") === "Tema" && translate("en", "themeLabel") === "Theme",
+  );
+  // The control persists to the SAME key Settings reads, so the choice carries
+  // into the Appearance section instead of diverging into a second store.
+  const settingsSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"), "utf8");
+  check(
+    "P3-368: the offline card writes the theme key Settings reads (one store)",
+    src.includes('const THEME_KEY = "ocr_theme";') && settingsSrc.includes('const THEME_KEY = "ocr_theme";'),
+  );
+}
+
 // --- P3-334: the desktop pairing screen leads with the host section ----------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
