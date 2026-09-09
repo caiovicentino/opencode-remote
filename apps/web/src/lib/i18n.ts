@@ -513,6 +513,9 @@ export const dict = {
     groupYesterday: "Yesterday",
     groupEarlier: "Earlier",
     groupArchived: "Archived ({n})",
+    groupPinned: "Pinned",
+    pin: "Pin conversation",
+    unpin: "Unpin",
     archive: "Archive",
     restore: "Restore",
     // QR scanner (in-app camera, P2-118) — connection screen copy must follow
@@ -1179,6 +1182,9 @@ export const dict = {
     groupYesterday: "Ontem",
     groupEarlier: "Anteriores",
     groupArchived: "Arquivadas ({n})",
+    groupPinned: "Fixadas",
+    pin: "Fixar conversa",
+    unpin: "Desafixar",
     archive: "Arquivar",
     restore: "Restaurar",
     // scanner de QR (câmera in-app, P2-118)

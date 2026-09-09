@@ -286,13 +286,10 @@ const daemonAnnounce = new Promise<void>((resolve, reject) => {
 // fixed 1s left two daemons in the relay room whenever the drain ran long
 // (slow unload/flush): the blind router then delivered frames to both, and the
 // message post could land on the OLD daemon — 410 "attachment expired" or a
-// stale-key frame the client cannot open. The listener inside
-// waitForChildExit is registered before the kill, so no exit is ever lost.
-const old = daemon;
-const exited = waitForChildExit(old);
-old.kill("SIGTERM");
-const { waitedMs, forced } = await exited;
-console.log(`old daemon exited after ${waitedMs}ms (forced=${forced})`);
+// stale-key frame the client cannot open. stopAndAwaitExit registers the exit
+// listener before the kill and escalates to SIGKILL, so no exit is ever lost.
+const { forced } = await stopAndAwaitExit(daemon);
+console.log(`old daemon exited (forced=${forced})`);
 daemon = startDaemon();
 await daemonAnnounce;
 

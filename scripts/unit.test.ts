@@ -379,6 +379,7 @@ import { recencyGroup, groupByRecency, startOfLocalDay } from "../apps/web/src/l
 import { accountInitial, accountPlanKey } from "../apps/web/src/lib/account";
 
 import { toggleArchived, ARCHIVED_MAX } from "../apps/web/src/lib/archive";
+import { togglePinned, isPinned, PINNED_MAX } from "../apps/web/src/lib/pins";
 import {
   INSTALL_HINT_DISMISSED_KEY,
   INSTALL_HINT_MESSAGE,
@@ -727,7 +728,7 @@ import {
   type AssetProbe,
 } from "../apps/relay/src/webroot";
 
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONFLICT_OPERATOR_MARKER, CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, readWorkflowTexts, workflowsExpectPrChecks, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONFLICT_OPERATOR_MARKER, CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, readWorkflowTexts, workflowsExpectPrChecks, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, shq, prTitle, PR_TITLE_MAX, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
@@ -8688,6 +8689,34 @@ check(
   check("P2-134: rebaseOutcome ok ⇒ clean", rebaseOutcome({ ok: true, output: "" }) === "clean");
   check("P2-134: rebaseOutcome !ok ⇒ conflict (never throws)", rebaseOutcome({ ok: false, output: "CONFLICT (content): Merge conflict in shared.txt" }) === "conflict");
 
+  // --- P3-358: pr create shell-quoting survives hostile builder prose --------
+  {
+    const calls: string[] = [];
+    const io: PrMergeIo = {
+      exec: (cmd) => {
+        calls.push(cmd);
+        if (cmd.startsWith("gh pr create")) return { ok: true, output: "https://github.com/x/pull/7\n" };
+        if (cmd.startsWith("gh pr list")) return { ok: true, output: "7\n" };
+        if (cmd.startsWith("gh pr merge")) return { ok: true, output: "" };
+        if (cmd.startsWith("gh pr view")) return { ok: true, output: JSON.stringify({ state: "MERGED", headRefOid: "c".repeat(40) }) };
+        return { ok: false, output: `unexpected exec: ${cmd}` };
+      },
+      sleep: () => Promise.resolve(),
+    };
+    const hostileBody = "attempt `89b88b1` and `$(rm -rf /)` plus it's not our 404d2dc";
+    const out = await mergePrForTask(io, {
+      branch: "pilot/P3-354",
+      title: "P3-354: ".repeat(60), // 420 chars — over GitHub's 256 limit
+      body: hostileBody,
+      pushedSha: "c".repeat(40),
+    });
+    const createCmd = calls.find((c) => c.startsWith("gh pr create")) ?? "";
+    check("P3-358: title is capped to the GraphQL budget", prTitle("x".repeat(400)).length === PR_TITLE_MAX + 1 && createCmd.includes("…"));
+    check("P3-358: body is single-quote shell-escaped", createCmd.includes(`--body ${shq(hostileBody)}`));
+    check("P3-358: no raw JSON.stringify interpolation left in the command", !createCmd.includes('--body "') && !createCmd.includes('--title "'));
+    check("P3-358: hostile prose still opens and merges the PR", out.ok === true);
+  }
+
   // Real-git acceptance (P1-036 lesson: never mock git)
   const originDir = mkdtempSync(join(tmpdir(), "ocr-rebaseorigin-"));
   const wsRepo = mkdtempSync(join(tmpdir(), "ocr-rebasews-"));
@@ -11621,6 +11650,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("archive: restore removes only the target", ids.length === 1 && ids[0] === "b");
   const capped = toggleArchived(Array.from({ length: ARCHIVED_MAX + 10 }, (_, i) => `s${i}`), "new", true);
   check("archive: archived set is capped", capped.length === ARCHIVED_MAX && capped[0] === "new");
+
+  // --- P3-357: pinning conversations (pure set algebra, mirrors archive) ---
+  let pins = togglePinned([], "a", true);
+  pins = togglePinned(pins, "b", true);
+  check("pins: newest pinned first", pins[0] === "b" && pins[1] === "a");
+  pins = togglePinned(pins, "a", true);
+  check("pins: re-pinning dedupes to the front", pins.length === 2 && pins[0] === "a");
+  pins = togglePinned(pins, "a", false);
+  check("pins: unpin removes only the target", pins.length === 1 && pins[0] === "b");
+  check("pins: isPinned answers the set", isPinned(pins, "b") && !isPinned(pins, "a"));
+  const pinCapped = togglePinned(Array.from({ length: PINNED_MAX + 10 }, (_, i) => `s${i}`), "new", true);
+  check("pins: pinned set is capped", pinCapped.length === PINNED_MAX && pinCapped[0] === "new");
 
   const previewEvents = [
     { type: "session.idle", properties: { sessionID: "s-idle" } },

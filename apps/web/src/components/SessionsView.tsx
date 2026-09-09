@@ -4,11 +4,12 @@ import { humanizeError } from "../lib/errors";
 import { timeAgo, sessionUpdatedTs } from "../lib/time";
 import { groupByRecency } from "../lib/recency";
 import { loadArchived, saveArchived, toggleArchived } from "../lib/archive";
+import { isPinned, loadPinned, savePinned, togglePinned } from "../lib/pins";
 import type { EventEnvelope } from "@ocr/protocol";
 import { applySessionFilters, splitPilotSessions, type BadgeFilter } from "../lib/sessionFilter";
 import { dropCachedSession } from "../lib/sessionCache";
 import { buildAskDialog, type AskIntent } from "../lib/askdialog";
-import { IconArchive, IconCheck, IconChevronDown, IconFilter, IconMore, IconPencil, IconPlus, IconUndo, IconX } from "./icons";
+import { IconArchive, IconCheck, IconChevronDown, IconFilter, IconMore, IconPencil, IconPin, IconPlus, IconUndo, IconX } from "./icons";
 import AskDialog from "./AskDialog";
 
 interface Session {
@@ -122,6 +123,8 @@ export default function SessionsView({
   // P3-084: client-side archive (this device's localStorage, reversible)
   const [archivedIds, setArchivedIds] = useState<string[]>(() => loadArchived());
   const [archivedOpen, setArchivedOpen] = useState(false);
+  // P3-357: client-side pinning (this device's localStorage, like archive)
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => loadPinned());
   // P2-323: the in-app confirmation dialog (rename/delete) replaces the
   // native window.prompt/window.confirm the desktop shell never implemented
   const [ask, setAsk] = useState<{ intent: AskIntent; id: string; current: string } | null>(null);
@@ -198,6 +201,12 @@ export default function SessionsView({
     saveArchived(next);
   }
 
+  function pinConversation(id: string, pinned: boolean) {
+    const next = togglePinned(pinnedIds, id, pinned);
+    setPinnedIds(next);
+    savePinned(next);
+  }
+
   function restoreConversation(id: string) {
     const next = toggleArchived(archivedIds, id, false);
     setArchivedIds(next);
@@ -226,8 +235,15 @@ export default function SessionsView({
   // end of the list so the user's conversations stay on top
   const { user: userSessions, pilot: pilotSessions } = splitPilotSessions(live);
 
+  // P3-357: pinned conversations float above the recency groups — that is the
+  // whole point of pinning. The pin rides on the user's split (archived and
+  // pilot rows keep their own groups regardless of the pinned set).
+  const pinnedSet = new Set(pinnedIds);
+  const pinnedSessions = userSessions.filter((s) => pinnedSet.has(s.id));
+  const unpinned = userSessions.filter((s) => !pinnedSet.has(s.id));
+
   // P3-084: temporal buckets (Hoje/Ontem/Anteriores), local-midnight bounded
-  const groups = groupByRecency((s) => sessionUpdatedTs(s), userSessions);
+  const groups = groupByRecency((s) => sessionUpdatedTs(s), unpinned);
 
   // live status per session, derived from the last relevant event of each one
   const statusOf = (() => {
@@ -313,6 +329,15 @@ export default function SessionsView({
             </button>
           ) : (
             <>
+              <button
+                className={`row-pin${isPinned(pinnedIds, s.id) ? " active" : ""}`}
+                aria-label={isPinned(pinnedIds, s.id) ? t("unpin") : t("pin")}
+                aria-pressed={isPinned(pinnedIds, s.id)}
+                title={isPinned(pinnedIds, s.id) ? t("unpin") : t("pin")}
+                onClick={() => pinConversation(s.id, !isPinned(pinnedIds, s.id))}
+              >
+                <IconPin size={14} />
+              </button>
               <button
                 className="row-rename"
                 aria-label={t("rename")}
@@ -521,6 +546,8 @@ export default function SessionsView({
         {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
         {variant === "rows" && (
           <div className="sess-rows">
+            {pinnedSessions.length > 0 && <GroupHead group="pinned" label={t("groupPinned")} />}
+            {pinnedSessions.map((s) => renderRow(s))}
             {groups.today.length > 0 && <GroupHead group="today" label={t("groupToday")} />}
             {groups.today.map((s) => renderRow(s))}
             {groups.yesterday.length > 0 && <GroupHead group="yesterday" label={t("groupYesterday")} />}
@@ -541,6 +568,8 @@ export default function SessionsView({
         )}
         {variant === "list" && !loading && (
           <div className="convo-rows">
+            {pinnedSessions.length > 0 && <GroupHead group="pinned" label={t("groupPinned")} />}
+            {pinnedSessions.map((s) => renderListRow(s))}
             {groups.today.length > 0 && <GroupHead group="today" label={t("groupToday")} />}
             {groups.today.map((s) => renderListRow(s))}
             {groups.yesterday.length > 0 && <GroupHead group="yesterday" label={t("groupYesterday")} />}
@@ -604,6 +633,18 @@ export default function SessionsView({
               </button>
             ) : (
               <>
+                <button
+                  role="menuitem"
+                  className="sheet-item"
+                  data-action="pin"
+                  onClick={() => {
+                    pinConversation(sheet.id, !isPinned(pinnedIds, sheet.id));
+                    setSheet(null);
+                  }}
+                >
+                  <IconPin size={18} aria-hidden />
+                  {isPinned(pinnedIds, sheet.id) ? t("unpin") : t("pin")}
+                </button>
                 <button
                   role="menuitem"
                   className="sheet-item"
