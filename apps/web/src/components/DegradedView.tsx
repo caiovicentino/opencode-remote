@@ -1,24 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
-import { applyTheme, type ThemeChoice } from "../lib/theme";
+// P3-368: the offline card's copy promises "language and theme" — the theme
+// control ships here too, reading and persisting through the shared lib/theme
+// helpers (same ocr_theme key + applyTheme() path as the Settings card).
+import { applyTheme, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
 import { retryLineParts } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
 import PaneMap from "./PaneMap";
-
-// P3-368: the offline card's copy promises "language and theme" — the theme
-// control ships here too, persisting to the same ocr_theme key Settings reads
-// and reapplying through the shared applyTheme().
-const THEME_KEY = "ocr_theme";
-
-function readTheme(): ThemeChoice {
-  try {
-    const stored = localStorage.getItem(THEME_KEY);
-    return stored === "dark" || stored === "light" ? stored : "system";
-  } catch {
-    return "system";
-  }
-}
 
 interface Props {
   kind: DegradedKind;
