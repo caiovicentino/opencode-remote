@@ -2324,12 +2324,25 @@ try {
             const back = run("P1-089: back to the conversation list", ["click", ".chat-back"], 15_000, localEnv2);
             if (back.ok) {
               await waitProbe("P1-089: board rendered (chat unmounted)", "!!document.querySelector('.messages')", (v) => /false/.test(v), localEnv2);
-              await waitProbe(
+              const rowProbe = await waitProbe(
                 "P1-089: session row rendered on the board",
                 "document.body.innerText.includes('Reentry check') + '|STATE:' + (document.body.innerText.match(/(Nenhuma conversa|no sessions|Erro[^\\n]*)/i)?.[1] ?? 'rows-or-other') + '|TXT:' + (document.querySelector('.sess-rows,.convo-rows')?.parentElement?.innerText ?? '').slice(0, 180).replace(/\\n/g, '/')",
                 (v) => v.startsWith("true"),
                 localEnv2,
               );
+              if (!rowProbe) {
+                // P3-374: fail-open diagnostic for the documented board-hang
+                // flake ("request de listagem nunca resolve", 77d717d): did the
+                // fake backend ever see the board's GET /session? One line,
+                // best-effort, never a new failure mode.
+                try {
+                  const hits = (await (await fetch(`${fakeUrl}/__hits`)).json()) as { method: string; path: string }[];
+                  const listing = hits.filter((h) => h.path === "/session").length;
+                  console.log(`     P1-089 diagnostic: fake backend saw ${hits.length} hits, ${listing} GET /session`);
+                } catch (err) {
+                  console.log(`     P1-089 diagnostic: /__hits unreachable: ${String(err).slice(0, 80)}`);
+                }
+              }
               const row = run("P1-089: click the session row", ["click", '.convo-row[data-session="ses-reentry-check"]'], 15_000, localEnv2);
               if (row.ok) {
                 await waitProbe(
