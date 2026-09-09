@@ -11209,6 +11209,64 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-374: stepper centered under the wordmark, skip in the card's row ------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // P3-330's lesson: assert the COMBINATION in the real source — the header
+  // must center text AND not be a flex row (flex items ignore text-align, so
+  // either assertion alone can pass while the sparse corner row lives on).
+  const headerAt = css.indexOf(".welcome header {");
+  const headerRule = css.slice(headerAt, css.indexOf("}", headerAt));
+  check(
+    "P3-374: the brand header centers text and is not a space-between flex row",
+    headerAt > 0 &&
+      headerRule.includes("text-align: center") &&
+      !headerRule.includes("display: flex") &&
+      !headerRule.includes("justify-content"),
+  );
+  const metaAt = css.indexOf(".welcome-meta {");
+  const metaRule = css.slice(metaAt, css.indexOf("}", metaAt));
+  check(
+    "P3-374: .welcome-meta is a plain centered block, not one end of a sparse row",
+    metaAt > 0 &&
+      !metaRule.includes("flex") &&
+      !metaRule.includes("position: absolute") &&
+      !metaRule.includes("justify-content"),
+  );
+  // Brand order in the markup: wordmark first, step indicator after, both
+  // inside the header that precedes the first step card.
+  const wordmarkAt = src.indexOf('className="brand-wordmark"');
+  const metaMarkAt = src.indexOf('className="welcome-meta"');
+  const step1At = src.indexOf("step === 1 && (");
+  const step2At = src.indexOf("step === 2 && (");
+  const step3At = src.indexOf("step === 3 && (");
+  check(
+    "P3-374: the step indicator renders under the wordmark, before the step cards",
+    wordmarkAt > 0 &&
+      metaMarkAt > wordmarkAt &&
+      metaMarkAt < step1At,
+  );
+  // Steps 1 and 2 mount the skip inside .welcome-actions, after the row opens
+  // — escape and progress read as one unit (step 3 keeps welcome-later, the
+  // single in-context exit asserted by the P3-338 block above).
+  const row = (s: string) =>
+    s.indexOf('className="welcome-actions"') > -1 &&
+    s.indexOf("welcome-skip") > s.indexOf('className="welcome-actions"');
+  check(
+    "P3-374: steps 1 and 2 mount the quiet skip inside the card's action row",
+    step1At > 0 && step2At > step1At && step3At > step2At &&
+      row(src.slice(step1At, step2At)) &&
+      row(src.slice(step2At, step3At)),
+  );
+  const actionsAt = css.indexOf(".welcome-actions {");
+  const actionsRule = css.slice(actionsAt, css.indexOf("}", actionsAt));
+  check(
+    "P3-374: .welcome-actions is the card's flex action row",
+    actionsAt > 0 && actionsRule.includes("display: flex"),
+  );
+}
+
 // --- P3-374 round 2: demoted mobile chrome + board listing watchdog -----------
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
