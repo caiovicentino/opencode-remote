@@ -405,6 +405,9 @@ private. That is the product: **local power, remote control, zero trust**.
   component
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
+  shell title included (P3-373: the build-5 token bump had briefly promoted it
+  to the 0.95rem display step, past the demoted ≤14px contract — it now sits
+  back on the `--font-size-xs` overline step), the
   badge filters fold into a menu attached to the search field (active filter
   marked with a dot on the funnel icon), the desktop empty state ends in a
   composer-styled "New conversation" action, and the daemon status is stated

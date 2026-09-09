@@ -3682,7 +3682,9 @@ button.desk-new:hover:not(:disabled) {
   flex: 1;
   min-width: 0;
   text-align: center;
-  font-size: var(--font-size-md);
+  /* P2-108: the mobile chrome is a demoted overline — the display step
+     (--font-size-md, 15.2px) blew past the gate's ≤14px contract. */
+  font-size: var(--font-size-xs);
   font-weight: var(--font-weight-medium);
   color: var(--fg);
   overflow: hidden;
