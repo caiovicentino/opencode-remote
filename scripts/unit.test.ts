@@ -11277,6 +11277,21 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-369: the paste target keeps paste hygiene off (spell/autocorrect) ----
+// The .pair-code rule itself (resize: none, mono token) is pinned by
+// scripts/paircode.test.ts; this covers the attributes on the element.
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const taAt = src.indexOf('className="pair-code"');
+  const taEnd = src.indexOf("/>", taAt);
+  const ta = taAt === -1 ? "" : src.slice(taAt, taEnd);
+  check(
+    "P3-369: the paste target is a compact 2-row box with paste hygiene off (spell/autocorrect)",
+    ta.includes("rows={2}") && ta.includes("spellCheck={false}") && ta.includes('autoCapitalize="off"') &&
+      ta.includes('autoCorrect="off"') && ta.includes('autoComplete="off"'),
+  );
+}
+
 // --- P3-331 round 2: the manual escape survives the sticky local verdict ------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
