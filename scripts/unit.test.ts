@@ -11109,15 +11109,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 // --- P3-338: one labeled exit on the welcome's final step ---------------------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
-  const metaAt = src.indexOf('className="welcome-meta"');
-  const guardAt = src.indexOf("{step < 3 && (", metaAt);
-  const skipAt = src.indexOf('className="welcome-skip"', metaAt);
-  const laterAt = src.indexOf('className="welcome-later"');
-  // The global skip renders only while the step card has no in-context exit;
-  // the pairing step keeps "do this later" as the single way out.
+  // P3-374: the skip lives inside the step-1/2 cards' action rows (they only
+  // mount for steps 1–2); the pairing card — the last step block in the file —
+  // must carry the in-context "do this later" as the single way out, with no
+  // global skip rendering on the final step.
+  const pairAt = src.indexOf("step === 3 && (");
+  const laterAt = src.indexOf('className="welcome-later"', pairAt);
   check(
     "P3-338: the global welcome skip is hidden on the final step (welcome-later is the one exit)",
-    metaAt >= 0 && guardAt >= 0 && skipAt > guardAt && laterAt > 0,
+    pairAt > 0 && laterAt > 0 && src.indexOf("welcome-skip", pairAt) === -1,
   );
 }
 

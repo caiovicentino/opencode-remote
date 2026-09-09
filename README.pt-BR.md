@@ -361,9 +361,11 @@ remoto, zero confiança**.
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
-  parear um celular com a opção explícita de "fazer isso depois". Os dois primeiros
-  passos têm o atalho global "Pular" na linha de metadados; o passo final tem uma
-  única saída, no próprio cartão — "Fazer isso depois" (ou "Pronto" depois de parear)
+  parear um celular com a opção explícita de "fazer isso depois". O indicador de
+  passo fica centralizado sob a marca, e os dois primeiros passos têm o "Pular"
+  discreto dentro da linha de ações do cartão, ao lado da ação principal — fuga e
+  progresso leem-se como uma coisa só (P3-374); o passo final tem uma
+  única saída, no próprio cartão — "Fazer isso depois" (ou "Pronto" depois de pareado)
   — para a mesma ação nunca mostrar duas rotas com nomes diferentes (P3-338). Concluir
   ou pular grava a flag no localStorage do renderer (sem IPC, sem tocar o processo
   main), então quem já usa o app — incluindo todo mundo que atualizar com pareamento

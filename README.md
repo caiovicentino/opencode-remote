@@ -1545,10 +1545,13 @@ paste-code ceremony (the path that used to hide behind the unlabeled link on
 the previous screen), and explicit manual intent forces the local
 auto-connect mode off there so the paste form can never be swallowed
 (P3-332 rule).
-The first
-two steps carry a global "Skip" in the top meta row; the final step has a
-single, in-context way out — "Do this later" (or "Done" once paired) — so one
-action never shows two differently-labeled exits (P3-338). Finishing or
+The step
+indicator reads as part of the brand block — centered under the wordmark — and
+the first two steps carry their quiet "Skip" inside the card's action row,
+right beside the primary action, so escape and progress read as one unit
+(P3-374); the final step has a single, in-context way out — "Do this later"
+(or "Done" once paired) — so one action never shows two differently-labeled
+exits (P3-338). Finishing or
 skipping stamps a flag in the renderer's localStorage (no IPC, no
 main-process change), so existing users — including everyone upgrading with a
 stored pairing — never see it. It renders as a single full-screen surface: no
