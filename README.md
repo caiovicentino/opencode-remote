@@ -418,7 +418,9 @@ private. That is the product: **local power, remote control, zero trust**.
   degraded first boot) carry a persistent "After pairing" card listing the panes that stay
   locked until connection — Conversations, Artifacts, Browser, Mission Control — each with a
   one-line description and a lock glyph, so a first-time user sees what pairing unlocks
-  instead of a transient toast flashing the only explanation away
+  instead of a transient toast flashing the only explanation away. On the first-boot shell
+  skeleton (P3-365) the card retitles to "Before pairing" and keeps the lock glyph only on
+  Conversations — the rail beside it already opens the other panes
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
   shell title included (P3-373: the build-5 token bump had briefly promoted it

@@ -1401,6 +1401,10 @@ export default function App() {
               onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
               sidecarExit={sidecarExit}
               sidecarWedge={sidecarWedge}
+              // P3-365: the rail beside this card opens Artifacts, Browser and
+              // Mission Control pre-pairing — the hero's pane map must not
+              // claim those panes are locked.
+              panesReachable
             />
           </main>
           <section className="desk-pane" style={{ display: isPaneOpen(view) ? "block" : "none" }}>
