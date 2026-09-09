@@ -3,6 +3,7 @@ import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { retryLineParts } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
+import PaneMap from "./PaneMap";
 import { applyTheme } from "./SettingsView";
 
 // P3-368: the offline card's copy promises "language and theme" — the theme
@@ -194,6 +195,9 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
           </select>
         </div>
       </div>
+      {/* P3-364: the offline card above is what works NOW; this is what
+          pairing unlocks — the standing map the gate toast only flashes. */}
+      <PaneMap />
       <button className="degraded-manual" onClick={onPairManually}>
         {t("degradedPairManually")}
       </button>
