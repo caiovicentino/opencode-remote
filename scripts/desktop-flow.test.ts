@@ -2376,8 +2376,8 @@ try {
                 // P2-090) can legitimately replace the visible surface right
                 // after chat-back — reclaim the board on each re-probe, silent
                 // (probes, never run: reclaims must not add failure noise).
-                // The Go-menu pane action resets to the home when no chat is
-                // active, so the drawer path is the honest reclaim.
+                // The drawer path is the honest reclaim: it works from any
+                // surface, while .chat-back only exists while a chat is up.
                 () => {
                   probe(["click", ".shell-menu"], 15_000, localEnv2);
                   probe(["click", '.drawer-row[data-dest="chats"]'], 15_000, localEnv2);
@@ -2892,9 +2892,10 @@ try {
                 12,
                 1_000,
                 // P3-374: same trailing-event hijack as P1-089's board probe —
-                // silent reclaim (Go menu), then re-open the row's action sheet.
+                // silent reclaim (← re-click, see above), then re-open the
+                // row's action sheet.
                 () => {
-                  probe(["menu-click", "go-pane-chat"], 15_000, localEnv2);
+                  probe(["ipc", "document.querySelector('.chat-back')?.click() ?? 'noop'"], 15_000, localEnv2);
                   probe(["ipc", "document.querySelector('.convo-row[data-session=\"ses-reentry-check\"] .convo-row-menu')?.click() ?? 'MISS'"], 15_000, localEnv2);
                 },
               );

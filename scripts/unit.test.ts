@@ -9785,6 +9785,14 @@ check(
     "p1-046 back() from the board reaches the home (empty stack)",
     viewReducer(backFromChat, { type: "back" }).stack.length === 0,
   );
+  // P3-374: a deep-linked chat replaces the history — back must still reach the
+  // board instead of dead-ending on the home (the desktop-flow P1-089 repro).
+  const deepLinked = viewReducer(base, { type: "openChat", sessionId: "dl" });
+  const backToBoard = viewReducer(deepLinked, { type: "back" });
+  check(
+    "p3-374 back() from a deep-linked chat lands on the sessions board",
+    backToBoard.chatSession === null && topSlot(backToBoard) === "chats",
+  );
   check(
     "p1-046 topSlot falls back to chat on the home screen",
     topSlot(base) === "chat" && activeSlots(base).has("chat"),

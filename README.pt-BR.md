@@ -214,6 +214,11 @@ remoto, zero confiança**.
   do shell vira uma overline maiúscula e discreta (o "Conversas" entre o
   drawer e o botão de nova conversa), no mesmo padrão do indicador de passo
   do wizard, em vez de título de página em tamanho cheio
+- **Voltar cai no painel (P3-374)** — no layout de telefone, sair de uma
+  conversa pelo botão ← sempre mostra a lista de conversas (mesmo quando a
+  conversa foi aberta por deep link, que substitui o histórico de navegação);
+  a home segue como superfície padrão do app, e mais um ← na lista volta pra
+  ela
 - **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
   filtram o painel pelas conversas com ou sem badge de não-lidas
 - **Troca rápida de sessão (P1-064)** — abrir uma conversa busca só as últimas
