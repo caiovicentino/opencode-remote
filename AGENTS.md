@@ -277,6 +277,12 @@ P3-367 transformou o toast em caminho de saída: um "Parear agora" inline
 (`.pair-gate-hint-action`) pula direto pro ceremony manual de pareamento
 (`setPairManual(true)`) — no "adicionar máquina" o toast segue sem ação, pois
 o ceremony já está na tela;
+P3-366 estendeu a regra paste-first do desktop (P2-117) ao escape manual do
+degradado: o PairingView alcançado por "Parear outro dispositivo manualmente"
+(e pelo escape do wizard) recebe `preferPaste={!!desktopBridge()}` — "Parear"
+é o botão primário verde e "Escanear QR code" a opção secundária nesse caminho
+também (o celular segue scan-first); o beat `P3-366` do desktop-flow prova a
+hierarquia de classes pós-clique em `.degraded-manual`;
 use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app

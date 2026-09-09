@@ -6464,6 +6464,20 @@ check(
       cssSource.includes(".pair-gate-hint-action:hover"),
   );}
 
+// --- P3-366: desktop paste-first holds on every PairingView call site -----------
+{
+  // P2-117's rule is global to the desktop shell: whatever path reaches the
+  // manual ceremony (add machine, wizard escape, degraded journey's "pair
+  // manually"), the paste form must lead and the scanner stays the option.
+  const appSource = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const pairingSites = appSource.split("<PairingView").slice(1);
+  check(
+    "P3-366: every PairingView call site passes preferPaste (desktop paste-first)",
+    pairingSites.length === 2 &&
+      pairingSites.every((s) => s.slice(0, s.indexOf("/>")).includes("preferPaste={")),
+  );
+}
+
 
 // --- P2-276: shell language (apps/desktop/src/shelllang.ts) ---------------------
 {
