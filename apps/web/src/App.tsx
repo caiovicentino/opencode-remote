@@ -1366,8 +1366,9 @@ export default function App() {
                     key={b.slot}
                     className={slots.has(b.slot) ? "active" : ""}
                     onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
+                    disabled={b.slot === "chat"}
+                    title={b.slot === "chat" ? t("gateSessionsHint") : b.label}
                     data-pane={b.slot}
-                    title={b.label}
                   >
                     {b.icon}
                     <span>{b.label}</span>
