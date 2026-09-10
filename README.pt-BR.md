@@ -107,7 +107,14 @@ remoto, zero confiança**.
   que hospeda o daemon e **nunca impede o envio** — a mensagem pode seguir
   mesmo assim. O mesmo veredito é servido em
   `GET /__ocr/model/status` (`{ available, state, message }`, espelhando a
-  rota de stt-status). `OCR_MODEL_BLOCK=1` no daemon é um hatch de teste que
+  rota de stt-status). O veredito não fica mais congelado: a rota de status
+  re-observa o catálogo preguiçosamente quando o veredito corrente não é
+  ready (no máximo uma vez por minuto), então uma credencial configurada
+  depois do boot é percebida sem reiniciar o daemon. `OCR_MODEL_READINESS_MIN_MS`
+  muda o intervalo mínimo (milissegundos inteiros, padrão 60000, teto
+  3600000) e `OCR_MODEL_READINESS_DISABLE=off` desliga a revalidação
+  completamente (valores inválidos falham o boot, fail-closed).
+  `OCR_MODEL_BLOCK=1` no daemon é um hatch de teste que
   força o veredito no-provider para evidência visual determinística
 - **Prontidão de versão do opencode** — a seção de máquina do Settings avisa
   quando o opencode instalado na máquina que hospeda o daemon é mais velho do
