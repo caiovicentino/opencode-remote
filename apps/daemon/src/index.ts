@@ -68,6 +68,7 @@ import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whispe
 import { sttVerdict } from "./voicecap.js";
 import { ttsVerdict } from "./ttscap.js";
 import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
+import { modelRevalidatePlan, parseModelReadinessKnobs } from "./modelrevalidate.js";
 import { MIN_OPENCODE_VERSION, versionVerdict, type OpencodeVersionVerdict } from "./opencodever.js";
 import { parseReadinessKnobs, readinessRefreshPlan } from "./readiness.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
@@ -1339,8 +1340,14 @@ end tell`;
   // P2-210: model-readiness status, mirroring the stt-status route shape
   // (available boolean + verdict state and actionable pt-BR message). Same
   // auth, same tunnel — no new network surface. Reads ONLY the already-cached
-  // catalog summary (see noteProviderCatalog); it never fires its own fetch.
+  // catalog summary (see noteProviderCatalog); it never fires its own fetch
+  // outside the P3-397 re-observation gate below.
   if (req.path === "/__ocr/model/status" && req.method === "GET") {
+    // P3-397: lazy re-observation before the verdict is served — a credential
+    // configured after boot is picked up here without a restart (at most once
+    // per OCR_MODEL_READINESS_MIN_MS, honoring OCR_MODEL_READINESS_DISABLE,
+    // no new periodic timer). The route still answers from the cached summary.
+    await maybeReobserveModelCatalog();
     return { id: req.id, status: 200, body: modelStatus() };
   }
   if (req.path === "/__ocr/voice/tts" && req.method === "POST") {
@@ -2428,6 +2435,56 @@ async function maybeReprobeBrowse(): Promise<void> {
     st.probedAt = Date.now();
     // one line per re-done probe: capability name + resulting state only
     log("info", "readiness re-probe", { capability: "browse", state: browseCap.state });
+  }
+}
+
+// P3-397: model-catalog revalidation — knobs parsed fail-closed (main() exits
+// on a bad value) plus the same per-capability bookkeeping the P2-250
+// readiness state keeps: when the catalog was last observed and whether an
+// observation is in flight (never duplicated).
+const modelReadinessKnobs = parseModelReadinessKnobs(process.env);
+let modelObservedAt = 0;
+let modelObservationInFlight = false;
+
+/** Lazy model re-observation: fired ONLY from the model status route when the
+ * current verdict is not ready. Re-fetches the SAME /provider catalog the
+ * daemon already fetches elsewhere (the context ruler's on-miss refresh) and
+ * records it through the existing noteProviderCatalog path — no new route, no
+ * new port, no new listener, no periodic timer. Never throws, never
+ * duplicates an observation in flight, and a failed observation never worsens
+ * the verdict beyond the neutral unknown (one log line, no path, no secret).
+ * The documented OCR_MODEL_BLOCK=1 hatch keeps its forced verdict. */
+async function maybeReobserveModelCatalog(): Promise<void> {
+  if (process.env.OCR_MODEL_BLOCK === "1") return;
+  const plan = modelRevalidatePlan(
+    modelStatus().state,
+    modelObservedAt,
+    Date.now(),
+    modelReadinessKnobs.minIntervalMs,
+  );
+  if (modelReadinessKnobs.disabled || plan.action !== "observe" || modelObservationInFlight) return;
+  modelObservationInFlight = true;
+  try {
+    const pres = await fetch(new URL("/provider", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+    });
+    if (pres.ok) {
+      const catalog = (await pres.json()) as Parameters<typeof providerWindows.refresh>[0];
+      providerWindows.refresh(catalog);
+      noteProviderCatalog(catalog, true);
+      log("info", "readiness re-probe", { capability: "model-catalog", state: modelStatus().state });
+    } else {
+      noteProviderCatalog(null, false);
+      log("warn", "model catalog re-observation failed — verdict unknown", { reason: `upstream ${pres.status}` });
+    }
+  } catch {
+    // a failed observation teaches nothing new — degrade to the neutral
+    // unknown (never a more accusatory verdict), one line, nothing sensitive
+    noteProviderCatalog(null, false);
+    log("warn", "model catalog re-observation failed — verdict unknown", { reason: "fetch error" });
+  } finally {
+    modelObservationInFlight = false;
+    modelObservedAt = Date.now();
   }
 }
 
@@ -4497,6 +4554,13 @@ async function main() {
   // invalid OCR_READINESS_* never falls back to the default silently.
   if (readinessKnobs.problems.length > 0) {
     for (const problem of readinessKnobs.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P3-397: the model-catalog revalidation knobs follow the same fail-closed
+  // contract — an invalid OCR_MODEL_READINESS_* never starts a listener.
+  if (modelReadinessKnobs.problems.length > 0) {
+    for (const problem of modelReadinessKnobs.problems) log("error", problem);
     process.exit(1);
     return;
   }

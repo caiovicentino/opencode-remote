@@ -121,6 +121,15 @@ import {
   identityRecoveryPlan,
 } from "../apps/daemon/src/identitybackup";
 import { modelReadyVerdict, providerSummary } from "../apps/daemon/src/modelready";
+
+import {
+  MODEL_READINESS_DEFAULT_INTERVAL_MS,
+  MODEL_READINESS_DISABLE_ENV,
+  MODEL_READINESS_INTERVAL_CEILING_MS,
+  MODEL_READINESS_INTERVAL_ENV,
+  modelRevalidatePlan,
+  parseModelReadinessKnobs,
+} from "../apps/daemon/src/modelrevalidate";
 import { MIN_OPENCODE_VERSION, parseVersion, versionVerdict } from "../apps/daemon/src/opencodever";
 import {
   DISK_ALERT_FREE_BYTES,
@@ -21185,6 +21194,167 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-397: lazy model-catalog revalidation (modelrevalidate.ts) + wiring ------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const modelrevalidateSrc = src(["apps", "daemon", "src", "modelrevalidate.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  const NOW = 1_000_000;
+  const MIN = 60_000;
+
+  // decision table: [label, currentState, lastObservedAt, now, minIntervalMs, action, reason]
+  const cases: [string, unknown, number, number, number, "observe" | "reuse", string][] = [
+    ["a verdict within the ceiling is reused", "no-provider", NOW - (MIN - 1), NOW, MIN, "reuse", "within-ceiling"],
+    ["a verdict exactly at the ceiling is re-observed", "no-provider", NOW - MIN, NOW, MIN, "observe", "ceiling-elapsed"],
+    ["a verdict past the ceiling is re-observed", "unknown", NOW - MIN - 1, NOW, MIN, "observe", "ceiling-elapsed"],
+    ["a never-observed verdict (epoch sentinel) is re-observed", "no-model", 0, NOW, MIN, "observe", "ceiling-elapsed"],
+    ["a future lastObservedAt clamps to age zero (reuse)", "no-provider", NOW + 5_000, NOW, MIN, "reuse", "within-ceiling"],
+    ["an already-ready verdict never observes, even with an enormous age", "ready", 0, NOW, MIN, "reuse", "verdict-ready"],
+    ["an already-ready verdict never observes even with broken instants", "ready", NaN, NaN, NaN, "reuse", "verdict-ready"],
+    ["a missing verdict is fail-closed reuse", undefined, 0, NOW, MIN, "reuse", "invalid-input"],
+    ["an empty verdict is fail-closed reuse", "", NOW, NOW, MIN, "reuse", "invalid-input"],
+    ["a negative lastObservedAt is fail-closed reuse", "no-provider", -1, NOW, MIN, "reuse", "invalid-input"],
+    ["a negative now is fail-closed reuse", "no-provider", 0, -5, MIN, "reuse", "invalid-input"],
+    ["a non-finite instant is fail-closed reuse", "no-provider", NaN, NOW, MIN, "reuse", "invalid-input"],
+    ["a non-finite ceiling is fail-closed reuse", "no-provider", 0, NOW, Infinity, "reuse", "invalid-input"],
+    ["a zero ceiling is fail-closed reuse", "no-provider", 0, NOW, 0, "reuse", "invalid-input"],
+    ["a negative ceiling is fail-closed reuse", "no-provider", 0, NOW, -60_000, "reuse", "invalid-input"],
+  ];
+  for (const [label, state, lastObservedAt, now, minIntervalMs, action, reason] of cases) {
+    const plan = modelRevalidatePlan(state, lastObservedAt, now, minIntervalMs);
+    check(`P3-397: ${label}`, plan.action === action && plan.reason === reason);
+  }
+  check(
+    "P3-397: the same input yields the identical plan twice",
+    JSON.stringify(modelRevalidatePlan("no-provider", 0, NOW, MIN)) ===
+      JSON.stringify(modelRevalidatePlan("no-provider", 0, NOW, MIN)),
+  );
+
+  // knob parsing: empty environment reproduces the documented defaults
+  const cfg = parseModelReadinessKnobs({});
+  check(
+    "P3-397: an empty environment yields the documented defaults",
+    cfg.minIntervalMs === MODEL_READINESS_DEFAULT_INTERVAL_MS &&
+      cfg.minIntervalMs === 60_000 &&
+      cfg.disabled === false &&
+      cfg.problems.length === 0,
+  );
+  check(
+    "P3-397: a blank OCR_MODEL_READINESS_MIN_MS keeps the default with no problem",
+    parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: "   " }).problems.length === 0 &&
+      parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: "   " }).minIntervalMs ===
+        MODEL_READINESS_DEFAULT_INTERVAL_MS,
+  );
+  check(
+    "P3-397: the documented disable value turns the revalidation off with no problem",
+    (["off", "0", "false", "OFF", "False"] as const).every(
+      (v) =>
+        parseModelReadinessKnobs({ [MODEL_READINESS_DISABLE_ENV]: v }).disabled === true &&
+        parseModelReadinessKnobs({ [MODEL_READINESS_DISABLE_ENV]: v }).problems.length === 0,
+    ) &&
+      (["on", "1", "true"] as const).every(
+        (v) =>
+          parseModelReadinessKnobs({ [MODEL_READINESS_DISABLE_ENV]: v }).disabled === false &&
+          parseModelReadinessKnobs({ [MODEL_READINESS_DISABLE_ENV]: v }).problems.length === 0,
+      ),
+  );
+  check(
+    "P3-397: a non-documented disable value is a problem, never a silent enable",
+    parseModelReadinessKnobs({ [MODEL_READINESS_DISABLE_ENV]: "banana" }).problems.length === 1,
+  );
+  check(
+    "P3-397: non-numeric, zero, negative, fractional and above-ceiling intervals are problems",
+    parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: "abc" }).problems.length === 1 &&
+      parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: "0" }).problems.length === 1 &&
+      parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: "-5" }).problems.length === 1 &&
+      parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: "1500.5" }).problems.length === 1 &&
+      parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: String(MODEL_READINESS_INTERVAL_CEILING_MS + 1) })
+        .problems.length === 1 &&
+      parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: String(MODEL_READINESS_INTERVAL_CEILING_MS) })
+        .problems.length === 0,
+  );
+  check(
+    "P3-397: several problems are returned at once, never short-circuited",
+    parseModelReadinessKnobs({ [MODEL_READINESS_INTERVAL_ENV]: "abc", [MODEL_READINESS_DISABLE_ENV]: "banana" })
+      .problems.length === 2,
+  );
+
+  // modelrevalidate.ts stays pure: no node:fs/network/timer, unit tests must
+  // never boot a daemon on import (strip line comments — the header prose
+  // names the banned modules)
+  const code = modelrevalidateSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P3-397: modelrevalidate.ts is pure (no node imports, no fetch, no timer)",
+    !/node:(fs|child_process|http|os|path)/.test(code) &&
+      !/fetch|setTimeout|setInterval/.test(code),
+  );
+
+  // real-repo assertions on apps/daemon/src/index.ts
+  // 1) no new periodic timer: exactly two mentions of the re-observation in
+  //    the whole daemon — the declaration and the single awaited call site on
+  //    the model status route (never a setInterval/setTimeout line)
+  check(
+    "P3-397: the re-observation has exactly one call site — the model status route, no periodic timer",
+    (indexSrc.match(/maybeReobserveModelCatalog/g) ?? []).length === 2 &&
+      /async function maybeReobserveModelCatalog\(/.test(indexSrc) &&
+      /await maybeReobserveModelCatalog\(\);/.test(indexSrc),
+  );
+  // 2) the route serves the cached summary; its only new statement is the
+  //    gated call (no own fetch in the route body — extends the P2-210 check)
+  const routeAt = indexSrc.indexOf('/__ocr/model/status" && req.method === "GET"');
+  const routeBody = routeAt >= 0 ? indexSrc.slice(routeAt, indexSrc.indexOf("if (req.path", routeAt + 20)) : "";
+  check(
+    "P3-397: the route body gates through the re-observation and never fetches on its own",
+    routeAt >= 0 &&
+      /await maybeReobserveModelCatalog\(\);/.test(routeBody) &&
+      /body: modelStatus\(\) \}/.test(routeBody) &&
+      !routeBody.includes("fetch("),
+  );
+  // 3) inside the re-observation itself every fetch sits BEHIND the ceiling
+  //    gate, the hatch returns before the plan, and a failed observation
+  //    degrades to the neutral unknown through the existing failure recorder
+  //    (both branches, never a throw, never a more accusatory verdict)
+  const fnStart = indexSrc.indexOf("async function maybeReobserveModelCatalog");
+  const fnEnd = fnStart >= 0 ? indexSrc.indexOf("\n}", fnStart) : -1;
+  const fnBody = fnEnd > fnStart ? indexSrc.slice(fnStart, fnEnd) : "";
+  const gateAt = fnBody.indexOf('plan.action !== "observe"');
+  const firstFetchAt = fnBody.indexOf("fetch(");
+  check(
+    "P3-397: every catalog fetch sits behind the ceiling gate inside the re-observation",
+    fnStart >= 0 &&
+      gateAt > 0 &&
+      firstFetchAt > gateAt &&
+      fnBody.includes("modelRevalidatePlan(") &&
+      fnBody.indexOf('OCR_MODEL_BLOCK === "1"') >= 0 &&
+      fnBody.indexOf('OCR_MODEL_BLOCK === "1"') < gateAt,
+  );
+  check(
+    "P3-397: a failed observation never throws and degrades through noteProviderCatalog(null, false) — the neutral unknown",
+    (fnBody.match(/noteProviderCatalog\(null, false\)/g) ?? []).length === 2 &&
+      !fnBody.includes("throw") &&
+      modelReadyVerdict([{ id: "prov-a", models: 3 }], true).state === "unknown" &&
+      modelReadyVerdict(null, true).message === modelReadyVerdict(undefined, true).message,
+  );
+  // 4) the knobs are parsed fail-closed at boot like every other env surface
+  check(
+    "P3-397: parseModelReadinessKnobs runs on the real process env and the boot fails closed on problems",
+    /const modelReadinessKnobs = parseModelReadinessKnobs\(process\.env\);/.test(indexSrc) &&
+      /modelReadinessKnobs\.problems\.length > 0/.test(indexSrc),
+  );
+
+  // documented for operators (constitution rule 5)
+  check(
+    "P3-397: the new knobs are documented in both READMEs and the API docs",
+    /OCR_MODEL_READINESS_MIN_MS/.test(src(["README.md"])) &&
+      /OCR_MODEL_READINESS_MIN_MS/.test(src(["README.pt-BR.md"])) &&
+      /OCR_MODEL_READINESS_MIN_MS/.test(src(["docs", "api.md"])) &&
+      /OCR_MODEL_READINESS_DISABLE/.test(src(["docs", "api.md"])) &&
+      /OCR_MODEL_READINESS_MIN_MS/.test(src(["docs", "troubleshooting.md"])),
+  );
+}
+
 // --- P2-213: opencode version-readiness verdict (opencodever.ts) + wiring ------
 
 {
@@ -28606,12 +28776,15 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   // state (lesson P2-182: never a path, a resolved binary or env content).
   // P2-284: browse joins the same one-line-per-redone-probe policy.
   // P2-298: tts joins the same policy too.
+  // P3-397: the model-catalog re-observation joins the same policy too.
   {
     const logLines = code.split("\n").filter((l) => l.includes("readiness re-probe"));
     check(
       "P2-250: each re-done probe logs exactly one line with capability + state only",
-      logLines.length === 4 &&
-        logLines.every((l) => /capability: "(transcription|tts|doc-convert|browse)", state: [\w.()]+?\s*\}/.test(l)),
+      logLines.length === 5 &&
+        logLines.every((l) =>
+          /capability: "(transcription|tts|doc-convert|browse|model-catalog)", state: [\w.()]+?\s*\}/.test(l),
+        ),
     );
   }
 
@@ -32854,8 +33027,8 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     !/setInterval|setTimeout/.test(settings296) && (idx296.match(/setInterval\(/g) || []).length === 5,
   );
   check(
-    "P2-296: no new re-probe log line — each re-probe keeps its one-line policy (four capabilities total, P2-298 added tts)",
-    idx296.split("\n").filter((l) => l.includes("readiness re-probe")).length === 4,
+    "P2-296: no new re-probe log line — each re-probe keeps its one-line policy (five capabilities total, P3-397 added model-catalog)",
+    idx296.split("\n").filter((l) => l.includes("readiness re-probe")).length === 5,
   );
 
   // Real-repo assertion on the module itself: still pure, and the voice table
@@ -33132,8 +33305,8 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
     !/setInterval|setTimeout/.test(settings300) && (idx300.match(/setInterval\(/g) || []).length === 5,
   );
   check(
-    "P2-300: no new re-probe log line — each re-probe keeps its one-line policy (four capabilities total)",
-    idx300.split("\n").filter((l) => l.includes("readiness re-probe")).length === 4,
+    "P2-300: no new re-probe log line — each re-probe keeps its one-line policy (five capabilities total, P3-397 added model-catalog)",
+    idx300.split("\n").filter((l) => l.includes("readiness re-probe")).length === 5,
   );
 
   // Real-repo assertion on the module itself: still pure, and the speech

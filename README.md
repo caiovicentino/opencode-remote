@@ -122,7 +122,14 @@ private. That is the product: **local power, remote control, zero trust**.
   the daemon and **never blocks sending** — the message can still go through
   if a model is reachable anyway. The same verdict is served on
   `GET /__ocr/model/status` (`{ available, state, message }`, mirroring the
-  stt-status route). `OCR_MODEL_BLOCK=1` on the daemon is a test hatch that
+  stt-status route). The verdict is no longer frozen: the status route
+  re-observes the catalog lazily when the current verdict is not ready (at
+  most once per minute), so a credential configured after boot is picked up
+  without a restart. Set `OCR_MODEL_READINESS_MIN_MS` to change the minimum
+  interval (whole milliseconds, default 60000, ceiling 3600000) or
+  `OCR_MODEL_READINESS_DISABLE=off` to turn the revalidation off entirely
+  (invalid values fail the boot, fail-closed). `OCR_MODEL_BLOCK=1` on the
+  daemon is a test hatch that
   forces the no-provider verdict for deterministic screenshots
 - **opencode version readiness** — the Settings machine section warns when the
   opencode installed on the machine hosting the daemon is older than the
