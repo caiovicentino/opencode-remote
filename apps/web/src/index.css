@@ -3851,6 +3851,33 @@ button.desk-new:disabled {
   font-size: 0.75rem;
   padding: 0 var(--space-4);
 }
+/* P3-377: the guided load-failure card — names the dead dependency, promises
+   the auto-reload, points to the status card and carries the manual retry.
+   Same quiet card language as .mission-active, one error accent on the left
+   edge; static (auditoria surface, nothing animates). */
+.mission-down {
+  margin: var(--space-2) var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--status-err);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  max-width: 520px;
+}
+.mission-down-title {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+}
+.mission-down-detail {
+  margin: 0 0 var(--space-1);
+  color: var(--muted);
+}
+.mission-down-actions {
+  margin-top: var(--space-2);
+}
+.mission-down-actions button {
+  font-size: 0.7rem;
+}
 @media (max-width: 1023px) {
   .mission-grid {
     grid-template-columns: 1fr;

@@ -63,6 +63,13 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   vira um link discreto dentro do bloco de escalada, ao lado do botão de
   diagnósticos (mesmo feedback: spinner, estado "tentando", toast de
   resultado) — para a coluna nunca mostrar dois CTAs da mesma peso
+- Painel Mission guiado com daemon caído (P3-377): no mundo pareado, a falha de
+  carga do pane deixa de ser a linha vermelha solta em inglês ("daemon
+  unreachable") e vira um card calmo — o que quebrou (o daemon local não
+  respondeu), a promessa (os dados recarregam sozinhos quando ele voltar), o
+  caminho de volta ("Reconectar agora" no card de status ao lado do painel) e o
+  botão "Tentar novamente", que recarrega na hora sem esperar a enquete de 6s. No
+  portão, o mundo vazio calmo do P3-327 segue intacto
 - Menu Go no portão sem beco circular (P3-362): os itens de painel abrem os
   mesmos panes offline que o rail já abre (Mission Control, Artifacts, Browser,
   Ajustes) em vez de piscar um aviso de pareamento — que era circular no

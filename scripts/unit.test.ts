@@ -10547,6 +10547,47 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-377: Mission Control's dead-daemon state is guided, not a lone red string
+// The pane used to print the raw "daemon unreachable" thrown string — English in
+// a pt-BR app, no explanation, no retry, no pointer to the reconnect card.
+{
+  const missionSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps/web/src/components/MissionControlView.tsx"),
+    "utf8",
+  );
+  const downKeys = ["missionDownTitle", "missionDownDetail", "missionDownHint", "missionDownRetry"];
+  check(
+    "P3-377: guided dead-daemon copy resolves in BOTH locales (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      downKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+  check(
+    "P3-377: pt copy names the dependency, the auto-reload and the reconnect card",
+    translate("pt", "missionDownTitle").includes("daemon") &&
+      translate("pt", "missionDownDetail").includes("recarregam sozinhos") &&
+      translate("pt", "missionDownHint").includes("Reconectar agora") &&
+      translate("pt", "missionDownRetry") === "Tentar novamente",
+  );
+  check(
+    "P3-377: the pane renders the guided state through t() with a manual retry",
+    missionSrc.includes('t("missionDownTitle")') &&
+      missionSrc.includes('t("missionDownHint")') &&
+      missionSrc.includes('t("missionDownRetry")') &&
+      missionSrc.includes("retryLoad"),
+  );
+  // The old lone red line only survives for non-load errors (timeline /
+  // takeover / live shot) and the phone's localized fallback — the desktop
+  // pane never prints the raw English thrown string for a dead daemon.
+  check(
+    "P3-377: the raw error string no longer prints on the desktop load failure",
+    missionSrc.includes("error && !phone && !loadFailed"),
+  );
+}
+
 
 // --- P2-112: first-boot degraded journey decision (pure logic) ------------------
 {
