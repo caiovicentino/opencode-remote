@@ -2211,7 +2211,11 @@ try {
               })()`;
               const navExpr = `(async () => {
                 const wv = document.querySelector('.browser-frame webview');
-                wv.loadURL('http://127.0.0.1:${p2Port}/');
+                // P3-379: the pane's first paint is the new-tab empty state —
+                // the guest has no dom-ready yet, so loadURL() throws. The src
+                // attribute carries the first navigation, exactly like a
+                // user's first address-bar entry does.
+                wv.src = 'http://127.0.0.1:${p2Port}/';
                 await new Promise((resolve, reject) => {
                   const t = setTimeout(() => reject(new Error('load timeout')), 15000);
                   wv.addEventListener('did-stop-loading', () => { clearTimeout(t); resolve(); }, { once: true });

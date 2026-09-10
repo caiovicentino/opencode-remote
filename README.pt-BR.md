@@ -353,7 +353,11 @@ remoto, zero confiança**.
   inclui um **pane Browser**: no shell desktop ele renderiza um `<webview>` Electron real e
   sandboxed (scroll, click e edit funcionam como num navegador; `contextIsolation`/`sandbox`
   ligados, `nodeIntegration` desligado, popups desligados), com barra de URL editável, reload
-  e botão maximizar (~80% de largura). Um download iniciado no pane segue a
+  e botão maximizar (~80% de largura). A primeira pintura do pane é um estado vazio de nova
+  aba (P3-379): nada carrega até você digitar um endereço ou chegar um evento de prévia —
+  o pane nunca navega sozinho para um serviço da máquina (a URL padrão antiga alcançava
+  silenciosamente o dashboard do daemon em boots sem pareamento). Um download iniciado no
+  pane segue a
   política única de downloads do shell — nenhum diálogo nativo, nome saneado,
   salvo na pasta Downloads do sistema ou recusado com uma linha de log (P2-241). O modo
   screenshot via Playwright (`/api/browse`) segue

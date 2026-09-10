@@ -11691,7 +11691,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "browserToggleText", "browserRefreshShot", "browserGo", "browserLoading",
     "browserNoPage", "browserShotAlt", "browserInvalidUrl", "browserLoadFailed",
     "browserCrashed", "browserErrUnreachable", "browserErrDesktopOnly",
-    "browserErrUnexpected", "browserErrGeneric",
+    "browserErrUnexpected", "browserErrGeneric", "browserEmptyHint",
   ];
   check(
     "P3-382: every browser key resolves per locale (no raw-key fallback)",
@@ -11705,6 +11705,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-382: pane title matches the rail label in both locales",
     (["en", "pt"] as const).every((lang) => translate(lang, "navBrowser") === (lang === "pt" ? "Navegador" : "Browser")),
+  );
+  // --- P3-379: the pane's first paint reaches no host service ----------------
+  // The old DEFAULT_URL (127.0.0.1:8792/dashboard) half-loaded the production
+  // daemon dashboard on unpaired first boots. The pane now starts on the
+  // new-tab empty state; the lock keeps any default URL from coming back.
+  check(
+    "P3-379: BrowserView ships no default URL (no silent host-service reach)",
+    !src.includes("8792") && !src.includes("DEFAULT_URL") && src.includes("browserEmptyHint"),
   );
 }
 

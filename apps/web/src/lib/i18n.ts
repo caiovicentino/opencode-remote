@@ -807,6 +807,8 @@ export const dict = {
     browserGo: "Go",
     browserLoading: "Loading…",
     browserNoPage: "No page loaded.",
+    // P3-379: the pane's first paint is a new-tab empty state, not a host URL
+    browserEmptyHint: "Type an address above, or open a preview from the chat.",
     browserShotAlt: "Host browser screenshot",
     browserInvalidUrl: "Invalid URL — use http(s)://…",
     browserLoadFailed: "Could not load the page.",
@@ -1535,6 +1537,8 @@ export const dict = {
     browserGo: "Ir",
     browserLoading: "Carregando…",
     browserNoPage: "Nenhuma página carregada.",
+    // P3-379: a primeira pintura do pane é um estado vazio de nova aba, não uma URL do host
+    browserEmptyHint: "Digite um endereço acima ou abra uma prévia pelo chat.",
     browserShotAlt: "Captura do navegador da máquina",
     browserInvalidUrl: "URL inválida — use http(s)://…",
     browserLoadFailed: "Não foi possível carregar a página.",

@@ -1195,6 +1195,43 @@ button.desk-new:disabled {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }
 }
+/* P3-379: the pane's first paint is a designed new-tab empty state — the pane
+   never auto-navigates to a host service on the user's behalf. Same craft
+   pattern as the chat's welcome empty state, overlaid on the blank guest. */
+.browser-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
+  max-width: 320px;
+  margin: 0 auto;
+  color: var(--muted);
+  animation: msg-in var(--motion-fast) var(--ease-out);
+}
+.browser-empty-icon {
+  color: var(--muted);
+  display: block;
+  margin-bottom: 6px;
+}
+.browser-empty-icon svg {
+  width: 2.2rem;
+  height: 2.2rem;
+}
+.browser-empty-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.browser-empty-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
 /* P2-123: the living home — serif greeting + central composer + ideas.
    Desktop-only (isDesktop gate in App.tsx); the mobile board never unmounts
    this because the home only mounts ≥1024px. */
