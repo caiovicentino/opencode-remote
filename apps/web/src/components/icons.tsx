@@ -244,6 +244,17 @@ export function IconMic(p: IconProps) {
   );
 }
 
+/** P3-404: screen-peek trigger ("Ver a tela") — a display glyph. */
+export function IconMonitor(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <rect x="2.5" y="4" width="19" height="13.5" rx="2" />
+      <path d="M8.5 21h7" />
+      <path d="M12 17.5V21" />
+    </Icon>
+  );
+}
+
 /** P2-125: composer voice-reply toggle (spoken replies via edge-tts). */
 export function IconSpeaker(p: IconProps) {
   return (

@@ -343,7 +343,21 @@ o mesmo veredito pra câmera do scanner de pareamento: o IPC `app:camAccess`
 (módulo puro `apps/desktop/src/camaccess.ts`, mesma leitura a cada pedido)
 substitui a frase estática de permissão negada pela frase acionável do
 veredito com a ação "Abrir ajustes do sistema" quando a ponte do shell está
-presente — no telefone a frase do dicionário segue intacta. P2-321 fecha a
+presente — no telefone a frase do dicionário segue intacta. P3-404 acrescenta o
+screen-peek "Ver a tela": o botão de monitor do composer abre o card "Tela da
+máquina" no PWA — um único frame por pedido explícito (nunca streaming), com
+timestamp, "Atualizar" e "Perguntar sobre a tela", que manda o frame pelo
+pipeline de anexo existente (attachImage → ocr-upload://) com a pergunta como
+text part; a captura acontece sempre no shell desktop (contexto responsável do
+TCC — `app:captureScreen`/`app:listScreens`/`app:screenAccess` sob demanda,
+com o veredito puro de `apps/desktop/src/screenaccess.ts` espelhando
+camaccess.ts, sessão hermética responde frame sintético fixo antes de
+qualquer captura real, regra P2-326), o daemon só casa pedido→frame em memória
+(`/__ocr/screen/request|frames|frame|failed`, frame único com TTL de 30min,
+eventos `screen.capture-requested`/`screen.frame`/`screen.capture-failed`), o
+shell acusa a captura num flash de indicador com picker de telas/janelas em
+multi-display, e o card no telefone escapa com instrução nomeada quando o app
+desktop não responde. P2-321 fecha a
 cega de supervisionamento que sobrava: um daemon que trava VIVO (porta ligada,
 event loop preso) nunca sai, então o handler de saída nunca dispara respawn —
 depois do primeiro boot saudável o próprio filho passa a ser sondado

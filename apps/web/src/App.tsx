@@ -61,6 +61,13 @@ import SendToAgentView from "./components/SendToAgentView";
 import BrowserView, { type BrowseFn } from "./components/BrowserView";
 import { previewFromEvent } from "./lib/preview";
 import type { ArtifactMeta } from "./lib/artifacts";
+import {
+  captureAndFulfill,
+  respondToCaptureRequest,
+  SCREEN_SOURCES_MAX,
+  type ScreenSourceInfo,
+} from "./lib/screenresponder";
+import ScreenFlash from "./components/ScreenFlash";
 import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
 import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
@@ -189,11 +196,34 @@ interface DesktopBridge {
   getMicAccess?: () => Promise<MicAccessVerdict | null>;
   /** P2-319: camera-permission verdict (desktop shell only, mirrored in QrScanner). */
   getCamAccess?: () => Promise<CameraAccessVerdict | null>;
+  /** P3-404: screen-peek — OS screen-capture verdict, the label-only source
+   * list and the single-frame capture (desktop shell only; a hermetic session
+   * answers a fixed synthetic frame, never the operator's real screen). */
+  getScreenAccess?: () => Promise<ScreenAccessVerdictShape>;
+  listScreens?: () => Promise<ScreenSourceInfo[]>;
+  captureScreen?: (req: { sourceId?: string }) => Promise<ScreenCaptureShape | null>;
 }
 
 function desktopBridge(): DesktopBridge | null {
   const bridge = (window as unknown as { ocrDesktop?: DesktopBridge }).ocrDesktop;
   return bridge && typeof bridge.getPairUrl === "function" ? bridge : null;
+}
+
+/** P3-404: shapes mirrored from apps/desktop/src/preload.ts (kept in sync by
+ * unit pins) so the shell responder and its picker overlay stay honest. */
+interface ScreenAccessVerdictShape {
+  verdict: "ready" | "will-ask" | "blocked-by-system" | "unknown";
+  phrase: string;
+  settingsTarget: string | null;
+}
+interface ScreenCaptureShape {
+  ok: boolean;
+  bytes?: Uint8Array;
+  width?: number;
+  height?: number;
+  name?: string;
+  verdict?: ScreenAccessVerdictShape;
+  reason?: string;
 }
 
 /** Slot each Cmd+1..6 accelerator (and Go menu item) maps to. */
@@ -251,6 +281,11 @@ export default function App() {
   const [connAttempts, setConnAttempts] = useState(0);
   const [machineName, setMachineName] = useState("");
   const [events, setEvents] = useState<EventEnvelope[]>([]);
+  // P3-404: shell-side screen-peek indicator — a capture just answered a
+  // phone's request; the overlay flashes once and offers the source picker
+  // on multi-display machines. Absent on the phone.
+  const [screenFlash, setScreenFlash] = useState<{ at: number; sources: ScreenSourceInfo[] } | null>(null);
+  const screenReqSeen = useRef<Set<string>>(new Set());
   const clientRef = useRef<OcrClient | null>(null);
   // P1-046: one reducer owns ALL navigation (the old five booleans are gone).
   const [view, dispatchView] = useReducer(viewReducer, initialViewState);
@@ -527,6 +562,10 @@ export default function App() {
           setPreviewUrl(preview.url);
           dispatchView({ type: "open", slot: "browser" });
         }
+        // P3-404: the shell (only) answers a phone's screen-peek request —
+        // capture in the TCC-responsible shell, upload through the existing
+        // attachment pipeline, then flash the indicator.
+        if (evt.type === "screen.capture-requested") void handleScreenCaptureRequest(evt);
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -854,6 +893,43 @@ export default function App() {
     // switch) — expected state; surfaces branch on the class, not the prose.
     if (!client) throw new NotConnected();
     return client.request(method as "GET", path, body, query, timeoutMs);
+  }
+
+  // P3-404: the shell's answer to a phone's screen-peek request — dedupe,
+  // capture via the bridge, fulfill through the daemon, flash the indicator.
+  async function handleScreenCaptureRequest(evt: EventEnvelope) {
+    const bridge = desktopBridge();
+    if (!bridge) return;
+    const props = (evt.properties ?? {}) as { requestId?: unknown; at?: unknown };
+    if (typeof props.requestId === "string") {
+      if (screenReqSeen.current.has(props.requestId)) return;
+      screenReqSeen.current.add(props.requestId);
+      if (screenReqSeen.current.size > 50) {
+        screenReqSeen.current = new Set([...screenReqSeen.current].slice(-20));
+      }
+    }
+    const res = await respondToCaptureRequest(request, bridge, props, true, Date.now());
+    if (res.outcome === "fulfilled") {
+      setScreenFlash({ at: res.at ?? Date.now(), sources: res.sources ?? [] });
+    }
+  }
+
+  // picker action: recapture from a chosen screen/window and re-fulfill (the
+  // daemon replaces the stored frame and rebroadcasts screen.frame)
+  async function recaptureScreen(sourceId: string) {
+    const bridge = desktopBridge();
+    if (!bridge) return;
+    const res = await captureAndFulfill(request, bridge, "manual");
+    if (!res.ok) return;
+    let sources: ScreenSourceInfo[] = [];
+    if (bridge.listScreens) {
+      try {
+        sources = (await bridge.listScreens()).slice(0, SCREEN_SOURCES_MAX);
+      } catch {
+        sources = [];
+      }
+    }
+    setScreenFlash({ at: res.at ?? Date.now(), sources });
   }
 
   // P1-046: session creation lifted out of SessionsView so Cmd+T and the
@@ -1356,7 +1432,14 @@ export default function App() {
   if (addingMachine) {
     return (
       <div className={banner ? "pair-wrap has-daemon-down" : "pair-wrap"} data-phase={phase}>
-        {banner}
+      {banner}
+      {screenFlash && (
+        <ScreenFlash
+          flash={screenFlash}
+          onClose={() => setScreenFlash(null)}
+          onRecapture={(sourceId) => void recaptureScreen(sourceId)}
+        />
+      )}
         {pairingOverlay}
         {gateHintNode}
         <PairingView

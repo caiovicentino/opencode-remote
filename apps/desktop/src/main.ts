@@ -1,4 +1,4 @@
-import { app, autoUpdater, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, systemPreferences, Tray, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, systemPreferences, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -108,6 +108,7 @@ import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
 import { micAccessVerdict } from "./micaccess";
 import { camAccessVerdict } from "./camaccess";
+import { screenAccessVerdict, type ScreenAccessVerdict } from "./screenaccess";
 import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "./tray";
 import { trayStatus } from "./traystatus";
 import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, type ShellLabels } from "./shelllang";
@@ -292,6 +293,25 @@ if (harnessUserData) {
 // showMainWindow() is a no-op and the renderer keeps painting with
 // paintWhenInitiallyHidden. Same test-only OCR_* hatch policy.
 const HERMETIC_E2E = !!process.env.OCR_DESKTOP_SESSION;
+
+// P3-404: screen-peek capture knobs. The hermetic frame is a fixed 8x8 PNG:
+// the harness flow (request → capture → upload → fulfill) runs end to end
+// without ever touching the operator's real screen. Source ids are Electron
+// desktopCapturer ids ("screen:N[:N]" / "window:N") — validated before use.
+const SCREEN_THUMBNAIL_SIZE = { width: 1600, height: 1000 };
+const SCREEN_SOURCE_ID = /^(?:screen|window):[\w:.-]+$/;
+const HERMETIC_SCREEN_FRAME = {
+  ok: true,
+  bytes: new Uint8Array(
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADEDGNLAAAAEklEQVR4nGP8z8DwnwEJMDEgAQAwIgUByVv9eAAAAABJRU5ErkJggg==",
+      "base64",
+    ),
+  ),
+  width: 8,
+  height: 8,
+  name: "Tela 1",
+};
 initDesktopLog(app.getPath("userData"));
 // P3-018: the daemon sidecar's stdout/stderr (JSONL lines) is teed to
 // userData/logs/daemon-sidecar.log (~1MB cap, one rotated file kept). Must be
@@ -1915,6 +1935,60 @@ async function onReady(): Promise<void> {
       // Unsupported platform — the pure verdict fails closed to "unknown".
     }
     return camAccessVerdict(process.platform, permissionCtx.cameraBlocked ? "denied" : status);
+  });
+
+  // P3-404: screen-peek — the shell (Electron) is the capture context, the
+  // TCC-responsible process; the launchd daemon never captures. Three
+  // on-demand reads in the same form as the mic/cam handlers above, and the
+  // state is read at REQUEST time, never at boot. The cameraBlocked hatch
+  // (P2-117) answers denied here too: a system-level refusal is exactly what
+  // it simulates, so the screen verdict stays reproducible in the harness.
+  const screenStatusVerdict = (): ScreenAccessVerdict => {
+    let status: unknown = "unknown";
+    try {
+      status = systemPreferences.getMediaAccessStatus("screen");
+    } catch {
+      // Unsupported platform — the pure verdict fails closed to "unknown".
+    }
+    return screenAccessVerdict(process.platform, permissionCtx.cameraBlocked ? "denied" : status);
+  };
+  ipcMain.handle("app:screenAccess", () => screenStatusVerdict());
+
+  // One label-only entry per screen/window so the shell overlay can offer a
+  // source picker on multi-display machines — never thumbnails, and in a
+  // hermetic session a fixed fake list instead of the operator's real desktop.
+  ipcMain.handle("app:listScreens", async () => {
+    if (HERMETIC_E2E) return [{ id: "screen:1", name: "Tela 1", type: "screen" }, { id: "screen:2", name: "Tela 2", type: "screen" }];
+    try {
+      const sources = await desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 1, height: 1 } });
+      return sources.map((s) => ({ id: s.id, name: s.name, type: s.id.startsWith("screen") ? "screen" : "window" }));
+    } catch {
+      return [];
+    }
+  });
+
+  // Capture one frame of a requested source (or the primary display). Rule
+  // order is the P2-326 contract: the hermetic-session check runs FIRST,
+  // before any capture object is constructed — a gate run must never lift a
+  // frame of the operator's real screen, so the harness answers a fixed
+  // synthetic frame and the full request→upload→fulfill flow stays testable.
+  ipcMain.handle("app:captureScreen", async (_event, req: { sourceId?: string }) => {
+    if (HERMETIC_E2E) return { ...HERMETIC_SCREEN_FRAME };
+    const verdict = screenStatusVerdict();
+    if (verdict.verdict !== "ready") return { ok: false, verdict };
+    const sourceId = typeof req?.sourceId === "string" && SCREEN_SOURCE_ID.test(req.sourceId) ? req.sourceId : "";
+    try {
+      const sources = await desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: SCREEN_THUMBNAIL_SIZE });
+      const picked = (sourceId ? sources.find((s) => s.id === sourceId) : undefined) ?? sources.find((s) => s.id.startsWith("screen:"));
+      if (!picked) return { ok: false, reason: "no-sources" };
+      const png = picked.thumbnail.toPNG();
+      if (!png.length) return { ok: false, reason: "empty-frame" };
+      const { width, height } = picked.thumbnail.getSize();
+      log(`[desktop] screen frame captured (${width}x${height})`);
+      return { ok: true, bytes: new Uint8Array(png), width, height, name: picked.name };
+    } catch {
+      return { ok: false, reason: "no-sources" };
+    }
   });
 
   // P2-241: the single download policy for the whole shell, registered
