@@ -106,7 +106,10 @@ function firstHit(
 }
 
 /** A short raw window around [start,end), ≤ SEARCH_SNIPPET_CHARS, with the
- * match boundaries remapped into the window. */
+ * match boundaries remapped into the window. A match longer than the cap
+ * keeps the whole window inside the match — the offsets are clamped to the
+ * snippet (never negative), so what they highlight is always the visible
+ * part of the occurrence. */
 function snippetFor(text: string, start: number, end: number): {
   snippet: string;
   matchStart: number;
@@ -121,7 +124,7 @@ function snippetFor(text: string, start: number, end: number): {
   }
   return {
     snippet: text.slice(from, to),
-    matchStart: start - from,
+    matchStart: Math.max(0, start - from),
     matchEnd: Math.min(end, to) - from,
   };
 }
@@ -156,13 +159,11 @@ export function searchConversations(
     if (!isSearchConversation(conv)) continue; // malformed entry: skipped
     const instant = Number.isFinite(conv.instant) ? conv.instant : 0;
     const title = typeof conv.title === "string" ? conv.title : "";
-    const candidates: Array<{ text: string; inTitle: boolean }> = [
-      ...(title ? [{ text: title, inTitle: true }] : []),
-      ...conv.texts
-        .filter((t): t is string => typeof t === "string" && t !== "")
-        .map((text) => ({ text, inTitle: false })),
+    const candidates: string[] = [
+      ...(title ? [title] : []),
+      ...conv.texts.filter((t): t is string => typeof t === "string" && t !== ""),
     ];
-    for (const { text, inTitle } of candidates) {
+    for (const text of candidates) {
       const hit = firstHit(text, needle);
       if (!hit) continue;
       const { snippet, matchStart, matchEnd } = snippetFor(text, hit.start, hit.end);

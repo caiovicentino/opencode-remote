@@ -34624,6 +34624,24 @@ import { REPLY_NOTIFY_BODY, REPLY_NOTIFY_MIN_INTERVAL_MS, REPLY_NOTIFY_TITLE, re
       );
     })(),
   );
+  check(
+    "P3-400: a term longer than the snippet cap keeps match offsets inside the snippet",
+    (() => {
+      // reachable via GET /__ocr/search (no q cap beyond the min length)
+      const term = "0123456789".repeat(15); // 150 chars > SEARCH_SNIPPET_CHARS
+      const hits = searchConversations(term, [conv("s1", 1, `prefix ${term} suffix`)]);
+      const h = hits[0]!;
+      const visible = h.snippet.slice(h.matchStart, h.matchEnd);
+      return (
+        hits.length === 1 &&
+        h.snippet.length <= SEARCH_SNIPPET_CHARS &&
+        h.matchStart >= 0 && // the reported bug: this went negative
+        h.matchEnd <= h.snippet.length &&
+        h.matchStart < h.matchEnd &&
+        term.includes(visible) // what is highlighted is part of the match
+      );
+    })(),
+  );
 
   // --- matcher: malformed input ---------------------------------------------------
   check(
