@@ -3984,6 +3984,171 @@ try {
     rmSync(daemonHome4, { recursive: true, force: true });
   }
 
+  // --- P3-396: model-credential journey (OCR_MODEL_BLOCK=1) --------------------
+  // The documented P2-210 hatch forces the no-provider verdict even on hosts
+  // with credentials; with the desktop shell paired, the composer hint
+  // resolves to the dedicated desktop copy (the reader IS the machine
+  // manager — never "ask whoever manages the machine") and carries three real
+  // actions: copy the official `opencode auth login` command, open the
+  // official instructions through the extlink gate, and re-check — always
+  // landing in a terminal state (P3-327). The paired home composer is the
+  // first surface a layperson meets.
+  phase("P3-396: model-credential journey (hatch daemon)");
+  const daemonHome5 = mkdtempSync(join(tmpdir(), "ocr-flow-modelblock-"));
+  const localStateFile5 = join(daemonHome5, ".opencode-remote", "daemon.json");
+  const port5 = await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+  const localDaemon5 = spawn(daemonSpawn().command, daemonSpawn().args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: daemonHome5,
+      OCR_METRICS_PORT: String(port5),
+      // The hatch under test: the model verdict is forced no-provider even
+      // though this host may have credentials configured.
+      OCR_MODEL_BLOCK: "1",
+      RELAY_URL: "ws://127.0.0.1:1",
+      OCR_LOG_LEVEL: "error",
+    },
+    stdio: ["ignore", "ignore", "ignore"],
+    detached: true,
+  });
+  const killDaemon5 = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    if (!localDaemon5.pid) return;
+    try {
+      process.kill(-localDaemon5.pid, signal);
+    } catch {
+      /* already gone */
+    }
+  };
+  process.on("exit", () => killDaemon5("SIGKILL"));
+  const modelEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-modelblock`,
+    OCR_DESKTOP_LOCAL_STATE: localStateFile5,
+    OCR_DAEMON_METRICS_PORT: String(port5),
+  };
+  let modelBooted = false;
+  try {
+    const token5 = await waitForDaemonStateFile(localStateFile5, port5);
+    check("P3-396: hermetic daemon (model hatch) published the 0600 state file", !!token5);
+    // The route-level verdict is proven by the UI below: .model-hint-actions
+    // only renders when the hint probe really answered no-provider through
+    // the sealed op channel (the /__ocr routes ride proxy(), not the HTTP
+    // metrics surface — no direct fetch probe is possible here).
+    if (token5) {
+      const open5 = run("P3-396: open (hermetic launch)", ["open"], 45_000, modelEnv);
+      modelBooted = open5.ok;
+      if (open5.ok) {
+        // Fresh userData boots into the first-run welcome — skip it; the
+        // paired home composer is the surface carrying the model hint.
+        run("P3-396: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, modelEnv);
+        await waitProbe(
+          "P3-396: app paired with the hatch daemon",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          modelEnv,
+        );
+        const actionsUp = await waitProbe(
+          "P3-396: credential-journey block rendered on the home composer",
+          "!!document.querySelector('.model-hint-actions')",
+          (v) => /true/.test(v),
+          modelEnv,
+        );
+        if (actionsUp) {
+          // The desktop copy must name the reader as the manager — never the
+          // daemon's "ask whoever manages the machine" sentence.
+          const hintCopy = run(
+            "P3-396: hint copy probe",
+            ["ipc", "document.querySelector('.composer-hint')?.textContent ?? ''"],
+            15_000,
+            modelEnv,
+          );
+          if (hintCopy.ok) {
+            check(
+              "P3-396: desktop copy speaks to the reader, never to the machine manager",
+              /you can add it yourself|você mesmo pode adicionar/.test(hintCopy.stdout) &&
+                !/quem gerencia|who manages|peça a/.test(hintCopy.stdout),
+              hintCopy.stdout,
+            );
+          }
+          // Capture wrappers BEFORE the real clicks (same shape as P3-392):
+          // the clipboard write is recorded (the real write still happens)
+          // and window.open is intercepted so the beat never launches a host
+          // browser — the extlink gate itself is main-side and unit-tested.
+          run(
+            "P3-396: seed the action captures",
+            [
+              "ipc",
+              "window.__ocrCopy=''; window.__ocrDocs=''; " +
+                "const w = navigator.clipboard.writeText.bind(navigator.clipboard); " +
+                "navigator.clipboard.writeText = (t) => { window.__ocrCopy = t; return w(t); }; " +
+                "window.open = (u) => { window.__ocrDocs = String(u); return null; }; 'seeded'",
+            ],
+            15_000,
+            modelEnv,
+          );
+          const copy5 = run("P3-396: copy login command", ["click", ".model-missing-copy"], 15_000, modelEnv);
+          if (copy5.ok) {
+            await waitProbe(
+              "P3-396: copied feedback is a terminal state",
+              "document.querySelector('.model-hint-copied')?.textContent ?? ''",
+              (v) => /Command copied|Comando copiado/.test(v),
+              modelEnv,
+            );
+            const payload = run("P3-396: clipboard payload", ["ipc", "window.__ocrCopy ?? ''"], 15_000, modelEnv);
+            if (payload.ok) {
+              check(
+                "P3-396: clipboard carries the official login command",
+                /opencode auth login/.test(payload.stdout),
+                payload.stdout,
+              );
+            }
+          }
+          // Docs: the real click must go through window.open — the shell
+          // routes it through the P2-178 extlink gate (https passes).
+          const docs5 = run("P3-396: open setup instructions", ["click", ".model-missing-docs"], 15_000, modelEnv);
+          if (docs5.ok) {
+            const opened = run("P3-396: window.open target", ["ipc", "window.__ocrDocs ?? ''"], 15_000, modelEnv);
+            if (opened.ok) {
+              check("P3-396: instructions opened at the official docs", /opencode\.ai\/docs/.test(opened.stdout), opened.stdout);
+            }
+          }
+          // Re-check: transient "checking" then the TERMINAL "still not
+          // ready" line within the bounded wait — the hatch keeps the
+          // verdict no-provider, so the terminal state is the still line.
+          const recheck5 = run("P3-396: check again", ["click", ".model-missing-recheck"], 15_000, modelEnv);
+          if (recheck5.ok) {
+            await waitProbe(
+              "P3-396: recheck lands in the terminal still-not-ready state",
+              "document.querySelector('.model-hint-still')?.textContent ?? ''",
+              (v) => /still isn't ready|ainda não ficou pronta/.test(v),
+              modelEnv,
+              12,
+              1_000,
+            );
+          }
+          const shotModel1440 = join(shotsDir, "P3-396-model-1440.png");
+          const shotModel390 = join(shotsDir, "P3-396-model-390.png");
+          const s1 = run("P3-396: 1440x900 evidence shot", ["shot", shotModel1440, "1440", "900"], 15_000, modelEnv);
+          if (s1.ok) check("P3-396: 1440x900 shot is a real PNG", pngSize(shotModel1440).join("x") === "1440x900");
+          const s2 = run("P3-396: 390 evidence shot", ["shot", shotModel390, "390", "844"], 15_000, modelEnv);
+          if (s2.ok) check("P3-396: 390 shot is a real PNG", pngSize(shotModel390)[0] === 390);
+        }
+      }
+    }
+  } finally {
+    if (modelBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: modelEnv });
+    killDaemon5("SIGKILL");
+    rmSync(daemonHome5, { recursive: true, force: true });
+  }
+
   // --- P2-140: daemon-down card explains WHY the daemon died ------------------
   // The harness honors a caller-set OCR_DAEMON_ENTRY: the shell really spawns
   // this fake daemon entry, which prints EADDRINUSE on stderr and exits 1.

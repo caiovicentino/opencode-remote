@@ -1633,6 +1633,9 @@ export default function App() {
       connAttempts={connAttempts}
       connSince={clientRef.current?.disconnectedSince ?? 0}
       onRetryNow={() => clientRef.current?.retryNow()}
+      // P3-396: the model hint resolves per surface — desktop copy + actions
+      // inside the shell, the daemon sentence untouched on the phone.
+      desktopShell={!!desktopBridge()}
     />
   );
   // (P3-365: settingsNode/filesNode/artifactsNode/browseNode/missionNode/
@@ -1680,6 +1683,7 @@ export default function App() {
       onStart={(prompt) => createSession(prompt)}
       dropNotice={homeDropError}
       variant="mobile"
+      desktopShell={!!desktopBridge()}
     />
   );
 
@@ -1756,6 +1760,7 @@ export default function App() {
                 voice={clientRef.current?.caps?.transcribe === true}
                 creating={creating}
                 onStart={(prompt) => createSession(prompt)}
+                desktopShell={!!desktopBridge()}
                 dropNotice={homeDropError}
               />
             )}

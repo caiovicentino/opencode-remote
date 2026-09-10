@@ -1632,6 +1632,22 @@ deterministic visual evidence on machines that DO have opencode, the daemon
 honors the `OCR_OPENCODE_MISSING=1` test hatch, which forces the binary-absent
 half of the split (the upstream probe itself stays real).
 
+**A missing model credential comes with the whole setup journey (P3-396)**: the
+composer's model-readiness hint (P2-210) used to tell the reader to "ask
+whoever manages the machine" to add a provider credential — on the desktop
+shell that person is the one sitting at the computer. When the shell bridge is
+present and the verdict is `no-provider` or `no-model`, the hint now resolves
+to dedicated copy that speaks to the reader and carries three real actions:
+"Copy login command" puts the official `opencode auth login` on the clipboard
+(the CLI command is uniform across platforms), "Open setup instructions" opens
+the official provider docs through the shell's external-link gate, and "Check
+again" re-probes the verdict and always lands in a terminal state — the whole
+hint disappears by itself once the credential is in (never a permanent
+spinner). The phone keeps the daemon's own sentence with no actions (per-
+surface copy keys, never one key on two surfaces). `OCR_MODEL_BLOCK=1` on the
+daemon remains the documented hatch forcing the `no-provider` verdict for
+deterministic screenshots.
+
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
 for the whole session — poll gaps and degraded states no longer resurrect the

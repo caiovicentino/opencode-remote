@@ -12,9 +12,10 @@ import {
 import type { EventEnvelope } from "@ocr/protocol";
 import { WavRecorder, encodeWav } from "../lib/recorder";
 import { transcribeBlob, useSttStatus } from "../lib/transcribe";
-import { useModelStatus } from "../lib/modelstatus";
+import { modelHintKey, useModelStatus } from "../lib/modelstatus";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
+import ModelMissingActions from "./ModelMissingActions";
 import { saveFile } from "../lib/files";
 import { copyText } from "../lib/clipboard";
 import { copyPlan, type CopyPart } from "../lib/copymsg";
@@ -118,6 +119,11 @@ interface Props {
   /** P2-312: microphone-permission verdict from the desktop shell (absent on
    * the phone) — replaces the Safari-only NotAllowedError advice. */
   getMicAccess?: () => Promise<MicAccessVerdict | null>;
+  /** P3-396: the same shell verdict the App computes (desktopBridge() !==
+   * null). On the desktop shell the model hint resolves to dedicated copy +
+   * a real credential journey; the phone keeps the daemon sentence, no
+   * actions (per-surface keys, lesson P3-394). */
+  desktopShell?: boolean;
   /** EVAL4-B: reconnect telemetry from the client (App passes them) — real
    * dial attempts since the drop, when the drop started (0 while paired) and
    * the "try now" action that skips the pending backoff. All optional: the
@@ -388,6 +394,7 @@ export default function ChatView({
   shellBridge,
   shellBannerVisible = false,
   getMicAccess,
+  desktopShell,
   connAttempts: connAttemptsProp,
   connSince = 0,
   onRetryNow,
@@ -434,8 +441,12 @@ export default function ChatView({
   // blocking the conversation because a probe says the machine has no
   // credentials would be worse than the late raw upstream error this line
   // replaces. Its whole job is to explain that failure before the first send.
-  const modelStatus = useModelStatus(request);
+  // P3-396: bumping modelProbe re-probes (the hint block's "check again");
+  // on the desktop shell the hint resolves to dedicated copy + real actions.
+  const [modelProbe, bumpModelProbe] = useState(0);
+  const modelStatus = useModelStatus(request, modelProbe);
   const modelHint = modelStatus && modelStatus.state !== "ready" ? modelStatus : null;
+  const modelHintText = modelHint ? modelHintKey(modelHint.state, !!desktopShell) : null;
   // P2-125 voice replies: toggle + playback state. Availability comes from the
   // daemon (edge-tts installed on the host); the full answer stays in the chat.
   const [ttsOn, setTtsOn] = useState(() => localStorage.getItem("ocr-tts-on") === "1");
@@ -3023,9 +3034,19 @@ export default function ChatView({
 
 
         {modelHint && (
-          <p className="composer-hint" role="status">
-            {modelHint.message}
-          </p>
+          <>
+            <p className="composer-hint" role="status">
+              {/* P3-396: desktop shell resolves the verdict to its own copy
+                  (unit battery pins both locales); the phone keeps the
+                  daemon's sentence untouched. */}
+              {modelHintText ? t(modelHintText) : modelHint.message}
+            </p>
+            {/* P3-396: the credential journey — only when the desktop key
+                resolved (never on the phone, never for unknown). */}
+            {modelHintText && (
+              <ModelMissingActions status={modelHint} onRecheck={() => bumpModelProbe((n) => n + 1)} />
+            )}
+          </>
         )}
         <div className="composer">
           {images.length > 0 && (

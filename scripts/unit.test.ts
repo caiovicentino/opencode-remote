@@ -370,6 +370,8 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
+import { authCommandFor, modelHintKey, MODEL_DOCS_URL, MODEL_RECHECK_TIMEOUT_MS } from "../apps/web/src/lib/modelstatus";
+
 import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, shouldEscalateRetry, escalationMinutes, escalateDetailKey, installCommandFor, INSTALL_DOCS_URL, UPSTREAM_RECHECK_TIMEOUT_MS, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
@@ -21166,13 +21168,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // both composers consult the verdict, show the calm hint and NEVER block
-  // sending (fail open on purpose — no disabled= may depend on the hint)
+  // sending (fail open on purpose — no disabled= may depend on the hint).
+  // P3-396: the probe takes the recheck epoch (the "check again" action).
   const chatViewSrc = src(["apps", "web", "src", "components", "ChatView.tsx"]);
   const homeViewSrc = src(["apps", "web", "src", "components", "HomeView.tsx"]);
   check(
     "P2-210: ChatView and HomeView probe model status, show the calm hint and never disable sending",
-    chatViewSrc.includes("const modelStatus = useModelStatus(request)") &&
-      homeViewSrc.includes("const modelStatus = useModelStatus(request)") &&
+    chatViewSrc.includes("const modelStatus = useModelStatus(request, modelProbe)") &&
+      homeViewSrc.includes("const modelStatus = useModelStatus(request, modelProbe)") &&
       (chatViewSrc.match(/modelHint/g) ?? []).length >= 2 &&
       (homeViewSrc.match(/modelHint/g) ?? []).length >= 2 &&
       src(["apps", "web", "src", "lib", "modelstatus.ts"]).includes('request("GET", "/__ocr/model/status")') &&
@@ -21182,6 +21185,111 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-210: the fail-open reason is written in the code comment",
     /DELIBERATELY fail-open/.test(chatViewSrc) && /DELIBERATELY fail-open/.test(homeViewSrc),
+  );
+}
+
+// --- P3-396: desktop credential journey for the model-missing verdicts --------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+
+  // surface helper: desktop keys ONLY inside the shell; phone/ready/unknown
+  // keep the daemon's own sentence (per-surface keys, lesson P3-394)
+  check(
+    "P3-396: modelHintKey resolves dedicated desktop keys for no-provider/no-model inside the shell only",
+    modelHintKey("no-provider", true) === "modelMissingProviderDesktop" &&
+      modelHintKey("no-model", true) === "modelMissingModelDesktop" &&
+      modelHintKey("no-provider", false) === null &&
+      modelHintKey("no-model", false) === null &&
+      modelHintKey("ready", true) === null &&
+      modelHintKey("unknown", true) === null &&
+      modelHintKey("", true) === null,
+  );
+
+  // every new key resolves in BOTH locales — never a raw-key fallback
+  const modelKeys = [
+    "modelMissingProviderDesktop",
+    "modelMissingModelDesktop",
+    "modelMissingCopyCmd",
+    "modelMissingCopied",
+    "modelMissingOpenDocs",
+    "modelMissingRecheck",
+    "modelMissingChecking",
+    "modelMissingStill",
+  ];
+  const resolves = (l: "en" | "pt") =>
+    modelKeys.every((k) => {
+      const s = translate(l, k);
+      return s !== k && s.trim().length > 0;
+    });
+  check("P3-396: every model-journey key resolves per locale (no raw-key fallback)", resolves("en") && resolves("pt"));
+
+  // copy hygiene: no paths, no raw URLs, no emoji in the hint copy
+  check(
+    "P3-396: the desktop hint copy stays clean (no paths, no emoji)",
+    modelKeys.every((k) => {
+      const en = translate("en", k);
+      const pt = translate("pt", k);
+      return !/[\\/]/.test(en) && !/[\\/]/.test(pt) && !/\p{Extended_Pictographic}/u.test(pt);
+    }),
+  );
+
+  // per-platform command table (see AUTH_COMMANDS): every family resolves to
+  // the official `opencode auth login` the CLI docs publish
+  const table: [string, string][] = [
+    ["darwin", "opencode auth login"],
+    ["Darwin", "opencode auth login"],
+    ["mac", "opencode auth login"],
+    ["win32", "opencode auth login"],
+    ["WIN32", "opencode auth login"],
+    ["linux", "opencode auth login"],
+    ["", "opencode auth login"],
+    ["sunos", "opencode auth login"],
+  ];
+  check(
+    "P3-396: authCommandFor table pins the official login command per platform family",
+    table.every(([p, cmd]) => authCommandFor(p) === cmd) && authCommandFor("win32").trim().length > 0,
+  );
+
+  // the docs gate + recheck bound are importable constants with safe shapes
+  check(
+    "P3-396: docs URL is https at opencode.ai and the recheck bound is bounded",
+    MODEL_DOCS_URL.startsWith("https://opencode.ai/") && MODEL_RECHECK_TIMEOUT_MS > 0 && MODEL_RECHECK_TIMEOUT_MS <= 15_000,
+  );
+
+  // real-repo wiring: the composers resolve the hint through the surface
+  // helper, render the actions component under that key only, and the phone
+  // path (no key) renders the daemon message with zero action buttons.
+  const chatViewSrc = src(["apps", "web", "src", "components", "ChatView.tsx"]);
+  const homeViewSrc = src(["apps", "web", "src", "components", "HomeView.tsx"]);
+  const actionsSrc = src(["apps", "web", "src", "components", "ModelMissingActions.tsx"]);
+  const modelstatusSrc = src(["apps", "web", "src", "lib", "modelstatus.ts"]);
+  const appSrc = src(["apps", "web", "src", "App.tsx"]);
+  check(
+    "P3-396: the composers gate the credential journey behind the desktop key and re-probe on demand",
+    chatViewSrc.includes('modelHintText ? t(modelHintText) : modelHint.message') &&
+      homeViewSrc.includes('modelHintText ? t(modelHintText) : modelHint.message') &&
+      chatViewSrc.includes("{modelHintText && (") &&
+      homeViewSrc.includes("{modelHintText && (") &&
+      chatViewSrc.includes("bumpModelProbe((n) => n + 1)") &&
+      homeViewSrc.includes("bumpModelProbe((n) => n + 1)") &&
+      appSrc.split("desktopShell={!!desktopBridge()}").length >= 4,
+  );
+  check(
+    "P3-396: the actions block copies the per-platform command and opens the docs through window.open",
+    actionsSrc.includes("authCommandFor(platform)") &&
+      actionsSrc.includes("window.open(MODEL_DOCS_URL") &&
+      actionsSrc.includes("MODEL_RECHECK_TIMEOUT_MS") &&
+      // re-check always lands in a terminal state (lesson P3-327): the
+      // transient "checking…" label resolves into the copied/still lines
+      actionsSrc.includes("setStill(true)") &&
+      actionsSrc.includes('t("modelMissingChecking")'),
+  );
+  check(
+    "P3-396: the modelstatus hook owns the recheck signal and the pure helpers",
+    modelstatusSrc.includes("export function useModelStatus(request: RequestFn, recheckSignal = 0)") &&
+      modelstatusSrc.includes("}, [recheckSignal]);") &&
+      modelstatusSrc.includes("opencode auth login"),
   );
 }
 
