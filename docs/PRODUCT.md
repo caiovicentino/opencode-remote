@@ -100,6 +100,12 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   sai do dicionário EN/pt-BR, inclusive no fallback de screenshot; o pane é
   visto no portão do primeiro boot, então um usuário pt-BR nunca mais lê
   "Browser / Go / Loading…" em cima de um rail que diz "Navegador"
+- Mission Control sem erro cru (P3-381): no mundo pareado a linha de erro
+  pintava o throw interno verbatim ("daemon unreachable", "HTTP 502") em
+  vermelho — só o celular tinha copy traduzida; agora o erro passa pelo
+  humanizador compartilhado e degrada para a mesma frase calma de falha de
+  carregamento ("Não deu pra ler os registros da frota — a máquina não
+  respondeu"), nunca um literal em inglês
 - Painel de artifact com animação de entrada/saída e backdrop
 - Gauge de contexto e recap (P1-079) no rodapé do chat, discretos
 - Rotinas agendadas visíveis ("Programado"), com histórico de execução por

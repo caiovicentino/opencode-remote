@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { humanizeError } from "../lib/errors";
 import { useT } from "../lib/i18n";
 import { IconRadar } from "./icons";
 
@@ -158,6 +159,20 @@ async function decode(
   const json = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
   if (r.status >= 400 || json.error) throw new Error(String(json.error ?? `HTTP ${r.status}`));
   return { json };
+}
+
+type TFn = (key: string, vars?: Record<string, string | number>) => string;
+
+// P3-381: the paired desktop world used to paint the internal throws verbatim
+// in red ("daemon unreachable", "HTTP 502") — only the phone got localized
+// copy. The view's own known throw resolves to the calm load-failed key, a
+// string the shared humanizer recognizes keeps its dedicated copy, and
+// everything else degrades to that same localized sentence — never a bare
+// English literal.
+export function missionErrorText(raw: string, t: TFn): string {
+  if (/daemon unreachable/i.test(raw)) return t("missionLoadFailed");
+  const humanized = humanizeError(raw, t);
+  return humanized === raw ? t("missionLoadFailed") : humanized;
 }
 
 export default function MissionControlView({
@@ -428,7 +443,11 @@ export default function MissionControlView({
           </div>
         </div>
       )}
-      {error && !phone && !loadFailed && <p className="mission-error">{error}</p>}
+      {error && !phone && !loadFailed && (
+        // P3-381: remaining failures (timeline, takeover, live) keep the
+        // humanized single line — sentinel throws resolve to dedicated keys.
+        <p className="mission-error">{missionErrorText(error, t)}</p>
+      )}
       {view === "dash" && dashUrl && (
         <iframe
           src={dashUrl}

@@ -647,7 +647,7 @@ import { NIGHTLY_DRAIN_CAP_MS, NIGHTLY_START_HOUR, nightlyWindow } from "../apps
 import { backlogSkeletonNeeded, bootMissionRepo, detectDefaultBranch, logMissionLoaded, parseRemoteShowHead, parseSymbolicHead, pipelineBaseBranch } from "../apps/pilot/src/missionrepo";
 import { BACKLOG_SKELETON, backlogSkeletonEdit, needsBacklogSkeleton, seedBacklogSkeleton } from "../apps/pilot/src/backlog";
 import { activeModelSubstitutions, clearModelSubstitution, formatModelSubstitutions, readModelSubstitutions, recordModelSubstitution } from "../apps/pilot/src/modelsubst";
-import { formatModelSubstitutions as formatModelSubstitutionsView } from "../apps/web/src/components/MissionControlView";
+import { formatModelSubstitutions as formatModelSubstitutionsView, missionErrorText } from "../apps/web/src/components/MissionControlView";
 
 import { INFRA_STREAK_HARD_FAIL, clearTaskInfraStreak, infraStarvationReason, infraStreakExhausted, recordTaskInfraStreak } from "../apps/pilot/src/audit";
 
@@ -11746,6 +11746,47 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-382: pane title matches the rail label in both locales",
     (["en", "pt"] as const).every((lang) => translate(lang, "navBrowser") === (lang === "pt" ? "Navegador" : "Browser")),
+  );
+}
+
+// --- P3-381: Mission Control never paints a raw throw ------------------------
+// The paired desktop world used to print the internal throws verbatim in red
+// ("daemon unreachable", "HTTP 502") while only the phone got localized copy.
+// The error line now pipes through the shared humanizer, and anything it
+// doesn't recognize degrades to the same calm load-failed sentence the phone
+// shows (P3-385 lesson: missionLoadFailed renders on a new surface, so its
+// per-locale resolution joins the battery in the same commit).
+{
+  const tFor = (lang: "en" | "pt") => (k: string, vars?: Record<string, string | number>) => translate(lang, k, vars);
+  check(
+    "P3-381: known internal throws never surface raw (both locales)",
+    (["en", "pt"] as const).every((lang) => {
+      const t = tFor(lang);
+      return missionErrorText("daemon unreachable", t) !== "daemon unreachable" &&
+        missionErrorText("HTTP 502", t) !== "HTTP 502" &&
+        missionErrorText("host-only", t) !== "host-only";
+    }),
+  );
+  check(
+    "P3-381: unrecognized strings degrade to the calm localized load-failed copy",
+    (["en", "pt"] as const).every((lang) => missionErrorText("something exotic", tFor(lang)) === translate(lang, "missionLoadFailed")),
+  );
+  check(
+    "P3-381: the load-failed key itself resolves in both locales (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => {
+      const s = translate(lang, "missionLoadFailed");
+      return s !== "missionLoadFailed" && s.trim() !== "";
+    }),
+  );
+  check(
+    "P3-381: humanizeError-recognized strings keep their dedicated copy",
+    missionErrorText("not connected", tFor("en")) === translate("en", "errNotPaired") &&
+      missionErrorText("offline", tFor("pt")) === translate("pt", "errConnectionLost"),
+  );
+  const mcvSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "MissionControlView.tsx"), "utf8");
+  check(
+    "P3-381: the paired error render routes through missionErrorText (no bare {error} line)",
+    mcvSrc.includes("missionErrorText(error, t)") && !mcvSrc.includes(": error}</p>"),
   );
 }
 
