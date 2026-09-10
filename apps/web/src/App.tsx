@@ -195,6 +195,27 @@ function desktopBridge(): DesktopBridge | null {
 /** Slot each Cmd+1..6 accelerator (and Go menu item) maps to. */
 const PANE_ACCELERATORS = ["chat", "artifacts", "browser", "files", "settings", "mission"] as const;
 
+/** P3-362: i18n key naming the Go action the gate toast was triggered by —
+ * the toast says "… para abrir Artifacts" instead of one generic sentence for
+ * every item (the explorer dead-end: nothing said WHICH pane was requested).
+ * Keys ride existing nav / palette copy so the toast names things exactly as
+ * the rail and palette do. */
+const GATE_ACTION_LABELS: Record<string, string> = {
+  "newChat": "paletteNewChat",
+  "palette": "paletteName",
+  "pane:chat": "navConversations",
+  "pane:artifacts": "navArtifacts",
+  "pane:browser": "navBrowser",
+  "pane:files": "navFiles",
+  "pane:settings": "navSettings",
+  "pane:mission": "navMission",
+};
+
+/** P3-362: panes the gate shell opens pre-pairing — the rail's non-chat
+ * buttons as shipped by P3-365 (Files has no rail button; its Go action keeps
+ * the toast, now naming it). The Go menu must match this set exactly. */
+const GATE_SHELL_PANES = new Set<string>(["artifacts", "browser", "mission", "settings"]);
+
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
@@ -259,6 +280,9 @@ export default function App() {
   // of App).
   const [gateHintTick, setGateHintTick] = useState(0);
   const [gateHintAt, setGateHintAt] = useState(0);
+  // P3-362: i18n key of the Go action that triggered the current toast —
+  // the toast names the requested pane/action instead of a generic line.
+  const [gateHintWhat, setGateHintWhat] = useState<string | null>(null);
   // P3-357b: the drawer's Recents pin against the same device-local set —
   // kept live through the pins pub-sub so a SessionsView toggle reorders here.
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => loadPinned());
@@ -855,6 +879,20 @@ export default function App() {
     dispatchView({ type: "back" });
   }
 
+  // P3-362: the gate shell (P3-365's degraded first-boot journey) is the one
+  // gate surface with real pane targets. One boolean shared by the menu
+  // handler below and the gate render further down, so the Go menu and the
+  // rail can never disagree about what is openable pre-pairing. (A boolean,
+  // not the raw inputs, keeps the menu subscription from re-arming on every
+  // 3s pairing-state push.)
+  const gateShellUp =
+    phase !== "paired" &&
+    !!desktopBridge() &&
+    !pairManual &&
+    pairingState?.mode !== "remote" &&
+    !loadState() &&
+    isDesktop;
+
   // P1-046: keyboard navigation. Inside the Electron shell the Go menu pushes
   // ocr:menu-action (accelerators are OS-level there); in the plain browser a
   // keydown fallback covers the same keys. Registered only when the bridge is
@@ -862,9 +900,20 @@ export default function App() {
   useEffect(() => {
     function runMenuAction(id: string) {
       if (phase !== "paired") {
-        // P3-328: no client yet — nothing to open, but never silent.
+        // P3-362: at the gate shell the offline panes have a target — the Go
+        // menu matches the rail and opens them, instead of demanding pairing
+        // for a pane the rail already opens (the circular first-boot dead
+        // end: "pair first" with a QR the down daemon would have to mint).
+        const slot = id.startsWith("pane:") ? (id.slice(5) as Slot) : null;
+        if (slot && gateShellUp && GATE_SHELL_PANES.has(slot)) {
+          openPane(slot);
+          return;
+        }
+        // P3-328: no target — never silent. P3-362: the toast names WHAT was
+        // requested (the label map falls back to the generic line).
         setGateHintTick((n) => n + 1);
         setGateHintAt(Date.now());
+        setGateHintWhat(GATE_ACTION_LABELS[id] ?? null);
         return;
       }
       if (id === "newChat") {
@@ -904,7 +953,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, session, creating]);
+  }, [phase, session, creating, gateShellUp]);
 
   // iOS-style swipe-back: drag from the right edge slides the current screen;
   // releasing past the threshold pops the view.
@@ -1055,6 +1104,7 @@ export default function App() {
     <GateHint
       trigger={gateHintTick}
       at={gateHintAt}
+      what={gateHintWhat ? t(gateHintWhat) : null}
       onDismiss={() => setGateHintAt(0)}
       onPairNow={
         showWelcome
@@ -1271,8 +1321,9 @@ export default function App() {
       !!desktopBridge() && !pairManual && pairingState?.mode !== "remote" && !loadState();
     // P3-365: everything that is not the first-boot desktop journey keeps the
     // classic centered screen below (narrow windows, manual ceremony, remote
-    // mode, stored-pairing errors).
-    if (!degraded || !isDesktop) {
+    // mode, stored-pairing errors). P3-362: `gateShellUp` is the SAME verdict
+    // the Go menu handler uses — menu and rail never disagree here.
+    if (!gateShellUp) {
       return (
         <div
           className={(degraded ? mismatchBanner : banner) ? "pair-wrap has-daemon-down" : "pair-wrap"}

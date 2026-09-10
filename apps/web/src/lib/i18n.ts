@@ -434,9 +434,17 @@ export const dict = {
     // P3-328: Go-menu pane actions stay enabled at the pairing gate — pressing
     // one now surfaces this hint instead of silently doing nothing.
     pairFirstHint: "Pair with your machine first — the panes unlock once connected.",
+    // P3-362: the same toast names WHAT was requested (pane/action label in
+    // {pane}) — one generic sentence for every Go item told the user nothing.
+    // "to open {pane}" keeps the sentence grammatical for every label (plural
+    // nav names included) in both locales.
+    pairFirstHintFor: "Pair with your machine first to open {pane}.",
     // P3-367: inline escape inside the gate toast — jumps to the manual
     // pairing ceremony instead of leaving the user to find the link above.
     pairFirstAction: "Pair now",
+    // P3-362: the command palette as the gate toast names it (the palette has
+    // no nav* rail label to reuse).
+    paletteName: "Command palette",
     // P3-364: the gate's persistent pane map — what pairing unlocks. Labels
     // ride the nav* keys so the map names match the real rail verbatim.
     // P3-365: on the first-boot shell skeleton the rail already opens three of
@@ -1123,9 +1131,16 @@ export const dict = {
     // P3-328: ações de painel do menu Go ficam habilitadas no portão de
     // pareamento — apertar uma agora mostra este aviso em vez de não fazer nada.
     pairFirstHint: "Pareie com sua máquina primeiro — os painéis ficam disponíveis depois de conectar.",
+    // P3-362: o mesmo aviso diz O QUE foi pedido (rótulo do painel/ação em
+    // {pane}) — uma frase genérica pra todo item do Go não dizia nada.
+    // "para abrir {pane}" mantém a concordância pra qualquer rótulo.
+    pairFirstHintFor: "Pareie com sua máquina primeiro para abrir {pane}.",
     // P3-367: escape inline dentro do aviso do portão — pula direto pro
     // ceremony manual de pareamento em vez de caçar o link acima.
     pairFirstAction: "Parear agora",
+    // P3-362: a paleta de comandos como o aviso do portão a nomeia (a paleta
+    // não tem rótulo nav* do rail pra reutilizar).
+    paletteName: "Paleta de comandos",
     // P3-364: o mapa persistente do portão — o que parear desbloqueia. Os
     // rótulos usam as chaves nav* pra o mapa falar igual à barra lateral.
     // P3-365: no esqueleto do primeiro boot a barra lateral já abre três dos
