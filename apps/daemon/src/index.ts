@@ -149,6 +149,7 @@ import {
   type UpstreamVerdict,
 } from "./upstream.js";
 import { opencodeCandidates, pickOpencodeBinary, type OpencodeBinaryPick } from "./opencodebin.js";
+import { enumerateNodeVersionDirs } from "./nodeversions.js";
 import {
   injectArtifactsPathPart,
   injectArtifactsSystem,
@@ -2243,7 +2244,7 @@ let binaryCheckedAt = 0;
 function refreshOpencodeBinary(force = false): void {
   if (!force && Date.now() - binaryCheckedAt < 60_000) return;
   binaryCheckedAt = Date.now();
-  binaryPick = pickOpencodeBinary(opencodeCandidates(process.env, process.platform, homedir()), (p) => {
+  binaryPick = pickOpencodeBinary(opencodeCandidates(process.env, process.platform, homedir(), nodeVersionDirs()), (p) => {
     try {
       accessSync(p, constants.X_OK);
       return true;
@@ -2251,6 +2252,26 @@ function refreshOpencodeBinary(force = false): void {
       return false;
     }
   });
+}
+
+/**
+ * P3-395: node version directories under nvm/mise, enumerated fault-tolerantly
+ * so a Finder-launched app (minimal inherited PATH) still finds an opencode
+ * installed under a runtime manager. Anything that goes wrong — missing
+ * directory, permission denied, hostile listing — yields [] and the candidate
+ * list stays exactly as it would be without this feature. Never throws.
+ */
+function nodeVersionDirs(): string[] {
+  try {
+    return enumerateNodeVersionDirs({
+      platform: process.platform,
+      home: homedir(),
+      env: process.env,
+      readdir: (dir) => readdirSync(dir),
+    });
+  } catch {
+    return [];
+  }
 }
 
 // P2-213: opencode version readiness. Probed EXACTLY ONCE at boot, on the

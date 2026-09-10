@@ -53,19 +53,33 @@ function push(
 }
 
 /**
- * Deterministic, deduplicated candidate list for the opencode binary: every
- * absolute PATH entry first (source "path", `:`-separated on posix and
- * `;`-separated on win32), then the known install locations (source "known") —
- * posix: ~/.opencode/bin, /opt/homebrew/bin, /usr/local/bin; win32:
- * opencode.exe under LOCALAPPDATA and under Program Files (the latter
- * defaulting to "C:\Program Files"). Empty, relative or missing entries are
- * dropped; a directory present in both PATH and the known list appears once,
- * with the PATH occurrence winning. The list is never undefined.
+ * Deterministic, deduplicated candidate list for the opencode binary, in this
+ * exact order (P3-395):
+ *
+ * 1. every absolute PATH entry (source "path", `:`-separated on posix and
+ *    `;`-separated on win32);
+ * 2. the known opencode install locations (source "known") — posix:
+ *    ~/.opencode/bin, /opt/homebrew/bin, /usr/local/bin; win32: opencode.exe
+ *    under LOCALAPPDATA and under Program Files (the latter defaulting to
+ *    "C:\Program Files");
+ * 3. the runtime-manager install locations (source "known") — posix:
+ *    ~/.bun/bin, ~/.local/bin, ~/.npm-global/bin, ~/.local/share/pnpm and
+ *    ~/.volta/bin; win32: the npm folder under APPDATA and the pnpm folder
+ *    under LOCALAPPDATA. A Finder-launched app inherits a minimal PATH, so
+ *    these catch installs that the terminal resolves but the app would miss;
+ * 4. the caller-enumerated node version directories (source "known"), nvm and
+ *    mise last of all: each entry joins `bin` under the version directory on
+ *    posix and points straight at it on win32 (nvm-windows layout).
+ *
+ * Empty, relative or missing entries are dropped; a directory appearing more
+ * than once (PATH collision included) keeps only its first occurrence, so the
+ * PATH always wins. The list is never undefined.
  */
 export function opencodeCandidates(
   env: Record<string, string | undefined>,
   platform: string,
   home: string,
+  nodeVersionDirs: readonly string[] = [],
 ): OpencodeCandidate[] {
   const list: OpencodeCandidate[] = [];
   const seen = new Set<string>();
@@ -81,10 +95,23 @@ export function opencodeCandidates(
   if (win) {
     if (env.LOCALAPPDATA) push(list, seen, `${env.LOCALAPPDATA}\\opencode\\bin`, "known", platform);
     push(list, seen, `${env.ProgramFiles ?? "C:\\Program Files"}\\opencode`, "known", platform);
+    if (env.APPDATA) push(list, seen, `${env.APPDATA}\\npm`, "known", platform);
+    if (env.LOCALAPPDATA) push(list, seen, `${env.LOCALAPPDATA}\\pnpm`, "known", platform);
   } else {
     push(list, seen, `${home}/.opencode/bin`, "known", platform);
     push(list, seen, "/opt/homebrew/bin", "known", platform);
     push(list, seen, "/usr/local/bin", "known", platform);
+    push(list, seen, `${home}/.bun/bin`, "known", platform);
+    push(list, seen, `${home}/.local/bin`, "known", platform);
+    push(list, seen, `${home}/.npm-global/bin`, "known", platform);
+    push(list, seen, `${home}/.local/share/pnpm`, "known", platform);
+    push(list, seen, `${home}/.volta/bin`, "known", platform);
+  }
+
+  // node versions managed by nvm/mise, caller-enumerated: appended last so a
+  // versioned install is only preferred after every global location above.
+  for (const dir of nodeVersionDirs) {
+    push(list, seen, win ? dir : `${dir}/bin`, "known", platform);
   }
 
   return list;

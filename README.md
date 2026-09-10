@@ -1889,6 +1889,12 @@ install locations once at boot, refreshed at most once a minute while the
 upstream is unreachable), and `binarySource` is `"path"`, `"known"` or `null`
 depending on where it was found — so a refused connection reads as "start the
 server" when a binary exists and as "install opencode first" when it does not.
+Since P3-395 the known locations also cover the runtime managers: on macOS and
+Linux the daemon probes `~/.bun/bin`, `~/.local/bin`, `~/.npm-global/bin`,
+`~/.local/share/pnpm`, `~/.volta/bin` and the node versions nvm and mise keep
+under the home directory, so an app opened from the Finder (which inherits a
+minimal `PATH`) still finds what the terminal finds; on Windows the npm folder
+under `APPDATA` and the pnpm folder under `LOCALAPPDATA` join the search.
 No absolute path, token or password ever appears in `reason`, `hint` or the
 payload — only the boolean and the origin. The "opencode is DOWN" push uses the
 classifier's hint as its body (prefixed with the machine name), so the phone
