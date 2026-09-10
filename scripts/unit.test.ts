@@ -13148,10 +13148,16 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check("P2-149: dedupe keeps first occurrence (PATH wins over known) in order", (() => {
     const candidates = opencodeCandidates({ PATH: "/opt/homebrew/bin:/usr/local/bin" }, "darwin", "/home/u");
     const paths = candidates.map((c) => c.path);
+    // P3-395: the known tail grew the runtime-manager locations, in order.
     const expected = [
       "/opt/homebrew/bin/opencode",
       "/usr/local/bin/opencode",
       "/home/u/.opencode/bin/opencode",
+      "/home/u/.bun/bin/opencode",
+      "/home/u/.local/bin/opencode",
+      "/home/u/.npm-global/bin/opencode",
+      "/home/u/.local/share/pnpm/opencode",
+      "/home/u/.volta/bin/opencode",
     ];
     return (
       paths.length === expected.length &&
@@ -13164,7 +13170,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     const candidates = opencodeCandidates({ PATH: "bin:.:~/x::/usr/local/bin/" }, "darwin", "/home/u");
     const paths = candidates.map((c) => c.path);
     return (
-      candidates.length === 3 &&
+      candidates.length === 8 &&
       candidates[0].path === "/usr/local/bin/opencode" &&
       candidates[0].source === "path" &&
       paths.filter((p) => p === "/usr/local/bin/opencode").length === 1 &&

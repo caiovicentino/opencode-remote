@@ -99,7 +99,7 @@ server (opencode) in detail:
 | `reason` | string | short pt-BR description of what was observed |
 | `hint` | string | actionable pt-BR next step ("" when nothing needs doing) — becomes the down-push body, prefixed with the machine name |
 | `checkedAt` | string \| null | ISO timestamp of that probe; `null` before the first one |
-| `binaryFound` | boolean | additive (P2-149): `true` when an executable `opencode` binary exists on this machine — resolved from `PATH` plus known install locations once at boot and refreshed at most once a minute while the upstream is unreachable |
+| `binaryFound` | boolean | additive (P2-149): `true` when an executable `opencode` binary exists on this machine — resolved from `PATH` plus known install locations once at boot and refreshed at most once a minute while the upstream is unreachable; since P3-395 the known locations include the bun/pnpm/npm-global/volta/`~/.local/bin` managers plus the node versions nvm and mise expose (npm under `APPDATA` and pnpm under `LOCALAPPDATA` on Windows), so a Finder-launched app with a minimal inherited `PATH` still finds a terminal-visible install |
 | `binarySource` | `path` \| `known` \| null | additive (P2-149): where the binary was found (`"path"` = a `PATH` entry, `"known"` = a known install location); `null` when none is executable |
 
 The probes (boot healthcheck + 60s watchdog) classify HTTP status, parsed
