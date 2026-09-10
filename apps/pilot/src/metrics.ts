@@ -131,8 +131,9 @@ const COMPLETES: Record<string, string> = {
 
 /** P1-101: informational gate phases that must never open a tracked phase —
  * they fire between `gatekeeper` and `gatekeeper-done` and would otherwise
- * clobber the opener, breaking the pairing above. */
-const AUX_PHASES = new Set(["gate-flaky", "gate-fail"]);
+ * clobber the opener, breaking the pairing above. P3-355: the escalation
+ * phases fire between `reviewers` and `reviewers-done` for the same reason. */
+const AUX_PHASES = new Set(["gate-flaky", "gate-fail", "review-escalation", "escalation"]);
 
 /**
  * Average wall duration per pipeline phase, derived from phase transitions in
