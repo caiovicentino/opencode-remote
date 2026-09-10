@@ -265,9 +265,11 @@ calmo "conectando pela primeira vez…" no lugar do alerta vermelho, retry
 automático visível, feedback real do "Reconectar agora" com spinner+toast e
 o hatch de pareamento manual); P3-363 adicionou ao mesmo card a escalada do
 retry silencioso: depois de 60s acumulados tentando sozinho, um bloco de
-diagnóstico nomeia o daemon local que não responde, aponta o
-`opencode-remote doctor` e abre a seção de ajuda/diagnósticos (o laço
-paciente nunca vira um congelamento indistinguível); P2-140 adicionou ao mesmo card calmo o
+diagnóstico nomeia o daemon local que não responde e abre a seção de
+ajuda/diagnósticos (o laço paciente nunca vira um congelamento
+indistinguível; P3-394: o detalhe da escalada segue a superfície — no desktop
+aponta o botão de diagnósticos do próprio app, no celular manda conferir o
+computador ou parear outro dispositivo, nunca um terminal); P2-140 adicionou ao mesmo card calmo o
 porquê da morte do daemon local (classificador puro `sidecarexit.ts`
 recebe code/signal/cauda de stderr, veredito port-busy/entry-missing/
 runtime-error/killed/unknown via `sidecarExit` no `ocr:pairing-state`,

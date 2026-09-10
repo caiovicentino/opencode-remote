@@ -1596,6 +1596,13 @@ link beside the diagnostics button, keeping its full feedback contract
 (spinner, trying state, result toast) — so the escalated column shows exactly
 one primary recovery path.
 
+**Escalation that respects the surface (P3-394)**: the escalated card's detail
+copy never asks anyone to open a terminal. On the desktop shell it points at
+the in-app "Open diagnostics" button in the same block (the report is copied
+from inside the app); on the phone it points back to the computer itself or to
+pairing another device manually — both locales written, chosen by the same
+desktop-shell verdict the app already computes.
+
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
 for the whole session — poll gaps and degraded states no longer resurrect the

@@ -1385,6 +1385,9 @@ export default function App() {
               onOpenHelp={() => setHelpOpen(true)}
               sidecarExit={sidecarExit}
               sidecarWedge={sidecarWedge}
+              // P3-394: the same shell verdict the install hint uses — it
+              // picks the escalation detail (in-app diagnostics vs phone).
+              desktopShell={!!desktopBridge()}
             />
           ) : (
             <PairingView
@@ -1500,6 +1503,9 @@ export default function App() {
               onOpenHelp={() => setHelpOpen(true)}
               sidecarExit={sidecarExit}
               sidecarWedge={sidecarWedge}
+              // P3-394: the same shell verdict the install hint uses — it
+              // picks the escalation detail (in-app diagnostics vs phone).
+              desktopShell={!!desktopBridge()}
               // P3-365: the rail beside this card opens Artifacts, Browser and
               // Mission Control pre-pairing — the hero's pane map must not
               // claim those panes are locked.

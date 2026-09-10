@@ -163,7 +163,9 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // one box — wall time crossed 300s on a loaded run with ALL beats green
 // (P1-089 passed ~20s after the readiness fix), so the budget grows to 360s;
 // the first 360s run stayed green through the second-to-last beat and died at
-// the P2-152 close-to-tray boot, so it lands at 420s.
+// the P2-152 close-to-tray boot, so it lands at 420s. P3-394 added the
+// escalation beat (the ?escalate=1 hatch + the desktop-phrase probe) inside
+// the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 420_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -682,6 +684,47 @@ try {
     10,
     500,
   );
+  // --- P3-394: the escalation block's surface-aware phrase --------------------
+  // The documented ESCALATE_HATCH_KEY hatch (DegradedView) seeds the cumulative
+  // retry counter at the threshold and one same-URL reload re-mounts the card
+  // already escalated — no 60s wait. (The shell's will-navigate guard blocks
+  // any renderer navigation to a different URL, so a query-param hatch is not
+  // an option.) The desktop shell must name the in-app diagnostics button —
+  // never a terminal command for a layperson. The hatch is removed right after
+  // so no later mount in this session inherits it.
+  run("P3-394: seed the escalate hatch and reload", ["ipc", "setTimeout(() => { localStorage.setItem('ocr.degraded.escalateHatch', '1'); location.reload(); }, 0); 'nav'"], 15_000);
+  await waitProbe(
+    "P3-394: escalation block rendered",
+    "!!document.querySelector('.degraded-escalate')",
+    (v) => /true/.test(v),
+    cliEnv,
+    12,
+    500,
+  );
+  const escalateDetail = run("P3-394: escalation detail copy", ["ipc", "document.querySelector('.degraded-escalate-detail')?.textContent ?? ''"], 15_000);
+  if (escalateDetail.ok) {
+    check(
+      "P3-394: desktop escalation names the in-app diagnostics, never a terminal (en|pt)",
+      /diagnósticos|diagnostics/i.test(escalateDetail.stdout) &&
+        !/terminal|opencode-remote doctor/i.test(escalateDetail.stdout),
+      escalateDetail.stdout,
+    );
+  }
+  const escalateBtn = run("P3-394: diagnostics button inside the escalation block", ["ipc", "!!document.querySelector('.degraded-escalate .degraded-upstream-help')"], 15_000);
+  if (escalateBtn.ok) check("P3-394: in-app diagnostics button rides the block", /true/.test(escalateBtn.stdout));
+  const esc1440 = join(shotsDir, "P3-394-escalated-1440.png");
+  const esc390 = join(shotsDir, "P3-394-escalated-390.png");
+  const esc1 = run("P3-394: 1440x900 escalation shot", ["shot", esc1440, "1440", "900"], 15_000);
+  if (esc1.ok) check("P3-394: 1440x900 shot is a real PNG", pngSize(esc1440).join("x") === "1440x900");
+  const escStill = run("P3-394: escalation survives the 390 resize", ["ipc", "!!document.querySelector('.degraded-escalate')"], 15_000);
+  if (escStill.ok) check("P3-394: escalation block still mounted at 390px", /true/.test(escStill.stdout));
+  const esc2 = run("P3-394: 390 escalation shot", ["shot", esc390, "390", "844"], 15_000);
+  if (esc2.ok) check("P3-394: 390 shot is a real PNG", pngSize(esc390)[0] === 390);
+  // Cleared only after the shots: the 390px resize re-mounts the card (the
+  // desk skeleton folds to the classic screen), and the hatch is read at
+  // mount — clearing earlier would un-escalate the 390 evidence. The manual
+  // escape click below lands on the ceremony either way.
+  run("P3-394: clear the escalate hatch", ["ipc", "localStorage.removeItem('ocr.degraded.escalateHatch'); 'cleared'"], 15_000);
   run("P2-112: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000);
   // P3-366: the degraded journey's manual escape lands on the ceremony with
   // the desktop paste-first hierarchy intact — "Pair" is the primary button
