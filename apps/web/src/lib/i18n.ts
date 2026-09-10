@@ -794,6 +794,27 @@ export const dict = {
       "Open OpenCode Remote on your computer, show the pairing QR code and scan it here — or paste the pairing code.",
     // F1b: stored pairing, machine unreachable → countdown into the auto-retry
     pairAutoRetry: "Trying again in {s} s…",
+    // P3-382: browser pane chrome rides the dict — the header title reuses
+    // navBrowser so pane and rail agree in every locale (the pane is reachable
+    // from the unpaired first-boot gate). Errors: known internal throws map to
+    // their own key, daemon-provided messages ride browserErrGeneric's {msg}.
+    browserBack: "Back to chat",
+    browserMaximize: "Maximize pane",
+    browserRestore: "Restore pane",
+    browserReload: "Reload",
+    browserToggleText: "Toggle text",
+    browserRefreshShot: "Refresh screenshot",
+    browserGo: "Go",
+    browserLoading: "Loading…",
+    browserNoPage: "No page loaded.",
+    browserShotAlt: "Host browser screenshot",
+    browserInvalidUrl: "Invalid URL — use http(s)://…",
+    browserLoadFailed: "Could not load the page.",
+    browserCrashed: "The page renderer crashed — reload.",
+    browserErrUnreachable: "The machine did not answer — the host browser is unreachable.",
+    browserErrDesktopOnly: "The browser pane needs the desktop connection.",
+    browserErrUnexpected: "Unexpected answer from the machine.",
+    browserErrGeneric: "Could not open the page — {msg}",
   },
   pt: {
     search: "Buscar conversas…",
@@ -1501,5 +1522,26 @@ export const dict = {
       "Abra o OpenCode Remote no computador, mostre o QR code de pareamento e escaneie aqui — ou cole o código de pareamento.",
     // F1b: pareamento guardado, máquina fora de alcance → contagem até a nova tentativa
     pairAutoRetry: "Tentando de novo em {s} s…",
+    // P3-382: chrome do pane do navegador no dicionário — o título do header
+    // reusa navBrowser pra pane e rail falarem igual em qualquer idioma (o pane
+    // é alcançável no portão do primeiro boot). Erros: throws internos known
+    // ganham chave própria; mensagem vinda do daemon entra no {msg} genérico.
+    browserBack: "Voltar ao chat",
+    browserMaximize: "Maximizar painel",
+    browserRestore: "Restaurar painel",
+    browserReload: "Recarregar",
+    browserToggleText: "Mostrar/ocultar texto",
+    browserRefreshShot: "Atualizar screenshot",
+    browserGo: "Ir",
+    browserLoading: "Carregando…",
+    browserNoPage: "Nenhuma página carregada.",
+    browserShotAlt: "Captura do navegador da máquina",
+    browserInvalidUrl: "URL inválida — use http(s)://…",
+    browserLoadFailed: "Não foi possível carregar a página.",
+    browserCrashed: "O renderizador da página caiu — recarregue.",
+    browserErrUnreachable: "A máquina não respondeu — o navegador do host está fora de alcance.",
+    browserErrDesktopOnly: "O pane do navegador pede a conexão do desktop.",
+    browserErrUnexpected: "Resposta inesperada da máquina.",
+    browserErrGeneric: "Não foi possível abrir a página — {msg}",
   },
 } satisfies Record<Lang, Record<string, string>>;

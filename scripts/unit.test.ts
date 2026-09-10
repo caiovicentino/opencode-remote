@@ -11650,6 +11650,64 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-382: BrowserView pane chrome rides the dict (drift lock) ----------------
+// The browser pane is reachable from the unpaired first-boot gate, so its
+// chrome must speak the user's locale: no hardcoded "Browser"/"Go"/"Loading…"
+// English literals and no hardcoded pt-BR chrome either (the WebViewPane used
+// to hardcode its aria labels in Portuguese). The header title reuses the
+// rail's navBrowser key verbatim so pane and rail can never disagree again.
+{
+  const src = readFileSync(new URL("../apps/web/src/components/BrowserView.tsx", import.meta.url), "utf8");
+  const banned = [
+    // hardcoded English chrome (screenshot fallback)
+    ">Browser</h1>",
+    "Go\n        </button>",
+    '"Loading…"',
+    "No page loaded.",
+    'aria-label="Toggle text"',
+    'aria-label="Refresh screenshot"',
+    'alt="host browser"',
+    // hardcoded pt-BR chrome (webview pane)
+    "Voltar ao chat",
+    "Maximizar painel",
+    "Restaurar painel",
+    'aria-label="Recarregar"',
+    "URL inválida",
+    "Não foi possível carregar",
+    "O renderizador da página caiu",
+  ];
+  const drift = banned.filter((p) => src.includes(p));
+  check(
+    "P3-382: BrowserView carries zero hardcoded chrome phrases (all copy rides the dict)",
+    drift.length === 0,
+    drift.join(", "),
+  );
+  check(
+    "P3-382: both pane headers reuse the rail's navBrowser key",
+    src.split('t("navBrowser")').length - 1 === 2,
+  );
+  const browserKeys = [
+    "browserBack", "browserMaximize", "browserRestore", "browserReload",
+    "browserToggleText", "browserRefreshShot", "browserGo", "browserLoading",
+    "browserNoPage", "browserShotAlt", "browserInvalidUrl", "browserLoadFailed",
+    "browserCrashed", "browserErrUnreachable", "browserErrDesktopOnly",
+    "browserErrUnexpected", "browserErrGeneric",
+  ];
+  check(
+    "P3-382: every browser key resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      browserKeys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+  check(
+    "P3-382: pane title matches the rail label in both locales",
+    (["en", "pt"] as const).every((lang) => translate(lang, "navBrowser") === (lang === "pt" ? "Navegador" : "Browser")),
+  );
+}
+
 // --- P3-373: the brand glyph leads every first-contact header ----------------
 {
   const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");

@@ -433,7 +433,11 @@ remoto, zero confiança**.
   traduzida (P2-275): Sobre, Estilo de legenda, Aparência, Notificações push, Compartilhar
   com o agente, Skills, Rotinas agendadas e o Registro de segurança saem do dicionário,
   com um teste unitário de travamento de deriva que falha se uma frase literal em inglês
-  voltar a ser escrita no componente
+  voltar a ser escrita no componente. O chrome do pane Browser também sai do dicionário
+  (P3-382): o header reusa o rótulo do rail verbatim ("Browser"/"Navegador"), e o botão
+  Ir, estados de carregamento/vazio, labels de acessibilidade e copy de erro — incluindo
+  os erros crus do fallback de screenshot — traduzem, com o mesmo travamento de deriva
+  guardando o pane (ele é alcançável no portão do primeiro boot)
 
 ## Quick Start (Mac → iPhone, ~5 min)
 

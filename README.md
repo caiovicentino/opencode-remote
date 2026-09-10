@@ -413,7 +413,11 @@ private. That is the product: **local power, remote control, zero trust**.
   About, Caption style, Appearance, Push notifications, Share to agent, Skills,
   Scheduled routines and the Security log all translate, with a unit-test drift
   lock that fails when a literal English phrase is written back into the
-  component
+  component. The Browser pane chrome is dictionary-driven as well (P3-382):
+  its header reuses the rail's label verbatim ("Browser"/"Navegador"), and the
+  Go button, loading/empty states, aria labels and error copy — including the
+  screenshot fallback's raw throws — all localize, with the same drift lock
+  guarding the pane (it is reachable from the unpaired first-boot gate)
 - **Pairing gate with a map (P3-364)** — the unpaired screens (manual ceremony and the
   degraded first boot) carry a persistent "After pairing" card listing the panes that stay
   locked until connection — Conversations, Artifacts, Browser, Mission Control, Settings — each with a

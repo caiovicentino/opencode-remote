@@ -79,6 +79,12 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas
   da jornada compartilham a mesma linguagem de marca, em vez de o glifo
   aparecer só no wizard
+- Pane do navegador no dicionário (P3-382): o header reusa o rótulo do rail
+  verbatim ("Navegador" em pt-BR, via `navBrowser`), e todo o chrome — botão
+  Ir, estados carregando/vazio, labels de acessibilidade e copy de erro —
+  sai do dicionário EN/pt-BR, inclusive no fallback de screenshot; o pane é
+  visto no portão do primeiro boot, então um usuário pt-BR nunca mais lê
+  "Browser / Go / Loading…" em cima de um rail que diz "Navegador"
 - Painel de artifact com animação de entrada/saída e backdrop
 - Gauge de contexto e recap (P1-079) no rodapé do chat, discretos
 - Rotinas agendadas visíveis ("Programado"), com histórico de execução por
