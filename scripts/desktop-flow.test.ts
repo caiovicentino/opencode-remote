@@ -155,6 +155,9 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // P2-323 added the rename-dialog beat (prefilled in-app dialog over the fake
 // backend's session list, identical-title refusal, focus round-trip, a real
 // PATCH on confirm and 1440/390 evidence shots) inside the same budget.
+// P2-326 added the agent-reply-notification beat (fresh-userData boot, two
+// unread pushes with the window hidden, verdict counted in that boot's
+// desktop.log) inside the same budget.
 // P3-331 made every hermetic-daemon readiness wait deadline-based and dropped
 // the npx indirection, but the pipeline now runs gate slots concurrently on
 // one box — wall time crossed 300s on a loaded run with ALL beats green
@@ -958,6 +961,51 @@ try {
   run("P2-150: clear the badge (unread=0)", ["ipc", "window.ocrDesktop.sendUnread(0)"], 15_000);
   const badgeCleared = run("P2-150: read app:unreadBadge after clear", ["ipc", "window.ocrDesktop.getUnreadBadge()"], 15_000);
   if (badgeCleared.ok) check("P2-150: badge clears to 0", badgeCleared.stdout.trim() === "0");
+
+  // --- P2-326: agent-reply notification verdict ---------------------------------
+  // The unread push now also decides a native "the agent replied" toast. In a
+  // hermetic session the verdict is log-only (P1-081: never a native toast on
+  // the operator's screen), so the beat boots a FRESH userData (the
+  // last-notification instant starts clean) and pushes a rise with the window
+  // hidden: exactly one notify verdict in that boot's desktop.log, and none on
+  // the second push — a rise inside the documented minimum interval.
+  const replyEnv = { ...process.env, OCR_DESKTOP_SESSION: `${session}-replynotify` };
+  let replyBooted = false;
+  try {
+    const replyOpen = run("P2-326: open (hermetic launch, fresh userData)", ["open"], 45_000, replyEnv);
+    replyBooted = replyOpen.ok;
+    if (replyOpen.ok) {
+      const replyUserData = (() => {
+        try {
+          return (JSON.parse(replyOpen.stdout.trim()) as { userData?: string }).userData ?? "";
+        } catch {
+          return "";
+        }
+      })();
+      run("P2-326: push unread=3 (first rise, hidden window)", ["ipc", "window.ocrDesktop.sendUnread(3)"], 15_000, replyEnv);
+      run("P2-326: push unread=5 (rise inside the minimum interval)", ["ipc", "window.ocrDesktop.sendUnread(5)"], 15_000, replyEnv);
+      const replyLog = (() => {
+        try {
+          return readFileSync(join(replyUserData, "logs", "desktop.log"), "utf8");
+        } catch {
+          return "";
+        }
+      })();
+      const verdicts = replyLog.split("\n").filter((line) => line.includes("reply notify verdict:"));
+      const notifies = verdicts.filter((line) => line.includes("verdict: notify")).length;
+      const quiets = verdicts.filter((line) => line.includes("verdict: quiet")).length;
+      check(
+        "P2-326: exactly one reply-notification verdict, the interval push stays quiet",
+        notifies === 1 && quiets >= 1,
+        `notify=${notifies} quiet=${quiets}\n${verdicts.join("\n")}`,
+      );
+      check("P2-326: hermetic session never builds the native toast", !replyLog.includes("reply notification shown"), replyLog.slice(-2000));
+    }
+  } finally {
+    if (replyBooted) {
+      spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: replyEnv, timeout: 30_000 });
+    }
+  }
 
   // --- P1-072: the shell must expose the real <webview> tag --------------------
   await testWebviewPane();

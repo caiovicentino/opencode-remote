@@ -33696,6 +33696,85 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   check("dist wiring: the boot pass counts as the first run", indexSrc.includes("lastDistSweep = Date.now();"));
 }
 
+// --- P2-326: the agent-reply notification verdict (pure module) -----------------
+// replyNotifyDecision() receives the previous unread push, the new one, whether
+// the main window is visible AND focused, the current instant and the instant
+// of the last notification, and returns a closed-set verdict: notify (with one
+// static pt-BR body) or quiet. Table below covers every acceptance row.
+import { REPLY_NOTIFY_BODY, REPLY_NOTIFY_MIN_INTERVAL_MS, REPLY_NOTIFY_TITLE, replyNotifyDecision } from "../apps/desktop/src/replynotify";
+{
+  const MIN = REPLY_NOTIFY_MIN_INTERVAL_MS;
+  const d = (prev: unknown, next: unknown, focused: boolean, now: number, last: number | null) =>
+    replyNotifyDecision(prev, next, focused, now, last);
+
+  // The core table: rise/fall/equal × focus × interval.
+  check("P2-326: rise with the window hidden notifies with the static body", d(0, 3, false, 1_000, null).kind === "notify" && d(0, 3, false, 1_000, null).body === REPLY_NOTIFY_BODY);
+  check("P2-326: rise with the window visible and focused never notifies", d(0, 3, true, 1_000, null).kind === "quiet");
+  check("P2-326: falling count is quiet", d(5, 2, false, 1_000, null).kind === "quiet");
+  check("P2-326: equal count is quiet", d(5, 5, false, 1_000, null).kind === "quiet");
+  check("P2-326: first notification without a previous instant notifies", d(3, 4, false, 1_000, null).kind === "notify");
+  check("P2-326: second notification one ms before the minimum interval is quiet", d(3, 4, false, 1_000 + MIN - 1, 1_000).kind === "quiet");
+  check("P2-326: second notification exactly at the interval boundary notifies", d(3, 4, false, 1_000 + MIN, 1_000).kind === "notify");
+  check("P2-326: second notification after the interval notifies", d(3, 4, false, 1_000 + MIN + 1, 1_000).kind === "notify");
+
+  // Fail-closed sanitization, badge.ts discipline but stricter (no floor).
+  check(
+    "P2-326: missing count is quiet on either side",
+    [undefined, null].every((bad) => d(bad, 4, false, 1_000, null).kind === "quiet" && d(3, bad, false, 1_000, null).kind === "quiet"),
+  );
+  check("P2-326: negative count is quiet on either side", d(-1, 4, false, 1_000, null).kind === "quiet" && d(3, -4, false, 1_000, null).kind === "quiet");
+  check("P2-326: fractional count is quiet on either side (no floor)", d(3, 4.5, false, 1_000, null).kind === "quiet" && d(3.5, 4, false, 1_000, null).kind === "quiet");
+  check(
+    "P2-326: non-numeric count is quiet",
+    ["4", NaN, Infinity, true, {}, [4]].every((bad) => d(3, bad, false, 1_000, null).kind === "quiet"),
+  );
+  check("P2-326: a non-finite current instant is quiet (fail closed)", d(3, 4, false, NaN, null).kind === "quiet");
+  check("P2-326: a future last instant reads as just-notified (age never negative)", d(3, 4, false, 1_000, 2_000).kind === "quiet");
+
+  // Determinism: the same input yields the exact same verdict on every call.
+  check(
+    "P2-326: determinism — the same input returns the identical verdict twice",
+    JSON.stringify(d(0, 3, false, 1_000, null)) === JSON.stringify(d(0, 3, false, 1_000, null)) &&
+      JSON.stringify(d(3, 4, false, 1_000 + MIN, 1_000)) === JSON.stringify(d(3, 4, false, 1_000 + MIN, 1_000)),
+  );
+
+  // The phrase discipline: short, static, no path, no content.
+  check(
+    "P2-326: the body is one short static pt-BR phrase with no path or title",
+    REPLY_NOTIFY_BODY.length > 0 &&
+      REPLY_NOTIFY_BODY.length < 80 &&
+      !REPLY_NOTIFY_BODY.includes("/") &&
+      !REPLY_NOTIFY_BODY.includes("\\") &&
+      !REPLY_NOTIFY_BODY.includes("\n") &&
+      REPLY_NOTIFY_TITLE === "OpenCode Remote" &&
+      Number.isInteger(MIN) &&
+      MIN > 0,
+  );
+
+  // The real sources: purity of the module + the main.ts wiring order.
+  const replySrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "replynotify.ts"), "utf8");
+  check(
+    "P2-326: purity — replynotify.ts has no import at all (no electron, no node:fs, no I/O)",
+    !/^import\b/m.test(replySrc) && !/(electron|node:fs|node:path|node:child_process|node:net)\b/.test(replySrc.replace(/^\/\/.*$/gm, "")),
+  );
+  check("P2-326: purity — no timer and no environment access in the module", !/setInterval|setTimeout|process\.env/.test(replySrc));
+
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const unreadHandlerAt = mainSrc.indexOf('ipcMain.on("ocr:unread"');
+  const applyAt = mainSrc.indexOf("function applyReplyNotification");
+  const applyEnd = applyAt >= 0 ? mainSrc.indexOf("\n}", applyAt) : -1;
+  const wiring = applyAt >= 0 && applyEnd > applyAt ? mainSrc.slice(applyAt, applyEnd) : "";
+  check("P2-326: wiring — the existing ocr:unread handler applies the verdict, no new channel", unreadHandlerAt >= 0 && mainSrc.slice(unreadHandlerAt, unreadHandlerAt + 900).includes("applyReplyNotification(") && mainSrc.includes('from "./replynotify"'));
+  check("P2-326: wiring — the test-session rule is consulted before any native notification", (() => {
+    const hermeticAt = wiring.indexOf("HERMETIC_E2E");
+    const notificationAt = wiring.indexOf("new Notification");
+    return hermeticAt >= 0 && notificationAt > hermeticAt && wiring.indexOf("isSupported") > hermeticAt;
+  })());
+  check("P2-326: wiring — no periodic timer was introduced by the reply notification", !/setInterval|setTimeout/.test(wiring) && !/setInterval|setTimeout/.test(mainSrc.slice(unreadHandlerAt, unreadHandlerAt + 900)));
+  check("P2-326: wiring — the notification click reuses the shell show-and-focus path", wiring.includes("showMainWindow()"));
+  check("P2-326: wiring — the verdict line always lands in desktop.log", wiring.includes("reply notify verdict"));
+}
+
 
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);

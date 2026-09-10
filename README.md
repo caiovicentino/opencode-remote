@@ -1677,6 +1677,10 @@ the tail — the app icon shows the indicator: a count on the macOS dock / Linux
 and a green overlay disk on the Windows taskbar icon. Focusing the window or
 jumping back to the tail clears it.
 
+**Agent-reply notification (P2-326)**: when the agent replies while the window
+is out of focus, a native notification says so at most once per minute — it
+never carries message content, and clicking it brings the window to the front.
+
 ```bash
 npm run build --workspace @ocr/web       # build the UI once
 npm run build --workspace @ocr/desktop   # compile the shell (TypeScript main process)

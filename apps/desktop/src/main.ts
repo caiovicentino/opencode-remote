@@ -99,6 +99,7 @@ import { initSidecarLog } from "./sidecar-log";
 import { phonePaired, type PairingState } from "./pairing";
 import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
+import { REPLY_NOTIFY_TITLE, replyNotifyDecision } from "./replynotify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
@@ -1710,8 +1711,12 @@ async function onReady(): Promise<void> {
   // a taskbar overlay icon (setBadgeCount is a no-op there). badgePlan also
   // sanitizes the payload, so a hostile/malformed push can never set garbage.
   ipcMain.on("ocr:unread", (_e, n: unknown) => {
+    const prevUnread = lastUnreadBadge;
     const plan = badgePlan(process.platform, n);
     lastUnreadBadge = plan.count;
+    // P2-326: the same push decides the agent-reply notification — pure
+    // verdict (replynotify.ts), applied best-effort, badge behavior unchanged.
+    applyReplyNotification(prevUnread, n);
     if (plan.kind === "dock") {
       try {
         app.setBadgeCount(plan.count);
@@ -2175,6 +2180,44 @@ function observeDaemonHealth(down: boolean): void {
     log(`[desktop] notification: ${body}`);
   } catch (err) {
     logError("[desktop] daemon notification failed:", err);
+  }
+}
+
+// P2-326: agent-reply notification. The unread push the badge already consumes
+// now also decides — through the pure verdict in replynotify.ts — whether a
+// native toast says the agent replied (long task finished, the user is away).
+// Process-memory state only, no timer: the verdict moves exclusively inside
+// the ocr:unread handler, and the badge surface is untouched.
+let lastReplyNotifyAt: number | null = null;
+
+function applyReplyNotification(prevUnread: unknown, nextRaw: unknown): void {
+  let focused = false;
+  try {
+    focused = !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused();
+  } catch {
+    focused = false; // an unreadable window state never notifies (fail closed)
+  }
+  const now = Date.now();
+  const decision = replyNotifyDecision(prevUnread, nextRaw, focused, now, lastReplyNotifyAt);
+  log(`[desktop] reply notify verdict: ${decision.kind} (${decision.reason})`);
+  if (decision.kind !== "notify") return;
+  lastReplyNotifyAt = now;
+  // P1-081 order contract (replynotify.ts header): the hermetic test-session
+  // rule is consulted FIRST — a harness session only logs the verdict above
+  // and never constructs the native notification, so the operator's screen
+  // stays clean of test artifacts.
+  if (HERMETIC_E2E) return;
+  // Best-effort only, same discipline as observeDaemonHealth(): an
+  // unsupporting platform or a denied permission never takes the shell down.
+  // The click reuses the SAME show-and-focus path as the tray (showMainWindow).
+  try {
+    if (!Notification.isSupported()) return;
+    const toast = new Notification({ title: REPLY_NOTIFY_TITLE, body: decision.body, silent: false });
+    toast.on("click", () => showMainWindow());
+    toast.show();
+    log(`[desktop] reply notification shown`);
+  } catch (err) {
+    logError("[desktop] reply notification failed:", err);
   }
 }
 
