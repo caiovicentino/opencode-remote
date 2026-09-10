@@ -2493,7 +2493,11 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
  * trivial conflicts, push the new head, re-probe — see repairConflictedBranch;
  * semantic conflicts escalate to the operator with CONFLICT_OPERATOR_MARKER).
  * If nothing confirms within the budget the outcome is honest infra ("timeout"): the
- * next cycle re-schedules instead of burning an attempt. The PR is always
+ * next cycle re-schedules instead of burning an attempt. P3-354: before any
+ * merge is armed, one `gh pr view --json state,headRefOid` probe catches the
+ * out-of-loop operator merge — state MERGED with a foreign head returns infra
+ * "conflict" (resync next cycle) instead of letting the confirmation poll
+ * classify it as a merit anomaly. The PR is always
  * addressed by NUMBER (`--delete-branch` removes the ref, the poll must stay
  * valid) and there is deliberately NO local-merge/push-to-main fallback
  * (P1-076).
@@ -2585,6 +2589,39 @@ export async function mergePrForTask(
     );
     return { ok: false, infra, detail: `PR #${prNumber} not merged (${effective.verdict}): ${effective.detail}` };
   }
+  // P3-354: a PR merged OUTSIDE the loop (operator, or this task's previous
+  // cycle whose --delete-branch then makes the retry push fail the
+  // force-with-lease) reports state MERGED with a head that is not ours.
+  // Arming `gh pr merge` is pointless there, and the confirmation poll's
+  // head-mismatch check would burn an attempt + a fever sample for work that
+  // is already in main. One explicit probe BEFORE arming: MERGED + foreign
+  // head is infra "conflict" — the next cycle's empty-diff self-heal resyncs.
+  // gh noise here fails open: the poll below remains the backstop.
+  const pre = io.exec(`gh pr view ${prNumber} --json state,headRefOid`);
+  if (pre.ok) {
+    let preSnap: { state?: unknown; headRefOid?: unknown } = {};
+    try {
+      preSnap = JSON.parse(pre.output);
+    } catch {
+      // malformed snapshot — the poll below re-reads the PR anyway
+    }
+    const preHead = typeof preSnap.headRefOid === "string" ? preSnap.headRefOid : "";
+    if (preSnap.state === "MERGED" && preHead && preHead !== expectedSha) {
+      console.log(
+        JSON.stringify({
+          ts: nowLocalISO(),
+          level: "warn",
+          msg: "merge skipped — PR already MERGED outside the loop",
+          data: { pr: prNumber, branch: args.branch, head: preHead.slice(0, 7), ours: expectedSha.slice(0, 7) },
+        }),
+      );
+      return {
+        ok: false,
+        infra: "conflict",
+        detail: `PR #${prNumber} already MERGED outside the loop (head ${preHead.slice(0, 7)}, our ${expectedSha.slice(0, 7)}) — resyncs next cycle`,
+      };
+    }
+  }
   // --auto only works once branch protection exists; the immediate squash is
   // the fallback. Failure here is NOT fatal: the squash may be queued anyway.
   const merge = io.exec(
@@ -2666,7 +2703,21 @@ async function mergeTask(
   // head stays at the old sha and the poll's head-mismatch check burns the
   // very attempt this repair exists to spare. The lease keeps the anti-clobber
   // property of a peer push landing after our last fetch (metapush precedent).
-  exec(`git push -q --force-with-lease origin pilot/${t.id}`, { cwd: ws, allowFail: true });
+  // P3-354: "silently" is exactly the bug — a refused push (e.g. the operator
+  // merged the PR out-of-loop and --delete-branch removed the ref, so the
+  // lease fails) vanished from the log. Warn with the captured reason; the
+  // retry policy is unchanged (setupTaskBranch / the self-heal own recovery).
+  const pushed = exec(`git push -q --force-with-lease origin pilot/${t.id}`, { cwd: ws, allowFail: true });
+  if (!pushed.ok) {
+    console.log(
+      JSON.stringify({
+        ts: nowLocalISO(),
+        level: "warn",
+        msg: "branch push refused — PR keeps the head origin already has",
+        data: { task: t.id, branch: `pilot/${t.id}`, detail: pushed.output.trim().slice(-PR_MERGE_TAIL) },
+      }),
+    );
+  }
   // P2-125: the PR create/merge runs through the injectable PrMergeIo with
   // fail-closed confirmation — see mergePrForTask. P1-076: no local-merge
   // fallback — a merge without a PR has no audit trail, and a direct push to

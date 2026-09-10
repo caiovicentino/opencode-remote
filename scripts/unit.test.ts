@@ -8612,10 +8612,12 @@ check(
   check("P2-125: merge addressed by PR number, never by branch", confirmed.calls.some((c) => c.startsWith("gh pr merge 42 ")) && confirmed.calls.some((c) => c.startsWith("gh pr view 42 ")) && !confirmed.calls.some((c) => c.startsWith("gh pr view pilot/")));
   check("P2-125: immediate confirmation has zero artificial latency (no sleep before poll 0)", confirmed.getSleeps() === 0);
 
-  // MERGED with another headRefOid is a real anomaly — merit, never success
+  // P3-354: MERGED with a foreign head is the out-of-loop operator merge —
+  // infra "conflict" (resync next cycle), never success and never a merge
   const swapped = mkIo(() => ({ state: "MERGED", headRefOid: otherSha }));
   const swappedOut = await mergePrForTask(swapped.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
-  check("P2-125: MERGED with another headRefOid ⇒ failure, never success", swappedOut.ok === false && swappedOut.infra === undefined);
+  check("P3-354: MERGED with another headRefOid ⇒ infra conflict, never success", swappedOut.ok === false && swappedOut.infra === "conflict");
+  check("P3-354: out-of-loop merge never arms `gh pr merge`", !swapped.calls.some((c) => c.startsWith("gh pr merge")));
 
   // queued forever: view stays OPEN for the whole budget ⇒ honest infra
   // timeout; polling never sleeps before reading (59 sleeps for 60 polls)
@@ -8623,7 +8625,7 @@ check(
   const queuedOut = await mergePrForTask(queued.io, { branch: "pilot/P2-125", title: "t", body: "b", pushedSha: sha });
   check("P2-125: merge never confirmed ⇒ ok=false with infra=timeout", queuedOut.ok === false && queuedOut.infra === "timeout");
   check("P2-125: unconfirmed detail carries the gh merge tail", queuedOut.detail.includes("failed to arm auto-merge"));
-  check("P2-125: every poll in the budget ran", confirmViews(queued.calls) === PR_MERGE_CONFIRM_POLLS);
+  check("P2-125: every poll in the budget ran", confirmViews(queued.calls) === PR_MERGE_CONFIRM_POLLS + 1); // +1: the P3-354 pre-merge head probe
   check("P2-125: sleep only between polls (59 sleeps for 60 polls)", queued.getSleeps() === PR_MERGE_CONFIRM_POLLS - 1);
 
   // the runSlot infra branch: structured kind → recordInfraFailure only —
@@ -8664,6 +8666,52 @@ check(
     "P2-125: P2-058 verified-merge guard untouched (recordVerifiedMerge + isTaskMergeSha still wired)",
     pipelineSrc.includes("isTaskMergeSha(ws, postMergeHead, t.id)") && pipelineSrc.includes("recordVerifiedMerge(defaultVerifiedMergesFile(), postMergeHead, t.id"),
   );
+}
+
+
+// --- P3-354: the out-of-loop operator merge is infra conflict, not an attempt --
+{
+  // The P3-328 incident shape: the retry's push is refused (--delete-branch
+  // removed the ref after the operator merged), `gh pr create` fails, list
+  // still resolves the PR and the view reports MERGED with a head that is not
+  // ours. Zero network — every gh step is a fake.
+  const sha = "8".repeat(40);
+  const mergedHead = "4".repeat(40);
+  const calls: string[] = [];
+  let sleeps = 0;
+  const io: PrMergeIo = {
+    exec: (cmd) => {
+      calls.push(cmd);
+      if (cmd.startsWith("gh pr create")) return { ok: false, output: "failed: push refused, head ref gone" };
+      if (cmd.startsWith("gh pr list")) return { ok: true, output: "877\n" };
+      if (cmd.startsWith("gh pr view")) return { ok: true, output: JSON.stringify({ state: "MERGED", headRefOid: mergedHead }) };
+      return { ok: false, output: `unexpected exec: ${cmd}` };
+    },
+    sleep: () => {
+      sleeps++;
+      return Promise.resolve();
+    },
+  };
+  const out = await mergePrForTask(io, { branch: "pilot/P3-354", title: "t", body: "b", pushedSha: sha });
+  check("P3-354: PR already MERGED out-of-loop ⇒ ok=false with infra=conflict", out.ok === false && out.infra === "conflict");
+  check("P3-354: detail names the PR, both heads and the resync", out.detail.includes("PR #877 already MERGED outside the loop") && out.detail.includes(mergedHead.slice(0, 7)) && out.detail.includes(sha.slice(0, 7)) && out.detail.includes("resyncs next cycle"));
+  check("P3-354: `gh pr merge` is never armed", !calls.some((c) => c.startsWith("gh pr merge")));
+  check("P3-354: decided without polling (readiness probe + head probe, zero sleeps)", calls.filter((c) => c.startsWith("gh pr view")).length === 2 && sleeps === 0);
+
+  // the infra path burns no per-task attempt and feeds no fever sample
+  // (mirrors runSlot in apps/pilot/src/index.ts)
+  const st = { date: "2026-09-09", tasks: 0, deploys: 0, failures: 0, taskAttempts: {} } as PilotState;
+  const kind = resultInfraKind({ ok: out.ok, infra: out.infra });
+  if (kind) recordInfraFailure(st);
+  else {
+    recordCycle(st, false, "P3-354");
+    recordTaskFailure(st, "P3-354", 4);
+  }
+  check("P3-354: infra conflict burns no attempt and no fever sample", Object.keys(st.taskAttempts).length === 0 && feverReason(st) === null);
+
+  // wiring: the refused push in mergeTask is surfaced (warn), not silent
+  const pipelineSrc2 = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+  check("P3-354: mergeTask warns on the refused force-with-lease push", pipelineSrc2.includes("const pushed = exec(`git push -q --force-with-lease origin pilot/${t.id}`") && pipelineSrc2.includes("branch push refused"));
 }
 
 

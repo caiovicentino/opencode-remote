@@ -934,9 +934,9 @@ devolve o campo estruturado `infra` (`timeout` quando o poll de confirmação
 estoura o orçamento de ~5 min, `network` quando create+list não resolvem o PR)
 e o resultado segue o caminho da P1-074: soma em `infraFails`, zero attempts
 queimados, zero amostras de febre, task re-agendada no ciclo seguinte. Anomalia
-real de mérito (PR mergeado com outro sha) **não** recebe `infra` e continua
-queimando attempt. Ver "merge por PR" acima para o formato do detail com a
-razão real do `gh`.
+real de mérito (head trocado por push de peer durante o merge) **não** recebe
+`infra` e continua queimando attempt. Ver "merge por PR" acima para o formato
+do detail com a razão real do `gh`.
 
 **PR bloqueado por conflito com main é infra `conflict` + rebase no resume
 (P2-134)**: o poll de confirmação também lê `mergeable`/`mergeStateStatus` —
@@ -987,6 +987,20 @@ merge com CI herdado do head velho. Reparo roda no máximo uma vez por chamada:
 um segundo `CONFLICTING` depois do push cai no skip infra normal, e conflito de
 código com semântica continua sendo trabalho de builder round novo via
 `mergeConflictBlock` — a rota manual não mudou.
+
+**PR já mergeado fora do loop é infra `conflict` (P3-354)**: quando o operador
+mergeia o PR da task por fora (e o `--delete-branch` apaga a ref), o push de
+retry do `mergeTask` falha no `--force-with-lease`, o `gh pr create` falha, o
+`pr list` ainda resolve o número e o snapshot reporta `MERGED` com um head que
+não é o nosso — o poll de confirmação classificava isso como anomalia de mérito
+(`head is X, not our Y`), queimando attempt + amostra de febre por trabalho que
+já está em `main` (caso do P3-328, PR #877). Agora `mergePrForTask` sonda
+`gh pr view <n> --json state,headRefOid` **antes de armar o merge**: `MERGED`
+com head estrangeiro devolve `infra: "conflict"` (retry grátis; o self-heal de
+diff vazio do ciclo seguinte ressincroniza) sem executar `gh pr merge`. Falha do
+gh nessa sonda é fail-open — o poll de confirmação continua sendo o backstop.
+O push recusado em `mergeTask` também não é mais silencioso: sai warn estruturado
+com a cauda do output do git.
 
 **Falha de formato de spec é infra uma vez por task (P2-137)**: quando o planner
 não produz um `specs/<ID>.md` válido, o `specRejectReason` (seção faltando,
