@@ -532,7 +532,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     <div className="screen">
       <header>
         <button onClick={onBack}>←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>{t("navSettings")}</h1>
+        <h1 className="pane-title">{t("navSettings")}</h1>
       </header>
 
       <div className="list">

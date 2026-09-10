@@ -350,7 +350,7 @@ export default function MissionControlView({
       <div className="screen">
         <header>
           {onBack && <button onClick={onBack}>←</button>}
-          <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Mission Control</h1>
+          <h1 className="pane-title">Mission Control</h1>
         </header>
         <div className="list">
           <p className="muted" style={{ padding: 16 }}>
@@ -365,7 +365,7 @@ export default function MissionControlView({
     <div className="screen mission">
       <header>
         {onBack && <button onClick={onBack}>←</button>}
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>
+        <h1 className="pane-title">
           <IconRadar size={16} /> Mission Control
         </h1>
         {!phone && !prePairing && (

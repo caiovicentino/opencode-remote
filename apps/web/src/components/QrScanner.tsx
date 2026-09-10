@@ -192,7 +192,7 @@ export default function QrScanner({ onScan, onCancel, onPaste, getCamAccess }: P
     >
       <header>
         <button onClick={onCancel} aria-label={t("scanBackManual")}>←</button>
-        <h1 style={{ fontSize: "0.9rem", margin: 0, flex: 1 }}>{t("scanPairingTitle")}</h1>
+        <h1 className="pane-title">{t("scanPairingTitle")}</h1>
       </header>
       {phase === "unavailable" ? (
         <div className="qr-unavailable" role="alert">

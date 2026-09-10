@@ -383,6 +383,30 @@ allowlist or state-file writes, no new routes. If the desktop.log has no wake
 lines after a wake, the platform did not expose `powerMonitor` and the shell
 keeps its previous behavior (the existing backoff/reconnect still applies).
 
+## Reauthentication in a loop: clock out of sync (RT-390)
+
+Handshakes now carry an authenticated creation timestamp. The daemon refuses a
+hello whose token is older or newer than ±5 minutes from its own clock
+(`stale` / `future`), and a hello with a nonce it has already seen
+(`replay`) — a recorded handshake is no longer replayable. The client gets a
+`session-reauth-required` control and re-handshakes; it does not store the
+refusal.
+
+- **Symptom**: the phone pairs fine but immediately drops back to
+  "connecting", over and over, and the daemon log shows
+  `handshake rejected reason: "stale"` or `reason: "future"`. That is a clock
+  skew problem, not a key problem: the device's clock is more than 5 minutes
+  away from the daemon's.
+- **Fix on the phone**: enable automatic date & time (iOS: Settings →
+  General → Date & Time; Android: Settings → System → Date & time), then
+  reload the PWA.
+- **A cached PWA from before RT-390** sends hellos without the timestamp and
+  is refused with `reason: "no-timestamp"` until the page is reloaded once
+  (the service worker rotates the cache automatically).
+- **After a daemon restart** a very recent captured hello can still be
+  replayed within the ±5 min window — the nonce cache is in-memory by design.
+  This residual window is documented in `docs/security.md` (Threat notes).
+
 ## Start at login (P2-218)
 
 The installed app now opens at login by default: on the **first boot of a

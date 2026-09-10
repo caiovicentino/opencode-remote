@@ -85,6 +85,7 @@ import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, isSidecarStopMessage, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
+import { HelloSeen, helloFreshness, helloVerdict } from "./helloguard.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { relayDialVerdict, type RelayDialKind } from "./relaydialerror.js";
@@ -1791,6 +1792,11 @@ const sessions = new Map<string, ClientSession>();
 // verifies the hint before acting (framegate.ts). Throttled per sender id so
 // a client stuck on a stale key gets one reply per interval, not one per op.
 const authFailures = new AuthFailureLedger();
+// RT-390: nonce dedupe for the freshness guard below. In-memory by design —
+// after a restart a recorded hello can be replayed within the ±5 min skew
+// window (documented residual risk in docs/security.md); closing that for
+// good needs a server challenge (handshake v3, out of scope).
+const helloSeen = new HelloSeen();
 const reauthRepliedAt = new Map<string, number>();
 const REAUTH_REPLY_MAP_CAP = 512;
 
@@ -3158,6 +3164,33 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         });
         audit("client.auth-failed", { pub: helloPub ? helloPub.slice(0, 16) : undefined, device: kind });
         sendReauthRequired(ws, frame.from, kind === "known-stale" ? helloPub : null);
+        return;
+      }
+
+      // ---- handshake freshness (RT-390) -----------------------------------
+      // A recorded hello used to be valid forever: replaying it re-opened the
+      // session with lastSeq = 0 and the recorded op frames after it were
+      // re-executed (the replay guard was zeroed by the very handshake that
+      // should protect it). Two fail-closed checks, in this order: the token's
+      // authenticated creation instant (±5 min skew) and the nonce dedupe.
+      // The return happens BEFORE any sessions.set/saveAllowlist, so a live
+      // session for frame.from — and its lastSeq — stays intact, and every
+      // refusal produces an observable terminal signal (lesson P3-327).
+      const helloNonce =
+        typeof maybeControl.hello.nonce === "string" ? maybeControl.hello.nonce : "";
+      const verdict = helloVerdict(helloFreshness(accepted.ts, Date.now()), () =>
+        helloSeen.admit(helloNonce, Date.now()),
+      );
+      if (verdict !== "accept") {
+        const device = attributeAuthFailure(accepted.clientPub);
+        metrics.inc("ocr_hello_rejected_total");
+        log("warn", "handshake rejected", {
+          from: frame.from,
+          reason: verdict,
+          device,
+        });
+        audit("client.hello-rejected", { fp: pubFingerprint(accepted.clientPub), reason: verdict });
+        sendReauthRequired(ws, frame.from, device === "known-stale" ? accepted.clientPub : null);
         return;
       }
 

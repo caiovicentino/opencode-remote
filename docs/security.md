@@ -109,6 +109,19 @@ identity servers, no accounts.
   client answers it with one ping and only rehandshakes when no sealed frame
   arrives within 1500 ms, with a 10 s floor between hint-triggered
   rehandshakes.
+- A captured handshake is no longer replayable (RT-390): the hello token now
+  seals an authenticated creation timestamp, and the daemon runs two
+  fail-closed checks before a session can be (re)created — the token must be
+  within ±300 000 ms (±5 min) of the daemon's clock, and the hello nonce is
+  admitted at most once per window (in-memory cache, newest 4096 nonces,
+  pruned every check; at the cap the newcomer is refused, never the oldest).
+  Both refusals answer with a `session-reauth-required` control instead of a
+  silent drop, are counted in `ocr_hello_rejected_total`, and never touch the
+  live session's replay guard (`lastSeq`). Residual limitation: the nonce
+  cache lives in memory, so a hello captured shortly before a daemon restart
+  can still be replayed within the ±5 min window right after the restart —
+  closing that for good requires a server challenge (handshake v3, out of
+  scope).
 - A rogue device cannot sustain a flood through the relay: message frames are
   token-bucketed per connection (600 msgs/min, burst 1000, tunable via env)
   and the over-budget socket is dropped with close code 4029. Every frame

@@ -37,8 +37,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   offline-capables (Mission Control, lista de artifacts, Ajustes) — em vez de
   uma tela cheia; o card calmo "Conectando pela primeira vez…" segue como herói
   da coluna principal, e o mapa de panes do herói troca pra variante "Antes de
-  parear" (cadeado só em Conversas) pra não contradizer o rail ao lado
-  (P1-071: todo fluxo alcançável no primeiro boot). Janela
+   parear" (cadeado só em Conversas) pra não contradizer o rail ao lado
+   (P1-071: todo fluxo alcançável no primeiro boot); o mapa lista também
+   Ajustes, que o rail abre offline no primeiro boot (P3-389). Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
   clássica centrada. Os panes abertos no portão mostram mundos vazios
   esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control
@@ -52,6 +53,13 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   próprio painel, fila sobrevive a restart do app). P3-386: o compositor é
   pintado sobre o branco do card com borda de repouso mais firme — lê como
   campo ativo que convida a digitar, não como campo desabilitado.
+  próprio painel, fila sobrevive a restart do app)
+- Escalada com um caminho só de recuperação (P3-385): quando o card calmo
+  escala ("Sem resposta do daemon local há 1 min" + "Abrir diagnósticos"), o
+  botão laranja "Reconectar agora" para de aparecer empilhado logo abaixo —
+  vira um link discreto dentro do bloco de escalada, ao lado do botão de
+  diagnósticos (mesmo feedback: spinner, estado "tentando", toast de
+  resultado) — para a coluna nunca mostrar dois CTAs da mesma peso
 - Menu Go no portão sem beco circular (P3-362): os itens de painel abrem os
   mesmos panes offline que o rail já abre (Mission Control, Artifacts, Browser,
   Ajustes) em vez de piscar um aviso de pareamento — que era circular no
@@ -64,6 +72,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo
   display da escala de tokens (`--font-size-xl`) — em vez de estilo inline a
   1rem (tamanho de corpo)
+- Títulos de pane na escala tipográfica (P3-384): todo header de pane
+  (Artifacts, Browser, Files, Mission Control, Ajustes, Send to agent,
+  scanner de QR) usa a classe compartilhada `.pane-title` — passo md dos
+  tokens, peso 600, ellipsis em título longo — sem override inline de
+  `fontSize`, então os headers não driftam mais entre si
 - Glifo da marca em todas as telas de primeiro contato (P3-373): o glifo de
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas

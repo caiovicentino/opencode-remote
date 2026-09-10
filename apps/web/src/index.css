@@ -147,6 +147,23 @@ textarea {
   gap: 8px;
 }
 
+/* P3-384: one shared title for every pane header (Artifacts, Browser, Files,
+   Mission Control, Settings, Send to agent, QR scanner) — the token-scale
+   discipline P3-336 gave the wordmark, so the headers can't drift apart via
+   inline fontSize overrides. Sits on the md step of the type scale, weight
+   600 like the rest of the chrome; ellipsis keeps long titles from pushing
+   header buttons out (P3-327's squeeze, now everywhere). */
+.pane-title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+}
+
 .muted {
   color: var(--muted);
   font-size: 0.85rem;
@@ -1113,12 +1130,6 @@ button.desk-new:hover:not(:disabled) {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-}
-.browser-header h1 {
-  font-size: 1rem;
-  font-weight: 600;
-  margin: 0;
-  flex: 1;
 }
 .browser-header button {
   padding: 4px 10px;
@@ -2620,6 +2631,24 @@ button.desk-new:hover:not(:disabled) {
 .degraded {
   justify-content: center;
 }
+/* P3-387: with a pane open the gate column narrows and the degraded stack
+   grows taller than the viewport. Plain centered flex overflows BOTH edges —
+   the serif wordmark rendered sheared flush at y=0 (explorer shot
+   journey-mission-control-20260910: top half of the glyphs clipped) and the
+   overflow above the start edge is unreachable. The same shear shows up in
+   the pair-wrap path on a narrow desktop window (390px probe). Overflow-safe
+   centering: when the stack fits it stays centered; when it overflows, `safe`
+   drops the alignment to the start edge and the screen itself becomes the
+   scroll container, so the brand header always renders whole below the
+   screen's own top padding and every card below stays reachable (P1-071).
+   .degraded is unique to DegradedView — no sibling screen reuses it (the
+   P3-330 lesson is about shared base classes; this is not one). */
+.screen.degraded {
+  overflow-y: auto;
+  justify-content: safe center;
+  /* focus-driven scroll-into-view keeps the screen's top inset (P3-387) */
+  scroll-padding-top: 16px;
+}
 /* P3-330: the degraded gate is the screen right after the welcome wizard, so
    its brand header sits on the same centered axis as the wizard's
    (.welcome header) and the pairing screen's (P3-339) — a flush-left
@@ -2909,6 +2938,31 @@ button.desk-new:hover:not(:disabled) {
   color: var(--text);
   opacity: 0.85;
   overflow-wrap: anywhere;
+}
+/* ── P3-385: one calm recovery path once escalated ──────────────────────────
+   The standalone orange "Reconnect now" button no longer stacks below the
+   escalation block; it folds in as a quiet text link beside the diagnostics
+   button (.degraded-manual's underlined-link language), so the column never
+   shows two same-weight recovery CTAs. */
+.degraded-escalate-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 2px;
+}
+.degraded-reconnect-link {
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.degraded-reconnect-link:hover {
+  color: var(--text);
+  background: transparent;
 }
 /* Settings help section (P2-138): the destination of the calm-card button. */
 .settings-help {
@@ -3465,11 +3519,7 @@ button.desk-new:hover:not(:disabled) {
 .mission header {
   flex-wrap: wrap;
 }
-.mission header h1 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* P3-327's ellipsis moved into the shared .pane-title (P3-384). */
 .mission-grid {
   flex: 1;
   min-height: 0;

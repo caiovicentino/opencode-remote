@@ -416,11 +416,12 @@ private. That is the product: **local power, remote control, zero trust**.
   component
 - **Pairing gate with a map (P3-364)** — the unpaired screens (manual ceremony and the
   degraded first boot) carry a persistent "After pairing" card listing the panes that stay
-  locked until connection — Conversations, Artifacts, Browser, Mission Control — each with a
+  locked until connection — Conversations, Artifacts, Browser, Mission Control, Settings — each with a
   one-line description and a lock glyph, so a first-time user sees what pairing unlocks
   instead of a transient toast flashing the only explanation away. On the first-boot shell
   skeleton (P3-365) the card retitles to "Before pairing" and keeps the lock glyph only on
-  Conversations — the rail beside it already opens the other panes
+  Conversations — the rail beside it already opens the other panes, including Settings
+  offline (P3-389)
 - **Offline panes stay calm at the gate (P3-327)** — behind the first-boot gate shell the
   reachable panes read as expected empty worlds, not errors: Mission Control opens on the
   forensic view with its "no sessions recorded yet" copy (the dashboard and live-shot
@@ -1494,6 +1495,10 @@ on 150/300ms ease-out tokens (fully disabled under `prefers-reduced-motion`,
 including programmatic scrolls) and a six-step dark-gray ladder where every
 step has one role — canvas, chrome, raised surface, hover, resting and active
 borders. All color/type/spacing/motion literals live in `apps/web/src/tokens.css`.
+Pane headers share one title class (P3-384): every pane (Artifacts, Browser,
+Files, Mission Control, Settings, Send to agent, QR scanner) renders its `h1`
+via `.pane-title` on the `--font-size-md` token step — no per-view inline
+`fontSize` overrides left to drift, mirroring the `.brand-wordmark` discipline.
 
 **Benchmark conversation list & ⌘K (P3-084)**: the sidebar groups conversations
 into **Today / Yesterday / Earlier** (bounded by local calendar midnights, so
@@ -1538,7 +1543,11 @@ above the vertically centered card stack, so the post-wizard screen reads as
 the same intentional ceremony instead of a flush-left column floating in dead
 space at desktop sizes. The accent glyph from the wizard's opening screen now
 sits above the wordmark here too (P3-373), so the whole first-contact journey
-shares one brand header.
+shares one brand header. That header can never shear against the viewport top
+(P3-387): when the card stack grows taller than the column — a pane open, a
+short window — the degraded screen becomes a real scroll container with
+overflow-safe centering, so the stack top-anchors with a scrollbar instead of
+clipping the glyph and wordmark at the top edge.
 
 **Live auto-retry line (P3-372)**: that calm card's "Retrying automatically…"
 line is no longer frozen static copy. It now carries the feedback the
@@ -1546,9 +1555,18 @@ component always promised: seconds tick since the current attempt started
 ("há 12s · tentativa 3" / "12s · attempt 3"), resetting on every new attempt
 so the number doubles as a quiet countdown to the next probe, and the shell's
 attempt counter rides along once it exists. The ticking segment appears from
-the first full second (no awkward "há 0s" first paint) and uses tabular
-numerals (no per-second jitter); it is hidden from screen readers so the
-status live region is not re-announced every second.
+  the first full second (no awkward "há 0s" first paint) and uses tabular
+  numerals (no per-second jitter); it is hidden from screen readers so the
+  status live region is not re-announced every second.
+
+**One calm recovery path once escalated (P3-385)**: when the calm card
+escalates after a minute of silent retrying ("No answer from the local daemon
+for 1 min" + "Open diagnostics"), the standalone orange "Reconnect now" button
+no longer stacks directly beneath it as a second, same-weight call to action.
+The reconnect action folds into the escalation block — demoted to a quiet text
+link beside the diagnostics button, keeping its full feedback contract
+(spinner, trying state, result toast) — so the escalated column shows exactly
+one primary recovery path.
 
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky

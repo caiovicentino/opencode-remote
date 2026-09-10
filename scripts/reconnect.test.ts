@@ -99,10 +99,15 @@ const identity = await newIdentity(false);
 let key: CryptoKey;
 let daemonLastSeq = 0;
 let sendSeq = 0;
+// RT-390: captured material for the replay proof below — the hello of the
+// current session and the last sealed op frame sent (with its original seq).
+let lastHello: unknown = null;
+let lastSentOp: { id: string; seq: number; payload: string } | null = null;
 
 async function handshake() {
   const { hello, sessionKey } = await clientHello(state.ecdhPub, identity);
   key = sessionKey;
+  lastHello = hello;
   daemonLastSeq = 0;
   ws.send(
     JSON.stringify({
@@ -202,7 +207,10 @@ function request(method: string, path: string, body?: unknown): Promise<OpRespon
     ws.on("message", onMsg);
     const seq = ++sendSeq;
     void seal({ type: "op", req: { id, method, path, body } }, key, seqAad("testclient", seq)).then(
-      (payload) => ws.send(JSON.stringify({ room: state.room, from: "testclient", seq, payload })),
+      (payload) => {
+        lastSentOp = { id, seq, payload };
+        ws.send(JSON.stringify({ room: state.room, from: "testclient", seq, payload }));
+      },
     );
   });
 }
@@ -264,6 +272,79 @@ console.log("handshake: OK");
 let res = await request("POST", "/__ocr/transcribe/chunk", { id: "t1", idx: 0, data: "" });
 if (res.status !== 200) throw new Error(`pre-restart op failed: ${res.status}`);
 console.log("op before restart: OK");
+
+// --- RT-390: replay proof — a captured handshake/op must be worthless -------
+// Attack (no crypto broken, exactly what a hostile relay can do): record the
+// hello and a sealed op frame, resend them. Before the fix the replayed hello
+// re-opened the session with lastSeq = 0 (a confirm came back) and the
+// recorded op was re-executed (a response came back). After the fix the
+// hello is refused as a nonce replay and the recorded frame is dropped by
+// the seq guard — while the live session keeps answering normally.
+function countMatches(match: (clear: { confirm?: unknown; type?: string; res?: { id?: string } }) => boolean, ms: number): Promise<number> {
+  return new Promise((resolve) => {
+    let hits = 0;
+    const onMsg = async (data: WebSocket.RawData) => {
+      let frame: { from?: string; seq?: number; payload?: string };
+      try {
+        frame = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (frame.from === "testclient" || !frame.payload) return;
+      // clear control frame (reauth hint, announce) — match on its shape
+      try {
+        if (match(JSON.parse(atob(frame.payload)))) hits++;
+        return;
+      } catch {
+        // not clear JSON: try the sealed shapes below
+      }
+      const env = await openSealed<{ type?: string; res?: { id?: string }; ok?: boolean; confirm?: string }>(
+        frame.payload,
+        key,
+        seqAad(frame.from, frame.seq ?? 0),
+      );
+      if (env && match(env as { confirm?: unknown; type?: string; res?: { id?: string } })) hits++;
+    };
+    ws.on("message", onMsg);
+    setTimeout(() => {
+      ws.off("message", onMsg);
+      resolve(hits);
+    }, ms);
+  });
+}
+
+// (a) the same hello again: no confirm may come back within 2s
+if (!lastHello || typeof lastHello !== "object") throw new Error("no hello recorded");
+const helloReplayed = countMatches((c) => typeof c.confirm === "string", 2000);
+ws.send(
+  JSON.stringify({
+    room: state.room,
+    from: "testclient",
+    payload: b64(new TextEncoder().encode(JSON.stringify({ type: "hello", hello: lastHello }))),
+  }),
+);
+if ((await helloReplayed) !== 0) throw new Error("replayed hello was accepted (confirm received)");
+console.log("replayed hello refused (no confirm): OK");
+
+// (b) the recorded sealed op frame: zero responses within 2s
+if (!lastSentOp) throw new Error("no op frame recorded");
+const replayedId = lastSentOp.id;
+const opReplayed = countMatches((e) => e.res?.id === replayedId, 2000);
+ws.send(
+  JSON.stringify({
+    room: state.room,
+    from: "testclient",
+    seq: lastSentOp.seq,
+    payload: lastSentOp.payload,
+  }),
+);
+if ((await opReplayed) !== 0) throw new Error("recorded op frame was re-executed (response received)");
+console.log("replayed op frame dropped (no response): OK");
+
+// (c) the original session is unharmed by the replay attempts
+res = await request("POST", "/__ocr/transcribe/chunk", { id: "t1-replay-check", idx: 0, data: "" });
+if (res.status !== 200) throw new Error(`live session broke after replay attempts: ${res.status}`);
+console.log("live session intact after replays: OK");
 
 // --- restart the daemon under the client's feet ----------------------------
 // The restarted daemon announces itself with an empty-payload frame from the

@@ -25,7 +25,7 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
   delete process.env[k];
 }
 
-import { b64, fromB64, newIdentity, seal, openSealed, seqAad } from "@ocr/protocol";
+import { b64, clientHello, fromB64, newIdentity, seal, openSealed, seqAad, serverAccept } from "@ocr/protocol";
 
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { classifyConflictPath, isCommentOnlyHunk, parseConflictedFile, repairPlan, resolveConflictedFile } from "../apps/pilot/src/mergerepair";
@@ -51,6 +51,7 @@ import {
 } from "../apps/web/src/lib/swupdate";
 
 import { isLoopbackAddr, localOriginAllowed, localUpgradeAllowed } from "../apps/daemon/src/localws";
+import { HelloSeen, HELLO_MAX_SKEW_MS, HELLO_SEEN_CAP, helloFreshness, helloVerdict } from "../apps/daemon/src/helloguard";
 
 import {
   PUSH_SUBSCRIPTION_MAX_ENDPOINT_LENGTH,
@@ -1066,6 +1067,54 @@ check("seal/openSealed roundtrip", (await openSealed<{ hello: string }>(sealed, 
 check("wrong seq rejected", (await openSealed(sealed, key, seqAad("client", 2))) === null);
 
 check("wrong sender rejected", (await openSealed(sealed, key, seqAad("other", 1))) === null);
+
+
+// --- handshake freshness (RT-390) -------------------------------------------
+const te = (s: string): Uint8Array => new TextEncoder().encode(s);
+const NOW = 1_000_000_000;
+
+check("helloFreshness: null is no-timestamp (fail-closed)", helloFreshness(null, NOW) === "no-timestamp");
+check("helloFreshness: NaN is no-timestamp", helloFreshness(Number.NaN, NOW) === "no-timestamp");
+check("helloFreshness: exactly at the skew boundary is fresh", helloFreshness(NOW - HELLO_MAX_SKEW_MS, NOW) === "fresh");
+check("helloFreshness: 1ms past the boundary is stale", helloFreshness(NOW - HELLO_MAX_SKEW_MS - 1, NOW) === "stale");
+check("helloFreshness: future beyond the boundary is future", helloFreshness(NOW + HELLO_MAX_SKEW_MS + 1, NOW) === "future");
+
+{
+  const seen = new HelloSeen();
+  check("HelloSeen: first nonce is new", seen.admit("nonce-a", NOW) === "new");
+  check("HelloSeen: same nonce inside the window is replay", seen.admit("nonce-a", NOW + 1) === "replay");
+  check("HelloSeen: same nonce after the window is new again (pruned)", seen.admit("nonce-a", NOW + HELLO_MAX_SKEW_MS + 1) === "new");
+}
+{
+  const seen = new HelloSeen();
+  for (let i = 0; i < HELLO_SEEN_CAP; i++) seen.admit(`n${i}`, NOW);
+  check("HelloSeen: cache full -> newcomer is overflow, not evicted", seen.admit("n-new", NOW) === "overflow");
+  check("HelloSeen: size never exceeds the cap", seen.size() <= HELLO_SEEN_CAP);
+  check("HelloSeen: overflowed newcomer stays unknown", seen.admit("n-new", NOW + 1) === "overflow");
+}
+check("helloVerdict: stale never touches the cache", helloVerdict("stale", () => { throw new Error("admit must not run"); }) === "stale");
+check("helloVerdict: no-timestamp passes through", helloVerdict("no-timestamp", () => "new" as const) === "no-timestamp");
+check("helloVerdict: future passes through", helloVerdict("future", () => "new" as const) === "future");
+check("helloVerdict: fresh + new = accept", helloVerdict("fresh", () => "new" as const) === "accept");
+check("helloVerdict: fresh + replay = replay", helloVerdict("fresh", () => "replay" as const) === "replay");
+check("helloVerdict: fresh + overflow = overflow", helloVerdict("fresh", () => "overflow" as const) === "overflow");
+
+{
+  // protocol round-trip: the creation stamp rides inside the sealed token
+  const daemon = await newIdentity(true);
+  const client = await newIdentity(true);
+  const before = Date.now();
+  const { hello, sessionKey } = await clientHello(daemon.publicKey, client, before);
+  const accepted = await serverAccept(hello, daemon);
+  check("clientHello/serverAccept: clientPub matches", accepted?.clientPub === client.publicKey);
+  check("clientHello/serverAccept: ts surfaces inside the skew window", accepted !== null && accepted.ts !== null && Math.abs((accepted.ts as number) - before) === 0);
+  const probe = await seal({ ok: true }, sessionKey, te("ocr-confirm"));
+  check("clientHello/serverAccept: both sides derive the same session key", (await openSealed(probe, accepted!.sessionKey, te("ocr-confirm")))?.ok === true);
+  const swapped = { ...hello, clientPub: (await newIdentity(true)).publicKey };
+  check("clientHello/serverAccept: swapped clientPub still null", (await serverAccept(swapped, daemon)) === null);
+  const noTs = { ...hello, token: await seal({ clientPub: client.publicKey }, sessionKey, te("ocr-hello")) };
+  check("clientHello/serverAccept: token without ts -> ts null (old client refused upstream)", (await serverAccept(noTs, daemon))?.ts === null);
+}
 
 
 // --- pairing URI ------------------------------------------------------------
@@ -10576,6 +10625,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "firstContactTitle", "firstContactHint", "degradedRetrying", "degradedDownHint",
     "degradedLocalTitle", "degradedLocalHint", "degradedPairManually",
     "reconnectTrying", "reconnectStarted", "reconnectFailed", "pairBack",
+    // P3-385: the escalation block's folded retry link renders this label —
+    // once escalated it is the only surface still showing "Reconnect now".
+    "reconnectNow",
   ];
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",
@@ -11567,6 +11619,37 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-384: pane titles share one token-scale class, no inline font sizes ----
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const tokens = read("tokens.css");
+  const titleAt = css.indexOf(".pane-title");
+  const title = css.slice(titleAt, css.indexOf("}", titleAt));
+  check(
+    "P3-384: .pane-title sizes from the type-scale tokens",
+    titleAt >= 0 && title.includes("font-size: var(--font-size-md)") && tokens.includes("--font-size-md:"),
+  );
+  // Every pane header h1 carries the shared class — the per-view inline
+  // fontSize overrides (1rem here, 0.9rem on the scanner) are gone.
+  for (const view of [
+    "ArtifactsView.tsx",
+    "BrowserView.tsx",
+    "MissionControlView.tsx",
+    "FilesView.tsx",
+    "SettingsView.tsx",
+    "SendToAgentView.tsx",
+    "QrScanner.tsx",
+  ]) {
+    const src = read(join("components", view));
+    const h1s = src.match(/<h1[^>]*>/g) ?? [];
+    check(
+      `P3-384: ${view} pane h1 uses .pane-title (no inline fontSize)`,
+      h1s.length > 0 && h1s.every((h) => h.includes('className="pane-title"') && !h.includes("style=")),
+    );
+  }
+}
+
 // --- P3-373: the brand glyph leads every first-contact header ----------------
 {
   const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
@@ -11641,12 +11724,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
   const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
-  // Four rows, named exactly like the rail (nav* keys), each with a one-line
+  // Five rows (P3-389 added Settings: the gate rail opens it offline too),
+  // named exactly like the rail (nav* keys), each with a one-line
   // description and the per-row lock glyph.
-  const rowKeys = ["navConversations", "navArtifacts", "navBrowser", "navMission"];
-  const descKeys = ["paneMapChat", "paneMapArtifacts", "paneMapBrowser", "paneMapMission"];
+  const rowKeys = ["navConversations", "navArtifacts", "navBrowser", "navMission", "navSettings"];
+  const descKeys = ["paneMapChat", "paneMapArtifacts", "paneMapBrowser", "paneMapMission", "paneMapSettings"];
   check(
-    "P3-364: PaneMap lists the four locked panes with descriptions and lock glyphs",
+    "P3-364: PaneMap lists the five panes with descriptions and lock glyphs",
     rowKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
       descKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
       // P3-365: the title key became reachable-conditional (both spellings).
@@ -11705,11 +11789,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       mapSrc.includes("p.locked && <IconLock"),
   );
   // Only Conversations stays locked in the reachable variant (the chat rail
-  // slot is the disabled one; the other three are one rail-click away).
+  // slot is the disabled one; the other four are one rail-click away).
   check(
     "P3-365: reachable variant locks only Conversations",
     (mapSrc.match(/locked: true/g) ?? []).length === 1 &&
-      (mapSrc.match(/locked: !reachable/g) ?? []).length === 3,
+      (mapSrc.match(/locked: !reachable/g) ?? []).length === 4,
   );
   // DegradedView forwards the flag; App passes it ONLY on the skeleton hero
   // (the classic centered screen keeps the fully locked map).
