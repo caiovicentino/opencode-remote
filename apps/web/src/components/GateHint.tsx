@@ -26,17 +26,24 @@ const WINDOW_MS = 4_000;
  *
  * P3-362: `what` is the label of the action that triggered this toast —
  * "Artifacts", "Command palette", … — so the sentence names the request
- * instead of flashing one generic pane-agnostic line for every Go item. */
+ * instead of flashing one generic pane-agnostic line for every Go item.
+ *
+ * P3-398: `message` is an already-resolved override copy for toasts that are
+ * not Go-menu actions — today the OS file drop at the gate (lib/dropgate
+ * verdict), which reuses this calm warning with its own per-surface sentence.
+ * The pair-now escape still rides along when App passes it. */
 export default function GateHint({
   trigger,
   at,
   what,
+  message,
   onPairNow,
   onDismiss,
 }: {
   trigger: number;
   at: number;
   what?: string | null;
+  message?: string | null;
   onPairNow?: () => void;
   onDismiss?: () => void;
 }) {
@@ -56,7 +63,7 @@ export default function GateHint({
   if (!visible) return null;
   return (
     <div className="ocr-toast pair-gate-hint" role="status">
-      {what ? t("pairFirstHintFor", { pane: what }) : t("pairFirstHint")}
+      {message ? message : what ? t("pairFirstHintFor", { pane: what }) : t("pairFirstHint")}
       {onPairNow && (
         <button
           type="button"

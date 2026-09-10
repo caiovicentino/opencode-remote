@@ -42,6 +42,8 @@ import ChatView, { type MicAccessVerdict } from "./components/ChatView";
 import { type CameraAccessVerdict } from "./components/QrScanner";
 import HomeView from "./components/HomeView";
 import GateHint from "./components/GateHint";
+import { dropSurfaceFor, type DropSurface } from "./lib/dropgate";
+import { useDropAbsorb } from "./lib/dropwindow";
 import { setDraft, markSendOnOpen } from "./lib/drafts";
 import SettingsView, {
   type RelaySetting,
@@ -285,6 +287,16 @@ export default function App() {
   // P3-362: i18n key of the Go action that triggered the current toast —
   // the toast names the requested pane/action instead of a generic line.
   const [gateHintWhat, setGateHintWhat] = useState<string | null>(null);
+  // P3-398: override copy for gate toasts that are not Go-menu actions —
+  // today the OS file-drop refusal (lib/dropgate). A key, resolved at render.
+  const [gateHintMsgKey, setGateHintMsgKey] = useState<string | null>(null);
+  // P3-398: inline refusal copy for an OS file drop on the home (zero files,
+  // over the cap) — rendered by HomeView's existing error slot.
+  const [homeDropError, setHomeDropError] = useState<string | null>(null);
+  // P3-398: files dropped on the home — ride the same fresh-identity
+  // traversal paneArtifact uses (App holds them, the newly mounted ChatView
+  // adopts them once and uploads via its existing attachFile path).
+  const [paneDrop, setPaneDrop] = useState<File[] | null>(null);
   // P3-357b: the drawer's Recents pin against the same device-local set —
   // kept live through the pins pub-sub so a SessionsView toggle reorders here.
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => loadPinned());
@@ -935,6 +947,7 @@ export default function App() {
         setGateHintTick((n) => n + 1);
         setGateHintAt(Date.now());
         setGateHintWhat(GATE_ACTION_LABELS[id] ?? null);
+        setGateHintMsgKey(null);
         return;
       }
       if (id === "newChat") {
@@ -975,6 +988,48 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [phase, session, creating, gateShellUp]);
+
+  // P3-398: window-level drop absorption for the surfaces ChatView's own
+  // listeners leave uncovered — the first-boot gate and the paired home. The
+  // verdict comes from the pure lib/dropgate module (the listener mechanics
+  // live in lib/dropwindow, keeping App at zero window listeners per the
+  // P2-220 pin): the gate refuses into the existing GateHint calm warning
+  // (per-surface copy, bridge-aware), a home drop creates the conversation
+  // and delivers the files through the paneDrop traversal, a refusal on the
+  // home shows the calm reason in HomeView's error slot. Never a silent
+  // drop. P3-398 r2: the surface is mount truth via dropSurfaceFor — the
+  // chat is persistent (a raised pane never unmounts it), so any open
+  // session means ChatView's own window listeners own the drop and this
+  // absorber stands down; deciding from `top` would handle one drop twice
+  // (attach to the current chat AND spawn a new conversation).
+  const dropSurface: DropSurface | null = dropSurfaceFor(phase, !!session);
+  useDropAbsorb(dropSurface, desktopBridge, (verdict, files) => {
+    if (verdict.action === "open") {
+      setHomeDropError(null);
+      setPaneDrop([...files]); // fresh array identity — ChatView adopts once per drop
+      void createSession().then((err) => {
+        if (err) {
+          setPaneDrop(null);
+          setHomeDropError(t("homeStartError"));
+        }
+      });
+      return;
+    }
+    if (verdict.action !== "refuse" || !verdict.reason) return;
+    if (dropSurface === "gate") {
+      setGateHintWhat(null);
+      setGateHintMsgKey(verdict.reason);
+      setGateHintTick((n) => n + 1);
+      setGateHintAt(Date.now());
+      return;
+    }
+    setHomeDropError(t(verdict.reason));
+  });
+
+  // P3-398: a home drop refusal is stale once any conversation exists.
+  useEffect(() => {
+    if (session) setHomeDropError(null);
+  }, [session]);
 
   // iOS-style swipe-back: drag from the right edge slides the current screen;
   // releasing past the threshold pops the view.
@@ -1129,6 +1184,7 @@ export default function App() {
       trigger={gateHintTick}
       at={gateHintAt}
       what={gateHintWhat ? t(gateHintWhat) : null}
+      message={gateHintMsgKey ? t(gateHintMsgKey) : null}
       onDismiss={() => setGateHintAt(0)}
       onPairNow={
         showWelcome
@@ -1565,6 +1621,9 @@ export default function App() {
       onBack={goBack}
       paneArtifact={paneArtifact}
       onPaneArtifactConsumed={() => setPaneArtifact(null)}
+      paneDrop={paneDrop}
+      onPaneDropConsumed={() => setPaneDrop(null)}
+      shellBridge={!!desktopBridge()}
       // P2-108: the shell strip (.daemon-reconnecting/.daemon-down) and the
       // in-chat .conn-banner say the same sentence — never show both.
       shellBannerVisible={kind === "reconnecting" || kind === "down"}
@@ -1619,6 +1678,7 @@ export default function App() {
       voice={clientRef.current?.caps?.transcribe === true}
       creating={creating}
       onStart={(prompt) => createSession(prompt)}
+      dropNotice={homeDropError}
       variant="mobile"
     />
   );
@@ -1696,6 +1756,7 @@ export default function App() {
                 voice={clientRef.current?.caps?.transcribe === true}
                 creating={creating}
                 onStart={(prompt) => createSession(prompt)}
+                dropNotice={homeDropError}
               />
             )}
           </main>
