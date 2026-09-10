@@ -148,6 +148,7 @@
   <span>FALHAS</span><b id="h-fails" class="bad">0</b>
   <span>FILA</span><b id="h-fila">0</b>
   <span>HB</span><b id="h-hb">—</b>
+  <span>NOTIFY</span><b id="h-notify" title="último aviso entregue">—</b>
   <div class="bars hidden" id="h-bars" title="burn-down 7 dias"></div>
 </div>
 
@@ -260,6 +261,8 @@ const STATIONS = [
 const STATION = Object.fromEntries(STATIONS.map((s) => [s.id, s]));
 // gate battery, in the order pipeline.ts runs it (+ evidence/corpus verdicts)
 const LAMPS = ["typecheck","build","unit","lock-sync","reconnect","integration","desktop-sidecar","invariants","evidence","corpus"];
+// P3-357: a supervisor notify older than the pending replay TTL reads stale
+const NOTIFY_STALE_MS = 24 * 3_600_000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. world state (pure data, mutated by the reducer; the painter only reads)
@@ -276,6 +279,7 @@ const world = {
   merges: 0, failures: 0, tasks: 0, deploys: 0, maxTasks: 6, maxDeploys: 6,
   ready: 0, blocked: 0, readyList: [], blockedList: [],
   hbMs: null,                // heartbeat age (ms) — null = unknown
+  notifyMs: null,            // P3-357: age of the last delivered supervisor notify (ms) — null = never
   offline: false,
   lastEvent: null,
   taskCosts: {}, taskAttempts: {}, contextPressure: {},
@@ -748,6 +752,11 @@ function renderHud() {
   $("h-fila").textContent = world.blocked ? `${world.ready} · ${world.blocked}×` : `${world.ready}`;
   $("h-hb").textContent = world.offline ? "OFF" : world.hbMs == null ? "—" : fmtAge(world.hbMs);
   $("h-hb").className = world.offline || world.hbMs == null ? "bad" : world.hbMs < 90_000 ? "ok" : "warn";
+  // P3-357: "último aviso entregue há N min" — supervisor notify age
+  const notifyMin = world.notifyMs == null ? null : Math.max(1, Math.round(world.notifyMs / 60_000));
+  $("h-notify").textContent = world.notifyMs == null ? "—" : fmtAge(world.notifyMs);
+  $("h-notify").className = world.notifyMs == null ? "" : world.notifyMs < NOTIFY_STALE_MS ? "ok" : "warn";
+  $("h-notify").title = notifyMin == null ? "nenhum aviso entregue" : `último aviso entregue há ${notifyMin} min`;
   $("live").className = world.offline ? "off" : world.hbMs != null && world.hbMs < 90_000 ? "on" : "stale";
   $("c-audit").classList.toggle("on", !!world.audit); $("c-audit").title = world.audit ? `${world.audit.reason} · desde ${hhmmss(world.audit.since)}` : "";
   $("c-rb").classList.toggle("on", world.core.state === "unhealthy"); $("c-rb").title = world.rbDetail || "";
@@ -934,6 +943,7 @@ async function poll() {
     world.hbMs = Number.isFinite(data.heartbeatMs) ? data.heartbeatMs : null;
     if (world.hbMs != null && (lastHb == null || world.hbMs < lastHb)) heartbeatPulse();
     lastHb = world.hbMs;
+    world.notifyMs = Number.isFinite(data.notifyLastMs) ? data.notifyLastMs : null;
     world.tasks = st.tasks ?? 0; world.deploys = st.deploys ?? 0; world.failures = st.failures ?? 0; world.merges = st.merges ?? 0;
     world.maxTasks = cfg.maxTasksPerDay || 6; world.maxDeploys = cfg.maxDeploysPerDay || 6;
     world.fleetSlots = Number.isInteger(cfg.slots) ? cfg.slots : world.fleetSlots || 2;

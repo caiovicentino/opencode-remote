@@ -108,5 +108,7 @@ export async function runResearcher(cfg: PilotConfig, state: { researchLast?: st
     log("warn", result === "refused" ? "aux push refused" : "researcher landing failed", { lines: lines.length });
   }
   const summary = r.output.slice(-600);
-  await notifySupervisor("research — frontier scan", true, summary);
+  // P3-357: the daemon awaits a full opencode turn before answering — never
+  // block the aux flow on it (notify is best-effort by design)
+  void notifySupervisor("research — frontier scan", true, summary).catch(() => {});
 }

@@ -754,6 +754,24 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   A rota lê seções de verdade (`backlogview.ts`, P2-240): cada título delimita
   a seção até o próximo título, e linha não marcada dentro de `## Done` nunca
   conta como pronta.
+- **Notify honesto ao supervisor (P3-357)**: o `notifySupervisor` nunca entregou
+  de fato — engolia todo erro (`catch { return false }`) e tratava o HTTP 200
+  do daemon como sucesso, quando o daemon só responde depois de um turno
+  completo do opencode na sessão supervisor (>120s medido em produção; o timeout
+  de 10s abortava antes). Agora cada tentativa loga `warn`/`info` com o motivo
+  real (status HTTP, socket, `delivered=false`, config ausente, timeout) no
+  pilot.log e grava um registro `pilot-notify` em `~/.opencode-remote/audit.log`
+  (`grep pilot-notify ~/.opencode-remote/audit.log`). Falha definitiva (HTTP,
+  socket, `delivered=false`) estaciona a mensagem em
+  `~/.opencode-remote/pilot/notify-pending.jsonl` — a próxima tentativa drena a
+  fila antes de enviar (TTL 24h, teto de 100 linhas, sem duplicatas; timeout
+  não estaciona porque o daemon pode ainda entregar a 1ª cópia). Na 3ª recusa
+  em janela o push do telefone recebe uma cópia com `needs operator`. Timeout
+  vira 120s (`NOTIFY_TIMEOUT_MS`) e o researcher deixou de esperar o notify.
+- **HUD NOTIFY no dashboard (P3-357)**: `/dashboard/v3` mostra ao lado do HB a
+  idade do último aviso realmente entregue ao supervisor ("último aviso
+  entregue há N min" no tooltip, via `pilot/notify-last` + `notifyLastMs` em
+  `/api/pilot-events`).
 - **Chip AUDIT MODE**: quando o circuit breaker de febre (P2-032) pausa a fila,
   um chip vermelho no topo do painel mostra o motivo e, no tooltip, o resumo
   do `buildDiagnosis` (api + top steps + top tasks) persistido em
