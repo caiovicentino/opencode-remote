@@ -348,6 +348,18 @@ import {
   type PasteItem,
 } from "../apps/web/src/lib/pasteattach";
 
+import {
+  dropSurfaceFor,
+  dropVerdict,
+  DROP_MAX_FILES,
+  DROP_REFUSE_GATE,
+  DROP_REFUSE_GATE_SHELL,
+  DROP_REFUSE_INVALID,
+  DROP_REFUSE_NO_FILES,
+  DROP_REFUSE_TOO_MANY,
+  type DropSurface,
+} from "../apps/web/src/lib/dropgate";
+
 import { copyPlan, COPY_UNAVAILABLE_NOTHING, type CopyPart } from "../apps/web/src/lib/copymsg";
 
 import { mimeFor } from "../apps/web/src/lib/files";
@@ -30799,6 +30811,164 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
       fnBody.includes("PASTE_FALLBACK_IMAGE_NAME") && fnBody.includes("PASTE_FALLBACK_FILE_NAME"),
     );
   }
+}
+
+// --- P3-398: OS file-drop verdict table (dropgate.ts) + surface wiring -------
+{
+  const surfaces: DropSurface[] = ["gate", "home", "chat"];
+
+  // gate — always refuses (no composer yet): whatever the count, valid or
+  // not, and the shell bridge picks the per-surface calm copy.
+  for (const bridge of [false, true]) {
+    for (const n of [0, 1, DROP_MAX_FILES, DROP_MAX_FILES + 1, Number.NaN, undefined, "2"]) {
+      const v = dropVerdict("gate", bridge, n);
+      check(
+        `P3-398: the gate refuses a drop of ${String(n)} (bridge=${String(bridge)}) with the bridge's copy`,
+        v.action === "refuse" && v.reason === (bridge ? DROP_REFUSE_GATE_SHELL : DROP_REFUSE_GATE),
+      );
+    }
+  }
+
+  // home/chat — the valid counts open or attach; exactly at the ceiling is
+  // still valid, one above refuses without truncating.
+  check("P3-398: one file dropped on the home opens a conversation", (() => {
+    const v = dropVerdict("home", true, 1);
+    return v.action === "open" && v.reason === "";
+  })());
+  check("P3-398: one file dropped on the chat attaches to the composer", (() => {
+    const v = dropVerdict("chat", false, 1);
+    return v.action === "attach" && v.reason === "";
+  })());
+  for (const s of ["home", "chat"] as DropSurface[]) {
+    check(`P3-398: zero files on ${s} refuses instead of staying silent`, (() => {
+      const v = dropVerdict(s, true, 0);
+      return v.action === "refuse" && v.reason === DROP_REFUSE_NO_FILES;
+    })());
+    check(`P3-398: exactly the documented ceiling on ${s} still goes through`, (() => {
+      const v = dropVerdict(s, true, DROP_MAX_FILES);
+      return (s === "home" ? v.action === "open" : v.action === "attach") && v.reason === "";
+    })());
+    check(`P3-398: one above the ceiling on ${s} refuses instead of truncating`, (() => {
+      const v = dropVerdict(s, true, DROP_MAX_FILES + 1);
+      return v.action === "refuse" && v.reason === DROP_REFUSE_TOO_MANY;
+    })());
+  }
+
+  // fail-closed: absent or non-numeric counts and unknown surfaces refuse
+  // with the invalid reason — never an assumed 0 or 1.
+  for (const bad of [undefined, Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, "2", null]) {
+    check(`P3-398: a ${bad === null ? "null" : typeof bad} count (${String(bad)}) fails closed`, (() => {
+      const v = dropVerdict("home", true, bad as unknown as number);
+      return v.action === "refuse" && v.reason === DROP_REFUSE_INVALID;
+    })());
+  }
+  for (const badSurface of ["modal", "", null, undefined, 42]) {
+    check(`P3-398: an unknown surface (${String(badSurface)}) fails closed`, (() => {
+      const v = dropVerdict(badSurface, true, 1);
+      return v.action === "refuse" && v.reason === DROP_REFUSE_INVALID;
+    })());
+  }
+
+  // every returned reason is a bare i18n key — no path, URL scheme or secret
+  const verdicts = surfaces.flatMap((s) =>
+    [0, 1, DROP_MAX_FILES + 1, Number.NaN].map((n) => dropVerdict(s, true, n)),
+  );
+  check(
+    "P3-398: no returned reason carries a file path, URL scheme or secret",
+    verdicts.every((v) => v.reason === "" || (/^[A-Za-z]*$/.test(v.reason) && !v.reason.includes("/") && !v.reason.includes(":"))),
+  );
+
+  // i18n: all five reasons resolve in en and pt with key parity.
+  check(
+    "P3-398: drop reasons resolve in en and pt",
+    [DROP_REFUSE_NO_FILES, DROP_REFUSE_TOO_MANY, DROP_REFUSE_INVALID, DROP_REFUSE_GATE, DROP_REFUSE_GATE_SHELL].every(
+      (k) =>
+        translate("en", k) !== k && translate("pt", k) !== k && translate("en", k) !== translate("pt", k),
+    ),
+  );
+
+  // Purity, in the spirit of pasteattach: no React, no DOM, no fetch, no I/O.
+  const dropSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "dropgate.ts"), "utf8");
+  check(
+    "P3-398: dropgate.ts imports nothing and touches no DOM/fetch/IO",
+    !/\bimport\b/.test(dropSrc) &&
+      !dropSrc.includes("document.") &&
+      !dropSrc.includes("window.") &&
+      !dropSrc.includes("fetch(") &&
+      !dropSrc.includes("require("),
+  );
+
+  // Wiring, read from the real sources: App owns the gate/home surfaces (the
+  // drop surface is the gate whenever the phase is not paired and never the
+  // chat — ChatView keeps its own listeners), the home path reuses the
+  // paneDrop fresh-identity traversal plus createSession, and the GateHint
+  // toast carries the drop refusal copy.
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  const dropWindowSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "dropwindow.ts"), "utf8");
+  // surface table from mount truth (the r1 regression: deciding from `top`
+  // double-handled a drop with a session open under a raised pane — the
+  // persistent ChatView attached it AND the hook spawned a new conversation)
+  const surfaceTable: [string, boolean, DropSurface | null][] = [
+    ["unpaired", false, "gate"],
+    ["connecting", false, "gate"],
+    ["connecting", true, "gate"],
+    ["error", false, "gate"],
+    ["paired", false, "home"],
+    // any open session = ChatView mounted with its own window listeners,
+    // whether the chat is the raised view OR sits under a pane
+    ["paired", true, null],
+  ];
+  for (const [ph, open, want] of surfaceTable) {
+    check(
+      `P3-398 r2: surface for phase=${ph} + session=${String(open)} is ${String(want)}`,
+      dropSurfaceFor(ph, open) === want,
+    );
+  }
+  check(
+    "P3-398 r2: App decides the surface from mount truth (never double-handled with the persistent chat)",
+    appSrc.includes("dropSurfaceFor(phase, !!session)") &&
+      !appSrc.includes('top === "chat" && !!session ? null : "home"'),
+  );
+  check(
+    "P3-398: App computes the drop surface via the hook and absorbs with the bridge",
+    appSrc.includes("useDropAbsorb(dropSurface, desktopBridge"),
+  );
+  check(
+    "P3-398: the hook decides every drop through dropVerdict and paints the shared highlight",
+    dropWindowSrc.includes("dropVerdict(surface") &&
+      dropWindowSrc.includes('classList.add("dragging-files")') &&
+      dropWindowSrc.includes('classList.remove("dragging-files")'),
+  );
+  check(
+    "P3-398: App.tsx gains no window listeners of its own (P2-220 pin)",
+    (appSrc.match(/addEventListener\(/g) ?? []).length === 3,
+  );
+  check(
+    "P3-398: a home drop creates the conversation and rides the paneDrop traversal",
+    appSrc.includes("setPaneDrop([...files])") &&
+      appSrc.includes("paneDrop={paneDrop}") &&
+      appSrc.includes("onPaneDropConsumed={() => setPaneDrop(null)}") &&
+      !appSrc.includes("__ocr/upload"),
+  );
+  check(
+    "P3-398: a gate drop reuses the GateHint calm warning with the drop copy",
+    appSrc.includes("message={gateHintMsgKey ? t(gateHintMsgKey) : null}") &&
+      appSrc.includes("setGateHintMsgKey(verdict.reason)"),
+  );
+  check(
+    "P3-398: the chat view keeps its own drop listeners and adopts paneDrop via attachFile",
+    (() => {
+      const chatSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "ChatView.tsx"), "utf8");
+      const dropAt = chatSrc.indexOf('dropVerdict("chat"');
+      const adoptAt = chatSrc.indexOf("if (!paneDrop || paneDrop.length === 0) return;");
+      return (
+        dropAt > -1 &&
+        adoptAt > -1 &&
+        chatSrc.indexOf("attachRef.current(f)", adoptAt) > adoptAt &&
+        chatSrc.includes("shellBridge === true")
+      );
+    })(),
+  );
 }
 
 // --- P2-282: copy-message verdict table (copymsg.ts) + bubble wiring ---------

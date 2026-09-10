@@ -245,6 +245,12 @@ private. That is the product: **local power, remote control, zero trust**.
 - **Paste to attach (P2-277)** — pasting into the composer attaches a copied
   screenshot, image or file directly (up to 4 items per paste, 25 MB each);
   pasting text keeps pasting text
+- **Drag a file anywhere (P3-398)** — dropping files from the Finder works on
+  every surface, not only inside a chat: on the home the drop creates a new
+  conversation with the file already attached, and at the first-boot gate the
+  drop answers with the calm pair-first warning instead of doing nothing (up
+  to 4 files per drop, with a clear line when the drop carried none or too
+  many); a drag in progress highlights the whole window
 - **Complete composer (P3-086)** — the chat input is one raised card: a "+"
   button attaches files with an inline preview chip (thumbnail, name, one-tap
   remove), a mic button sits next to it (functional placeholder — disabled,

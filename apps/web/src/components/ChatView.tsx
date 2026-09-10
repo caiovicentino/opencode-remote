@@ -53,6 +53,7 @@ import {
   PASTE_FALLBACK_IMAGE_NAME,
   type PasteItem,
 } from "../lib/pasteattach";
+import { dropVerdict } from "../lib/dropgate";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
   canHighlightInline,
@@ -102,6 +103,15 @@ interface Props {
   paneArtifact?: ArtifactMeta | null;
   /** Called after paneArtifact is adopted so the source can clear its pending state. */
   onPaneArtifactConsumed?: () => void;
+  /** P3-398: files dropped before this chat existed (home drop) — the same
+   * fresh-identity traversal paneArtifact uses. Adopted once on mount,
+   * uploaded through the existing attachFile path, then cleared in App. */
+  paneDrop?: File[] | null;
+  /** Called after paneDrop is adopted so the source can clear its pending state. */
+  onPaneDropConsumed?: () => void;
+  /** P3-398: shell bridge presence (App's desktopBridge()) — input of the
+   * lib/dropgate verdict for every OS file drop. */
+  shellBridge?: boolean;
   /** P2-108: the shell already shows .daemon-reconnecting/.daemon-down — the
    * in-chat .conn-banner must not duplicate the same sentence (one banner
    * only). The mobile PWA has no shell banner and keeps it. */
@@ -379,6 +389,9 @@ export default function ChatView({
   onBack,
   paneArtifact,
   onPaneArtifactConsumed,
+  paneDrop,
+  onPaneDropConsumed,
+  shellBridge,
   shellBannerVisible = false,
   getMicAccess,
   desktopShell,
@@ -2219,7 +2232,10 @@ export default function ChatView({
   // Drag & drop anywhere in the chat window: OS file drops attach to the
   // composer. Listeners live on window (not the root div) so a drop on the
   // message list, the sidebar or the composer behaves the same, and the
-  // Electron window never navigates to the dropped file.
+  // Electron window never navigates to the dropped file. P3-398: the verdict
+  // (attach vs refuse, with the cap and the fail-closed rules) comes from the
+  // pure lib/dropgate module — a refusal shows the calm reason instead of the
+  // old silence.
   const attachRef = useRef(attachFile);
   attachRef.current = attachFile;
   useEffect(() => {
@@ -2236,7 +2252,13 @@ export default function ChatView({
       document.body.classList.remove("dragging-files");
       if (!hasFiles(e)) return;
       e.preventDefault();
-      for (const f of Array.from(e.dataTransfer?.files ?? [])) {
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      const verdict = dropVerdict("chat", shellBridge === true, files.length);
+      if (verdict.action !== "attach") {
+        if (verdict.reason) setError(t(verdict.reason));
+        return;
+      }
+      for (const f of files) {
         void attachRef.current(f);
       }
     };
@@ -2249,7 +2271,21 @@ export default function ChatView({
       window.removeEventListener("drop", onDrop);
       document.body.classList.remove("dragging-files");
     };
-  }, []);
+  }, [shellBridge]);
+
+  // P3-398: adopt files dropped before this chat existed (home drop) — the
+  // same fresh-identity traversal as paneArtifact above: App re-sets the prop
+  // with a fresh array per drop, this effect attaches each file through the
+  // existing attachFile path (no new upload path) and clears the source.
+  const consumePaneDropRef = useRef(onPaneDropConsumed);
+  consumePaneDropRef.current = onPaneDropConsumed;
+  useEffect(() => {
+    if (!paneDrop || paneDrop.length === 0) return;
+    for (const f of paneDrop) {
+      void attachRef.current(f);
+    }
+    consumePaneDropRef.current?.();
+  }, [paneDrop]);
 
   // P2-277: paste-to-attach lives on the composer textarea only — never on
   // window — so no other paste target on the screen is robbed. The decision

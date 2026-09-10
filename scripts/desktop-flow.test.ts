@@ -167,7 +167,9 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // escalation beat (the ?escalate=1 hatch + the desktop-phrase probe) inside
 // the same budget; P3-392 added the binary-missing install-journey beat (the
 // OCR_OPENCODE_MISSING=1 daemon hatch + welcome agent-step actions + paired
-// Settings copy) inside it too.
+// Settings copy) inside it too. P3-398 added the file-drop beats (gate drop →
+// calm warning; home drop → new conversation with the attachment, against a
+// fake opencode that answers POST /session) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 420_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -984,6 +986,55 @@ try {
       /^false\|true\|true$/.test(afterPairNow.stdout.replace(/"/g, "").trim()),
       afterPairNow.stdout,
     );
+  }
+
+  // --- P3-398: an OS file drop at the gate answers with the calm warning -----
+  // The most natural desktop gesture — dropping a file from the Finder onto
+  // the window — used to die silently on both surfaces a new user actually
+  // sees. At the gate the drop now reuses the pair-first calm toast (the
+  // shell-bridge copy: pair the machine first), and the dragover highlight
+  // paints exactly like it does in the chat. The DragEvent is synthesized on
+  // the page itself (DataTransfer carrying a real File) through the harness
+  // ipc command; the verdict probes return join('|') lists, never
+  // JSON.stringify (the ipc harness JSON-wraps the eval result).
+  {
+    phase("P3-398: gate file drop (calm warning)");
+    const armDrop = `(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(["relatorio"], "relatorio.txt", { type: "text/plain" }));
+      window.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+      const highlighted = document.body.classList.contains("dragging-files");
+      window.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+      return [highlighted, document.body.classList.contains("dragging-files")].join("|");
+    })()`;
+    const gateDrop = run("P3-398: synthesized drop at the gate (dragover + drop)", ["ipc", armDrop], 15_000);
+    check(
+      "P3-398: dragover highlights the gate and drop clears the highlight",
+      gateDrop.ok && /^true\|false$/.test(gateDrop.stdout.replace(/"/g, "").trim()),
+      gateDrop.stdout,
+    );
+    const gateToast = await waitProbe(
+      "P3-398: gate drop surfaces the calm warning instead of silence",
+      "document.querySelector('.pair-gate-hint')?.textContent ?? ''",
+      (v) => /Pair with your machine first|Pareie com sua máquina primeiro/.test(v) && /drop files|solte arquivos/.test(v),
+      cliEnv,
+      8,
+      500,
+    );
+    if (gateToast) {
+      // evidence: the toast is short-lived (4s window) — re-arm before each
+      // sized shot so the calm warning is actually on screen in both.
+      const rearm = `(() => { const dt = new DataTransfer(); dt.items.add(new File(["x"], "x.txt", { type: "text/plain" })); window.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true })); return "ok"; })()`;
+      run("P3-398: re-arm the gate drop (1440 evidence)", ["ipc", rearm], 15_000);
+      const gshot = join(shotsDir, "P3-398-gate-drop-1440.png");
+      const gs = run("P3-398: 1440x900 gate-drop shot", ["shot", gshot, "1440", "900"], 15_000);
+      if (gs.ok) check("P3-398: gate-drop 1440x900 shot is a real PNG", pngSize(gshot).join("x") === "1440x900");
+      run("P3-398: re-arm the gate drop (390 evidence)", ["ipc", rearm], 15_000);
+      const gs390 = run("P3-398: 390 gate-drop shot", ["shot", join(shotsDir, "P3-398-gate-drop-390.png"), "390", "844"], 15_000);
+      if (gs390.ok) check("P3-398: gate-drop 390 shot is a real PNG", pngSize(join(shotsDir, "P3-398-gate-drop-390.png"))[0] === 390);
+      // resize vehicle only — later beats expect the desktop viewport
+      run("P3-398: resize back to desktop width", ["shot", join(shotsDir, "P3-398-resize-1440.png"), "1440", "900"], 15_000);
+    }
   }
 
   // --- P3-053: dock unread badge bridge ----------------------------------------
@@ -4320,6 +4371,151 @@ phase("P2-152: one-time close-to-tray hint");
     if (hintBooted2) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: hintEnv2 });
     if (hintBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: hintEnv });
     rmSync(hintDir, { recursive: true, force: true });
+  }
+}
+
+// --- P3-398: an OS file drop on the home creates the chat with the file -----
+// Second half of the silent-drop fix: on the paired home the drop must CREATE
+// the conversation and deliver the file through the existing attach path (the
+// paneDrop traversal — no new upload route). The hermetic daemon needs a
+// working upstream for POST /session, so this block points OPENCODE_URL at a
+// tiny fake that answers health + session routes; the attachment upload
+// itself is daemon-side (/__ocr/upload), no agent round-trip.
+{
+  phase("P3-398: home file drop (healthy fake opencode)");
+  const fakeSessionScript = [
+    "const http = require('node:http');",
+    "let n = 0;",
+    "const srv = http.createServer((req, res) => {",
+    "  const u = new URL(req.url, 'http://127.0.0.1');",
+    "  res.setHeader('content-type', 'application/json');",
+    "  if (u.pathname === '/global/health') { res.end('{}'); return; }",
+    "  if (u.pathname === '/session' && req.method === 'POST') { res.end(JSON.stringify({ id: 'ses_drop' + (++n) })); return; }",
+    "  if (u.pathname === '/session') { res.end('[]'); return; }",
+    "  res.end('{}');",
+    "});",
+    "srv.listen(0, '127.0.0.1', () => console.log('PORT=' + srv.address().port));",
+  ].join("\n");
+  const fakeSessionChild = spawn(process.execPath, ["-e", fakeSessionScript], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const fakeSessionPort = await new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("fake opencode (sessions) never printed PORT")), 10_000);
+    fakeSessionChild.stdout?.on("data", (d: Buffer) => {
+      const m = d.toString().match(/PORT=(\d+)/);
+      if (m) {
+        clearTimeout(timer);
+        resolve(Number(m[1]));
+      }
+    });
+    fakeSessionChild.on("exit", () => reject(new Error("fake opencode (sessions) exited early")));
+  }).catch((err) => {
+    check("P3-398: fake opencode (sessions) booted", false, String(err));
+    return NaN;
+  });
+  const killFakeSession = () => fakeSessionChild.kill();
+  process.on("exit", killFakeSession);
+  const daemonHomeDrop = mkdtempSync(join(tmpdir(), "ocr-flow-drop-"));
+  const dropStateFile = join(daemonHomeDrop, ".opencode-remote", "daemon.json");
+  const dropPort = await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+  const dropDaemon = spawn(daemonSpawn().command, daemonSpawn().args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: daemonHomeDrop,
+      OCR_METRICS_PORT: String(dropPort),
+      RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
+      OPENCODE_URL: `http://127.0.0.1:${fakeSessionPort}`,
+      OCR_LOG_LEVEL: "error",
+    },
+    stdio: ["ignore", "ignore", "ignore"],
+    detached: true,
+  });
+  const killDropDaemon = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    if (!dropDaemon.pid) return;
+    try {
+      process.kill(-dropDaemon.pid, signal);
+    } catch {
+      /* already gone */
+    }
+  };
+  process.on("exit", () => killDropDaemon("SIGKILL"));
+  const dropEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-drop`,
+    OCR_DESKTOP_LOCAL_STATE: dropStateFile,
+    OCR_DAEMON_METRICS_PORT: String(dropPort),
+  };
+  let dropBooted = false;
+  try {
+    const dropToken = await waitForDaemonStateFile(dropStateFile, dropPort);
+    check("P3-398: hermetic daemon (fake sessions upstream) published the 0600 state file", !!dropToken);
+    if (dropToken && Number.isFinite(fakeSessionPort)) {
+      const open = run("P3-398: open (hermetic launch)", ["open"], 45_000, dropEnv);
+      dropBooted = open.ok;
+      if (open.ok) {
+        run("P3-398: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, dropEnv);
+        await waitProbe(
+          "P3-398: app paired with the hermetic daemon",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          dropEnv,
+        );
+        await waitProbe(
+          "P3-398: home hero rendered (no session yet)",
+          "!!document.querySelector('.home-greeting')",
+          (v) => /true/.test(v),
+          dropEnv,
+        );
+        // the gesture, on the page: dragover paints the shared highlight, the
+        // drop delivers one real File to the window listeners
+        const armDrop = `(() => {
+          const dt = new DataTransfer();
+          dt.items.add(new File(["relatorio"], "relatorio.txt", { type: "text/plain" }));
+          window.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+          const highlighted = document.body.classList.contains("dragging-files");
+          window.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+          return [highlighted, document.body.classList.contains("dragging-files")].join("|");
+        })()`;
+        const homeDrop = run("P3-398: synthesized drop on the home (dragover + drop)", ["ipc", armDrop], 15_000, dropEnv);
+        check(
+          "P3-398: dragover highlights the home and drop clears the highlight",
+          homeDrop.ok && /^true\|false$/.test(homeDrop.stdout.replace(/"/g, "").trim()),
+          homeDrop.stdout,
+        );
+        // the conversation opens WITH the attachment: .messages mounts and the
+        // composer shows the uploaded file's chip (daemon-side upload)
+        const adopted = await waitProbe(
+          "P3-398: drop opened the conversation with the file attached",
+          "(() => { const chip = document.querySelector('.composer-att-name'); return [!!document.querySelector('.messages'), !!document.querySelector('.composer-att'), chip ? chip.textContent : ''].join('|'); })()",
+          (v) => {
+            const [messages, chip, name] = v.replace(/"/g, "").split("|");
+            return messages === "true" && chip === "true" && (name ?? "").includes("relatorio");
+          },
+          dropEnv,
+          16,
+          750,
+        );
+        const dshot = join(shotsDir, "P3-398-home-drop-1440.png");
+        const ds1 = run("P3-398: 1440x900 home-drop shot", ["shot", dshot, "1440", "900"], 15_000, dropEnv);
+        if (ds1.ok) check("P3-398: home-drop 1440x900 shot is a real PNG", pngSize(dshot).join("x") === "1440x900");
+        const ds2 = run("P3-398: 390 home-drop shot", ["shot", join(shotsDir, "P3-398-home-drop-390.png"), "390", "844"], 15_000, dropEnv);
+        if (ds2.ok) check("P3-398: home-drop 390 shot is a real PNG", pngSize(join(shotsDir, "P3-398-home-drop-390.png"))[0] === 390);
+        if (!adopted) check("P3-398: home drop never delivered the file", false, "chat or attachment chip never appeared");
+      }
+    }
+  } finally {
+    if (dropBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: dropEnv });
+    killDropDaemon("SIGKILL");
+    killFakeSession();
+    rmSync(daemonHomeDrop, { recursive: true, force: true });
   }
 }
 

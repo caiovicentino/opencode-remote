@@ -523,6 +523,14 @@ export const dict = {
     attachFile: "Attach file",
     pasteTooLarge: "Paste refused: the pasted item is larger than the attach limit",
     pasteTooMany: "Paste refused: too many items in one paste — attach up to 4 at a time",
+    // P3-398: OS file-drop verdicts (lib/dropgate) — per-surface calm copy,
+    // never silence. The gate reuses the GateHint toast; home/chat show the
+    // refusal inline (home error slot / composer error line).
+    dropNoFiles: "No file in that drop — try again",
+    dropTooMany: "Too many files at once — attach up to 4 per drop",
+    dropInvalid: "That drop could not be read — try again",
+    dropGateRefuse: "Pair first — scan the QR with your phone, then drop files anywhere to start a chat",
+    dropGateShellRefuse: "Pair with your machine first — then drop files anywhere to start a chat",
     micNeedsPermission: "Microphone unavailable — allow access to record voice",
     // P2-312: mic-denied copy — the phone keeps the Safari sentence, the
     // desktop shell swaps in the OS verdict phrase (apps/desktop/src/micaccess.ts).
@@ -1313,6 +1321,12 @@ export const dict = {
     attachFile: "Anexar arquivo",
     pasteTooLarge: "Colagem recusada: o item colado é maior que o limite de anexo",
     pasteTooMany: "Colagem recusada: itens demais numa só colagem — anexe até 4 por vez",
+    // P3-398: mesmas chaves — veredito de soltura de arquivos por superfície.
+    dropNoFiles: "Nenhum arquivo nessa soltura — tente de novo",
+    dropTooMany: "Arquivos demais de uma vez — anexe até 4 por soltura",
+    dropInvalid: "Não deu pra ler essa soltura — tente de novo",
+    dropGateRefuse: "Pareie primeiro — escaneie o QR com o celular e depois solte arquivos em qualquer lugar pra abrir uma conversa",
+    dropGateShellRefuse: "Pareie com sua máquina primeiro — depois solte arquivos em qualquer lugar pra abrir uma conversa",
     micNeedsPermission: "Microfone indisponível — permita o acesso pra gravar voz",
     // P2-312: same keys as above — the phone sentence and the panel action.
     micDeniedIos: "microfone negado — permita o acesso em Ajustes → Apps → Safari → Microfone e recarregue",

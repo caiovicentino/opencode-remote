@@ -36,6 +36,10 @@ type Props = {
   creating: boolean;
   /** start a session with `prompt` pre-filled; resolves to an error message */
   onStart: (prompt: string) => Promise<string | null>;
+  /** P3-398: App-resolved refusal copy for an OS file drop on the home
+   * (zero files, over the cap) — rendered in the same error slot as start
+   * failures, so the drop is never swallowed in silence. */
+  dropNotice?: string | null;
   /** "desktop" (P2-123 living home with ideas) | "mobile" (Bug 2 PWA home:
    * time-of-day greeting + mark, bottom-anchored composer, nothing else) */
   variant?: "desktop" | "mobile";
@@ -53,7 +57,7 @@ type RecState = "idle" | "rec" | "busy";
  * clickable ideas. Every string comes from the dict. Bug 2 adds the mobile
  * variant: the same composer, anchored to the bottom, under a centered
  * greeting — no ideas, no cards. */
-export default function HomeView({ machineName, request, voice, creating, onStart, variant = "desktop", desktopShell }: Props) {
+export default function HomeView({ machineName, request, voice, creating, onStart, dropNotice, variant = "desktop", desktopShell }: Props) {
   const t = useT();
   const mobile = variant === "mobile";
   const [input, setInput] = useState("");
@@ -272,9 +276,9 @@ export default function HomeView({ machineName, request, voice, creating, onStar
               {stt.message}
             </p>
           )}
-          {error && (
+          {(error || dropNotice) && (
             <div className="home-error" role="alert">
-              {error}
+              {error || dropNotice}
             </div>
           )}
         </div>
