@@ -54,6 +54,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "degraded-theme.test.ts",
   "desktop-log.test.ts",
   "drawer.test.ts",
+  "gate-queue.test.ts",
   "gpuplan.test.ts",
   "home.test.ts",
   "i18n-emoji.test.ts",

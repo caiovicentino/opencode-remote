@@ -6,6 +6,12 @@ import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { applyTheme, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
 import { escalationMinutes, retryLineParts, shouldEscalateRetry } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
+// P3-360: the offline first-message queue — text typed here is saved on this
+// machine (localStorage via lib/gatequeue) and becomes the first message of
+// the first conversation once the daemon answers (App consumes the queue on
+// "paired", reusing the home composer's send-on-open flow).
+import { readGateQueue, writeGateQueue } from "../lib/gatequeue";
+import { clampComposerHeight } from "../lib/composer";
 import ReconnectButton from "./ReconnectButton";
 import PaneMap from "./PaneMap";
 
@@ -117,6 +123,31 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
 
+  // P3-360: the offline first-message queue. Seeded from what is already
+  // saved (a restart while the daemon is still down must show the queued
+  // text, not swallow it) — editing again re-arms Save and hides the
+  // confirmation until the new text is persisted.
+  const [queueText, setQueueText] = useState(() => readGateQueue(localStorage));
+  const [queueSaved, setQueueSaved] = useState(() => !!readGateQueue(localStorage));
+  const queueRef = useRef<HTMLTextAreaElement>(null);
+  // Same auto-grow contract as the home composer: grows with content up to
+  // the shared 6-line cap, then scrolls internally.
+  useEffect(() => {
+    const el = queueRef.current;
+    if (!el) return;
+    const cs = getComputedStyle(el);
+    const lh = parseFloat(cs.lineHeight) || 20;
+    const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    el.style.height = "auto";
+    el.style.height = `${clampComposerHeight(el.scrollHeight, lh, padY)}px`;
+  }, [queueText]);
+
+  function saveQueue() {
+    const clean = writeGateQueue(queueText, localStorage);
+    setQueueText(clean);
+    setQueueSaved(!!clean);
+  }
+
 
   const title = busy
     ? t("localConnecting")
@@ -193,6 +224,41 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
       {escalated && <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} />}
       <div className="degraded-actions">
         <ReconnectButton className="degraded-reconnect-btn" reconnect={reconnect} />
+      </div>
+      {/* P3-360: the offline first-message queue — the core chat surface,
+          reachable on the very first boot. Enter submits (Shift+Enter is a
+          newline), same composer grammar as the home. */}
+      <div className="degraded-queue">
+        <h3>{t("degradedQueueTitle")}</h3>
+        <p className="muted">{t("degradedQueueHint")}</p>
+        <textarea
+          ref={queueRef}
+          className="degraded-queue-input"
+          rows={2}
+          aria-label={t("degradedQueueTitle")}
+          placeholder={t("degradedQueuePlaceholder")}
+          value={queueText}
+          onChange={(e) => {
+            setQueueText(e.target.value);
+            setQueueSaved(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              saveQueue();
+            }
+          }}
+        />
+        <div className="degraded-queue-row">
+          {queueSaved && (
+            <span className="degraded-queue-saved" role="status">
+              {t("degradedQueueSaved")}
+            </span>
+          )}
+          <button className="degraded-queue-save" onClick={saveQueue} disabled={!queueText.trim()}>
+            {t("degradedQueueSave")}
+          </button>
+        </div>
       </div>
       <div className="degraded-local">
         <h3>{t("degradedLocalTitle")}</h3>

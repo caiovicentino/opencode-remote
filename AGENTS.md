@@ -291,6 +291,12 @@ exigir pareamento com um QR que o próprio daemon caído teria que gerar; nos
 demais casos o toast nomeia o que foi pedido ("Pareie com sua máquina primeiro
 para abrir Artifacts." — `pairFirstHintFor` com `{pane}`), e um só veredito
 `gateShellUp` decide menu e render pra nunca divergirem;
+P3-360 deu compositor ao card calmo: a fila offline da primeira mensagem
+(`.degraded-queue`, lib `gatequeue.ts` com chave `ocr_gate_queue`) deixa o
+primeiro boot digitar de verdade — o texto salvo vira a primeira mensagem da
+primeira conversa quando o shell pareia (App consome a fila em `phase ===
+"paired"` via `markSendOnOpen` + `createSession(prefill)` e só apaga após a
+criação bem-sucedida), então "nada se perde" deixa de ser só copy;
 P3-366 estendeu a regra paste-first do desktop (P2-117) ao escape manual do
 degradado: o PairingView alcançado por "Parear outro dispositivo manualmente"
 (e pelo escape do wizard) recebe `preferPaste={!!desktopBridge()}` — "Parear"

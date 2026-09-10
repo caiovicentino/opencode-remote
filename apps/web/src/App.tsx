@@ -41,7 +41,7 @@ import ChatView, { type MicAccessVerdict } from "./components/ChatView";
 import { type CameraAccessVerdict } from "./components/QrScanner";
 import HomeView from "./components/HomeView";
 import GateHint from "./components/GateHint";
-import { setDraft } from "./lib/drafts";
+import { setDraft, markSendOnOpen } from "./lib/drafts";
 import SettingsView, {
   type RelaySetting,
   type RelaySettingWriteResult,
@@ -51,6 +51,7 @@ import SettingsView, {
   type ProxySettingWriteResult,
 } from "./components/SettingsView";
 import { applyTheme } from "./lib/theme";
+import { readGateQueue, clearGateQueue } from "./lib/gatequeue";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
 import SendToAgentView from "./components/SendToAgentView";
@@ -348,6 +349,23 @@ export default function App() {
   const [pairManual, setPairManual] = useState(false);
   useEffect(() => {
     if (phase === "paired") setPairManual(false);
+  }, [phase]);
+
+  // P3-360: the gate's offline queue becomes the first message. Whatever the
+  // user saved on the calm card while the daemon was down is sent as soon as
+  // the shell is paired — reusing the home composer's send-on-open flow
+  // (markSendOnOpen + createSession(prefill)). The queue only clears after
+  // the creation SUCCEEDS: a daemon that flaps again right after pairing
+  // loses nothing, and the next pairing consumes the queue for real.
+  useEffect(() => {
+    if (phase !== "paired") return;
+    const queued = readGateQueue(localStorage);
+    if (!queued) return;
+    void (async () => {
+      markSendOnOpen(queued);
+      const err = await createSession(queued);
+      if (!err) clearGateQueue(localStorage);
+    })();
   }, [phase]);
 
   // P2-148: first-run welcome (desktop shell only). The pure decision reads
