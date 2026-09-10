@@ -136,6 +136,17 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   rotina já renderizado na tela de ajustes (P2-318: linha colapsável calma por
   rotina, mais recente primeiro, com estado vazio falado)
 - Cmd+K: switcher de sessões com preview e teclas ←/→
+- Câmera-pergunta "Olho" (P3-402): botão de câmera no composer abre um
+  viewfinder ao vivo em sheet — o shutter captura o frame atual (canvas →
+  JPEG → mesmo pipeline de anexo das imagens de arquivo), o usuário digita a
+  pergunta e envia; foto e texto viajam numa mensagem só e o sheet permanece
+  aberto pra pergunta de follow-up sem reabrir a câmera. Nada de streaming: o
+  frame só sai no envio ("a foto só sai quando você envia", na própria UI). A
+  máquina de estados da câmera reusa os padrões provados do scanner de QR
+  (facingMode environment, retry de abort do iOS, watchdog de feed morto) e,
+  no shell desktop, a mesma ponte de veredito de permissão com atalho pro
+  painel do sistema; modelo sem visão degrada em card de aviso sugerindo
+  troca de modelo
 
 ## Regra de ouro
 Cada task de UI fecha com screenshot desktop-flow provando o critério visual.

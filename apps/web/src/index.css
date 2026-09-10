@@ -2293,6 +2293,202 @@ button.desk-new:disabled {
   font-size: 0.8rem;
 }
 
+/* Camera-ask sheet ("Olho", P3-402): a fixed overlay above the chat with the
+   live viewfinder as the hero. Same visual register as the rest of the app —
+   tokens only, one accent (the shutter), spacing on a 4px rhythm; nothing
+   glassy, nothing gradient. The privacy line is part of the design, not a
+   footnote: the frame leaves the device only on the shutter. */
+.cam-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  max-width: 100vw;
+  background: color-mix(in srgb, var(--bg) 88%, #000);
+  overflow-y: auto;
+}
+.cam-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cam-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.cam-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.cam-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #000;
+}
+.cam-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.cam-looking {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.cam-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+.cam-flash.on {
+  opacity: 0.55;
+}
+.cam-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 18px;
+}
+.cam-unavailable-title {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.cam-unavailable .cam-panel-cta {
+  align-self: stretch;
+}
+.cam-warn {
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  padding: 10px 14px;
+}
+.cam-warn-text {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.cam-warn-hint {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.cam-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+}
+.cam-side,
+.cam-side-spacer {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+}
+.cam-side {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.cam-side.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.cam-shutter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 62px;
+  height: 62px;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.cam-shutter:disabled {
+  opacity: 0.4;
+}
+.cam-ask {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cam-shot-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.cam-question {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+.cam-question::placeholder {
+  color: var(--muted);
+}
+.cam-question:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.cam-send {
+  height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+.cam-privacy {
+  margin: 0;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 /* first-run splash (P1-050): wordmark, value line, 3-step onboarding */
 .splash-logo {
   border-radius: 10px;

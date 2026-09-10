@@ -16,6 +16,8 @@ import { modelHintKey, useModelStatus } from "../lib/modelstatus";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
 import ModelMissingActions from "./ModelMissingActions";
+import CameraSheet from "./CameraSheet";
+import { type CameraAccessVerdict } from "./QrScanner";
 import { saveFile } from "../lib/files";
 import { copyText } from "../lib/clipboard";
 import { copyPlan, type CopyPart } from "../lib/copymsg";
@@ -69,7 +71,7 @@ import {
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { sendAskCountToShell } from "../lib/asks";
-import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 
 /** P2-312: microphone verdict from the desktop shell (mirrors
  * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
@@ -120,6 +122,9 @@ interface Props {
   /** P2-312: microphone-permission verdict from the desktop shell (absent on
    * the phone) — replaces the Safari-only NotAllowedError advice. */
   getMicAccess?: () => Promise<MicAccessVerdict | null>;
+  /** P3-402: camera-permission verdict from the desktop shell (absent on the
+   * phone) — the camera-ask sheet shares the bridge the QrScanner uses. */
+  getCamAccess?: () => Promise<CameraAccessVerdict | null>;
   /** P3-396: the same shell verdict the App computes (desktopBridge() !==
    * null). On the desktop shell the model hint resolves to dedicated copy +
    * a real credential journey; the phone keeps the daemon sentence, no
@@ -395,6 +400,7 @@ export default function ChatView({
   shellBridge,
   shellBannerVisible = false,
   getMicAccess,
+  getCamAccess,
   desktopShell,
   connAttempts: connAttemptsProp,
   connSince = 0,
@@ -457,6 +463,9 @@ export default function ChatView({
   const spokenRef = useRef<string | null>(null);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [uploading, setUploading] = useState(false);
+  // P3-402: camera-ask sheet ("Olho") — lives above the composer; sending
+  // from it keeps it open so a follow-up question never reopens the camera.
+  const [camOpen, setCamOpen] = useState(false);
   const { models, model, pickModel } = useModelSelector(request);
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   // P3-086: inline agent/model dropdown in the composer (Claude Desktop parity)
@@ -2090,6 +2099,18 @@ export default function ChatView({
     }
   }
 
+  // P3-402: camera-ask plumbing — the shutter feeds the SAME attach pipeline
+  // as attachImage (downscale ≤1568px q0.75 → chunked ocr-upload:// upload),
+  // and the sheet's send is the normal send() (photo + question ride one
+  // message; the sheet stays open for a follow-up probe).
+  function captureFromCamera(file: File) {
+    void attachImage(file);
+  }
+
+  function sendFromCamera(question: string) {
+    void send(question || undefined);
+  }
+
   async function micDown() {
     setError("");
     setMicPanel(null);
@@ -3107,6 +3128,15 @@ export default function ChatView({
               {uploading ? "…" : <IconPlus />}
             </button>
             <button
+              className="composer-btn composer-camera"
+              onClick={() => setCamOpen(true)}
+              disabled={uploading || recState === "busy"}
+              aria-label={t("camOpen")}
+              title={t("camOpen")}
+            >
+              <IconCamera />
+            </button>
+            <button
               className="composer-btn composer-mic"
               onPointerDown={(e) => {
                 e.preventDefault();
@@ -3445,6 +3475,17 @@ export default function ChatView({
           descriptor={buildAskDialog("rewind", t)}
           onConfirm={() => void handleRewindConfirm()}
           onClose={() => setRewindAsk(null)}
+        />
+      )}
+      {camOpen && (
+        <CameraSheet
+          onClose={() => setCamOpen(false)}
+          onCapture={captureFromCamera}
+          onSend={sendFromCamera}
+          getCamAccess={getCamAccess}
+          busy={uploading || sending}
+          canSend={input.trim().length > 0 || images.length > 0}
+          error={error}
         />
       )}
     </div>

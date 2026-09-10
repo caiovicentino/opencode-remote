@@ -30,8 +30,10 @@ export type ScanReason = "permission" | "no-device" | "busy" | "interrupted" | "
 
 /** getUserMedia failure names → the reason the state machine reports.
  * P2-118: every reason renders dictionary copy at render time (scanErr_*),
- * so a language switch mid-error still re-renders in the new locale. */
-function errorReason(err: unknown): ScanReason {
+ * so a language switch mid-error still re-renders in the new locale.
+ * P3-402: exported for the camera-ask sheet, which shares the state machine
+ * and the dictionary copy. */
+export function errorReason(err: unknown): ScanReason {
   const name = (err as { name?: string })?.name ?? "";
   if (name === "NotAllowedError") return "permission";
   if (name === "NotFoundError" || name === "OverconstrainedError") return "no-device";

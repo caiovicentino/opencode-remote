@@ -114,6 +114,18 @@ private. That is the product: **local power, remote control, zero trust**.
   row from that pair (`ready` → ok, `missing-tool` → unavailable).
   `OCR_TTS_BLOCK=1` on the daemon is a test hatch that forces the
   missing-tool verdict for deterministic screenshots
+- **Camera ask ("Olho")** — a camera button in the composer opens a live
+  viewfinder sheet: the shutter captures the current frame (canvas → JPEG →
+  the same attachment pipeline as file images, downscaled to ≤1568px), you
+  type a question and send — photo and text ride one message, and the sheet
+  stays open so a follow-up question never reopens the camera. Nothing
+  streams: the frame leaves the device only when you press send, and the
+  sheet says so. The camera state machine reuses the pairing scanner's
+  proven patterns (back camera first, iOS abort retry, dead-feed watchdog)
+  and, inside the desktop shell, the same camera-permission verdict with the
+  system-panel shortcut. If the model rejects images, the readable
+  daemon/opencode error becomes a warning card suggesting a model switch
+  (torch and camera flip appear when the device supports them)
 - **Model readiness** — the composer warns before the first send when the
   machine hosting the daemon has no usable model configured (no provider
   credential, or credentials without models): a single calm line above the

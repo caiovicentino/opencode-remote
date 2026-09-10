@@ -1548,6 +1548,33 @@ check("QrScanner asks the shell for the camera verdict", qrScannerSource.include
 check("QrScanner keeps the dictionary phrase when the bridge is absent", qrScannerSource.includes("scanErr_") && qrScannerSource.includes("camVerdict?.phrase"));
 check("camera copy exists in both languages", (i18nSource.match(/camOpenPanel:/g) ?? []).length === 2);
 
+// --- camera-ask sheet (P3-402) -------------------------------------------------
+// The "Olho" sheet shares the scanner's proven camera state machine and its
+// permission-verdict bridge; the battery pins the shape, not the pixels.
+
+import { torchSupported, torchConstraint } from "../apps/web/src/lib/camshot";
+
+check(
+  "camera-ask copy exists in both languages",
+  ["camOpen", "camTitle", "camCapture", "camQuestionPlaceholder", "camPrivacy", "camVisionHint"].every(
+    (k) => (i18nSource.match(new RegExp(`${k}:`, "g")) ?? []).length === 2,
+  ) && (i18nSource.match(/"camErr_no-signal":/g) ?? []).length === 2,
+);
+
+const cameraSheetSource = readFileSync(new URL("../apps/web/src/components/CameraSheet.tsx", import.meta.url), "utf8");
+check("CameraSheet asks the shell for the camera verdict", cameraSheetSource.includes("getCamAccess"));
+check("CameraSheet reuses the scanner's reason mapping", cameraSheetSource.includes("errorReason"));
+check("CameraSheet runs the dead-feed watchdog", cameraSheetSource.includes("feedVerdict"));
+check("CameraSheet keeps the iOS abort retry", /AbortError/.test(cameraSheetSource) && /400/.test(cameraSheetSource));
+check("CameraSheet sets playsinline/muted before srcObject", cameraSheetSource.indexOf("playsinline") < cameraSheetSource.indexOf("srcObject"));
+check("CameraSheet states the shutter-only privacy rule", cameraSheetSource.includes("camPrivacy"));
+check("CameraSheet shutter emits a JPEG file for the attach pipeline", cameraSheetSource.includes('type: "image/jpeg"'));
+check("CameraSheet maps the missing-torch state, not a silent button", cameraSheetSource.includes("torchSupported") && cameraSheetSource.includes("torchConstraint"));
+
+check("torchSupported fails closed on absent capabilities", torchSupported(null) === false && torchSupported(undefined) === false && torchSupported({}) === false);
+check("torchSupported admits a real torch capability", torchSupported({ torch: true }) && torchSupported({ torch: false, width: 1280 }));
+check("torchConstraint wraps the toggle in advanced", torchConstraint(true).advanced[0].torch === true && torchConstraint(false).advanced[0].torch === false);
+
 
 
 // --- guest webContents guard (P2-184) ----------------------------------------
