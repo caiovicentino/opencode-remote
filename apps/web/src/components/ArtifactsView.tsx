@@ -7,7 +7,7 @@ import {
 } from "../lib/artifacts";
 import { isSplitViewport } from "../lib/split";
 import { useExitAnimation } from "../lib/motion";
-import { humanizeError } from "../lib/errors";
+import { humanizeError, isNotConnected } from "../lib/errors";
 import type { OcrRequest } from "../lib/files";
 import ArtifactViewer from "./ArtifactViewer";
 import { ArtifactIcon } from "./icons";
@@ -54,15 +54,14 @@ export default function ArtifactsView({
       try {
         setListing(await listArtifactsDetailed(request));
       } catch (err) {
-        const raw = err instanceof Error ? err.message : String(err);
-        // P3-375: the same signal humanizeError maps to the "not paired" copy —
-        // but a never-paired user has nothing to "pair again"; the calm empty
-        // state below carries a sync hint instead of the red error line.
-        if (/not connected/i.test(raw)) {
+        // P3-375: the request layer's NotConnected sentinel marks the expected
+        // never-paired state — the calm empty world below carries a sync hint
+        // instead of the red error line. Branch on the class, not the prose.
+        if (isNotConnected(err)) {
           setOffline(true);
           return;
         }
-        setError(raw);
+        setError(err instanceof Error ? err.message : String(err));
       }
     })();
   }
@@ -104,6 +103,12 @@ export default function ArtifactsView({
             <p className="muted">{t("artifactsEmpty")}</p>
             {offline && <p className="muted artifacts-offline-hint">{t("artifactsOfflineHint")}</p>}
           </div>
+        )}
+        {/* P3-375 (review round 3): a load that succeeded before going offline
+            keeps its stale results on screen — the sync hint rides along instead
+            of the pane going silently stale (or red). */}
+        {offline && artifacts.length > 0 && (
+          <p className="muted artifacts-offline-hint">{t("artifactsOfflineHint")}</p>
         )}
         {[...groups.entries()].map(([sid, items]) => (
           <div key={sid}>

@@ -3,6 +3,24 @@
 
 type TFn = (key: string, vars?: Record<string, string | number>) => string;
 
+/**
+ * P3-375: thrown by the shell's request() while no client is live (first
+ * boot, machine switch) — an EXPECTED state, not a failure. Surfaces branch
+ * on the class identity via isNotConnected(), never on the message prose: if
+ * the wording ever changes, the calm offline states must not silently revert
+ * to red error lines.
+ */
+export class NotConnected extends Error {
+  constructor() {
+    super("not connected");
+    this.name = "NotConnected";
+  }
+}
+
+export function isNotConnected(err: unknown): boolean {
+  return err instanceof NotConnected;
+}
+
 const FALLBACK: TFn = (k, v) => {
   const en: Record<string, string> = {
     errAgentCrashed: "The agent crashed mid-answer — it usually comes back on retry.",
