@@ -1495,6 +1495,10 @@ on 150/300ms ease-out tokens (fully disabled under `prefers-reduced-motion`,
 including programmatic scrolls) and a six-step dark-gray ladder where every
 step has one role — canvas, chrome, raised surface, hover, resting and active
 borders. All color/type/spacing/motion literals live in `apps/web/src/tokens.css`.
+Pane headers share one title class (P3-384): every pane (Artifacts, Browser,
+Files, Mission Control, Settings, Send to agent, QR scanner) renders its `h1`
+via `.pane-title` on the `--font-size-md` token step — no per-view inline
+`fontSize` overrides left to drift, mirroring the `.brand-wordmark` discipline.
 
 **Benchmark conversation list & ⌘K (P3-084)**: the sidebar groups conversations
 into **Today / Yesterday / Earlier** (bounded by local calendar midnights, so

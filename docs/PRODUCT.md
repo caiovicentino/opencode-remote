@@ -63,6 +63,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo
   display da escala de tokens (`--font-size-xl`) — em vez de estilo inline a
   1rem (tamanho de corpo)
+- Títulos de pane na escala tipográfica (P3-384): todo header de pane
+  (Artifacts, Browser, Files, Mission Control, Ajustes, Send to agent,
+  scanner de QR) usa a classe compartilhada `.pane-title` — passo md dos
+  tokens, peso 600, ellipsis em título longo — sem override inline de
+  `fontSize`, então os headers não driftam mais entre si
 - Glifo da marca em todas as telas de primeiro contato (P3-373): o glifo de
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas

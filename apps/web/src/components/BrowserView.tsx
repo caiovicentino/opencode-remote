@@ -193,7 +193,7 @@ function WebViewPane({
     <div className="browser-pane">
       <header className="browser-header">
         <button onClick={onBack} aria-label="Voltar ao chat">←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Browser</h1>
+        <h1 className="pane-title">Browser</h1>
         {onToggleMaximize && (
           <button
             onClick={onToggleMaximize}
@@ -336,7 +336,7 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
     <div className="screen">
       <header>
         <button onClick={onBack}>←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Browser</h1>
+        <h1 className="pane-title">Browser</h1>
         <button onClick={() => setShowText((v) => !v)} aria-label="Toggle text">
           ≡
         </button>

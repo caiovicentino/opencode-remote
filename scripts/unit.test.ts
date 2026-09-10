@@ -11616,6 +11616,37 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-384: pane titles share one token-scale class, no inline font sizes ----
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const tokens = read("tokens.css");
+  const titleAt = css.indexOf(".pane-title");
+  const title = css.slice(titleAt, css.indexOf("}", titleAt));
+  check(
+    "P3-384: .pane-title sizes from the type-scale tokens",
+    titleAt >= 0 && title.includes("font-size: var(--font-size-md)") && tokens.includes("--font-size-md:"),
+  );
+  // Every pane header h1 carries the shared class — the per-view inline
+  // fontSize overrides (1rem here, 0.9rem on the scanner) are gone.
+  for (const view of [
+    "ArtifactsView.tsx",
+    "BrowserView.tsx",
+    "MissionControlView.tsx",
+    "FilesView.tsx",
+    "SettingsView.tsx",
+    "SendToAgentView.tsx",
+    "QrScanner.tsx",
+  ]) {
+    const src = read(join("components", view));
+    const h1s = src.match(/<h1[^>]*>/g) ?? [];
+    check(
+      `P3-384: ${view} pane h1 uses .pane-title (no inline fontSize)`,
+      h1s.length > 0 && h1s.every((h) => h.includes('className="pane-title"') && !h.includes("style=")),
+    );
+  }
+}
+
 // --- P3-373: the brand glyph leads every first-contact header ----------------
 {
   const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");

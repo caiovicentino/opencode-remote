@@ -75,7 +75,7 @@ export default function SendToAgentView({
     <div className="screen">
       <header>
         <button onClick={onBack}>←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Send to agent</h1>
+        <h1 className="pane-title">Send to agent</h1>
       </header>
       <div className="list">
         <div className="card">
