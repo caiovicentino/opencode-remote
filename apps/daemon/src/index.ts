@@ -68,9 +68,9 @@ import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whispe
 import { sttVerdict } from "./voicecap.js";
 import { ttsVerdict } from "./ttscap.js";
 import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
-import { modelRevalidatePlan, parseModelReadinessKnobs } from "./modelrevalidate.js";
 import { MIN_OPENCODE_VERSION, versionVerdict, type OpencodeVersionVerdict } from "./opencodever.js";
 import { parseReadinessKnobs, readinessRefreshPlan } from "./readiness.js";
+import { modelRevalidatePlan, parseModelReadinessKnobs } from "./modelrevalidate.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
@@ -530,6 +530,63 @@ function modelStatus(): { available: boolean; state: string; message: string } {
   return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
 }
 
+// P3-397: lazy model re-observation knobs — same fail-closed contract as the
+// shared readiness knobs (main() exits when parseModelReadinessKnobs
+// reported any problem; an invalid OCR_MODEL_READINESS_* never falls back to
+// the default silently).
+const modelReadinessKnobs = parseModelReadinessKnobs(process.env);
+
+// P3-397: instant the current model verdict was established (0 = epoch =
+// never observed — exactly the frozen session this exists to unfreeze) and
+// the single-flight guard so concurrent status reads never stampede.
+let modelObservedAt = 0;
+let modelObserveInFlight = false;
+
+/**
+ * P3-397: lazy re-observation of the ALREADY-EXISTING opencode /provider
+ * catalog, right before the model verdict is served. Runs only when the
+ * current verdict is NOT ready, at most once per
+ * OCR_MODEL_READINESS_MIN_MS (documented ceiling, kill switch
+ * OCR_MODEL_READINESS_DISABLE) — no new route, no new port, no new listener,
+ * no periodic timer. A failed observation never throws and never accuses:
+ * it degrades to the neutral unknown with a single log line carrying a
+ * coarse reason — never a path, never a secret.
+ */
+async function maybeReobserveModelCatalog(): Promise<void> {
+  if (process.env.OCR_MODEL_BLOCK === "1") return; // the hatch keeps its forced verdict
+  if (modelObserveInFlight) return; // never duplicate an observation in flight
+  const plan = modelRevalidatePlan(
+    modelStatus().state === "ready",
+    modelObservedAt,
+    Date.now(),
+    modelReadinessKnobs.minIntervalMs,
+  );
+  if (modelReadinessKnobs.disabled || plan.action !== "observe") return;
+  modelObserveInFlight = true;
+  try {
+    // round 2 review: the observation rides the shared catalog fetch — the
+    // forwarded credential and the upstream probe timeout included — so an
+    // authed server is never misread as "no model" and a hung upstream can
+    // never stall this polled route.
+    const got = await fetchProviderCatalog();
+    if (got.ok) {
+      noteProviderCatalog(got.catalog, true);
+    } else {
+      noteProviderCatalog(null, false);
+      log("warn", "model re-observation failed — advertising unknown", { reason: got.reason });
+    }
+  } catch {
+    // belt-and-braces: the observation itself must never take the route down
+    noteProviderCatalog(null, false);
+    log("warn", "model re-observation failed — advertising unknown", { reason: "provider unreachable" });
+  } finally {
+    modelObserveInFlight = false;
+    // a failed observation consumes the budget too: at most one attempt per
+    // interval, whatever the outcome
+    modelObservedAt = Date.now();
+  }
+}
+
 // P2-231: document→PDF conversion readiness, probed EXACTLY ONCE at boot on
 // the same readiness hook as whisper/edge-tts — never per request, never
 // periodic (the single probe call site lives inside main()). The verdict is
@@ -666,6 +723,26 @@ function stageChunk(
 const authHeader = OPENCODE_PASS
   ? `Basic ${Buffer.from(`${OPENCODE_USER}:${OPENCODE_PASS}`).toString("base64")}`
   : undefined;
+
+/** The one upstream read of the ALREADY-EXISTING opencode /provider catalog:
+ * forwards the same credential every other upstream fetch sends (a 401ing
+ * observation must never freeze the model verdict) and carries the shared
+ * upstream probe timeout, so a hung server cannot stall the caller (the
+ * model status route is polled). Never throws — every failure comes back as
+ * { ok: false } with a coarse reason (status code or fixed string — never a
+ * path, never a secret). */
+async function fetchProviderCatalog(): Promise<{ ok: true; catalog: unknown } | { ok: false; reason: string }> {
+  try {
+    const res = await fetch(new URL("/provider", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+      signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return { ok: false, reason: `provider status ${res.status}` };
+    return { ok: true, catalog: await res.json() };
+  } catch {
+    return { ok: false, reason: "provider unreachable" };
+  }
+}
 
 interface NotifySettings {
   permission: boolean;
@@ -858,11 +935,11 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
         window = providerWindows.lookup(providerID, modelID);
         if (!window) {
           try {
-            const pres = await fetch(new URL("/provider", OPENCODE_URL), {
-              headers: authHeader ? { authorization: authHeader } : {},
-            });
-            if (pres.ok) {
-              const catalog = (await pres.json()) as Parameters<typeof providerWindows.refresh>[0];
+            // P3-397 round 2: the same shared, auth-forwarded, timeout-capped
+            // catalog fetch the lazy model re-observation rides.
+            const got = await fetchProviderCatalog();
+            if (got.ok) {
+              const catalog = got.catalog as Parameters<typeof providerWindows.refresh>[0];
               providerWindows.refresh(catalog);
               // P2-210: same catalog, already fetched — record the readiness
               // summary without a new request or a freshness-policy change.
@@ -1339,14 +1416,13 @@ end tell`;
   }
   // P2-210: model-readiness status, mirroring the stt-status route shape
   // (available boolean + verdict state and actionable pt-BR message). Same
-  // auth, same tunnel — no new network surface. Reads ONLY the already-cached
-  // catalog summary (see noteProviderCatalog); it never fires its own fetch
-  // outside the P3-397 re-observation gate below.
+  // auth, same tunnel — no new network surface. P3-397: the cached summary
+  // is re-observed lazily right before the verdict is answered (at most once
+  // per OCR_MODEL_READINESS_MIN_MS, gated inside the helper) — the route
+  // itself still fires no fetch of its own outside that ceiling gate, so a
+  // credential configured after the last catalog fetch is picked up without
+  // a daemon restart.
   if (req.path === "/__ocr/model/status" && req.method === "GET") {
-    // P3-397: lazy re-observation before the verdict is served — a credential
-    // configured after boot is picked up here without a restart (at most once
-    // per OCR_MODEL_READINESS_MIN_MS, honoring OCR_MODEL_READINESS_DISABLE,
-    // no new periodic timer). The route still answers from the cached summary.
     await maybeReobserveModelCatalog();
     return { id: req.id, status: 200, body: modelStatus() };
   }
@@ -2435,56 +2511,6 @@ async function maybeReprobeBrowse(): Promise<void> {
     st.probedAt = Date.now();
     // one line per re-done probe: capability name + resulting state only
     log("info", "readiness re-probe", { capability: "browse", state: browseCap.state });
-  }
-}
-
-// P3-397: model-catalog revalidation — knobs parsed fail-closed (main() exits
-// on a bad value) plus the same per-capability bookkeeping the P2-250
-// readiness state keeps: when the catalog was last observed and whether an
-// observation is in flight (never duplicated).
-const modelReadinessKnobs = parseModelReadinessKnobs(process.env);
-let modelObservedAt = 0;
-let modelObservationInFlight = false;
-
-/** Lazy model re-observation: fired ONLY from the model status route when the
- * current verdict is not ready. Re-fetches the SAME /provider catalog the
- * daemon already fetches elsewhere (the context ruler's on-miss refresh) and
- * records it through the existing noteProviderCatalog path — no new route, no
- * new port, no new listener, no periodic timer. Never throws, never
- * duplicates an observation in flight, and a failed observation never worsens
- * the verdict beyond the neutral unknown (one log line, no path, no secret).
- * The documented OCR_MODEL_BLOCK=1 hatch keeps its forced verdict. */
-async function maybeReobserveModelCatalog(): Promise<void> {
-  if (process.env.OCR_MODEL_BLOCK === "1") return;
-  const plan = modelRevalidatePlan(
-    modelStatus().state,
-    modelObservedAt,
-    Date.now(),
-    modelReadinessKnobs.minIntervalMs,
-  );
-  if (modelReadinessKnobs.disabled || plan.action !== "observe" || modelObservationInFlight) return;
-  modelObservationInFlight = true;
-  try {
-    const pres = await fetch(new URL("/provider", OPENCODE_URL), {
-      headers: authHeader ? { authorization: authHeader } : {},
-    });
-    if (pres.ok) {
-      const catalog = (await pres.json()) as Parameters<typeof providerWindows.refresh>[0];
-      providerWindows.refresh(catalog);
-      noteProviderCatalog(catalog, true);
-      log("info", "readiness re-probe", { capability: "model-catalog", state: modelStatus().state });
-    } else {
-      noteProviderCatalog(null, false);
-      log("warn", "model catalog re-observation failed — verdict unknown", { reason: `upstream ${pres.status}` });
-    }
-  } catch {
-    // a failed observation teaches nothing new — degrade to the neutral
-    // unknown (never a more accusatory verdict), one line, nothing sensitive
-    noteProviderCatalog(null, false);
-    log("warn", "model catalog re-observation failed — verdict unknown", { reason: "fetch error" });
-  } finally {
-    modelObservationInFlight = false;
-    modelObservedAt = Date.now();
   }
 }
 
@@ -4557,8 +4583,8 @@ async function main() {
     process.exit(1);
     return;
   }
-  // P3-397: the model-catalog revalidation knobs follow the same fail-closed
-  // contract — an invalid OCR_MODEL_READINESS_* never starts a listener.
+  // P3-397: same fail-closed contract for the model re-observation knobs —
+  // an invalid OCR_MODEL_READINESS_* never falls back to the default silently.
   if (modelReadinessKnobs.problems.length > 0) {
     for (const problem of modelReadinessKnobs.problems) log("error", problem);
     process.exit(1);

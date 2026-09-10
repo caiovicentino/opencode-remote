@@ -204,24 +204,27 @@ longer claims all-clear while it cannot speak, and installing edge-tts
 afterwards is picked up without a restart. The documented `OCR_TTS_BLOCK=1`
 hatch keeps forcing the missing-tool verdict for these fields too.
 
-### `/__ocr/model/status` — model-readiness revalidation (P3-397)
+### `/__ocr/model/status` — lazy model-readiness revalidation (P3-397)
 
 `GET /__ocr/model/status` keeps its `{ available, state, message }` shape
-exactly as it was, but the verdict is no longer frozen at whatever the
-already-happening fetches (the context ruler's on-miss refresh and the
-`/provider` passthrough) last observed: when the current verdict is not
-`ready`, the route re-observes the same `/provider` catalog lazily, right
-before serving the answer — at most once per
-`OCR_MODEL_READINESS_MIN_MS` (whole milliseconds, default 60000, ceiling
-3600000; invalid values fail the boot, fail-closed). A verdict that already
-says `ready` is never re-observed, an observation in flight is never
-duplicated, and there is no new route, port, listener or periodic timer.
-Set `OCR_MODEL_READINESS_DISABLE=off|0|false` to turn the revalidation off
+exactly as it was. The verdict is no longer frozen at the last catalog fetch
+that already happened (the context ruler's on-miss refresh and the /provider
+passthrough): right before the route answers and ONLY while the current
+verdict is not `ready`, the daemon re-observes the already-existing opencode
+`/provider` catalog — with the same forwarded credential and the same upstream
+probe timeout every other upstream read uses — at most once per
+`OCR_MODEL_READINESS_MIN_MS` (whole
+milliseconds, default 60000, ceiling 3600000; invalid values fail the boot,
+fail-closed). A verdict that already says `ready` is never re-observed and a
+re-observation in flight is never duplicated. Set
+`OCR_MODEL_READINESS_DISABLE=off|0|false` to turn model revalidation off
 entirely; `on|1|true` is the documented enable value and anything else fails
-the boot. A failed observation never worsens the verdict beyond the neutral
-`unknown` and logs exactly one line with the reason — never a path or a
-secret. The documented `OCR_MODEL_BLOCK=1` hatch keeps forcing the
-no-provider verdict (the forced verdict is never re-observed away).
+the boot. A re-observation that fails never throws and never accuses: it
+degrades to the neutral `unknown` with a single log line carrying a coarse
+reason — never a path, never a secret. No new route, no new port, no new
+listener, no periodic timer, and the route itself fires no fetch outside the
+ceiling gate. The documented `OCR_MODEL_BLOCK=1` hatch keeps its forced
+no-provider verdict (never re-observed away).
 
 ### `/__ocr/settings` — machine-readiness mirror (P2-288)
 

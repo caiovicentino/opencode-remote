@@ -49,8 +49,11 @@ const POSIX_PATH_TOKEN = /(?:^|[\s(])(?:\/|~\/)[\w.@-]+(?:\/[\w.@-]+)+/g;
 /** A Windows drive path (C:\...\b) with at least one segment. */
 const WIN_PATH_TOKEN = /\b[A-Za-z]:\\(?:[\w.@-]+\\?)+/g;
 
-/** Control characters except \n (tab is normalized to a space below). */
-const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+/** Control characters except \n (tab is normalized to a space below). CR
+ * (\u000D) is included: it survives the single-line hatch log composed
+ * downstream (only \n is folded there), so a bare carriage return could
+ * forge a new line in desktop.log. */
+const CONTROL_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
 
 /**
  * Sanitize raw feed release notes into a safe native-dialog excerpt. See the

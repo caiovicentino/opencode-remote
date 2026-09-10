@@ -1,42 +1,50 @@
-// P3-397: lazy model-catalog revalidation plan. Pure module — no node:fs, no
-// network, no timer, no I/O of any kind, because index.ts runs main() on
-// import and unit tests must never boot a daemon (same hygiene as
-// modelready.ts / readiness.ts, lessons P2-149 and P2-228).
+// P3-397: lazy model-readiness revalidation planner. Pure module — no file
+// system, no network, no timer imports on purpose, because index.ts runs
+// main() on import and unit tests must never boot a daemon (same hygiene as
+// modelready.ts / readiness.ts).
 //
-// Why this exists: the model-readiness verdict (modelready.ts) is fed ONLY by
-// fetches that already happen — the context ruler's on-miss refresh and the
-// /provider passthrough. In a session where nobody opens the catalog the
-// verdict freezes at no-provider/unknown even after a credential is
-// configured, and every re-check keeps reading a stale truth. The fix is the
-// same lazy design P2-250 gave the machine capabilities: the status route
-// re-observes the catalog at the point of use, at most once per interval,
-// guided by this module. No new route, no new port, no new listener and no
-// periodic timer.
+// Why this exists: the model verdict (modelready.ts) is fed ONLY by fetches
+// that already happen — the context ruler's on-miss refresh and the /provider
+// passthrough. In a session where nobody opens the model selector (and no
+// context-gauge miss fires) the verdict freezes at no-provider/unknown even
+// after a credential is configured, and every re-check in the app keeps
+// reading a stale truth. The fix mirrors the P2-250 lazy design: index.ts
+// re-observes the ALREADY-EXISTING opencode /provider catalog at the point of
+// use (right before the model status route answers), at most once per
+// interval, guided by this module. No new route, no new port, no new
+// listener, no periodic timer.
 //
 // Decision rules — modelRevalidatePlan evaluates them in THIS order and the
 // order is part of the contract:
 //   1. a verdict that already says ready is never re-observed — the happy
-//      path (every status poll of a working machine) costs zero;
-//   2. missing, negative or non-finite input is fail-closed: the cached
-//      verdict is reused, because acting on a reading the plan cannot trust
-//      (a broken clock, a zero ceiling) must never turn into a fetch storm;
-//   3. an observation strictly younger than the minimum interval is reused —
-//      at most one observation per interval is the whole budget (exactly at
-//      the interval is not younger anymore);
+//      path (every status read on a working machine) must cost zero;
+//   2. invalid input is fail-closed: a missing (undefined) verdict, a
+//      negative or non-finite instant and a negative, zero or non-finite
+//      interval all reuse the cache — a broken clock reading or a broken
+//      knob never causes an observation, and a zero budget can never
+//      degenerate into a per-request fetch storm;
+//   3. an observation strictly newer than the interval is reused;
 //   4. everything left is stale and becomes an observation.
-// A lastObservedAt in the future is treated as now (age clamped to zero,
-// never negative).
+// A future observedAt (clock moved back) is treated as now: age clamps to
+// zero, never negative. observedAt 0 (epoch = never observed) is VALID and
+// always stale — the very first route call observes, which is exactly the
+// frozen-verdict session this module exists to unfreeze.
 //
-// Knob rationale (same choices as the P2-250 knobs in readiness.ts):
-//   - default interval 60 000 ms and documented ceiling 3 600 000 ms (one
-//     hour); invalid values are problems, never silently swallowed;
-//   - OCR_MODEL_READINESS_DISABLE=off|0|false turns the revalidation off
-//     entirely; on|1|true (any case) is the documented enable value and
-//     anything else is a problem (fail-closed, never a silent enable);
+// Knob rationale (mirrors readiness.ts, P2-250):
+//   - default interval 60 000 ms: configuring a credential takes minutes, so
+//     a one-minute window is imperceptible next to the step the user just
+//     performed, while the cost (one /provider read to the local opencode
+//     server) is negligible at that cadence;
+//   - ceiling 3 600 000 ms (one hour): beyond it "revalidation" stops
+//     meaning anything to a lay user, so larger values fail closed;
+//   - OCR_MODEL_READINESS_DISABLE=off|0|false (any case) turns revalidation
+//     off entirely — the documented kill switch; on|1|true (any case) is the
+//     documented enable value; anything else is a problem (fail-closed,
+//     never a silent enable/disable);
 //   - blank or missing values keep the documented default with no problem —
 //     the ONLY case that does.
 
-/** Default minimum interval between two catalog observations. */
+/** Default minimum interval between two model-catalog observations. */
 export const MODEL_READINESS_DEFAULT_INTERVAL_MS = 60_000;
 
 /** Documented operator override ceiling (fail-closed beyond it): one hour. */
@@ -45,16 +53,12 @@ export const MODEL_READINESS_INTERVAL_CEILING_MS = 3_600_000;
 /** Env var that sets the minimum re-observation interval, in whole ms. */
 export const MODEL_READINESS_INTERVAL_ENV = "OCR_MODEL_READINESS_MIN_MS";
 
-/** Env var that turns the model-catalog revalidation off entirely. */
+/** Env var that turns model-readiness revalidation off entirely. */
 export const MODEL_READINESS_DISABLE_ENV = "OCR_MODEL_READINESS_DISABLE";
 
-export type ModelRevalidateAction = "observe" | "reuse";
+export type ModelRevalidateAction = "observe" | "cache";
 
-export type ModelRevalidateReason =
-  | "verdict-ready"
-  | "invalid-input"
-  | "within-ceiling"
-  | "ceiling-elapsed";
+export type ModelRevalidateReason = "verdict-ready" | "invalid-input" | "fresh" | "stale";
 
 export interface ModelRevalidatePlan {
   action: ModelRevalidateAction;
@@ -62,44 +66,44 @@ export interface ModelRevalidatePlan {
 }
 
 /**
- * Decide whether the cached model-readiness verdict should be re-observed.
- * `currentState` is the current verdict state (a `ModelReadyState` string);
- * `lastObservedAt` the instant the cached verdict was established, `now` the
- * current instant, `minIntervalMs` the minimum interval between observations.
- * See the module header for the rule order.
+ * Decide whether the cached model verdict should be re-observed. `currentReady`
+ * maps the cached verdict to the single question that matters — does the
+ * machine currently advertise a usable model (true) or not (false).
+ * `observedAt` is the instant the cached verdict was established (0 = never),
+ * `now` the current instant, `minIntervalMs` the minimum interval between two
+ * observations. See the module header for the rule order.
  */
 export function modelRevalidatePlan(
-  currentState: unknown,
-  lastObservedAt: number,
+  currentReady: boolean,
+  observedAt: number,
   now: number,
   minIntervalMs: number,
 ): ModelRevalidatePlan {
-  // rule 1 — a working verdict never re-observes (happy path costs zero)
-  if (currentState === "ready") return { action: "reuse", reason: "verdict-ready" };
-  // guard — fail-closed on missing, negative or non-finite input
+  // rule 1 — a working machine is never re-observed (happy path costs zero)
+  if (currentReady === true) return { action: "cache", reason: "verdict-ready" };
+  // rule 2 — missing/negative/non-finite input is fail-closed: never observe
   if (
-    typeof currentState !== "string" ||
-    currentState === "" ||
-    !Number.isFinite(lastObservedAt) ||
+    typeof currentReady !== "boolean" ||
+    !Number.isFinite(observedAt) ||
     !Number.isFinite(now) ||
     !Number.isFinite(minIntervalMs) ||
-    lastObservedAt < 0 ||
+    observedAt < 0 ||
     now < 0 ||
     minIntervalMs <= 0
   ) {
-    return { action: "reuse", reason: "invalid-input" };
+    return { action: "cache", reason: "invalid-input" };
   }
-  // a future instant is treated as now: age clamps to zero, never negative
-  const age = Math.max(0, now - lastObservedAt);
-  // rule 3 — strictly younger than the interval is reused (exactly at the
-  // interval is not younger anymore)
-  if (age < minIntervalMs) return { action: "reuse", reason: "within-ceiling" };
+  // a future observedAt is treated as now: age clamps to zero, never negative
+  const age = Math.max(0, now - observedAt);
+  // rule 3 — strictly newer than the interval is reused (exactly at the
+  // interval is not newer anymore)
+  if (age < minIntervalMs) return { action: "cache", reason: "fresh" };
   // rule 4 — what remains is stale
-  return { action: "observe", reason: "ceiling-elapsed" };
+  return { action: "observe", reason: "stale" };
 }
 
 export interface ModelReadinessKnobs {
-  /** Minimum age a cached verdict must reach before an observation is due. */
+  /** Minimum age a cached verdict must reach before an observation is planned. */
   minIntervalMs: number;
   /** True when OCR_MODEL_READINESS_DISABLE holds a documented off value. */
   disabled: boolean;
@@ -108,10 +112,10 @@ export interface ModelReadinessKnobs {
 }
 
 /**
- * One integer env var resolved fail-closed: missing or blank keeps the
- * documented default with no problem — the ONLY case that does. Non-numeric,
- * zero, negative, fractional and above-ceiling values all push a problem
- * into `problems` and fall back to the default.
+ * One integer env var resolved fail-closed (same contract as readiness.ts):
+ * missing or blank keeps the documented default with no problem — the ONLY
+ * case that does. Non-numeric, zero, negative, fractional and above-ceiling
+ * values all push a problem into `problems` and fall back to the default.
  */
 function positiveInt(
   env: Record<string, string | undefined>,
@@ -152,12 +156,12 @@ function positiveInt(
 /**
  * Resolve the OCR_MODEL_READINESS_* environment into the re-observation
  * knobs. An empty environment reproduces the documented defaults. Every
- * variable is parsed independently and ALL problems are returned at once
- * (no short-circuit); with any problem present the caller must fail the boot
+ * variable is parsed independently and ALL problems are returned at once (no
+ * short-circuit); with any problem present the caller must fail the boot
  * closed instead of running with knobs the operator never asked for.
- * OCR_MODEL_READINESS_DISABLE=off|0|false disables the revalidation entirely;
- * on|1|true (any case) is the documented enable value and anything else is
- * a problem instead of a silent enable.
+ * OCR_MODEL_READINESS_DISABLE=off|0|false disables revalidation entirely;
+ * on|1|true (any case) is the documented enable value and anything else is a
+ * problem instead of a silent enable.
  */
 export function parseModelReadinessKnobs(env: Record<string, string | undefined>): ModelReadinessKnobs {
   const problems: string[] = [];
