@@ -121,6 +121,7 @@ export async function captureGateCorpus(
   taskId: string,
   reruns: Map<string, { ok: boolean; output: string }>,
   io: MetaPushIo = metaIo(ws),
+  base = "main",
 ): Promise<string[]> {
   // interpolation guard: taskId reaches a shell command below
   const id = /^[A-Za-z0-9]+-[A-Za-z0-9-]+$/.test(taskId) ? taskId : "unknown-task";
@@ -137,6 +138,9 @@ export async function captureGateCorpus(
   const landed = await landMetaCommit(ws, io, {
     files: ["apps/pilot/src/__fixtures__/gate-corpus"],
     message: `pilot(corpus): gate samples from ${id}`,
+    // P3-358: the landing re-bases on the pipeline base branch (foreign
+    // mission default branch), not a hardcoded main
+    base,
     // the corpus may legitimately grow 1-3 files per capture (one per evidence
     // command) — a prefix guard capped at that count and restricted to the
     // exact sample filenames appendCorpusSample writes

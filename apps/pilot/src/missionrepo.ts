@@ -54,3 +54,13 @@ export function detectDefaultBranch(io: RepoIo): DefaultBranch {
   if (fromShow) return { branch: fromShow, source: "remote-show" };
   return { branch: DEFAULT_BRANCH_FALLBACK, source: "fallback" };
 }
+
+/**
+ * P3-358: the base branch every pipeline read/write targets (`origin/<base>`):
+ * the detected default branch when it passes the branch charset, `main`
+ * otherwise. The single validator for base-branch values reaching shell
+ * commands — callers never interpolate a raw probe output.
+ */
+export function pipelineBaseBranch(branch: string | undefined | null): string {
+  return branch && validBranch(branch) ? branch : DEFAULT_BRANCH_FALLBACK;
+}

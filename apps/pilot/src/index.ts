@@ -13,7 +13,7 @@ import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDif
 import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, needsBacklogSkeleton, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
-import { detectDefaultBranch } from "./missionrepo";
+import { detectDefaultBranch, pipelineBaseBranch } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
@@ -121,8 +121,12 @@ async function main() {
   const missionKey = missionWorkspaceKey(activeMission);
   if (activeMission?.repoUrl && missionKey) {
     // foreign repo: its clone is the working repo for this run — slot
-    // worktrees derive from it and the queue is read from ITS origin/main
-    cfg.repo = ensureMissionRepo(activeMission.repoUrl, missionKey);
+    // worktrees derive from it and the queue is read from ITS default branch
+    // (P3-358: the origin/HEAD detection is the pipeline base branch — a
+    // master-default repo runs end to end, no hardcoded origin/main anywhere)
+    const missionRepo = ensureMissionRepo(activeMission.repoUrl, missionKey);
+    cfg.repo = missionRepo.dir;
+    cfg.baseBranch = pipelineBaseBranch(missionRepo.defaultBranch);
     foreignMission = true;
   }
   // slot worktrees live under pilot/ for this repo, under pilot/mission/<key>/
@@ -217,7 +221,7 @@ async function main() {
       // slot worktrees may be mid-pipeline on a task branch and are never
       // trusted for scheduling decisions
       exec("git fetch -q origin", { cwd: cfg.repo, allowFail: true });
-      const md = exec("git show origin/main:BACKLOG.md", { cwd: cfg.repo, allowFail: true });
+      const md = exec(`git show origin/${cfg.baseBranch ?? "main"}:BACKLOG.md`, { cwd: cfg.repo, allowFail: true });
       const queue = md.ok ? parseBacklog(md.output) : [];
       const busyAreas = new Set([...running.values()].map((r) => areaKey(r.task)));
       // budget-aware batch: freeSlots AND the remaining daily task budget
@@ -473,7 +477,7 @@ async function main() {
       // P2-058: the target is the newest gate-verified, non-quarantined merge
       // sha on origin/main — a direct push to main (bookkeeping or hostile) is
       // walked past and can never become a deploy target.
-      const target = latestDeployableSha(cfg.repo);
+      const target = latestDeployableSha(cfg.repo, cfg.baseBranch);
       if (prodSha && target && prodSha !== target) {
         log("info", "pending deploy: prod behind a gate-verified merge", { prod: prodSha.slice(0, 7), target: target.slice(0, 7) });
         const dep = await deploy(cfg, target, undefined, { onAttempt: countDeployAttempt });
@@ -508,21 +512,21 @@ async function main() {
     // queue read straight from origin/main: slot worktrees may be mid-pipeline
     // on a task branch and are never trusted for scheduling decisions
     exec("git fetch -q origin", { cwd: cfg.repo, allowFail: true });
-    const md = exec("git show origin/main:BACKLOG.md", { cwd: cfg.repo, allowFail: true });
+    const md = exec(`git show origin/${cfg.baseBranch ?? "main"}:BACKLOG.md`, { cwd: cfg.repo, allowFail: true });
     const queue = md.ok ? parseBacklog(md.output) : [];
 
     // aux agents share slot 1's worktree — only run when every slot is idle,
     // synced to main so their BACKLOG edits land on the right branch
     if (running.size === 0) {
       const aux = slotCfg.get(1)!;
-      syncWorkspace(aux.workspace);
+      syncWorkspace(aux.workspace, aux.baseBranch);
       writeSandboxConfig(aux.workspace); // headless runs abort without sandbox perms
       // P1-037: a refill whose push failed is persisted outside the worktree
       // and re-landed here — the sync reset above must never eat drafted tasks.
       const pendingFile = defaultPendingRefillFile(stateRoot);
       const pending = readPendingRefill(pendingFile);
       if (pending) {
-        const reland = await relandPendingRefill(aux.workspace, pendingFile, auxPushIo(aux.workspace), { seedSkeleton: foreignMission });
+        const reland = await relandPendingRefill(aux.workspace, pendingFile, auxPushIo(aux.workspace), { seedSkeleton: foreignMission, baseBranch: aux.baseBranch });
         log("info", "pending refill reland", { result: reland, lines: pending.lines.length });
         emit("phase", { task: "strategist", phase: "refill", ok: reland === "pushed" || reland === "empty", detail: relandDetail(reland, pending.lines.length) });
         if (reland !== "failed") continue; // backlog changed or snapshot is stale — re-read fresh
@@ -536,7 +540,7 @@ async function main() {
       }
       const today = nowLocalISO().slice(0, 10);
       if (state.researchLast !== today) {
-        await runResearcher(aux, state, activeMission?.prompt);
+        await runResearcher(aux, state, activeMission?.prompt, foreignMission);
         saveState(state);
       }
     }
@@ -751,7 +755,7 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });
     return;
   }
-  const target = latestDeployableSha(cfg.repo);
+  const target = latestDeployableSha(cfg.repo, cfg.baseBranch);
   if (!target) {
     log("warn", "no gate-verified merge sha on origin/main — deploy skipped", { task: task.id, sha: sha.slice(0, 7) });
     return;
@@ -983,7 +987,8 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
     const message = `pilot(strategist): queue refill ${nowLocalISO().slice(11, 16)}`;
     // foreign mission: a target repo without a pilot-format BACKLOG.md gets the
     // skeleton seeded in the apply step and landed inside this same refill PR
-    const result = await appendCommitAndPush(cfg.workspace, lines, message, auxPushIo(cfg.workspace), 3, { seedSkeleton: foreignMission });
+    // (P3-358: the landing targets the repo's actual default branch)
+    const result = await appendCommitAndPush(cfg.workspace, lines, message, auxPushIo(cfg.workspace), 3, { seedSkeleton: foreignMission, baseBranch: cfg.baseBranch });
     if (result === "pushed") {
       log("info", "strategist refilled queue", { lines: lines.length });
       emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${lines.length} lines)` });
@@ -1023,7 +1028,7 @@ async function tripCircuitBreaker(cfg: PilotConfig, st: PilotState, task: Task, 
 async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attempts: number, detail: string, notify: boolean) {
   if (!TASK_ID_RE.test(task.id)) return;
   try {
-    syncWorkspace(cfg.workspace);
+    syncWorkspace(cfg.workspace, cfg.baseBranch);
   } catch {
     return; // no clean main reachable from this worktree — retry next cycle
   }
@@ -1032,6 +1037,7 @@ async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attemp
     files: ["BACKLOG.md"],
     message: `pilot(${task.id}): block after ${attempts} failed attempts`,
     guardFile: "BACKLOG.md",
+    base: cfg.baseBranch,
     // R6: "already blocked" is the desired state present (a queued auto-merge
     // from a previous cycle landed between the retries) — the landing must
     // converge as success so the attempts counter is cleared and the P2-031
@@ -1107,8 +1113,10 @@ function missionDetail(spec: MissionSpec): string {
  * production checkout (ensureSlotWorkspace), so the whole pipeline — builders,
  * reviewers, judge — runs against the target repo. The URL was validated by
  * the mission parser (GitHub https shape, safe charset) and is shell-quoted.
+ * Returns the clone dir AND the remote's default branch — since P3-358 it is
+ * the pipeline base branch (`origin/<base>` everywhere), not just a pin source.
  */
-function ensureMissionRepo(repoUrl: string, key: string): string {
+function ensureMissionRepo(repoUrl: string, key: string): { dir: string; defaultBranch: string } {
   const dir = join(homedir(), ".opencode-remote", "pilot", "mission", key, "repo");
   if (!existsSync(join(dir, ".git"))) {
     mkdirSync(dirname(dir), { recursive: true });
@@ -1131,22 +1139,24 @@ function ensureMissionRepo(repoUrl: string, key: string): string {
     log("error", "mission repo: cannot pin main to the default branch", { repoUrl, defaultBranch: def.branch, source: def.source, tail: pin.output.slice(-200) });
     emit("phase", { task: "mission", phase: "default-branch", ok: false, detail: `cannot pin main to origin/${def.branch}` });
   } else if (def.branch !== "main") {
-    // the rest of the pipeline (queue read, task/meta PRs) still targets
-    // origin/main — say so loudly instead of failing piecemeal later
-    log("warn", "mission repo default branch is not main — pipeline base branch is still main (follow-up: parameterize)", { repoUrl, defaultBranch: def.branch, source: def.source });
-    emit("phase", { task: "mission", phase: "default-branch", ok: false, detail: `default branch is ${def.branch}; the pipeline expects main` });
+    // P3-358: no longer a limitation — the detected branch IS the pipeline
+    // base branch (cfg.baseBranch threads it through queue reads, task
+    // branches, meta landings and merges). Logged loudly so the shape stays
+    // visible in the boot record.
+    log("info", "mission repo default branch pinned — pipeline base branch parameterized", { repoUrl, defaultBranch: def.branch, source: def.source });
+    emit("phase", { task: "mission", phase: "default-branch", ok: true, detail: `pipeline base branch: ${def.branch} (origin/HEAD)` });
   } else {
     log("info", "mission repo default branch", { repoUrl, defaultBranch: def.branch, source: def.source });
   }
   // A target repo without a pilot-format BACKLOG.md is normal on first
-  // contact: the strategist seeds the skeleton locally (never pushed by
-  // itself) and lands it inside its first refill PR.
+  // contact: the researcher/strategist seed the skeleton locally (never pushed
+  // by themselves) and land it inside their first guarded PR.
   const md = exec(`git show ${shq(`origin/${def.branch}`)}:BACKLOG.md`, { cwd: dir, allowFail: true });
   if (needsBacklogSkeleton(md.ok ? md.output : null)) {
-    log("info", "mission repo has no BACKLOG.md in the pilot format — the strategist's first refill seeds it (via PR)", { repoUrl });
-    emit("phase", { task: "mission", phase: "backlog", ok: true, detail: "no pilot-format BACKLOG.md yet — first refill PR seeds it" });
+    log("info", "mission repo has no BACKLOG.md in the pilot format — the first aux landing seeds it (via PR)", { repoUrl });
+    emit("phase", { task: "mission", phase: "backlog", ok: true, detail: "no pilot-format BACKLOG.md yet — first aux PR seeds it" });
   }
-  return dir;
+  return { dir, defaultBranch: def.branch };
 }
 
 /**
@@ -1180,7 +1190,9 @@ function ensureSlotWorkspace(base: PilotConfig, slot: number, root = join(homedi
       throw new Error(`slot workspace set-url failed (${ws}): ${setUrl.output.slice(-300)}`);
     }
     exec("git fetch -q origin", { cwd: ws, allowFail: true });
-    exec("git checkout -q -B main origin/main", { cwd: ws, allowFail: true });
+    // P3-358: pin the local main to the base branch's remote ref — a
+    // master-default mission repo has no origin/main on its origin
+    exec(`git checkout -q -B main origin/${base.baseBranch ?? "main"}`, { cwd: ws, allowFail: true });
     // fresh clone has no node_modules — the gate cannot run without deps
     const installCmd = existsSync(join(ws, "package-lock.json"))
       ? "npm ci --no-audit --no-fund --loglevel=error"
@@ -1195,11 +1207,13 @@ function ensureSlotWorkspace(base: PilotConfig, slot: number, root = join(homedi
   return { ...base, workspace: ws };
 }
 
-/** Worktree must mirror origin/main before any local BACKLOG edit or agent run. */
-function syncWorkspace(ws: string) {
+/** Worktree must mirror the base branch (origin/<base>; P3-358: the mission
+ * repo's default branch) before any local BACKLOG edit or agent run. The
+ * local branch stays `main` — ensureMissionRepo/ensureSlotWorkspace pin it. */
+function syncWorkspace(ws: string, base?: string) {
   exec("git fetch origin", { cwd: ws, allowFail: true });
   exec("git checkout -q main", { cwd: ws, allowFail: true });
-  exec("git reset -q --hard origin/main", { cwd: ws });
+  exec(`git reset -q --hard origin/${base ?? "main"}`, { cwd: ws });
   exec("git clean -qfd", { cwd: ws });
 }
 

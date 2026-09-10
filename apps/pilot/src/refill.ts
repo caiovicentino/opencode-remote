@@ -82,12 +82,14 @@ export async function relandPendingRefill(
   repoDir: string,
   file: string,
   io: AuxPushIo,
-  opts: { seedSkeleton?: boolean } = {},
+  opts: { seedSkeleton?: boolean; baseBranch?: string } = {},
 ): Promise<RelandResult> {
   const pending = readPendingRefill(file);
   if (!pending) return "none";
   io.exec("git fetch -q origin");
-  const md = io.exec("git show origin/main:BACKLOG.md");
+  // P3-358: the base branch is the repo's actual default branch (foreign
+  // missions may target a master-default repo)
+  const md = io.exec(`git show origin/${opts.baseBranch ?? "main"}:BACKLOG.md`);
   let remaining = pending.lines;
   if (md.ok) {
     const taken = new Set(md.output.match(/\((?:P\d|RT)-\d{3}\)/g) ?? []);

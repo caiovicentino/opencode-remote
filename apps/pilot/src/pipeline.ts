@@ -307,9 +307,10 @@ export function rebaseOutcome(r: { ok: boolean; output: string }): "clean" | "co
  * the fresh path skips the rebase since it is born at origin/main.
  * Precondition: `id` was already TASK_ID_RE-checked by the caller (it is
  * interpolated into shell commands here). Returns true when the workspace
- * resumed an existing preserved branch.
+ * resumed an existing preserved branch. P3-358: `base` is the pipeline base
+ * branch — the mission repo's default branch, `main` for this repo.
  */
-export function setupTaskBranch(ws: string, id: string, attempts: number | undefined): boolean {
+export function setupTaskBranch(ws: string, id: string, attempts: number | undefined, base = "main"): boolean {
   const branch = `pilot/${id}`;
   exec("git fetch origin", { cwd: ws });
   exec("git reset -q --hard", { cwd: ws }); // clear dirt on whatever branch we are on
@@ -342,7 +343,7 @@ export function setupTaskBranch(ws: string, id: string, attempts: number | undef
     // (P2-114 spirit): a conflicting rebase is aborted, the branch stays intact
     // at its preserved tip (P1-060: NEVER reset --hard over preserved history)
     // and the builder resolves the conflict next round.
-    const rebase = exec("git rebase origin/main", { cwd: ws, allowFail: true });
+    const rebase = exec(`git rebase origin/${base}`, { cwd: ws, allowFail: true });
     if (rebaseOutcome(rebase) === "conflict") {
       exec("git rebase --abort", { cwd: ws, allowFail: true });
       console.log(
@@ -357,7 +358,7 @@ export function setupTaskBranch(ws: string, id: string, attempts: number | undef
     console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "branch preserved from previous attempt", data: { task: id, attempt: (attempts ?? 0) + 1 } }));
   } else {
     exec(`git branch -qD ${branch} 2>/dev/null || true`, { cwd: ws, allowFail: true });
-    exec(`git checkout -q -B ${branch} origin/main`, { cwd: ws });
+    exec(`git checkout -q -B ${branch} origin/${base}`, { cwd: ws });
     clearCheckpoint(id); // no stale range diff may resurrect deleted work
   }
   return resumed;
@@ -488,9 +489,9 @@ export function resumeBlock(resume: AgentIds | null | undefined, failedRound?: n
  * a mandatory reconciliation block — it owns both sides' semantics; the gate
  * re-runs the whole battery after the merge commit.
  */
-export function mergeConflictBlock(mergeable: string | null | undefined, taskId: string): string {
+export function mergeConflictBlock(mergeable: string | null | undefined, taskId: string, base = "main"): string {
   if (mergeable !== "CONFLICTING") return "";
-  return `\nMERGE CONFLICT — RESOLVE FIRST: the open PR for branch pilot/${taskId} is CONFLICTING with main (main moved — newer tasks merged while this branch was in review). Before any new work this round: run \`git fetch origin && git merge origin/main\` on this branch and resolve EVERY conflict keeping BOTH sides — your branch's feature AND main's newer changes (different features on the same files; never delete main's side to silence a conflict). After resolving, run the local battery (typecheck + build + unit) and commit the merge.\n`;
+  return `\nMERGE CONFLICT — RESOLVE FIRST: the open PR for branch pilot/${taskId} is CONFLICTING with ${base} (${base} moved — newer tasks merged while this branch was in review). Before any new work this round: run \`git fetch origin && git merge origin/${base}\` on this branch and resolve EVERY conflict keeping BOTH sides — your branch's feature AND ${base}'s newer changes (different features on the same files; never delete ${base}'s side to silence a conflict). After resolving, run the local battery (typecheck + build + unit) and commit the merge.\n`;
 }
 
 export function builderPrompt(
@@ -761,11 +762,12 @@ export function parseScribeLessons(output: string): string[] {
  * non-fast-forward is expected and cheap to redo (the append is recomputed from
  * the freshly fetched file each time).
  */
-async function commitLessons(ws: string, id: string, lessons: string[]): Promise<boolean> {
+async function commitLessons(ws: string, id: string, lessons: string[], base = "main"): Promise<boolean> {
   const result = await landMetaCommit(ws, metaIo(ws), {
     files: ["docs/EXPERIENCE.md"],
     message: `pilot(scribe): lessons from ${id}`,
     guardFile: "docs/EXPERIENCE.md",
+    base,
     apply: () => {
       const added = appendLessonsToWorkspace(ws, lessons, id);
       if (!added) return { action: "noop" }; // all deduped away — nothing to commit
@@ -779,7 +781,7 @@ async function commitLessons(ws: string, id: string, lessons: string[]): Promise
 }
 
 async function runScribe(
-  cfg: Pick<PilotConfig, "missionModels">,
+  cfg: Pick<PilotConfig, "missionModels" | "baseBranch">,
   ws: string,
   t: Task,
   diff: string,
@@ -807,7 +809,7 @@ async function runScribe(
     logScribe(t.id, "no parsable lessons — nothing recorded");
     return;
   }
-  const ok = await commitLessons(ws, t.id, lessons);
+  const ok = await commitLessons(ws, t.id, lessons, cfg.baseBranch ?? "main");
   logScribe(t.id, `committed ${lessons.length} lesson(s) to docs/EXPERIENCE.md`, ok);
   emit("phase", { task: t.id, phase: "scribe-done", ok, detail: `${lessons.length} lesson(s)` });
 }
@@ -1165,14 +1167,14 @@ export function writeAuxSandboxConfig(ws: string) {
  * read-only planner created or modified (tracked, untracked or committed) is
  * gone before the builder ever runs.
  */
-export function commitSpec(ws: string, id: string): boolean {
-  return commitSpecWithReason(ws, id).ok;
+export function commitSpec(ws: string, id: string, base = "main"): boolean {
+  return commitSpecWithReason(ws, id, base).ok;
 }
 
 /** P2-115: commitSpec carrying the rejection reason for the guard alert. */
 export type CommitSpecResult = { ok: true } | { ok: false; reason: string };
 
-export function commitSpecWithReason(ws: string, id: string): CommitSpecResult {
+export function commitSpecWithReason(ws: string, id: string, base = "main"): CommitSpecResult {
   const path = specPathFor(id);
   if (!path) return { ok: false, reason: "invalid task id" };
   const abs = join(ws, path);
@@ -1185,9 +1187,9 @@ export function commitSpecWithReason(ws: string, id: string): CommitSpecResult {
   }
   const reject = specRejectReason(content);
   if (reject) return { ok: false, reason: reject };
-  // rewind branch AND worktree to origin/main; keep the specs/ dir (validated
+  // rewind branch AND worktree to the base branch; keep the specs/ dir (validated
   // content is rewritten from memory) and the agent sandbox config
-  exec("git reset -q --hard origin/main", { cwd: ws, allowFail: true });
+  exec(`git reset -q --hard origin/${base}`, { cwd: ws, allowFail: true });
   exec(`git clean -qfd -e specs -e opencode.json`, { cwd: ws, allowFail: true });
   try {
     mkdirSync(dirname(abs), { recursive: true });
@@ -1198,7 +1200,7 @@ export function commitSpecWithReason(ws: string, id: string): CommitSpecResult {
   exec(`git add ${path}`, { cwd: ws, allowFail: true });
   exec(`git commit -qm "pilot(${id}): planner spec"`, { cwd: ws, allowFail: true });
   // airtight: the branch diff must be exactly the spec file, nothing else
-  const names = exec("git diff --name-only origin/main...HEAD", { cwd: ws, allowFail: true });
+  const names = exec(`git diff --name-only origin/${base}...HEAD`, { cwd: ws, allowFail: true });
   if (!names.ok) return { ok: false, reason: `branch diff not spec-only: ${names.output.trim().slice(-80) || "git error"}` };
   return names.output.trim() === path
     ? { ok: true }
@@ -1238,9 +1240,9 @@ export function recoverSpecFromBranch(ws: string, id: string, path: string): str
   return null;
 }
 
-/** P1-060: true when the task branch carries commits beyond origin/main. */
-export function branchHasCommits(ws: string, branch: string): boolean {
-  const r = exec(`git log -q --oneline origin/main..${branch}`, { cwd: ws, allowFail: true });
+/** P1-060: true when the task branch carries commits beyond the base branch. */
+function branchHasCommits(ws: string, branch: string, base = "main"): boolean {
+  const r = exec(`git log -q --oneline origin/${base}..${branch}`, { cwd: ws, allowFail: true });
   return r.ok && r.output.trim().length > 0;
 }
 
@@ -1256,6 +1258,10 @@ export interface EvidenceResult {
 
 export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, sessions?: Set<string>): Promise<PipelineResult> {
   const ws = cfg.workspace;
+  // P3-358: the pipeline base branch — the mission repo's remote default
+  // branch (origin/HEAD detection), `main` for this repo. Every origin/<base>
+  // read below (branch setup, planner spec, merge checks) derives from it.
+  const base = cfg.baseBranch ?? "main";
   // central injection guard: t.id is interpolated into shell commands below
   if (!TASK_ID_RE.test(t.id)) return { ok: false, detail: `invalid task id: ${t.id}` };
   // P2-028: every opencode session this task spawns lands here (planner,
@@ -1274,7 +1280,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
   // mission v2 (hardening c): per-task counters are namespaced by mission key
   const stateKey = attemptsKey(cfg.missionKey, t.id);
   const attemptNo = state.taskAttempts[stateKey] ?? 0;
-  const resumed = setupTaskBranch(ws, t.id, attemptNo);
+  const resumed = setupTaskBranch(ws, t.id, attemptNo, base);
 
   // sandbox permissions: agents in the clone get full tool access (the real
   // security boundary is the gatekeeper + invariants + staged deploy, not this)
@@ -1336,7 +1342,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
   // Skipped when the task is already merged: the spec commit alone would
   // otherwise mask the empty-diff self-heal with a spec-only diff.
   let specFile: string | null = null;
-  if (needsPlanner(t.priority) && !taskMergedIn(ws, t.id)) {
+  if (needsPlanner(t.priority) && !taskMergedIn(ws, t.id, base)) {
     specFile = specPathFor(t.id);
     if (!specFile) return { ok: false, detail: `invalid task id for planner: ${t.id}` };
     // P1-060: a preserved branch already carries its committed spec — reuse it
@@ -1357,7 +1363,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
             writeFileSync(join(ws, specFile), recovered);
             specState = "recovered";
           } catch {}
-        } else if (branchHasCommits(ws, branch)) {
+        } else if (branchHasCommits(ws, branch, base)) {
           emit("phase", { task: t.id, phase: "planner-done", ok: false, detail: "spec unrecoverable on preserved branch" });
           return {
             ok: false,
@@ -1400,7 +1406,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         trackSession(out.sessionId);
         // deterministic validation + commit: the LLM is never trusted, only the
         // on-disk file (all six sections present) counts as a spec
-        const res = commitSpecWithReason(ws, t.id);
+        const res = commitSpecWithReason(ws, t.id, base);
         specOk = res.ok;
         if (specOk) {
           // P2-115: a passing guard clears the repeated-rejection streak
@@ -1512,7 +1518,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       `gh pr list --head pilot/${t.id} --state open --json mergeable --jq '.[0].mergeable'`,
       { cwd: ws, allowFail: true },
     );
-    const conflictBlock = mergeConflictBlock(prMergeable.output?.trim(), t.id);
+    const conflictBlock = mergeConflictBlock(prMergeable.output?.trim(), t.id, base);
     // mission v2: the mission may pin the builder model (verified against the
     // live catalog at dispatch; default model otherwise — never a crash)
     const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap) + conflictBlock, {
@@ -1596,8 +1602,8 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // empty-diff self-heal: builder ran after the task was already merged.
       // Refresh origin/main first so the merge check below isn't fooled by a
       // stale local ref (transient network failure → best-effort check).
-      exec("git fetch -q origin main", { cwd: ws, allowFail: true });
-      if (!taskMergedIn(ws, t.id)) return { ok: false, detail: "builder produced an empty diff", ...roundMeta() };
+      exec(`git fetch -q origin ${base}`, { cwd: ws, allowFail: true });
+      if (!taskMergedIn(ws, t.id, base)) return { ok: false, detail: "builder produced an empty diff", ...roundMeta() };
       emit("phase", { task: t.id, phase: "already-merged" });
       console.log(
         JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "empty diff but task already merged, self-healing", data: { task: t.id } }),
@@ -1612,6 +1618,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         files: ["BACKLOG.md"],
         message: `pilot(${t.id}): mark done (empty-diff self-heal)`,
         guardFile: "BACKLOG.md",
+        base,
         apply: () => {
           markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
           exec("git add BACKLOG.md", { cwd: ws, allowFail: true });
@@ -2495,10 +2502,10 @@ export function readinessInfraKind(ready: MergeReadiness): InfraFailureKind {
  * once per mergePrForTask call; any `failed` outcome leaves the retry to the
  * next cycle.
  */
-export async function repairConflictedBranch(io: PrMergeIo, args: { branch: string }): Promise<RepairOutcome> {
+export async function repairConflictedBranch(io: PrMergeIo, args: { branch: string; base?: string }): Promise<RepairOutcome> {
   const fetched = io.exec("git fetch -q origin");
   if (!fetched.ok) return { status: "failed", detail: `git fetch failed: ${ghTail(fetched.output)}` };
-  const merge = io.exec("git merge --no-edit origin/main");
+  const merge = io.exec(`git merge --no-edit origin/${args.base ?? "main"}`);
   if (merge.ok) {
     const head = io.exec("git rev-parse HEAD");
     const sha = head.output.trim();
@@ -2595,7 +2602,7 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
  */
 export async function mergePrForTask(
   io: PrMergeIo,
-  args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean },
+  args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean; base?: string },
 ): Promise<PrMergeOutcome> {
   const create = io.exec(
     `gh pr create --head ${args.branch} --title ${shq(prTitle(args.title))} --body ${shq(args.body)}`,
@@ -2632,7 +2639,7 @@ export async function mergePrForTask(
   let effective = ready;
   let expectedSha = args.pushedSha;
   if (ready.verdict === "skip" && ready.infra === "conflict" && io.readFile && io.writeFile) {
-    const repair = await repairConflictedBranch(io, { branch: args.branch });
+    const repair = await repairConflictedBranch(io, { branch: args.branch, base: args.base });
     if (repair.status === "repaired" || repair.status === "clean") {
       expectedSha = repair.sha;
       console.log(
@@ -2781,6 +2788,9 @@ async function mergeTask(
   state: PilotState,
   rerunResults: RerunResults,
 ): Promise<PrMergeOutcome> {
+  // P3-358: the pipeline base branch — the mission repo's remote default
+  // branch (origin/HEAD detection), `main` for this repo
+  const base = cfg.baseBranch ?? "main";
   // merge via GitHub PR for audit trail
   const title = `pilot(${t.id}): ${t.title}`;
   // P2-058 (round 2): HEAD before the merge attempt — the post-merge record
@@ -2849,12 +2859,14 @@ async function mergeTask(
       // P3-346: read from the checkout being merged — a foreign mission repo
       // without workflows keeps the "no checks ⇒ merge" rule
       ciExpected: workflowsExpectPrChecks(readWorkflowTexts(ws)),
+      // P3-358: conflict repair merges the base branch, not a hardcoded main
+      base,
     },
   );
   if (!outcome.ok) return outcome;
   // bring workspace main up to date with the merge, then mark the task done
   exec("git checkout -q main", { cwd: ws, allowFail: true });
-  exec("git pull -q origin main", { cwd: ws, allowFail: true });
+  exec(`git pull -q origin ${base}`, { cwd: ws, allowFail: true });
   // P2-058: record the gate-green merge so deploy() only ever ships SHAs this
   // gatekeeper produced. Round-2 hardening: `gh pr merge --auto` can return
   // success while the squash is still QUEUED — recording blind HEAD would pin
@@ -2877,6 +2889,7 @@ async function mergeTask(
     files: ["BACKLOG.md"],
     message: `pilot(${t.id}): mark done`,
     guardFile: "BACKLOG.md",
+    base,
     apply: () => {
       markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
       return { action: "apply" };
@@ -2892,11 +2905,11 @@ async function mergeTask(
   if (mergesSinceCorpus >= (cfg.corpusEveryNMerges ?? 5)) {
     state.mergesSinceCorpus = 0;
     try {
-      const files = await captureGateCorpus(ws, t.id, rerunResults);
-      if (files.length) {
-        emit("phase", { task: t.id, phase: "corpus", ok: true, detail: `${files.length} sample(s)` });
-        exec("git pull -q origin main", { cwd: ws, allowFail: true });
-      }
+      const files = await captureGateCorpus(ws, t.id, rerunResults, metaIo(ws), base);
+    if (files.length) {
+      emit("phase", { task: t.id, phase: "corpus", ok: true, detail: `${files.length} sample(s)` });
+      exec(`git pull -q origin ${base}`, { cwd: ws, allowFail: true });
+    }
     } catch (err) {
       console.log(
         JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "corpus capture failed", data: { task: t.id, err: String(err).slice(0, 200) } }),
@@ -2913,15 +2926,16 @@ function headSha(ws: string): string {
 }
 
 /**
- * True when a commit on origin/main has the canonical subject `pilot(<id>): ...`.
+ * True when a commit on the base branch (origin/<base>; P3-358: the mission
+ * repo's default branch) has the canonical subject `pilot(<id>): ...`.
  * The id is validated against TASK_ID_RE (never reaches a shell unchecked) and
  * regex-escaped, then matched as a line-anchored ERE — so body/revert references
  * to the id don't count as "merged".
  */
-export function taskMergedIn(ws: string, id: string): boolean {
+export function taskMergedIn(ws: string, id: string, base = "main"): boolean {
   if (!TASK_ID_RE.test(id)) return false;
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const r = exec(`git log origin/main --extended-regexp --grep='^pilot\\(${escaped}\\):' --oneline`, {
+  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --oneline`, {
     cwd: ws,
     allowFail: true,
   });

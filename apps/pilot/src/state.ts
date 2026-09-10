@@ -33,6 +33,10 @@ export interface PilotConfig {
    * (gate-fail/, pending-refill.json) — pilot/ for this repo,
    * pilot/mission/<key>/ for a foreign mission. */
   stateRoot: string;
+  /** P3-358: pipeline base branch — the mission repo's remote default branch
+   * (origin/HEAD detection in missionrepo.ts). Undefined = `main` (this repo);
+   * every origin/<base> read (queue, task branches, merges) derives from it. */
+  baseBranch?: string;
 }
 
 // ── P1-059: tiered cognition (strong models plan/judge, flash executes) ──────

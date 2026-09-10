@@ -375,7 +375,7 @@ export async function appendCommitAndPush(
   message: string,
   io: AuxPushIo,
   attempts = 3,
-  opts: { seedSkeleton?: boolean } = {},
+  opts: { seedSkeleton?: boolean; baseBranch?: string } = {},
 ): Promise<AuxPushResult> {
   return landMetaCommit(
     repoDir,
@@ -392,6 +392,9 @@ export async function appendCommitAndPush(
         const r = appendReadyLines(repoDir, lines);
         return r === "applied" ? { action: "apply" } : r === "noop" ? { action: "noop" } : { action: "abort" };
       },
+      // P3-358: foreign mission base branch (e.g. `master`) — the meta PR
+      // re-bases on and lands into the repo's actual default branch
+      base: opts.baseBranch,
     },
     attempts,
   );

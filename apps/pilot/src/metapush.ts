@@ -1,4 +1,5 @@
 import { exec } from "./runner";
+import { pipelineBaseBranch } from "./missionrepo";
 import { basename } from "node:path";
 
 /**
@@ -95,6 +96,10 @@ export interface MetaCommitSpec {
   guard?: (nameOnlyOutput: string) => boolean;
   /** Deterministic edit, run after the branch is re-based on origin/main. */
   apply: (ws: string) => MetaApplyResult;
+  /** P3-358: pipeline base branch (foreign mission default branch, e.g.
+   * `master`) — pilot/meta re-bases on, diffs against and PRs into it.
+   * Undefined = `main`; validated upstream by pipelineBaseBranch(). */
+  base?: string;
 }
 
 /** POSIX single-quote shell escape (JSON.stringify is NOT shell quoting). */
@@ -103,10 +108,10 @@ function shq(s: string): string {
 }
 
 /** Find an OPEN PR for pilot/meta, else create the long-lived one. */
-function openMetaPr(io: MetaPushIo): boolean {
+function openMetaPr(io: MetaPushIo, base: string): boolean {
   if (prSnapshot(io)?.state === "OPEN") return true;
   return io.exec(
-    `gh pr create --head ${META_BRANCH} --base main --title "pilot: meta commits" --body ${shq(
+    `gh pr create --head ${META_BRANCH} --base ${shq(base)} --title "pilot: meta commits" --body ${shq(
       "Bookkeeping landings (backlog refills, scribe lessons, mark-done, corpus samples). Auto-merged when the light checks pass.",
     )}`,
   ).ok;
@@ -150,8 +155,8 @@ const MERGE_CONFIRM_DELAY_MS = 5_000;
  * Arm the squash merge of the meta PR and CONFIRM it landed with OUR commit
  * as the merged head. NEVER --delete-branch: pilot/meta is long-lived.
  */
-async function armMetaPr(io: MetaPushIo, pushedSha: string): Promise<MetaPushResult> {
-  if (!openMetaPr(io)) return "failed";
+async function armMetaPr(io: MetaPushIo, pushedSha: string, base: string): Promise<MetaPushResult> {
+  if (!openMetaPr(io, base)) return "failed";
   // --auto only works once branch protection exists (operator runbook); the
   // immediate squash keeps landings moving while protection is still off.
   const armed =
@@ -223,6 +228,9 @@ export async function landMetaCommit(
   attempts = 3,
 ): Promise<MetaPushResult> {
   const guard = spec.guard ?? ((names: string) => mayPush(names, spec.guardFile ?? ""));
+  // P3-358: the base the meta branch re-bases on, diffs against and PRs into —
+  // the mission repo's default branch, `main` for this repo
+  const base = pipelineBaseBranch(spec.base);
   try {
     for (let attempt = 0; attempt < attempts; attempt++) {
       io.exec("git fetch -q origin");
@@ -237,7 +245,7 @@ export async function landMetaCommit(
       // on a dirty tree, and the slot worktree may arrive on any branch
       io.exec("git reset -q --hard HEAD");
       io.exec("git clean -qfd");
-      if (!io.exec(`git checkout -q -B ${META_BRANCH} origin/main`).ok) {
+      if (!io.exec(`git checkout -q -B ${META_BRANCH} origin/${base}`).ok) {
         await io.sleep(3_000);
         continue;
       }
@@ -258,7 +266,7 @@ export async function landMetaCommit(
         await io.sleep(3_000);
         continue;
       }
-      const names = io.exec("git diff --name-only origin/main...HEAD");
+      const names = io.exec(`git diff --name-only origin/${base}...HEAD`);
       if (!guard(names.output)) return "refused";
       // --force-with-lease: the rewind to main is deliberate (the PR head is
       // always exactly main + this commit), but a peer landing that pushed
@@ -283,11 +291,12 @@ export async function landMetaCommit(
         await io.sleep(3_000);
         continue;
       }
-      return await armMetaPr(io, pushedSha);
+      return await armMetaPr(io, pushedSha, base);
     }
     return "failed";
   } finally {
-    // never leave the worktree parked on pilot/meta
+    // never leave the worktree parked on pilot/meta (local base pin is `main`
+    // on every checkout — ensureMissionRepo/ensureSlotWorkspace own the pin)
     io.exec("git checkout -q main");
   }
 }

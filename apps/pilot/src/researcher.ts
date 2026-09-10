@@ -69,8 +69,12 @@ Your LAST line of output must be exactly: RESEARCHER:DONE`;
  * P1-057: the agent is read-only (bash/edit denied) — fetched pages can inject
  * instructions but the worst they can produce is TEXT, which the runner
  * validates and lands via a guarded commit+push.
+ * P3-358: `foreign` (a mission.json repoUrl targets a repo outside this
+ * workspace) seeds the pilot-format BACKLOG skeleton in the same landing and
+ * targets the repo's actual default branch — the researcher was the last aux
+ * writer landing without either, so a fresh foreign repo never got a queue.
  */
-export async function runResearcher(cfg: PilotConfig, state: { researchLast?: string }, mission?: string): Promise<void> {
+export async function runResearcher(cfg: PilotConfig, state: { researchLast?: string }, mission?: string, foreign = false): Promise<void> {
   const today = nowLocalISO().slice(0, 10);
   if (state.researchLast === today) return;
   state.researchLast = today;
@@ -101,7 +105,10 @@ export async function runResearcher(cfg: PilotConfig, state: { researchLast?: st
     log("warn", "researcher: no valid task lines — nothing committed");
     return;
   }
-  const result = await appendCommitAndPush(cfg.workspace, lines, `pilot(researcher): frontier scan ${today}`, auxPushIo(cfg.workspace));
+  const result = await appendCommitAndPush(cfg.workspace, lines, `pilot(researcher): frontier scan ${today}`, auxPushIo(cfg.workspace), 3, {
+    seedSkeleton: foreign,
+    baseBranch: cfg.baseBranch,
+  });
   if (result === "pushed") {
     log("info", "researcher scan committed", { lines: lines.length });
   } else {
