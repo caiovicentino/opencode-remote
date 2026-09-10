@@ -1549,7 +1549,9 @@ above the vertically centered card stack, so the post-wizard screen reads as
 the same intentional ceremony instead of a flush-left column floating in dead
 space at desktop sizes. The accent glyph from the wizard's opening screen now
 sits above the wordmark here too (P3-373), so the whole first-contact journey
-shares one brand header. That header can never shear against the viewport top
+shares one brand header — a real display mark since P3-383: the glyph renders
+at ~2rem with a locked line-height and a spacing-scale beat of air below it,
+never as loose body-size text. That header can never shear against the viewport top
 (P3-387): when the card stack grows taller than the column — a pane open, a
 short window — the degraded screen becomes a real scroll container with
 overflow-safe centering, so the stack top-anchors with a scrollbar instead of

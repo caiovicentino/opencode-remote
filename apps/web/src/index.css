@@ -1360,11 +1360,16 @@ button.desk-new:disabled {
 /* P3-340: product identity — same glyph language as the P2-123 home mark.
    P3-373: kept unscoped on purpose — the welcome wizard, the pairing screen
    and the degraded journey all open their centered brand header with this
-   one shared mark, so the first three screens read as one ceremony. */
+   one shared mark, so the first three screens read as one ceremony.
+   P3-383: the glyph is a display mark, not a text run — 2rem with a locked
+   line-height so it never collapses back to body size above the display-step
+   wordmark, and a spacing-scale beat of air below it. */
 .welcome-mark {
   display: inline-flex;
+  font-size: 2rem;
+  line-height: 1;
   color: var(--accent);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
 }
 /* P3-340/P3-336: the product wordmark — serif voice at the display step of
    the type scale. One shared class for every first-contact screen (welcome

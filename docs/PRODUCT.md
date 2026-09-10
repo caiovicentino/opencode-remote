@@ -84,7 +84,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas
   da jornada compartilham a mesma linguagem de marca, em vez de o glifo
-  aparecer só no wizard
+  aparecer só no wizard. Desde o P3-383 ele é um marco display de verdade:
+  ~2rem com line-height travado e respiro na escala de espaçamento abaixo,
+  em vez de texto do tamanho do corpo frouxo sobre o wordmark serifado
 - Pane do navegador no dicionário (P3-382): o header reusa o rótulo do rail
   verbatim ("Navegador" em pt-BR, via `navBrowser`), e todo o chrome — botão
   Ir, estados carregando/vazio, labels de acessibilidade e copy de erro —
