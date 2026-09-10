@@ -31,7 +31,11 @@ Settings → About ("Connection: direct (local) / via relay").
 Shared crypto and wire types. ECDH P-256 identities, HKDF → AES-256-GCM
 session keys, sequence numbers bound as AAD (replay/reorder protection).
 No trusted third party: the pairing QR carries the daemon's public key and
-the handshake proves both sides possess the matching secret.
+the handshake proves both sides possess the matching secret. The handshake
+also carries an authenticated creation timestamp (sealed inside the hello
+token, invisible to the relay) and the daemon dedupes hello nonces, so a
+recorded hello expires after ±5 min and cannot be replayed to reset a
+session's replay guard (RT-390).
 
 ### apps/relay
 A blind router. Forwards opaque `RelayFrame` envelopes between sockets that
