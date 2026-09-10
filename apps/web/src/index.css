@@ -2513,6 +2513,12 @@ button.desk-new:disabled {
   font-size: 0.78rem;
   color: var(--muted);
 }
+.cam-draft-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 0.78rem;
+  color: color-mix(in srgb, var(--text) 78%, transparent);
+}
 
 /* Minimized "Olho" (P3-402 r3): the sheet collapses to a small live
    thumbnail pinned to the corner, so the reply can be read in the chat —
@@ -2540,6 +2546,7 @@ button.desk-new:disabled {
 .cam-sheet-min .cam-controls,
 .cam-sheet-min .cam-ask,
 .cam-sheet-min .cam-privacy,
+.cam-sheet-min .cam-draft-hint,
 .cam-sheet-min .cam-warn {
   display: none;
 }

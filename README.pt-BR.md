@@ -481,7 +481,9 @@ remoto, zero confiança**.
   fotos permanecem preparadas), e o sheet minimiza pra uma miniatura ao vivo
   no canto — dá pra ler a resposta no chat e reabrir pra perguntar de novo.
   Se o modelo rejeita imagens, o erro legível do daemon/opencode vira card de
-  aviso sugerindo trocar de modelo
+  aviso sugerindo trocar de modelo. O rascunho do composer nunca é apagado por
+  uma pergunta de câmera; enviar sem digitar nada faz do rascunho (texto e
+  anexos) a própria mensagem — e o sheet avisa disso antes de você enviar
 - **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
   `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
   (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o

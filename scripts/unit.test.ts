@@ -1606,6 +1606,19 @@ check(
   (i18nSource.match(/camMinimize:/g) ?? []).length === 2 && (i18nSource.match(/camExpand:/g) ?? []).length === 2,
 );
 
+// P3-402 round 4: the composer keeps its draft while the sheet is open. A
+// typed camera question must never wipe it (data loss), and sending with an
+// empty question consumes the draft itself — the sheet must SAY so, since the
+// fullscreen overlay hides the composer from the reader.
+const sendFnBody = chatViewSource.slice(
+  chatViewSource.indexOf("async function send("),
+  chatViewSource.indexOf("function sendFromCamera"),
+);
+check("camera question never wipes the composer draft (override skips the clear)", sendFnBody.includes("const usingComposer = override === undefined;") && sendFnBody.includes('if (usingComposer) updateInput("");'));
+check("composer chips ride the camera send only when the draft itself is sent", sendFnBody.includes("const attached = usingComposer ? [...images, ...staged] : staged;") && sendFnBody.includes("if (usingComposer) setImages([]);"));
+check("410 recovery appends restored attachments, never replaces preserved chips", sendFnBody.includes("setImages((prev) => [...prev, ...kept])"));
+check("camera sheet says when the composer draft will ride along", cameraSheetSource.includes("draftRides") && cameraSheetSource.includes("camDraftHint") && (i18nSource.match(/camDraftHint:/g) ?? []).length === 2);
+
 check("torchSupported fails closed on absent capabilities", torchSupported(null) === false && torchSupported(undefined) === false && torchSupported({}) === false);
 check("torchSupported admits a real torch capability", torchSupported({ torch: true }) && torchSupported({ torch: false, width: 1280 }));
 check("torchConstraint wraps the toggle in advanced", torchConstraint(true).advanced[0].torch === true && torchConstraint(false).advanced[0].torch === false);

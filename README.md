@@ -146,6 +146,9 @@ private. That is the product: **local power, remote control, zero trust**.
   message; the sheet stays open so a follow-up question never reopens the
   camera, and abandoning it transmits nothing. Nothing streams: the frame
   leaves the device only when you press send, and the sheet says so. The
+  composer draft is never wiped by a camera question; sending with nothing
+  typed makes the draft itself (text and attachments) the message — the
+  sheet says so before you press send. The
   camera state machine reuses the pairing scanner's
   proven patterns (back camera first, iOS abort retry, dead-feed watchdog)
   and, inside the desktop shell, the same camera-permission verdict with the

@@ -283,6 +283,11 @@ export default function CameraSheet({
 
   const lastShot = shots.length > 0 ? (shots[shots.length - 1]?.thumb ?? "") : "";
 
+  // Round-4 review: the composer draft lives hidden behind this fullscreen
+  // sheet — with no question typed, pressing send sends THAT draft (text and
+  // attachment chips) as the message. Never a silent behavior: say it.
+  const draftRides = !question.trim() && !!canSend;
+
   return (
     <div
       className={`cam-sheet${minimized ? " cam-sheet-min" : ""}`}
@@ -401,11 +406,17 @@ export default function CameraSheet({
           className="primary cam-send"
           onClick={() => void sendQuestion()}
           disabled={busy || sendBusy || !!sendBlocked || (!question.trim() && !canSend && shots.length === 0)}
-          title={sendBlocked ? t("streamingWait") : undefined}
+          title={sendBlocked ? t("streamingWait") : draftRides ? t("camDraftHint") : undefined}
         >
           {busy || sendBusy ? "…" : t("send")}
         </button>
       </div>
+
+      {draftRides && (
+        <p className="cam-draft-hint" role="status">
+          {t("camDraftHint")}
+        </p>
+      )}
 
       <p className="cam-privacy">{t("camPrivacy")}</p>
     </div>

@@ -149,7 +149,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   (facingMode environment, retry de abort do iOS, watchdog de feed morto) e,
   no shell desktop, a mesma ponte de veredito de permissão com atalho pro
   painel do sistema; modelo sem visão degrada em card de aviso sugerindo
-  troca de modelo
+  troca de modelo. O rascunho do composer coexiste com o sheet: pergunta
+  digitada nunca o apaga; enviar sem digitar faz dele a própria mensagem,
+  com aviso visível no sheet
 
 ## Regra de ouro
 Cada task de UI fecha com screenshot desktop-flow provando o critério visual.

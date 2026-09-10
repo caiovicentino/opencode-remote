@@ -1803,8 +1803,17 @@ export default function ChatView({
     // The camera path reads the outcome: "blocked" means the streaming guard
     // tripped and NOTHING was sent — the caller must keep its staged shots.
     const staged = extraAttachments ?? [];
+    // Round-4 review: the composer's own content rides along ONLY when it IS
+    // the content being sent (no override). A typed camera question must
+    // never wipe a coexisting draft — neither its text nor its chips.
+    const usingComposer = override === undefined;
     const text = (override ?? input).trim();
-    if ((!text && images.length === 0 && staged.length === 0) || sending || liveText || liveThinking) {
+    if (
+      (!text && staged.length === 0 && (!usingComposer || images.length === 0)) ||
+      sending ||
+      liveText ||
+      liveThinking
+    ) {
       return { status: "blocked" };
     }
     // the reader's own message always lands on the newest tail
@@ -1818,8 +1827,10 @@ export default function ChatView({
     setRetryText("");
     // P1-088: clears ONLY the sending session's draft (it is the current one
     // at click time) — a half-typed draft in another session is never wiped.
-    updateInput("");
-    const attached = [...images, ...staged];
+    // Round-4 review: and only when the draft itself is being sent — a camera
+    // question (override) leaves the composer untouched.
+    if (usingComposer) updateInput("");
+    const attached = usingComposer ? [...images, ...staged] : staged;
     setBubbles((b) => [
       ...b,
       {
@@ -1844,7 +1855,7 @@ export default function ChatView({
         if (agent) body.agent = agent;
         return body;
       };
-      setImages([]);
+      if (usingComposer) setImages([]);
       let body = buildBody();
       let res = await request("POST", `/session/${sessionId}/message`, body);
       // attachments age out of the daemon (30min TTL, or a daemon restart):
@@ -1872,7 +1883,10 @@ export default function ChatView({
           return { status: "error", message: gone };
         } else {
           const kept = attached.filter((img) => img.raw);
-          setImages(kept);
+          // append: on the composer path the chips were already cleared for
+          // the send (prev = []); on the camera-question path they were never
+          // touched — replacing would drop them
+          setImages((prev) => [...prev, ...kept]);
           if (text) updateInput(text);
           const expired = kept.length === attached.length ? t("errAttachmentExpiredKept") : t("errAttachmentExpiredLost");
           setError(expired);
