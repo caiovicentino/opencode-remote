@@ -1779,6 +1779,12 @@ jumping back to the tail clears it.
 is out of focus, a native notification says so at most once per minute — it
 never carries message content, and clicking it brings the window to the front.
 
+**Pending-approval notification (P3-399)**: when the agent stops to wait for
+your approval and the window is in the background, a native notification says
+an ask is pending — at most once per minute, never carrying the command, the
+path or the conversation title, and clicking it brings the window to the
+front.
+
 ```bash
 npm run build --workspace @ocr/web       # build the UI once
 npm run build --workspace @ocr/desktop   # compile the shell (TypeScript main process)

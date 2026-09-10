@@ -1382,6 +1382,11 @@ janela fora de foco, uma notificação nativa avisa no máximo uma vez por
 minuto — ela nunca carrega conteúdo da mensagem, e o clique traz a janela
 para a frente.
 
+**Aviso de aprovação pendente (P3-399)**: quando o agente para esperando sua
+aprovação e a janela está em segundo plano, uma notificação nativa diz que há
+um pedido esperando — no máximo uma vez por minuto, nunca traz o comando, o
+caminho nem o título da conversa, e o clique traz a janela para a frente.
+
 O **Mission Control** (Cmd+6) é o pós-mortem navegável das runs autônomas do
 pilot: um card por tarefa de agente (objetivo, progresso, esforço em minuto,
 ETA enquanto roda) lido do `pilot.log`/`events.jsonl` real, mais a timeline

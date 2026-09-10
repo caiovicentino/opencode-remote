@@ -68,6 +68,7 @@ import {
   type ThinkingState,
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
+import { sendAskCountToShell } from "../lib/asks";
 import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 
 /** P2-312: microphone verdict from the desktop shell (mirrors
@@ -1510,6 +1511,14 @@ export default function ChatView({
     responded,
     autoMode,
   );
+
+  // P3-399: publish the actionable-ask count so the shell can toast "the agent
+  // asks approval" while the window sits in the background — same push design
+  // as sendUnreadToShell above, on its own channel; the unread badge is
+  // untouched.
+  useEffect(() => {
+    sendAskCountToShell(pending.length);
+  }, [pending.length]);
 
   // agent questions (question.asked / replied / rejected) — live events win,
   // persisted list (GET /question) covers asks that predate the view

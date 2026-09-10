@@ -208,6 +208,10 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // getter exists so tests can verify the IPC round-trip via the harness.
   sendUnread: (n: number): void => ipcRenderer.send("ocr:unread", n),
   getUnreadBadge: (): Promise<number> => ipcRenderer.invoke("app:unreadBadge"),
+  // P3-399: pending permission-ask count — the web UI publishes it so main
+  // can decide the "agent asks approval" toast. One-way push on its OWN
+  // channel; the unread channel above and the badge behavior are untouched.
+  sendAsks: (n: number): void => ipcRenderer.send("ocr:asks", n),
   // P2-276: the shell (menu bar + tray) follows the language chosen in the
   // app — one-way push, same pattern as sendUnread above. Main resolves it
   // through shelllang.ts (an invalid payload counts as no preference) and
