@@ -60,6 +60,14 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   pintado sobre o branco do card com borda de repouso mais firme — lê como
   campo ativo que convida a digitar, não como campo desabilitado.
   próprio painel, fila sobrevive a restart do app)
+- Soltura de arquivo nunca morre em silêncio (P3-398): arrastar um arquivo do
+  Finder sobre o app pinta o realce de soltura em qualquer tela; no portão do
+  primeiro boot o drop responde com o mesmo aviso calmo de parear-primeiro
+  (copy própria da superfície, com o escape "Parear agora" quando existe), e
+  na Home o drop cria a conversa já com o arquivo anexado — o gesto mais
+  natural do desktop vira caminho de entrada em vez de nada. Teto de 4
+  arquivos por soltura, com linha calma para soltura vazia, excedente ou
+  ilegível (veredito puro em lib/dropgate, testado em tabela).
 - Escalada com um caminho só de recuperação (P3-385): quando o card calmo
   escala ("Sem resposta do daemon local há 1 min" + "Abrir diagnósticos"), o
   botão laranja "Reconectar agora" para de aparecer empilhado logo abaixo —
