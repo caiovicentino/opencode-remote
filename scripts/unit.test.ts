@@ -11691,6 +11691,38 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   }
 }
 
+// --- P3-376: Mission Control header fits its own controls ---------------------
+// At the desk pane's default 36vw width the header overflowed: the pane title
+// collapsed to an ellipsis behind the view pills and "Ao vivo" clipped at the
+// pane edge. The fix is three pinned pieces — compact pane-chrome buttons, a
+// natural flex basis on the title so the P3-327 wrap actually fires, and the
+// short "Dashboard" tab label — so lock all three in source.
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const css = read("index.css");
+  const headerAt = css.indexOf(".mission header {");
+  const header = headerAt >= 0 ? css.slice(headerAt, css.indexOf("}", headerAt)) : "";
+  const btnAt = css.indexOf(".mission header button {");
+  const btn = btnAt >= 0 ? css.slice(btnAt, css.indexOf("}", btnAt)) : "";
+  const titleAt = css.indexOf(".mission header .pane-title {");
+  const title = titleAt >= 0 ? css.slice(titleAt, css.indexOf("}", titleAt)) : "";
+  check(
+    "P3-376: mission header wraps (end-packed) and the title keeps a natural basis so wrap fires before collapse",
+    header.includes("flex-wrap: wrap") && header.includes("justify-content: flex-end") &&
+      titleAt >= 0 && title.includes("flex-basis: auto"),
+  );
+  check(
+    "P3-376: mission header buttons use the compact pane-chrome scale (.browser-header treatment)",
+    btnAt >= 0 && btn.includes("padding: 4px 10px") && btn.includes("font-size: 0.85rem"),
+  );
+  const dict = read("lib/i18n.ts");
+  const dashKeys = dict.match(/missionDash: "([^"]+)"/g) ?? [];
+  check(
+    "P3-376: missionDash stays the short 'Dashboard' label in every locale (no 'ao vivo' duplication beside the Live pill)",
+    dashKeys.length >= 2 && dashKeys.every((k) => k === 'missionDash: "Dashboard"'),
+  );
+}
+
 // --- P3-382: BrowserView pane chrome rides the dict (drift lock) ----------------
 // The browser pane is reachable from the unpaired first-boot gate, so its
 // chrome must speak the user's locale: no hardcoded "Browser"/"Go"/"Loading…"

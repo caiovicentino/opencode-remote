@@ -3565,9 +3565,29 @@ button.desk-new:disabled {
 }
 /* P3-327: the pane is reachable from the first-boot gate shell at ~500px —
    the view tabs wrap to a second row instead of painting over a title that
-   the flex squeeze already clipped to nothing. */
+   the flex squeeze already clipped to nothing. P3-376: rows pack toward the
+   end so a wrapped tab row stays aligned with the pills above. */
 .mission header {
   flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* P3-376: header controls at pane-chrome scale — the same treatment
+   .browser-header buttons already get. At the desk pane's default 36vw width
+   the back button, title and three pills at full button padding overflowed
+   the row: the title ellipsized into nothing behind "Dashboard ao vivo" and
+   "Ao vivo" clipped at the pane edge. */
+.mission header button {
+  padding: 4px 10px;
+  line-height: 1.2;
+  font-size: 0.85rem;
+}
+/* P3-376: the shared .pane-title carries flex-basis 0 (flex: 1), so the wrap
+   above never fired — a zero-basis title "fits" on any line and just got
+   squeezed to nothing. A natural basis makes the title's real width drive
+   the break: one row inside the default pane, tabs on their own row (title
+   intact) once the pane narrows past the header's content. */
+.mission header .pane-title {
+  flex-basis: auto;
 }
 /* P3-327's ellipsis moved into the shared .pane-title (P3-384). */
 .mission-grid {

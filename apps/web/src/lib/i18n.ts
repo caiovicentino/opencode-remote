@@ -496,7 +496,10 @@ export const dict = {
     defaultModel: "default model",
     stopRecording: "Stop recording",
     recordVoice: "Record voice",
-    missionDash: "Live dashboard",
+    // P3-376: short tab label — "Live dashboard" duplicated the adjacent
+    // "Live" shot button and pushed the pane header past its width at the
+    // desk pane's default size.
+    missionDash: "Dashboard",
     missionForensic: "Timeline",
     missionActive: "Active mission",
     missionActiveNone: "No mission set. Define one in the chat: describe what you want and, optionally, paste a GitHub repo link.",
@@ -1239,7 +1242,9 @@ export const dict = {
     defaultModel: "modelo padrão",
     stopRecording: "Parar gravação",
     recordVoice: "Gravar voz",
-    missionDash: "Dashboard ao vivo",
+    // P3-376: rótulo curto — "Dashboard ao vivo" duplicava o botão "Ao vivo"
+    // vizinho e empurrava o header do pane além da largura no tamanho padrão.
+    missionDash: "Dashboard",
     missionForensic: "Linha do tempo",
     missionActive: "Missão ativa",
     missionActiveNone: "Nenhuma missão definida. Defina no chat: descreva o que você quer e, se quiser, cole o link de um repo do GitHub.",

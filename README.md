@@ -440,7 +440,13 @@ private. That is the product: **local power, remote control, zero trust**.
   forensic view with its "no sessions recorded yet" copy (the dashboard and live-shot
   actions stay hidden — they need the daemon), and the artifact list shows its quiet empty
   state instead of the paired-world red "not paired" error; Mission Control's header also
-  wraps to a second row at pane width instead of painting its view tabs over the title
+  wraps to a second row at pane width instead of painting its view tabs over the title,
+  and in the paired world it now fits its own controls at the desk pane's default
+  1440x900 size (P3-376): compact pane-chrome pills (the Browser header's treatment),
+  a natural flex basis on the title so the wrap fires before the title collapses to an
+  ellipsis, and the dashboard tab renamed to the short "Dashboard" — "Dashboard ao
+  vivo" duplicated the adjacent "Ao vivo" live-shot pill and pushed the row past the
+  pane edge
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
   shell title included (P3-373: the build-5 token bump had briefly promoted it
