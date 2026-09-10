@@ -19738,6 +19738,16 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       (pilotIndexSrc.match(/await maybeNightly\(/g) ?? []).length === 1,
   );
   check("index.ts: nightly pass start emits a task=nightly phase=run event line", /emit\("phase", \{ task: "nightly", phase: "run", ok: true/.test(pilotIndexSrc));
+  // round 2 review: a skip record is only writable at hour >= 4, when the
+  // window is already closed — the loop must read the PRE-tick anchor, not the
+  // wiped one, or the "since when" half of the reason is dead code.
+  const anchorAt = pilotIndexSrc.indexOf("const windowAnchor = nightlyWindowSince;");
+  const wipeAt = pilotIndexSrc.indexOf("nightlyWindowSince = win.since;");
+  const skipSinceAt = pilotIndexSrc.indexOf("since: windowAnchor,");
+  check(
+    "index.ts: skip record reads the pre-tick window anchor (since survives the window close)",
+    anchorAt > -1 && wipeAt > anchorAt && skipSinceAt > wipeAt,
+  );
 
   // (5a) default HEAD detection — injectable io
   const ioOf = (sym: { ok: boolean; output: string }, show: { ok: boolean; output: string }) => {

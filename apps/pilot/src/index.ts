@@ -426,6 +426,11 @@ async function main() {
         foreignMission,
         doneToday: state.redteamLast === today && state.explorerLast === today && !forensicDue(state.forensicLast),
       });
+      // P3-356 (round 2): capture the anchor BEFORE the closed-window decision
+      // wipes it — a skip record is only writable at hour >= 4, when the window
+      // is already closed and win.since is undefined, so the "since when" half
+      // of the reason needs the previous (in-window) tick's anchor.
+      const windowAnchor = nightlyWindowSince;
       nightlyWindowSince = win.since;
       if (win.drain !== nightlyDrain && !once) {
         log("info", win.drain ? "nightly window open — new picks held until the slots drain" : "nightly window closed — new picks resume", { hour: new Date(nowMs).getHours() });
@@ -442,7 +447,7 @@ async function main() {
         const reason = nightlySkipDue(state, today, new Date(nowMs).getHours(), running.size > 0, {
           running: running.size,
           slots: slotNumbers.length,
-          since: nightlyWindowSince,
+          since: windowAnchor,
           now: nowMs,
         });
         if (reason) {
@@ -836,7 +841,11 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
   }
   // P3-356: the events.jsonl trace the operator greps for — one `phase: run`
   // line per night the pass really started (the skip path emits `skipped`).
-  emit("phase", { task: "nightly", phase: "run", ok: true, detail: `${trigger} — redteam/explorer/forensic starting` });
+  // Round 2 (review): a forensic-only night (redteam/explorer already stamped,
+  // the nightlyDone + forensicDue fall-through above) must not claim agents
+  // that will not run — the audit trail names what actually starts.
+  const starting = nightlyDone ? "forensic starting (redteam/explorer already ran today)" : "redteam/explorer/forensic starting";
+  emit("phase", { task: "nightly", phase: "run", ok: true, detail: `${trigger} — ${starting}` });
   // sync so the nightly agents read a fresh main; a failing sync only skips
   // the pass (best-effort by design — never blocks the loop)
   let wsReady = true;
