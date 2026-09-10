@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizeHttpUrl } from "../lib/preview";
 import { useT } from "../lib/i18n";
+import { IconGlobe } from "./icons";
 
 /**
  * Browser pane (P2-011, P1-072): in the desktop shell it renders a real,
@@ -8,6 +9,11 @@ import { useT } from "../lib/i18n";
  * In the PWA (no desktop bridge) it falls back to driving the host browser
  * through the daemon's /api/browse surface (Playwright screenshots), which
  * stays the reviewer-driving path (tools/browse.mjs).
+ *
+ * P3-379: the pane's first paint is a designed empty state — it never
+ * auto-navigates on the user's behalf (the old default URL silently reached
+ * the host daemon's dashboard from unpaired first boots). Nothing loads until
+ * the user types an address or a preview event arrives.
  */
 export type BrowseFn = (
   req: { path: string; method?: string; body?: unknown },
@@ -18,8 +24,6 @@ interface BrowseInfo {
   title: string;
   text?: string;
 }
-
-const DEFAULT_URL = "http://127.0.0.1:8792/dashboard";
 
 /** Methods of the Electron <webview> tag (webviewTag: true in the shell). */
 interface WebviewElement extends HTMLElement {
@@ -92,8 +96,12 @@ function WebViewPane({
   onBack: () => void;
 }) {
   const t = useT();
-  const [src, setSrc] = useState<string>(() => previewUrl ?? DEFAULT_URL);
-  const [input, setInput] = useState(() => previewUrl ?? DEFAULT_URL);
+  // P3-379: "" means "new tab" — no src attribute is rendered, so the pane
+  // never reaches a host service before the user asks for one.
+  const [src, setSrc] = useState<string>(() => previewUrl ?? "");
+  const [input, setInput] = useState(() => previewUrl ?? "");
+  // A real page is (or was) loaded: the empty state only paints before that.
+  const [started, setStarted] = useState(() => Boolean(previewUrl));
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const wvRef = useRef<WebviewElement | null>(null);
@@ -122,6 +130,7 @@ function WebViewPane({
   // Auto-preview: every new URL the daemon emits takes over the pane.
   useEffect(() => {
     if (!previewUrl) return;
+    setStarted(true);
     setInput(previewUrl);
     setError("");
     const wv = wvRef.current;
@@ -148,7 +157,11 @@ function WebViewPane({
     };
     const onNavigate = (e: Event) => {
       const u = urlOf(e);
-      if (u) setInput(u);
+      // about:blank is the guest's idle page — it never un-hides the empty
+      // state and never dirties the address bar
+      if (!u || u === "about:blank") return;
+      setStarted(true);
+      setInput(u);
       setError("");
       setLoading(false);
     };
@@ -187,6 +200,7 @@ function WebViewPane({
     }
     setError("");
     setInput(normalized);
+    setStarted(true);
     const wv = wvRef.current;
     if (wv) wv.loadURL(normalized);
     else setSrc(normalized);
@@ -199,7 +213,10 @@ function WebViewPane({
     try {
       wv.reload();
     } catch {
-      wv.loadURL(wv.getURL() || DEFAULT_URL);
+      // P3-379: with no page loaded there is nothing to reload — the pane
+      // stays on its empty state instead of falling back to a default URL.
+      const url = wv.getURL();
+      if (url) wv.loadURL(url);
     }
   }
 
@@ -236,9 +253,18 @@ function WebViewPane({
           ref={(el) => {
             wvRef.current = el as WebviewElement | null;
           }}
-          src={src}
+          src={src || undefined}
           webpreferences="contextIsolation=yes, sandbox=yes"
         />
+        {!started && (
+          <div className="browser-empty">
+            <span className="browser-empty-icon" aria-hidden="true">
+              <IconGlobe />
+            </span>
+            <p className="browser-empty-title">{t("browserNoPage")}</p>
+            <p className="browser-empty-hint">{t("browserEmptyHint")}</p>
+          </div>
+        )}
         {loading && <div className="browser-loading" aria-hidden="true" />}
       </div>
     </div>
@@ -249,7 +275,7 @@ function WebViewPane({
 
 function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack: () => void }) {
   const t = useT();
-  const [input, setInput] = useState(DEFAULT_URL);
+  const [input, setInput] = useState("");
   const [info, setInfo] = useState<BrowseInfo | null>(null);
   const [shot, setShot] = useState("");
   const [viewport, setViewport] = useState<{ width: number; height: number } | null>(null);
@@ -317,10 +343,9 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
     [callJson, refresh],
   );
 
-  // First paint: open the default page so the pane is never empty.
-  useEffect(() => {
-    if (browse) void open(DEFAULT_URL);
-  }, [browse]);
+  // P3-379: first paint stays on the empty state — the pane must not silently
+  // drive the host browser to a service (the old default URL) without the
+  // user asking for it.
 
   function onClickImage(e: React.MouseEvent<HTMLImageElement>) {
     const img = imgRef.current;
