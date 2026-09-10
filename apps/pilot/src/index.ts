@@ -18,7 +18,7 @@ import { landMetaCommit, metaIo } from "./metapush";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
-import { areaKey, nightlyIdleDue, nightlyLayer, nightlySkipDue, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
+import { areaKey, nightlyIdleDue, nightlySkipDue, nightlyWindow, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
 import {
   auditClearFile,
   auditResumeDue,
@@ -67,6 +67,15 @@ let deployBackoff: DeployBackoff | null = null;
  * (otherwise the eager-fill would instantly refill the slots and the reload
  * would never fire). */
 let drainNewPicks = false;
+/** P3-356: reserved nightly window — same hold mechanism as drainNewPicks, but
+ * owned by the nightly schedule (02:00–04:00 local) so a busy fleet drains into
+ * the nightly pass instead of starving it. Kept separate from drainNewPicks so
+ * a deploy-time reload drain can never be cleared by a window tick (or vice
+ * versa); fillFreeSlots holds on the OR of both. */
+let nightlyDrain = false;
+/** P3-356: epoch-ms the current nightly window opened (in-memory: a restart
+ * re-anchors on its first in-window tick). */
+let nightlyWindowSince: number | undefined;
 /** Self-serve mission loaded at boot (~/.opencode-remote/mission.json, written
  * by the chat agent) — null keeps the default mission (this repo). A changed
  * file is applied by the loop's drift self-reload, never hot-swapped. */
@@ -199,7 +208,7 @@ async function main() {
     // --once (eval battery): exactly one pipeline total — only the loop call picks
     if (once && reason === "eager-fill") return;
     if (frozen() || state.auditMode) return;
-    if (drainNewPicks) return; // P1-104: self-reload draining — no new picks
+    if (drainNewPicks || nightlyDrain) return; // P1-104 self-reload / P3-356 nightly window — no new picks
     if (state.tasks + running.size >= cfg.maxTasksPerDay) return;
     try {
       const free = slotNumbers.filter((s) => !running.has(s));
@@ -395,28 +404,58 @@ async function main() {
       driftSince = undefined;
     }
 
-    // nightly redteam + weekly maintenance — best effort, slots idle. P1-095:
-    // the pass fires at the first >= 2h idle gap of the day instead of the old
-    // unreachable hour===3 gate; a busy-through-the-window day is recorded.
+    // nightly redteam + weekly maintenance — best effort. P1-095 fires the pass
+    // at the first >= 2h idle gap; P3-356 adds the RESERVED window: from 02:00
+    // local new picks are held (same drain mechanism as the P1-104 self-reload)
+    // so the fleet drains into the pass — a busy 4-slot fleet never produces a
+    // 2h idle gap. 90min wait cap: after that the pass runs even with 1 slot
+    // busy, as long as slot 1 (the worktree the nightly agents share) is free.
     // P1-075: a crash inside the pass must never take the loop down — it is
     // logged ("nightly pass crashed") and the cycle continues.
     // Foreign mission: the whole nightly layer is OFF — redteam/explorer/
     // forensic are our repo's self-improvement, never an attack on the user's.
-    const nightly = nightlyLayer(foreignMission, running.size);
-    if (nightly === "run") {
-      try {
-        await maybeNightly(slotCfg.get(1)!, state);
-      } catch (err) {
-        log("warn", "nightly pass crashed", { err: String(err).slice(0, 200) });
-      }
-    } else if (nightly === "busy") {
+    {
+      const nowMs = Date.now();
       const today = nowLocalISO().slice(0, 10);
-      const reason = nightlySkipDue(state, today, new Date().getHours(), true);
-      if (reason) {
-        state.nightlySkipped = { date: today, reason };
-        saveState(state);
-        log("info", "nightly pass skipped", { reason });
-        emit("phase", { task: "nightly", phase: "skipped", ok: false, detail: reason });
+      const win = nightlyWindow({
+        hour: new Date(nowMs).getHours(),
+        running: running.size,
+        auxSlotBusy: running.has(1),
+        windowSince: nightlyWindowSince,
+        now: nowMs,
+        foreignMission,
+        doneToday: state.redteamLast === today && state.explorerLast === today && !forensicDue(state.forensicLast),
+      });
+      // P3-356 (round 2): capture the anchor BEFORE the closed-window decision
+      // wipes it — a skip record is only writable at hour >= 4, when the window
+      // is already closed and win.since is undefined, so the "since when" half
+      // of the reason needs the previous (in-window) tick's anchor.
+      const windowAnchor = nightlyWindowSince;
+      nightlyWindowSince = win.since;
+      if (win.drain !== nightlyDrain && !once) {
+        log("info", win.drain ? "nightly window open — new picks held until the slots drain" : "nightly window closed — new picks resume", { hour: new Date(nowMs).getHours() });
+      }
+      nightlyDrain = win.drain && !once;
+      if (win.run || (!foreignMission && running.size === 0 && nightlyIdleDue(state.lastCycleAt))) {
+        const trigger = win.run ? (win.forced ? "wait cap expired" : "reserved window") : "idle gap";
+        try {
+          await maybeNightly(slotCfg.get(1)!, state, trigger);
+        } catch (err) {
+          log("warn", "nightly pass crashed", { err: String(err).slice(0, 200) });
+        }
+      } else if (!foreignMission) {
+        const reason = nightlySkipDue(state, today, new Date(nowMs).getHours(), running.size > 0, {
+          running: running.size,
+          slots: slotNumbers.length,
+          since: windowAnchor,
+          now: nowMs,
+        });
+        if (reason) {
+          state.nightlySkipped = { date: today, reason };
+          saveState(state);
+          log("info", "nightly pass skipped", { reason });
+          emit("phase", { task: "nightly", phase: "skipped", ok: false, detail: reason });
+        }
       }
     }
 
@@ -779,14 +818,15 @@ function overCap(task: Task): boolean {
   return TASK_ID_RE.test(task.id) && isOverCap(state.taskAttempts[attemptsKey(activeMissionKey, task.id)], task.size);
 }
 
-/** One-shot validation mode used by the eval battery. */
-async function maybeNightly(cfg: PilotConfig, st: PilotState) {
+/**
+ * The nightly pass itself (experience maintenance, weekly forensic, computer-use
+ * explorer, red team). `trigger` names the loop decision that armed it
+ * ("reserved window" | "wait cap expired" | "idle gap") for the log/events.
+ * Day-stamps + --once are guarded here; WHEN to fire is the loop's job
+ * (nightlyWindow + nightlyIdleDue at the call site — P3-356).
+ */
+async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
   const today = nowLocalISO().slice(0, 10);
-  // P1-095: idle-window gate — the old exact-hour condition (3am) combined
-  // with the slots-idle call-site guard was effectively unreachable (pipelines
-  // routinely span the whole 03:00–03:59 window). Now: first >= 2h idle gap of
-  // the day.
-  if (!nightlyIdleDue(st.lastCycleAt)) return;
   // P1-059: forensic carries its own 7-day guard — a due forensic must not be
   // skipped just because redteam/explorer already ran today (both self-guard).
   const nightlyDone = st.redteamLast === today && st.explorerLast === today;
@@ -799,6 +839,13 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState) {
     st.nightlySkipped = null;
     saveState(st);
   }
+  // P3-356: the events.jsonl trace the operator greps for — one `phase: run`
+  // line per night the pass really started (the skip path emits `skipped`).
+  // Round 2 (review): a forensic-only night (redteam/explorer already stamped,
+  // the nightlyDone + forensicDue fall-through above) must not claim agents
+  // that will not run — the audit trail names what actually starts.
+  const starting = nightlyDone ? "forensic starting (redteam/explorer already ran today)" : "redteam/explorer/forensic starting";
+  emit("phase", { task: "nightly", phase: "run", ok: true, detail: `${trigger} — ${starting}` });
   // sync so the nightly agents read a fresh main; a failing sync only skips
   // the pass (best-effort by design — never blocks the loop)
   let wsReady = true;

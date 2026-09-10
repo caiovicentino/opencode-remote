@@ -640,7 +640,7 @@ import { CATALOG_TTL_MS, fetchAvailableModels, parseProviderCatalog, pickMission
 import { deployPreflight } from "../apps/pilot/src/deploy";
 import { directionGuardDetail } from "../apps/pilot/src/deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_AFTER, DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal } from "../apps/pilot/src/deploybackoff";
-import { nightlyLayer } from "../apps/pilot/src/scheduler";
+import { NIGHTLY_DRAIN_CAP_MS, NIGHTLY_START_HOUR, nightlyWindow } from "../apps/pilot/src/scheduler";
 import { detectDefaultBranch, parseRemoteShowHead, parseSymbolicHead } from "../apps/pilot/src/missionrepo";
 import { BACKLOG_SKELETON, backlogSkeletonEdit, needsBacklogSkeleton, seedBacklogSkeleton } from "../apps/pilot/src/backlog";
 import { activeModelSubstitutions, clearModelSubstitution, formatModelSubstitutions, readModelSubstitutions, recordModelSubstitution } from "../apps/pilot/src/modelsubst";
@@ -5463,7 +5463,7 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
   );
   check(
     "P1-104: fillFreeSlots honors the drain hold (no new picks while draining)",
-    pilotIndexSrc.includes("if (drainNewPicks) return; // P1-104: self-reload draining — no new picks"),
+    pilotIndexSrc.includes("if (drainNewPicks || nightlyDrain) return; // P1-104 self-reload / P3-356 nightly window — no new picks"),
   );
 }
 
@@ -9685,6 +9685,13 @@ check(
   check("nightlySkipDue: pass already ran today → null", nightlySkipDue({ redteamLast: today, explorerLast: today }, today, 4, true) === null);
   check("nightlySkipDue: slots idle → null", nightlySkipDue({ redteamLast: yesterday, explorerLast: yesterday }, today, 4, false) === null);
 
+  // P3-356: with the hold snapshot the reason names the slots that held and
+  // since when; without one (legacy callers) the honest generic string stands.
+  const holdReason = nightlySkipDue({ redteamLast: yesterday, explorerLast: yesterday }, today, 4, true, { running: 3, slots: 4, since: now - 7_234_567, now });
+  check("nightlySkipDue: hold ctx → reason carries slots held + since when", holdReason?.includes("3/4 slots busy") === true && /since \d\d:\d\d/.test(holdReason ?? ""));
+  const holdNoSince = nightlySkipDue({ redteamLast: yesterday, explorerLast: yesterday }, today, 4, true, { running: 2, slots: 4, now });
+  check("nightlySkipDue: hold without a window anchor omits the since part", holdNoSince?.includes("2/4 slots busy") === true && !holdNoSince.includes("since"));
+
   // recordCycle stamps the idle-window trigger with the injected now
   const rc = { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, taskAttempts: {} } as PilotState;
   recordCycle(rc, true, undefined, 12345);
@@ -9755,6 +9762,55 @@ check(
   check("idle day: idle-window trigger fires", nightlyIdleDue(idleState.lastCycleAt, now) === true);
   check("idle day: pass not done (explorerLast unset) → guards pass", !(idleState.redteamLast === today && idleState.explorerLast === today));
   check("idle day: slots idle → no skip record", nightlySkipDue(idleState, today, 4, false) === null);
+}
+
+// --- P3-356: reserved nightly window — table over the scheduler decision --------
+{
+  const NOW = 10_000_000_000;
+  const CAP = NIGHTLY_DRAIN_CAP_MS;
+  const rows: Array<{
+    name: string;
+    hour: number;
+    running: number;
+    aux?: boolean;
+    since?: number;
+    foreign?: boolean;
+    done?: boolean;
+    want: { drain: boolean; run: boolean; forced: boolean };
+  }> = [
+    // drena — the window holds new picks from 02:00 local and anchors the clock
+    { name: "before the window (hour 1) → closed", hour: 1, running: 4, want: { drain: false, run: false, forced: false } },
+    { name: "window opens at hour 2 → drains, anchors since", hour: 2, running: 4, want: { drain: true, run: false, forced: false } },
+    { name: "window holds at hour 3 with all slots busy", hour: 3, running: 4, since: NOW, want: { drain: true, run: false, forced: false } },
+    { name: "after the window (hour 4) → closed, picks resume", hour: 4, running: 4, since: NOW, want: { drain: false, run: false, forced: false } },
+    // roda — a drained fleet inside the window fires the pass
+    { name: "hour 3 with slots drained → run", hour: 3, running: 0, since: NOW, want: { drain: true, run: true, forced: false } },
+    // teto — 90min wait cap: runs with 1 slot busy, unless it holds the aux worktree
+    { name: "cap not reached (89min) → keep waiting", hour: 3, running: 1, aux: false, since: NOW - CAP + 60_000, want: { drain: true, run: false, forced: false } },
+    { name: "cap reached with 1 slot busy (aux free) → forced run", hour: 3, running: 1, aux: false, since: NOW - CAP, want: { drain: true, run: true, forced: true } },
+    { name: "cap reached but slot 1 (aux worktree) busy → keep waiting", hour: 3, running: 1, aux: true, since: NOW - CAP, want: { drain: true, run: false, forced: false } },
+    { name: "cap reached with 2 slots busy → keep waiting (honest skip instead)", hour: 3, running: 2, aux: false, since: NOW - CAP, want: { drain: true, run: false, forced: false } },
+    // dia já feito / foreign mission — the window stays closed
+    { name: "pass already ran today → closed (picks resume)", hour: 2, running: 4, done: true, want: { drain: false, run: false, forced: false } },
+    { name: "foreign mission → closed even with the fleet idle", hour: 2, running: 0, foreign: true, want: { drain: false, run: false, forced: false } },
+  ];
+  for (const r of rows) {
+    const d = nightlyWindow({
+      hour: r.hour,
+      running: r.running,
+      auxSlotBusy: r.aux ?? true,
+      windowSince: r.since,
+      now: NOW,
+      foreignMission: r.foreign ?? false,
+      doneToday: r.done ?? false,
+    });
+    const sinceOk = d.since === (r.want.drain ? r.since ?? NOW : undefined);
+    check(
+      `nightly window: ${r.name}`,
+      d.drain === r.want.drain && d.run === r.want.run && d.forced === r.want.forced && sinceOk,
+    );
+  }
+  check("nightly window: constants pin 02:00–04:00 local and the 90min cap", NIGHTLY_START_HOUR === 3 && NIGHTLY_DRAIN_CAP_MS === 90 * 60_000);
 }
 
 
@@ -19673,15 +19729,25 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const short = noteDeployRefusal(noteDeployRefusal(null, "direction-guard", t0, { after: 2, backoffMs: 1_000 }), "direction-guard", t0 + 1, { after: 2, backoffMs: 1_000 });
   check("deploy backoff: threshold and window injectable (tests)", short?.until === t0 + 1 + 1_000 && deployBackoffRemaining(short, t0 + 1_001) === 0);
 
-  // (3) nightly layer vs foreign mission
-  check("nightly layer: foreign mission → off, idle or busy", nightlyLayer(true, 0) === "off" && nightlyLayer(true, 3) === "off");
-  check("nightly layer: own repo → run when idle, busy otherwise", nightlyLayer(false, 0) === "run" && nightlyLayer(false, 1) === "busy");
-  const nightlyAt = pilotIndexSrc.indexOf("const nightly = nightlyLayer(foreignMission, running.size);");
+  // (3) nightly window vs foreign mission (P3-356)
+  check("nightly window: foreign mission → closed even idle", nightlyWindow({ hour: 2, running: 0, auxSlotBusy: false, windowSince: undefined, now: 1, foreignMission: true, doneToday: false }).run === false);
+  const nightlyAt = pilotIndexSrc.indexOf("const win = nightlyWindow({");
   check(
-    "index.ts: maybeNightly only runs under nightlyLayer === \"run\" (foreign mission never reaches the red team)",
+    "index.ts: maybeNightly only runs under the nightly window / idle gap (foreign mission never reaches the red team)",
     nightlyAt > -1 &&
-      /if \(nightly === "run"\) \{\s*try \{\s*await maybeNightly\(/.test(pilotIndexSrc.slice(nightlyAt, nightlyAt + 400)) &&
+      pilotIndexSrc.slice(nightlyAt, nightlyAt + 1400).includes("if (win.run || (!foreignMission && running.size === 0 && nightlyIdleDue(state.lastCycleAt))) {") &&
       (pilotIndexSrc.match(/await maybeNightly\(/g) ?? []).length === 1,
+  );
+  check("index.ts: nightly pass start emits a task=nightly phase=run event line", /emit\("phase", \{ task: "nightly", phase: "run", ok: true/.test(pilotIndexSrc));
+  // round 2 review: a skip record is only writable at hour >= 4, when the
+  // window is already closed — the loop must read the PRE-tick anchor, not the
+  // wiped one, or the "since when" half of the reason is dead code.
+  const anchorAt = pilotIndexSrc.indexOf("const windowAnchor = nightlyWindowSince;");
+  const wipeAt = pilotIndexSrc.indexOf("nightlyWindowSince = win.since;");
+  const skipSinceAt = pilotIndexSrc.indexOf("since: windowAnchor,");
+  check(
+    "index.ts: skip record reads the pre-tick window anchor (since survives the window close)",
+    anchorAt > -1 && wipeAt > anchorAt && skipSinceAt > wipeAt,
   );
 
   // (5a) default HEAD detection — injectable io

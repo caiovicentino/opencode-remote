@@ -108,12 +108,16 @@ export function assignSlots(
   return out;
 }
 
-// ── P1-095: nightly pass trigger — idle window instead of a wall-clock hour ──
+// ── P1-095/P3-356: nightly pass trigger ─────────────────────────────────────
 //
-// The old gate (`hour === 3` AND `running.size === 0`) was effectively
-// unreachable: pipelines routinely span the whole 03:00–03:59 window, so
-// redteam/explorer/forensic never ran. The nightly pass now fires at the first
-// moment the scheduler has been idle >= 2h since the last pipeline cycle.
+// P1-095 replaced the old `hour === 3` gate with a >= 2h idle gap. That fixed
+// the single-slot fleet but a busy 4-slot fleet NEVER produces 2 idle hours
+// (09-04..09-07 logged "nightly pass skipped" every day; it only ran when the
+// fever audit mode happened to empty the slots). P3-356 adds a RESERVED
+// window: one hour before the classic nightly hour the loop holds new picks
+// (the P1-104 drain mechanism) so the slots drain, and the pass fires as soon
+// as `running.size === 0` — with a wait cap after which it runs even with a
+// single slot still busy (the aux agents only need slot 1's worktree).
 
 /** Idle gap (ms since the last pipeline cycle) that arms the nightly pass. */
 export const NIGHTLY_IDLE_MS = 2 * 60 * 60_000;
@@ -121,22 +125,70 @@ export const NIGHTLY_IDLE_MS = 2 * 60 * 60_000;
 /**
  * True when the scheduler has been idle long enough to start the nightly pass.
  * An undefined `lastCycleAt` (fresh or legacy state) means idle since forever →
- * due immediately.
+ * due immediately. P3-356: this is now the OR-path for an already-idle fleet —
+ * the reserved window below is the trigger a busy fleet can always hit.
  */
 export function nightlyIdleDue(lastCycleAt: number | undefined, now = Date.now()): boolean {
   return now - (lastCycleAt ?? 0) >= NIGHTLY_IDLE_MS;
 }
 
+/** Local hour the nightly pass targets (the classic 03:xx window). */
+export const NIGHTLY_START_HOUR = 3;
+
+/** Wait cap inside the reserved window: after this long with slots still busy
+ * the pass runs anyway (at most 1 slot occupied, aux slot free). */
+export const NIGHTLY_DRAIN_CAP_MS = 90 * 60_000;
+
+/** Input for the per-tick nightly window decision (all injectable for tests). */
+export interface NightlyWindowInput {
+  /** Current local hour. */
+  hour: number;
+  /** Slots currently running pipelines. */
+  running: number;
+  /** True when slot 1 (the aux/nightly worktree) is among the busy slots. */
+  auxSlotBusy: boolean;
+  /** Epoch-ms the current window opened (undefined → opens on this tick). */
+  windowSince: number | undefined;
+  /** Epoch-ms now. */
+  now: number;
+  /** Foreign mission → the whole nightly layer is off. */
+  foreignMission: boolean;
+  /** Redteam+explorer already stamped today (and no forensic overdue). */
+  doneToday: boolean;
+}
+
+/** Per-tick decision for the reserved nightly window. */
+export interface NightlyWindowDecision {
+  /** Hold new picks this tick (drain the fleet into the pass). */
+  drain: boolean;
+  /** Run the nightly pass this tick. */
+  run: boolean;
+  /** The pass runs despite busy slots — the wait cap expired. */
+  forced: boolean;
+  /** Window anchor to carry into the next tick (undefined → window closed). */
+  since: number | undefined;
+}
+
+const NIGHTLY_WINDOW_CLOSED: NightlyWindowDecision = { drain: false, run: false, forced: false, since: undefined };
+
 /**
- * Which branch of the nightly layer the loop takes this tick. The nightly
- * agents (redteam, explorer, forensic, experience maintenance) are the
- * self-improvement layer of OUR repo: a foreign mission (the user's repo) gets
- * the mission pipeline only — never a red team attacking their code base, nor
- * a "nightly skipped" record for a pass that must not run there.
+ * P3-356: the reserved nightly window. From `NIGHTLY_START_HOUR - 1` (02:00
+ * local) to `NIGHTLY_START_HOUR + 1` (04:00) the fleet stops picking new tasks
+ * and the pass runs at the first tick with every slot idle. After
+ * `NIGHTLY_DRAIN_CAP_MS` inside the window it runs even with ONE slot busy —
+ * never while slot 1 (the worktree the nightly agents share) is itself busy,
+ * and never with 2+ slots still occupied (that is what the honest skip record
+ * in `nightlySkipDue` is for). A foreign mission or an already-done day keeps
+ * the window closed: no drain, no run.
  */
-export function nightlyLayer(foreignMission: boolean, slotsRunning: number): "run" | "busy" | "off" {
-  if (foreignMission) return "off";
-  return slotsRunning === 0 ? "run" : "busy";
+export function nightlyWindow(i: NightlyWindowInput): NightlyWindowDecision {
+  if (i.foreignMission || i.doneToday) return NIGHTLY_WINDOW_CLOSED;
+  const inWindow = i.hour >= NIGHTLY_START_HOUR - 1 && i.hour < NIGHTLY_START_HOUR + 1;
+  if (!inWindow) return NIGHTLY_WINDOW_CLOSED;
+  const since = i.windowSince ?? i.now;
+  const capHit = i.now - since >= NIGHTLY_DRAIN_CAP_MS;
+  const forced = i.running > 0 && capHit && !i.auxSlotBusy && i.running <= 1;
+  return { drain: true, run: i.running === 0 || forced, forced, since };
 }
 
 /** The nightly skip record persisted in state.json (once per day, honest). */
@@ -146,21 +198,43 @@ export interface NightlySkip {
 }
 
 /**
- * Reason string when the classic nightly window (03:xx) has passed with slots
- * still busy and the pass not run today — the "nightly skipped" signal for
- * state.json + Mission Control. Returns null (nothing to record) when the
- * slots are idle, the hour is still within the window, the pass already ran
- * today, or a skip was already recorded today (dedupe by date).
+ * Snapshot of WHO held the slots when the reserved nightly window passed —
+ * feeds the honest skip record (P3-356: how many slots and since when).
+ */
+export interface NightlyHold {
+  /** Slots busy at skip time. */
+  running: number;
+  /** Fleet size (slot count). */
+  slots: number;
+  /** Epoch-ms the reserved window opened (undefined → process booted mid-window). */
+  since?: number;
+  /** Epoch-ms now. */
+  now: number;
+}
+
+/**
+ * Reason string when the reserved nightly window (02:00–04:00 local) has
+ * passed with slots still busy and the pass not run today — the "nightly
+ * skipped" signal for state.json + Mission Control. With a `hold` snapshot the
+ * reason names the slots that held and since when (P3-356). Returns null
+ * (nothing to record) when the slots are idle, the hour is still within the
+ * window, the pass already ran today, or a skip was already recorded today
+ * (dedupe by date).
  */
 export function nightlySkipDue(
   st: { redteamLast?: string; explorerLast?: string; nightlySkipped?: NightlySkip | null },
   today: string,
   hour: number,
   slotsBusy: boolean,
+  hold?: NightlyHold,
 ): string | null {
   if (!slotsBusy) return null;
-  if (hour < 4) return null; // 03:xx window not over yet — reason must stay truthful
+  if (hour < NIGHTLY_START_HOUR + 1) return null; // window not over yet — reason must stay truthful
   if (st.redteamLast === today && st.explorerLast === today) return null;
   if (st.nightlySkipped?.date === today) return null;
-  return "slots busy past the nightly window — pass not run today";
+  if (!hold) return "slots busy past the nightly window — pass not run today";
+  const since = hold.since
+    ? ` since ${new Date(hold.since).toTimeString().slice(0, 5)}`
+    : "";
+  return `reserved window passed with ${hold.running}/${hold.slots} slots busy${since} — pass not run today`;
 }
