@@ -301,7 +301,10 @@ export const dict = {
     degradedQueueHint: "Saved on this machine and sent as soon as the daemon connects — nothing is lost.",
     degradedQueuePlaceholder: "Type your first message…",
     degradedQueueSave: "Save message",
-    degradedQueueSaved: "Saved — it sends when the daemon connects.",
+    // P3-388: distinct from the hint above — the hint carries the "nothing is
+    // lost" promise, the confirmation says what the save means (queued as the
+    // first message), so the card never states the same sentence twice.
+    degradedQueueSaved: "Queued — it becomes the first message.",
     degradedLocalTitle: "Available offline",
     degradedLocalHint: "Language and theme live on this machine — they work right now.",
     degradedPairManually: "Pair another device manually",
@@ -1016,7 +1019,9 @@ export const dict = {
     degradedQueueHint: "Salva nesta máquina e enviada assim que o daemon conectar — nada se perde.",
     degradedQueuePlaceholder: "Digite sua primeira mensagem…",
     degradedQueueSave: "Salvar mensagem",
-    degradedQueueSaved: "Salva — é enviada quando o daemon conectar.",
+    // P3-388: confirmação distinta do hint — o hint carrega a promessa
+    // "nada se perde", a confirmação diz o que a salva significa.
+    degradedQueueSaved: "Na fila — será a primeira mensagem.",
     // P3-363: a escalada depois de um minuto de retry silencioso — o laço é
     // paciente por design, mas nunca pode parecer um congelamento.
     degradedEscalateTitle: "Sem resposta do daemon local há {m} min",
