@@ -11718,6 +11718,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P3-373: .welcome-mark stays an unscoped shared class (accent glyph on tokens)",
     markAt >= 0 && markRule.includes("color: var(--accent)"),
   );
+  // P3-383: the glyph reads as a display mark, not body-size text — the
+  // size AND the locked line-height AND the spacing-scale bottom beat.
+  check(
+    "P3-383: .welcome-mark renders at the display step (2rem, line-height 1, rhythm below)",
+    markRule.includes("font-size: 2rem") && markRule.includes("line-height: 1") &&
+      markRule.includes("margin-bottom: var(--space-3)"),
+  );
   // Every first-contact screen opens its centered brand header with the same
   // glyph before the wordmark — the wizard's mark language, nothing per-view.
   for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
