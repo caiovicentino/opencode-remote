@@ -47,6 +47,17 @@ import {
   WEB_ENCODING_MIN_BYTES,
 } from "../apps/relay/src/webencoding";
 import { conditionalVerdict, etagFor } from "../apps/relay/src/webcond";
+import {
+  generateInstanceId,
+  GENERATED_INSTANCE_ID_PREFIX,
+  INSTANCE_ID_ENV,
+  INSTANCE_ID_MAX_LENGTH,
+  INSTANCE_ID_PATTERN,
+  INSTANCE_ID_RANDOM_BYTES,
+  isValidInstanceId,
+  resolveInstanceId,
+} from "../apps/relay/src/instanceid";
+import { RELAY_KNOB_NAMES } from "../apps/relay/src/knobnames";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -2464,6 +2475,154 @@ check(
   }
   proc.kill("SIGTERM");
 }
+
+// --- 29. instance id: fail-closed sanitization table (P3-401, pure module) ----
+// The module is the whole identity layer of the P3-401 diagnostic: the
+// operator value wins when it passes the closed grammar, the generated value
+// answers in every other case. No trimming, no partial adoption — a value is
+// either fully inside the grammar or rejected whole.
+const RANDOM_A = new Uint8Array([0x0f, 0x3a, 0x9c, 0x2b, 0x7d, 0x5e, 0x4a, 0x18]);
+const RANDOM_B = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+
+check("instance-id: the documented env variable name is RELAY_INSTANCE_ID", INSTANCE_ID_ENV === "RELAY_INSTANCE_ID");
+check("instance-id: generated id is the prefix plus the injected bytes as lowercase hex", (() => {
+  const id = generateInstanceId(RANDOM_A);
+  return id === "relay-i-0f3a9c2b7d5e4a18" && id.startsWith(GENERATED_INSTANCE_ID_PREFIX);
+})());
+check("instance-id: generated id matches the module's own grammar and stays under the ceiling", (() => {
+  const id = generateInstanceId(RANDOM_A);
+  return INSTANCE_ID_PATTERN.test(id) && id.length <= INSTANCE_ID_MAX_LENGTH;
+})());
+check("instance-id: generated ids differ when the injected random differs", generateInstanceId(RANDOM_A) !== generateInstanceId(RANDOM_B));
+check("instance-id: in-process stability — identical inputs give the identical id in two calls", resolveInstanceId(undefined, RANDOM_A) === resolveInstanceId(undefined, RANDOM_A));
+check("instance-id: an injection shorter than the documented entropy is a programming error", (() => {
+  try {
+    generateInstanceId(new Uint8Array(INSTANCE_ID_RANDOM_BYTES - 1));
+    return false;
+  } catch (e) {
+    return e instanceof TypeError;
+  }
+})());
+
+// the sanitization table: absent, empty, too long, invalid character, valid
+const GENERATED = resolveInstanceId(undefined, RANDOM_A);
+const table: [string, unknown, "generated" | string][] = [
+  ["absent", undefined, "generated"],
+  ["null", null, "generated"],
+  ["non-string (number)", 42, "generated"],
+  ["empty", "", "generated"],
+  ["blank", "   ", "generated"],
+  ["one above the ceiling", "a".repeat(INSTANCE_ID_MAX_LENGTH + 1), "generated"],
+  ["way above the ceiling", "a".repeat(1000), "generated"],
+  ["space inside", "relay 1", "generated"],
+  ["underscore", "relay_1", "generated"],
+  ["dot", "relay.example", "generated"],
+  ["slash", "relay/1", "generated"],
+  ["colon (address-like)", "10.0.0.1:8787", "generated"],
+  ["credential-like", "user:hunter2", "generated"],
+  ["non-ascii", "réplica-um", "generated"],
+  ["control byte", "relay\n1", "generated"],
+  ["valid at the ceiling", "a".repeat(INSTANCE_ID_MAX_LENGTH), "a".repeat(INSTANCE_ID_MAX_LENGTH)],
+  ["valid operator value", "replica-b", "replica-b"],
+  ["valid with dashes and digits", "fly-machine-9x2", "fly-machine-9x2"],
+];
+for (const [name, raw, expected] of table) {
+  check(`instance-id table: ${name} resolves as expected`, (() => {
+    const resolved = resolveInstanceId(raw, RANDOM_A);
+    return expected === "generated" ? resolved === GENERATED : resolved === expected;
+  })());
+}
+check("instance-id table: isValidInstanceId agrees with the resolver on the whole table", (() => {
+  return table.every(([_, raw, expected]) => {
+    const valid = isValidInstanceId(raw);
+    return expected === "generated" ? !valid : valid === true;
+  });
+})());
+
+// --- 30. instance id on the probe body (P3-401): additive getter ---------------
+// Rules mirrored from the healthz.ts header, in order: a state without the
+// getter keeps the body byte for byte (healthy and drain); a getter answering
+// a value outside the closed grammar adds nothing and a value is NEVER
+// invented; a valid value is the exactly-one additive field; nothing of a
+// room, address or secret ever appears.
+const INSTANCE_NOW = START + 90_000;
+const instanceState = (v: unknown): HealthzState => ({
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 9,
+  instance: () => v,
+});
+
+check(
+  "instance-probe: state without the getter keeps the exact pre-P3-401 healthy body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, INSTANCE_NOW)) === FIVE_FIELD_BODY,
+);
+check(
+  "instance-probe: state without the getter keeps the exact pre-P3-401 drain body",
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, INSTANCE_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"draining":true}',
+);
+check(
+  "instance-probe: a valid value is exactly the previous keys plus one, verbatim",
+  JSON.stringify(healthzPayload(instanceState("replica-b"), INSTANCE_NOW)) ===
+    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"instanceId":"replica-b"}',
+);
+check(
+  "instance-probe: the field rides the drain response additively, before draining",
+  JSON.stringify(healthzPayload(instanceState("replica-b"), INSTANCE_NOW, true)) ===
+    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"instanceId":"replica-b","draining":true}',
+);
+for (const bad of [undefined, null, 42, true, {}, "", "   ", "a".repeat(INSTANCE_ID_MAX_LENGTH + 1), "relay 1", "relay_1", "réplica", "10.0.0.1:8787"]) {
+  check(
+    `instance-probe: out-of-grammar value adds nothing (${JSON.stringify(String(bad)).slice(0, 24)})`,
+    JSON.stringify(healthzPayload(instanceState(bad), INSTANCE_NOW)) === FIVE_FIELD_BODY,
+  );
+}
+check(
+  "instance-probe: identical input produces an identical body in two calls",
+  JSON.stringify(healthzPayload(instanceState("replica-b"), INSTANCE_NOW)) ===
+    JSON.stringify(healthzPayload(instanceState("replica-b"), INSTANCE_NOW)),
+);
+check(
+  "instance-probe: the body carries no key beyond the documented ones and no room, address or secret material",
+  (() => {
+    const planted = healthzPayload(
+      instanceState("relay-i-0f3a9c2b7d5e4a18"),
+      INSTANCE_NOW,
+    );
+    const body = JSON.stringify(planted);
+    return (
+      JSON.stringify(Object.keys(planted)) ===
+        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "instanceId"]) &&
+      !body.includes("room-abc123def456") &&
+      !body.includes("10.0.0.1") &&
+      !body.includes("hunter2") &&
+      planted.instanceId === "relay-i-0f3a9c2b7d5e4a18"
+    );
+  })(),
+);
+
+// --- 31. instance id wiring (P3-401): boot resolution and knob registry --------
+check(
+  "instance-wiring: index.ts resolves the id exactly once at boot from the documented env and feeds the probe getter",
+  (() => {
+    const relayIndex = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/index.ts", import.meta.url)),
+      "utf8",
+    );
+    return (
+      relayIndex.includes("const INSTANCE_ID = resolveInstanceId(process.env[INSTANCE_ID_ENV], randomBytes(8))") &&
+      relayIndex.includes("instance: () => INSTANCE_ID") &&
+      // one resolution point: the id is stable for the process lifetime
+      (relayIndex.match(/resolveInstanceId\(/g) ?? []).length === 1
+    );
+  })(),
+);
+check(
+  "instance-wiring: RELAY_INSTANCE_ID is a registered knob name (no unknown-variable warn at boot)",
+  RELAY_KNOB_NAMES.includes(INSTANCE_ID_ENV),
+);
 
 if (failures) process.exit(1);
 console.log("relay-healthz: ALL OK");

@@ -117,6 +117,7 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_MAX_PER_IP` | `20` | Keep the default. Raise it only when many devices legitimately share one egress IP (office NAT, corporate VPN). Ceiling `1000`; a zero, negative, fractional or above-ceiling value refuses the boot (fail-closed) instead of disabling the cap. |
 | `RELAY_TRUST_PROXY_HOPS` | `0` | Leave `0` on direct exposure. Set it **only** to the exact number of trusted proxy layers in front of the relay (e.g. `1` for a single provider load balancer doing TLS termination) — see the section below. Ceiling `8`; a non-numeric, negative, fractional or above-ceiling value refuses the boot (fail-closed). |
 | `RELAY_DRAIN_GRACE_MS` | `0` | Extra window between the moment a `SIGTERM` marks the instance as draining (`/healthz` flips to `503`) and the moment the live sockets are closed. Default `0` keeps the historical behavior; raise it (max `2000`) when your load balancer polls `/healthz` too rarely to notice the 503 before `docker stop` proceeds. See the sections below. |
+| `RELAY_INSTANCE_ID` | unset (generated) | Opaque identifier of this replica, published as the additive `instanceId` field of `/healthz` (P3-401). Accepts 1–64 characters of `A-Z a-z 0-9 -`; an absent, empty, oversized or otherwise invalid value falls back to a per-boot generated id (`relay-i-` plus 16 hex digits) — nothing outside that grammar is ever published. Set it to your platform's replica id (a Fly machine id, a pod name) so restarts keep a stable identity; the field is never a secret, an address or a room id. See the replica section below. |
 | `RELAY_TLS_CERT` | unset | Leave unset for provider TLS in front (the default layout). Set **only together with `RELAY_TLS_KEY`** — the two form a mandatory pair — when the relay terminates TLS itself; both files must be readable by the `node` user and the relay serves `wss://` directly. |
 | `RELAY_TLS_KEY` | unset | See `RELAY_TLS_CERT`. Either variable alone, a set-but-blank value, or an unreadable file **refuses the boot** (fail-closed) — the relay never silently downgrades a public host to plain HTTP. |
 | `RELAY_LOG_LEVEL` | `info` | Log verbosity: `error`, `warn`, `info` or `debug` (case-insensitive). Keep `info`: only `debug` writes the per-frame `frame in` line, and on a public host that line reconstructs who talked to whom and when out of retained provider logs. An unknown or non-string value **refuses the boot** (fail-closed) instead of falling back to the default. See the section below. |
@@ -666,7 +667,7 @@ changed. No other relay log line ever carries a client address.
 expose publicly (no room ids, no per-peer metadata):
 
 ```json
-{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0}
+{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18"}
 ```
 
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
@@ -755,7 +756,7 @@ When the relay receives `SIGTERM` it enters a drain window (≤3s) and
 `draining:true` field — every pre-existing field keeps its name and meaning:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
+{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18","draining":true}
 ```
 
 The 503 tells the load balancer to stop routing NEW daemons and phones to
@@ -769,6 +770,56 @@ draining, waits that many milliseconds *before* closing the live sockets, so
 a balancer with a coarse polling interval has time to notice the 503 and
 pull the instance out of rotation. An empty env reproduces the historical
 shutdown sequence exactly.
+
+## One replica per room-space: the silent pairing trap (P3-401)
+
+Room state lives in the relay process's memory: a room exists only on the
+replica whose process admitted its peers, and frames route only inside that
+process. Run more than one live replica behind the same public address and
+the load balancer hands the Mac's websocket to replica A and the phone's to
+replica B. Both peers look connected, every replica is individually healthy,
+the probe is green, the logs are quiet — and no frame ever routes, because
+the room only exists on one of them. The pairing screen waits for a peer
+that never arrives, indistinguishable from a dead daemon or a bad network.
+
+The rule: **exactly one live replica may serve one public address's
+room-space.** Scale vertically — raise `RELAY_MAX_SOCKETS` and
+`RELAY_MAX_SOCKETS_GLOBAL` on a bigger instance — never horizontally. The
+P2-145 drain makes a restart safe in one order only: the old replica starts
+draining (503, upgrades refused), the balancer pulls it from rotation, its
+rooms die and their peers reconnect to the fresh replica. A deploy shape
+where the new replica starts admitting while the old one is still admitting
+is the same trap in miniature.
+
+### The two-minute test
+
+The `instanceId` field on `/healthz` answers the only question that
+matters here: how many distinct instances are answering this address right
+now? Call the probe through the **public** address — not localhost, so the
+balancer, not your process, decides who answers — several times over a
+minute, and compare:
+
+```bash
+for i in $(seq 1 12); do
+  curl -fsS https://relay.example.com/healthz | grep -o '"instanceId":"[^"]*"'
+  sleep 10
+done
+```
+
+- Every line shows the **same** id → one replica is answering; pairing can
+  work.
+- **Different** ids alternate → more than one replica is serving the
+  address: pairing is broken in silence. Scale back to one replica.
+
+The field is additive and opaque: it carries the `RELAY_INSTANCE_ID` value
+when set (1–64 characters of letters, digits and dashes; any other value
+falls back to the generated one) or a generated `relay-i-…` id per boot —
+never a secret, an address, or a room id. It rides the drain response like
+every other field, so the test stays honest during a rolling restart; a
+replica that answers, answers with its id. Setting `RELAY_INSTANCE_ID` to
+your platform's replica id keeps the identity stable across restarts; a
+generated id changes per boot but always agrees with itself minute to
+minute, which is all the test needs.
 
 ## Metrics endpoint
 
