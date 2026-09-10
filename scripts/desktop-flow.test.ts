@@ -509,6 +509,15 @@ try {
     15_000,
   );
   if (gateSide.ok) check("P3-365: .desk-side present while not paired", /side=true\|phase=(unpaired|connecting|error)/.test(gateSide.stdout), gateSide.stdout);
+  // P3-380: the shell's primary CTA is inert until pairing succeeds — it must
+  // carry the gate hint tooltip and visible disabled chrome, not silently
+  // swallow the most natural first click.
+  const gateNewDisabled = run(
+    "P3-380: gate + Novo reads as disabled with a hint",
+    ["ipc", "(() => { const b = document.querySelector('.desk-new'); if (!b) return 'missing'; const cs = getComputedStyle(b); return 'disabled:' + b.disabled + '|hint:' + (b.title ? 'yes' : 'no') + '|opacity:' + cs.opacity + '|cursor:' + cs.cursor; })()"],
+    15_000,
+  );
+  if (gateNewDisabled.ok) check("P3-380: .desk-new disabled + hinted + grayed at the gate", /disabled:true\|hint:yes\|opacity:0\.45\|cursor:not-allowed/.test(gateNewDisabled.stdout), gateNewDisabled.stdout);
   run("P3-365: open Mission Control from the rail", ["click", 'button[data-pane="mission"]'], 15_000);
   const gateMission = run(
     "P3-365: Mission Control renders behind the gate",

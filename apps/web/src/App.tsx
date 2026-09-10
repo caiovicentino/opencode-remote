@@ -1451,7 +1451,11 @@ export default function App() {
         <div className="desk">
           <aside className="desk-side">
             <div className="desk-side-top">
-              <button className="primary desk-new" disabled>
+              {/* P3-380: the primary CTA is inert until pairing succeeds —
+                  carry the same hint tooltip as the rail's Conversas slot and
+                  let the disabled chrome gray it out, so the shell's most
+                  natural first click explains itself instead of dying. */}
+              <button className="primary desk-new" disabled title={t("gateSessionsHint")}>
                 {t("newShort")}
               </button>
               <nav className="desk-nav">
