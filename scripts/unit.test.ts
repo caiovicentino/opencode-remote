@@ -1669,6 +1669,7 @@ const chatViewPeekSource = readFileSync(new URL("../apps/web/src/components/Chat
 check("ChatView mounts the screen-peek card on the composer", chatViewPeekSource.includes("screen-peek") && chatViewPeekSource.includes("openScreenPeek"));
 check("ChatView asks through the attachment pipeline", chatViewPeekSource.includes("setPendingAsk") && chatViewPeekSource.includes("attachImage(file)"));
 check("ChatView waits a bounded time with the labeled escape", chatViewPeekSource.includes("screenPeekTimeout"));
+check("ChatView keeps the typed question until the send fires", chatViewPeekSource.includes("if (q) setPendingAsk(q)"));
 check("App answers screen.capture-requested in the shell only", appSrcScreenPeek());
 function appSrcScreenPeek(): boolean {
   const src = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
@@ -1678,6 +1679,14 @@ const responderSource = readFileSync(new URL("../apps/web/src/lib/screenresponde
 check("responder reports failures to the daemon route", responderSource.includes("/__ocr/screen/failed"));
 check("responder fulfills through the frames route", responderSource.includes("/__ocr/screen/frames"));
 check("responder uploads through the shared chunked helper", responderSource.includes("uploadBytesChunked"));
+// review round 3: the picker must capture the PICKED source, and the shell
+// indicator must live on the main render path with a capture-keyed timer
+check("responder captures the picked screen/window source", responderSource.includes("bridge.captureScreen({ sourceId })"));
+const appPeekSource = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+check("App picker recapture fulfills a REAL pending request with the picked source", appPeekSource.includes('"/__ocr/screen/request"') && appPeekSource.includes("captureAndFulfill(request, bridge, requestId, sourceId)"));
+check("App renders the screen indicator on the main return path too", (appPeekSource.match(/screenFlash && \(/g) ?? []).length >= 2);
+const screenFlashSource = readFileSync(new URL("../apps/web/src/components/ScreenFlash.tsx", import.meta.url), "utf8");
+check("ScreenFlash hide timer keys on the capture, never on App renders", screenFlashSource.includes("[flash.at]") && screenFlashSource.includes("closeRef"));
 
 // the daemon routes exist, stay inside the E2E tunnel and are request-scoped
 const daemonIndexSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
@@ -1686,6 +1695,7 @@ for (const route of ["/__ocr/screen/request", "/__ocr/screen/frames", "/__ocr/sc
 }
 check("daemon broadcasts the shell event set", daemonIndexSrc.includes("screen.capture-requested") && daemonIndexSrc.includes("screen.frame") && daemonIndexSrc.includes("screen.capture-failed"));
 check("daemon keeps the screen frame in memory only", daemonIndexSrc.includes("let screenFrame"));
+check("daemon fulfills frames only for PENDING request ids", daemonIndexSrc.includes("screenRequests.has(requestId)"));
 
 // the copy exists in both languages of the dictionary
 check("screen-peek copy exists in both languages", (i18nSource.match(/screenPeekOpen:/g) ?? []).length === 2 && (i18nSource.match(/screenPeekTimeout:/g) ?? []).length === 2);

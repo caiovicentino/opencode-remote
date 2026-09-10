@@ -1533,12 +1533,19 @@ end tell`;
   }
   if (req.path === "/__ocr/screen/frames" && req.method === "POST") {
     const { requestId, uploadId } = req.body as { requestId?: string; uploadId?: string };
+    // a frame exists only because someone asked for THAT frame: the id must
+    // be pending (created by /__ocr/screen/request, consumed here) — a room
+    // member cannot seed the stored frame without an explicit request, and a
+    // replayed fulfillment finds the id already consumed.
+    if (typeof requestId !== "string" || !screenRequests.has(requestId)) {
+      return { id: req.id, status: 409, body: { error: "no pending screen request" } };
+    }
     const up = typeof uploadId === "string" ? uploads.get(uploadId) : undefined;
     if (!up) return { id: req.id, status: 410, body: { error: "frame upload not found" } };
     if (up.buf.length > SCREEN_FRAME_MAX_BYTES) {
       return { id: req.id, status: 413, body: { error: "frame too large" } };
     }
-    if (typeof requestId === "string") screenRequests.delete(requestId);
+    screenRequests.delete(requestId);
     screenFrame = { buf: Buffer.from(up.buf), mime: up.mime || "image/jpeg", at: Date.now() };
     metrics.inc("ocr_screen_frames_total");
     log("info", "screen frame received", { bytes: up.buf.length });

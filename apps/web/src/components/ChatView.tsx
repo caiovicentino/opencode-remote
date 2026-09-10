@@ -452,7 +452,7 @@ export default function ChatView({
   // fresh capture is requested), the phone waits a bounded time for the
   // shell's screen.frame event and then shows the labeled manual escape.
   const [screenPeek, setScreenPeek] = useState<{
-    status: "loading" | "empty" | "waiting" | "ready" | "error";
+    status: "loading" | "waiting" | "ready" | "error";
     b64?: string;
     mime?: string;
     at?: number;
@@ -531,12 +531,19 @@ export default function ChatView({
     }
   }, [events]);
 
-  // fire the ask once the attachment chip is in the composer strip
+  // fire the ask once the attachment chip is in the composer strip; on an
+  // upload failure the chip never lands and the typed question stays in the
+  // card input for a retry (attachImage's error banner explains why)
   useEffect(() => {
     if (!pendingAsk || uploading) return;
     const q = pendingAsk;
     setPendingAsk(null);
-    if (images.length > 0) void send(q);
+    if (images.length > 0) {
+      setScreenPeek(null);
+      setScreenAskOpen(false);
+      setScreenAskInput("");
+      void send(q);
+    }
   }, [pendingAsk, uploading, images]);
   const { models, model, pickModel } = useModelSelector(request);
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
@@ -2210,10 +2217,9 @@ export default function ChatView({
       setScreenPeek({ status: "error", failKey: "screenPeekFailUnknown" });
       return;
     }
-    setScreenPeek(null);
-    setScreenAskOpen(false);
-    setScreenAskInput("");
-    setPendingAsk(q);
+    // the draft stays in the card until the send actually fires; a
+    // whitespace-only question attaches the frame without a text part
+    if (q) setPendingAsk(q);
     void attachImage(file);
   }
 
@@ -3272,15 +3278,6 @@ export default function ChatView({
                 <p className="screen-peek-line">{t("screenPeekWaiting")}</p>
               ) : screenPeek.status === "loading" ? (
                 <p className="screen-peek-line">…</p>
-              ) : screenPeek.status === "empty" ? (
-                <>
-                  <p className="screen-peek-line">{t("screenPeekEmpty")}</p>
-                  <div className="screen-peek-actions">
-                    <button className="screen-peek-btn" onClick={() => void requestScreenCapture()}>
-                      <IconRefresh size={13} /> {t("screenPeekRefresh")}
-                    </button>
-                  </div>
-                </>
               ) : (
                 <>
                   <p className="screen-peek-line screen-peek-err">

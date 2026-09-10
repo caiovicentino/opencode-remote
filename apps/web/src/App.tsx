@@ -914,22 +914,33 @@ export default function App() {
     }
   }
 
-  // picker action: recapture from a chosen screen/window and re-fulfill (the
-  // daemon replaces the stored frame and rebroadcasts screen.frame)
+  // picker action: recapture from a chosen screen/window and re-fulfill. The
+  // capture must correspond to a real pending request (the daemon only
+  // fulfills those), so this creates one via /__ocr/screen/request — and
+  // registers it as SELF-initiated so the shell's own event responder does
+  // not race the picker with a primary-display capture.
   async function recaptureScreen(sourceId: string) {
     const bridge = desktopBridge();
     if (!bridge) return;
-    const res = await captureAndFulfill(request, bridge, "manual");
-    if (!res.ok) return;
-    let sources: ScreenSourceInfo[] = [];
-    if (bridge.listScreens) {
-      try {
-        sources = (await bridge.listScreens()).slice(0, SCREEN_SOURCES_MAX);
-      } catch {
-        sources = [];
+    try {
+      const reqRes = await request("POST", "/__ocr/screen/request", {});
+      const requestId = (reqRes.body as { requestId?: string } | undefined)?.requestId;
+      if (reqRes.status !== 200 || typeof requestId !== "string" || !requestId) return;
+      screenReqSeen.current.add(requestId);
+      const res = await captureAndFulfill(request, bridge, requestId, sourceId);
+      if (!res.ok) return;
+      let sources: ScreenSourceInfo[] = [];
+      if (bridge.listScreens) {
+        try {
+          sources = (await bridge.listScreens()).slice(0, SCREEN_SOURCES_MAX);
+        } catch {
+          sources = [];
+        }
       }
+      setScreenFlash({ at: res.at ?? Date.now(), sources });
+    } catch {
+      // unreachable daemon — the phone's own wait timeout is the backstop
     }
-    setScreenFlash({ at: res.at ?? Date.now(), sources });
   }
 
   // P1-046: session creation lifted out of SessionsView so Cmd+T and the
@@ -1782,6 +1793,13 @@ export default function App() {
       style={{ height: "100%" }}
     >
       {banner}
+      {screenFlash && (
+        <ScreenFlash
+          flash={screenFlash}
+          onClose={() => setScreenFlash(null)}
+          onRecapture={(sourceId) => void recaptureScreen(sourceId)}
+        />
+      )}
       {isDesktop ? (
         <div className="desk">
           <aside className="desk-side">

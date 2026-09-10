@@ -84,13 +84,16 @@ async function reportFailed(request: UploadRequestFn, requestId: string, reason:
 
 /**
  * Capture one frame and fulfill the request. Used by the event-driven
- * responder AND by the shell picker's manual recapture (any requestId — the
- * daemon only matches ids it knows).
+ * responder AND by the shell picker's manual recapture — `sourceId` selects
+ * the screen/window to capture (absent = the primary display). Used by the
+ * picker: the requestId must exist for a manual flow too (the daemon only
+ * fulfills PENDING request ids), created via /__ocr/screen/request.
  */
 export async function captureAndFulfill(
   request: UploadRequestFn,
   bridge: ScreenResponderBridge,
   requestId: string,
+  sourceId?: string,
 ): Promise<{ ok: boolean; at?: number; name?: string }> {
   if (!bridge.captureScreen) {
     await reportFailed(request, requestId, "no-bridge");
@@ -98,7 +101,7 @@ export async function captureAndFulfill(
   }
   let captured: ScreenCaptureResult | null = null;
   try {
-    captured = await bridge.captureScreen({});
+    captured = await bridge.captureScreen({ sourceId });
   } catch {
     captured = null;
   }

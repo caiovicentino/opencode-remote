@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useT } from "../lib/i18n";
 import type { ScreenSourceInfo } from "../lib/screenresponder";
 
@@ -22,10 +22,15 @@ export default function ScreenFlash({
   onRecapture: (sourceId: string) => void;
 }) {
   const t = useT();
+  // the flash is bounded by the CAPTURE time, not by App's render cadence:
+  // onClose arrives through a ref so a re-render during active use can never
+  // restart the 6s hide timer (review round 3)
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
-    const timer = setTimeout(onClose, 6000);
+    const timer = setTimeout(() => closeRef.current(), 6000);
     return () => clearTimeout(timer);
-  }, [flash.at, onClose]);
+  }, [flash.at]);
   return (
     <div className="screen-flash" role="status">
       <div className="screen-flash-head">
