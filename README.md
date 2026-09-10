@@ -450,7 +450,10 @@ private. That is the product: **local power, remote control, zero trust**.
   a natural flex basis on the title so the wrap fires before the title collapses to an
   ellipsis, and the dashboard tab renamed to the short "Dashboard" — "Dashboard ao
   vivo" duplicated the adjacent "Ao vivo" live-shot pill and pushed the row past the
-  pane edge
+  pane edge. P3-375: the calm artifact state now lives in the pane itself — any
+  "not connected" load failure (first boot, machine switch) renders the muted empty
+  copy plus a quiet "syncs on its own once the machine connects" hint, so the red
+  "not paired — pair again" line is reserved for real failures on every mount
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
   shell title included (P3-373: the build-5 token bump had briefly promoted it

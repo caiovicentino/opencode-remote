@@ -34077,6 +34077,58 @@ import { REPLY_NOTIFY_BODY, REPLY_NOTIFY_MIN_INTERVAL_MS, REPLY_NOTIFY_TITLE, re
 }
 
 
+// --- P3-375: the Artifacts pane's never-paired state is an empty world, not a
+// red failure. A "not connected" throw (first boot, machine switch) used to
+// render the danger-toned "Sem pareamento ativo — reabra o app ou pareie de
+// novo" — telling a user who never paired to "pair again".
+{
+  const artifactsSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps/web/src/components/ArtifactsView.tsx"),
+    "utf8",
+  );
+  check(
+    "P3-375: offline sync hint resolves in BOTH locales (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => {
+      const s = translate(lang, "artifactsOfflineHint");
+      return s !== "artifactsOfflineHint" && s.trim() !== "";
+    }),
+  );
+  check(
+    "P3-375: pt hint carries the calm promise — syncs on its own, nothing is lost",
+    translate("pt", "artifactsOfflineHint").includes("sincronizam sozinhos") &&
+      translate("pt", "artifactsOfflineHint").includes("nada se perde"),
+  );
+  check(
+    "P3-375: the pane branches the NotConnected sentinel into the offline state",
+    artifactsSrc.includes("isNotConnected(err)") &&
+      artifactsSrc.includes("setOffline(true)") &&
+      artifactsSrc.includes('t("artifactsOfflineHint")'),
+  );
+  // Round 3 review: the branch is pinned to the request layer's sentinel class,
+  // never to the human-readable message — a reworded throw must not silently
+  // revert the first-boot pane to the red "Sem pareamento ativo" line.
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps/web/src/App.tsx"), "utf8");
+  const errorsLibSrc = readFileSync(join(import.meta.dirname, "..", "apps/web/src/lib/errors.ts"), "utf8");
+  check(
+    "P3-375: the request layer throws the NotConnected sentinel, surfaces branch on identity",
+    errorsLibSrc.includes("export class NotConnected extends Error") &&
+      errorsLibSrc.includes("export function isNotConnected") &&
+      appSrc.includes("if (!client) throw new NotConnected()") &&
+      !appSrc.includes('throw new Error("not connected")') &&
+      !artifactsSrc.includes("/not connected/i.test("),
+  );
+  // The red line is reserved for unexpected failures; the expected offline
+  // state renders inside the calm empty-world branch, whose condition keeps
+  // the e2e error-absence hook (`.artifacts-error` gone, p.muted present).
+  // Round 3 review: a previously successful load keeps its stale results with
+  // the sync hint riding along — never a silent stale pane, never red.
+  check(
+    "P3-375: the offline hint renders in the empty world AND alongside stale results",
+    /artifacts\.length === 0 && !error && \(?[\s\S]*?artifacts-offline-hint/.test(artifactsSrc) &&
+      artifactsSrc.includes("offline && artifacts.length > 0"),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

@@ -14,6 +14,7 @@ import {
   type Status,
 } from "./lib/client";
 import { REAUTH_ERROR, REJECTED_ERROR } from "./lib/reauth";
+import { NotConnected } from "./lib/errors";
 import { classifyPairError, pairErrorCopy } from "./lib/pairerror";
 import { activeDrawerRow, hasUnreadDot, RECENTS_LIMIT, recentRows, type DrawerDest, type RecentRow } from "./lib/drawer";
 import { loadPinned, notifyPins, savePinned, subscribePins, togglePinned } from "./lib/pins";
@@ -837,7 +838,9 @@ export default function App() {
     timeoutMs?: number,
   ): Promise<OpResponse> {
     const client = clientRef.current;
-    if (!client) throw new Error("not connected");
+    // P3-375: the sentinel error for "no live client" (first boot, machine
+    // switch) — expected state; surfaces branch on the class, not the prose.
+    if (!client) throw new NotConnected();
     return client.request(method as "GET", path, body, query, timeoutMs);
   }
 

@@ -44,10 +44,13 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
    rail até o pareamento bem-sucedido (P3-380) — o clique mais natural do
    primeiro boot se explica em vez de morrer em silêncio. Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
-  clássica centrada. Os panes abertos no portão mostram mundos vazios
-  esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control
-  abre na visão forense com a copy de vazio, dashboard/captura ao vivo
-  escondidos; a lista de artifacts fica calma)
+   clássica centrada. Os panes abertos no portão mostram mundos vazios
+   esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control
+   abre na visão forense com a copy de vazio, dashboard/captura ao vivo
+   escondidos; a lista de artifacts fica calma). P3-375: a calma da lista de
+   artifacts virou comportamento do próprio pane — falha "not connected"
+   (primeiro boot, troca de máquina) mostra a copy vazia + aviso discreto de
+   sincronização, nunca o erro vermelho "sem pareamento"
 - Fila offline da primeira mensagem (P3-360): o card calmo ganha um compositor
   de verdade — "Escreva sua primeira mensagem" — e o texto salvo fica na
   máquina (`ocr_gate_queue`) até o daemon responder, quando vira a primeira

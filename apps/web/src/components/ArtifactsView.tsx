@@ -7,7 +7,7 @@ import {
 } from "../lib/artifacts";
 import { isSplitViewport } from "../lib/split";
 import { useExitAnimation } from "../lib/motion";
-import { humanizeError } from "../lib/errors";
+import { humanizeError, isNotConnected } from "../lib/errors";
 import type { OcrRequest } from "../lib/files";
 import ArtifactViewer from "./ArtifactViewer";
 import { ArtifactIcon } from "./icons";
@@ -35,6 +35,10 @@ export default function ArtifactsView({
   const t = useT();
   const [listing, setListing] = useState<ArtifactListing>({ artifacts: [], titles: {} });
   const [error, setError] = useState("");
+  // P3-375: a load failing with "not connected" is the expected never-paired
+  // state (first boot, machine switch) — an empty world to render calmly, not
+  // a failure to dress in red. Only unexpected failures keep .artifacts-error.
+  const [offline, setOffline] = useState(false);
   const [viewer, setViewer] = useState<ArtifactMeta | null>(null);
   // P3-087: the overlay slides out before unmounting — keep the last meta
   // so the exit animation has content to render
@@ -45,10 +49,18 @@ export default function ArtifactsView({
 
   function load() {
     setError("");
+    setOffline(false);
     void (async () => {
       try {
         setListing(await listArtifactsDetailed(request));
       } catch (err) {
+        // P3-375: the request layer's NotConnected sentinel marks the expected
+        // never-paired state — the calm empty world below carries a sync hint
+        // instead of the red error line. Branch on the class, not the prose.
+        if (isNotConnected(err)) {
+          setOffline(true);
+          return;
+        }
         setError(err instanceof Error ? err.message : String(err));
       }
     })();
@@ -82,11 +94,21 @@ export default function ArtifactsView({
         </button>
       </header>
       <div className="list">
-        {/* P3-365: the pane is reachable from the unpaired gate shell — a
-            "not connected" raw throw becomes the humanized not-paired copy. */}
+        {/* P3-365/P3-375: the pane is reachable before any pairing — a "not
+            connected" throw is the expected offline state and renders the calm
+            empty world; only unexpected failures take the red error line. */}
         {error && <p className="artifacts-error" style={{ color: "var(--danger)" }}>{humanizeError(error, t)}</p>}
         {artifacts.length === 0 && !error && (
-          <p className="muted">{t("artifactsEmpty")}</p>
+          <div className="artifacts-empty">
+            <p className="muted">{t("artifactsEmpty")}</p>
+            {offline && <p className="muted artifacts-offline-hint">{t("artifactsOfflineHint")}</p>}
+          </div>
+        )}
+        {/* P3-375 (review round 3): a load that succeeded before going offline
+            keeps its stale results on screen — the sync hint rides along instead
+            of the pane going silently stale (or red). */}
+        {offline && artifacts.length > 0 && (
+          <p className="muted artifacts-offline-hint">{t("artifactsOfflineHint")}</p>
         )}
         {[...groups.entries()].map(([sid, items]) => (
           <div key={sid}>

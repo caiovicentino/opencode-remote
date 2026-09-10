@@ -393,7 +393,10 @@ remoto, zero confiança**.
   do header do Browser, base flex natural no título para a quebra acontecer antes de o
   título colapsar em reticências, e a aba renomeada para o curto "Dashboard" —
   "Dashboard ao vivo" duplicava o pill vizinho "Ao vivo" e empurrava a linha além da
-  borda do pane
+  borda do pane. P3-375: o estado calmo dos artifacts agora vive no próprio pane —
+  qualquer falha de carga "not connected" (primeiro boot, troca de máquina) renderiza a
+  cópia vazia em tom calmo mais um aviso discreto "sincronizam sozinhos quando a máquina
+  conectar", reservando a linha vermelha "sem pareamento" para falhas de verdade
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
