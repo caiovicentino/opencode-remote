@@ -324,9 +324,12 @@ jobs:
       # P3-343: the boot leaves visual proof — the script saves a screenshot
       # of the real window (best-effort, never flips the verdict) and the step
       # right below uploads it as a run artifact.
+      # P3-348: the script exits deterministically after the verdict
+      # (kill-tree on win32 + process.exit), so the step itself only needs a
+      # 4min ceiling — a hang turns red in 4min instead of 10.
       - name: Smoke-boot the packaged app
         shell: bash
-        timeout-minutes: 10
+        timeout-minutes: 4
         env:
           OCR_PACKAGED_BOOT_SHOT: ${{ runner.temp }}/packaged-boot-win.png
         run: |

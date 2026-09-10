@@ -944,6 +944,7 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
 import { candidatePaths, isExecutableEntry } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
+import { exitPlan, runExitPlan } from "../apps/desktop/scripts/packaged-boot-exit.mjs";
 import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
 import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
 
@@ -21126,6 +21127,117 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         slice.includes("if-no-files-found: ignore"),
     );
   }
+}
+
+// --- P3-348: deterministic exit after the packaged-boot verdict ---------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const exitSrc = src(["apps", "desktop", "scripts", "packaged-boot-exit.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  // The regression behind runs 34280931249 (P3-343) and 34283357299 (P3-344):
+  // the smoke printed `OK` and then sat there for 10 minutes — finish() only
+  // set process.exitCode and on win32 the Electron tree/Playwright pipe held
+  // the event loop past closeApp(), so node never exited.
+
+  check(
+    "P3-348: win32 + live child plans kill-tree then exit with the verdict code",
+    JSON.stringify(exitPlan({ platform: "win32", exitCode: 0, pid: 4242, childAlive: true })) ===
+      JSON.stringify([{ kind: "kill-tree", pid: 4242 }, { kind: "exit", code: 0 }]),
+  );
+  check(
+    "P3-348: off-win32 the plan is exit-only (no taskkill, no spawn)",
+    JSON.stringify(exitPlan({ platform: "darwin", exitCode: 0, pid: 4242, childAlive: true })) ===
+      JSON.stringify([{ kind: "exit", code: 0 }]) &&
+      JSON.stringify(exitPlan({ platform: "linux", exitCode: 0, pid: 4242, childAlive: true })) ===
+        JSON.stringify([{ kind: "exit", code: 0 }]),
+  );
+  check(
+    "P3-348: a dead/garbage child never plans a kill-tree",
+    JSON.stringify(exitPlan({ platform: "win32", exitCode: 0, pid: 4242, childAlive: false })) ===
+      JSON.stringify([{ kind: "exit", code: 0 }]) &&
+      JSON.stringify(exitPlan({ platform: "win32", exitCode: 0, pid: null, childAlive: true })) ===
+        JSON.stringify([{ kind: "exit", code: 0 }]) &&
+      JSON.stringify(exitPlan({ platform: "win32", exitCode: 0, pid: 0, childAlive: true })) ===
+        JSON.stringify([{ kind: "exit", code: 0 }]) &&
+      JSON.stringify(exitPlan({ platform: "win32", exitCode: 0, pid: -1, childAlive: true })) ===
+        JSON.stringify([{ kind: "exit", code: 0 }]),
+  );
+  check(
+    "P3-348: a non-integer exitCode never becomes an accidental success",
+    JSON.stringify(exitPlan({ platform: "darwin", exitCode: undefined, pid: null, childAlive: false })) ===
+      JSON.stringify([{ kind: "exit", code: 1 }]) &&
+      JSON.stringify(exitPlan({ platform: "darwin", exitCode: 1, pid: null, childAlive: false })) ===
+        JSON.stringify([{ kind: "exit", code: 1 }]) &&
+      JSON.stringify(exitPlan({ platform: "darwin", exitCode: Number.NaN, pid: null, childAlive: false })) ===
+        JSON.stringify([{ kind: "exit", code: 1 }]),
+  );
+  check(
+    "P3-348: runExitPlan kills before exiting and calls exit exactly once with the verdict code",
+    (() => {
+      const steps: string[] = [];
+      runExitPlan(exitPlan({ platform: "win32", exitCode: 0, pid: 4242, childAlive: true }), {
+        kill: (pid: number) => steps.push(`kill:${pid}`),
+        exit: (code: number) => steps.push(`exit:${code}`),
+      });
+      return steps.join("|") === "kill:4242|exit:0";
+    })(),
+  );
+  check(
+    "P3-348: a throwing kill never swallows the FAIL exit code",
+    (() => {
+      let exitCalls = 0;
+      let codeSeen: number | null = null;
+      runExitPlan(exitPlan({ platform: "win32", exitCode: 1, pid: 7, childAlive: true }), {
+        kill: () => {
+          throw new Error("no taskkill");
+        },
+        exit: (code: number) => {
+          exitCalls++;
+          codeSeen = code;
+        },
+      });
+      return exitCalls === 1 && codeSeen === 1;
+    })(),
+  );
+  check(
+    "P3-348: packaged-boot-exit.mjs stays pure (no node: fs/os/path/net/http/child_process imports)",
+    !/node:(fs|os|path|net|http|child_process)/.test(exitSrc.replace(/\/\/.*$/gm, "")),
+  );
+  check(
+    "P3-348: packaged-boot.mjs runs the exit plan inside the finally, after closeApp",
+    (() => {
+      const finallyAt = bootSrc.indexOf("} finally {");
+      return finallyAt > -1 && bootSrc.indexOf("runExitPlan(", finallyAt) > finallyAt &&
+        bootSrc.indexOf("await closeApp(electronApp);", finallyAt) > finallyAt &&
+        bootSrc.indexOf("await closeApp(electronApp);", finallyAt) < bootSrc.indexOf("runExitPlan(", finallyAt);
+    })(),
+  );
+  check(
+    "P3-348: the win32 kill is a whole-tree taskkill (/T /F) on the launched pid",
+    bootSrc.includes('"taskkill", ["/T", "/F", "/PID", String(pid)]'),
+  );
+  check(
+    "P3-348: finish() no longer disarms the watchdog (it covers the post-verdict path too)",
+    !bootSrc.includes("clearTimeout(watchdog)") && bootSrc.includes("watchdog.unref?.()"),
+  );
+
+  // real-repo assertion: only the win ci step tightens to 4min; the mac ci
+  // step keeps 10 and release.yml is untouched.
+  const ciWin = src([".github", "workflows", "ci.yml"]);
+  const winJobAt = ciWin.indexOf("\n  desktop-package-win:");
+  const winSlice = winJobAt > -1 ? ciWin.slice(winJobAt, ciWin.indexOf("\n  verify-win:", winJobAt)) : "";
+  const winBootAt = winSlice.indexOf("Smoke-boot the packaged app");
+  const winBootSlice = winBootAt > -1 ? winSlice.slice(winBootAt, winSlice.indexOf("\n      - name:", winBootAt)) : "";
+  const macJobAt = ciWin.indexOf("\n  desktop-package:");
+  const macSlice = macJobAt > -1 ? ciWin.slice(macJobAt, ciWin.indexOf("\n  desktop-package-win:", macJobAt)) : "";
+  const macBootAt = macSlice.indexOf("Smoke-boot the packaged app");
+  const macBootSlice = macBootAt > -1 ? macSlice.slice(macBootAt, macSlice.indexOf("\n      - name:", macBootAt)) : "";
+  check(
+    "P3-348: the ci win boot step ceiling is 4 minutes; the mac step keeps 10",
+    winBootSlice.includes("timeout-minutes: 4") && macBootSlice.includes("timeout-minutes: 10"),
+  );
 }
 
 // --- P2-207: artifact retention janitor (artifactretention.ts) ----------------

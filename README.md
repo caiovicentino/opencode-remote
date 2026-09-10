@@ -778,6 +778,13 @@ Set `OCR_PACKAGED_BOOT_SHOT=<path>` to also save a screenshot of the booted
 window (best-effort, never changes the verdict) — the Windows packaging jobs
 do this and upload the PNG as a run artifact (P3-343).
 
+Since P3-348 the script exits deterministically once the verdict is printed:
+on Windows it best-effort `taskkill /T /F`s the whole Electron process tree
+before `process.exit`-ing with the verdict code (the tree used to outlive
+`close()` and hold the node event loop until the runner timeout), the boot
+watchdog now also covers the post-verdict path, and the ci.yml Windows boot
+step runs under a 4-minute ceiling.
+
 Since P2-251 both packaging jobs also execute the sidecar the boot smoke
 deliberately never spawns (`Smoke the packaged daemon sidecar` step, right
 after the boot smoke): the packaged `resources/daemon/index.js` is run with the
