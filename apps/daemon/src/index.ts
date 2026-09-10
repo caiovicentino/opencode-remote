@@ -70,6 +70,7 @@ import { ttsVerdict } from "./ttscap.js";
 import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
 import { MIN_OPENCODE_VERSION, versionVerdict, type OpencodeVersionVerdict } from "./opencodever.js";
 import { parseReadinessKnobs, readinessRefreshPlan } from "./readiness.js";
+import { modelRevalidatePlan, parseModelReadinessKnobs } from "./modelrevalidate.js";
 import { cachedSpeech, detectEdgeTts, prewarmSpeech, putSpeech, resolveVoice, synthesizeSpeech, TTS_VOICES } from "./edgetts.js";
 import { spokenNumbers, SPEECH_LANGS } from "./spoken.js";
 import { metrics, startMetricsServer, VERSION } from "./metrics.js";
@@ -527,6 +528,58 @@ function modelStatus(): { available: boolean; state: string; message: string } {
       ? modelReadyVerdict([])
       : modelReadyVerdict(modelCatalogSummary, modelCatalogFailed);
   return { available: verdict.state === "ready", state: verdict.state, message: verdict.message };
+}
+
+// P3-397: lazy model re-observation knobs — same fail-closed contract as the
+// shared readiness knobs (main() exits when parseModelReadinessKnobs
+// reported any problem; an invalid OCR_MODEL_READINESS_* never falls back to
+// the default silently).
+const modelReadinessKnobs = parseModelReadinessKnobs(process.env);
+
+// P3-397: instant the current model verdict was established (0 = epoch =
+// never observed — exactly the frozen session this exists to unfreeze) and
+// the single-flight guard so concurrent status reads never stampede.
+let modelObservedAt = 0;
+let modelObserveInFlight = false;
+
+/**
+ * P3-397: lazy re-observation of the ALREADY-EXISTING opencode /provider
+ * catalog, right before the model verdict is served. Runs only when the
+ * current verdict is NOT ready, at most once per
+ * OCR_MODEL_READINESS_MIN_MS (documented ceiling, kill switch
+ * OCR_MODEL_READINESS_DISABLE) — no new route, no new port, no new listener,
+ * no periodic timer. A failed observation never throws and never accuses:
+ * it degrades to the neutral unknown with a single log line carrying a
+ * coarse reason — never a path, never a secret.
+ */
+async function maybeReobserveModelCatalog(): Promise<void> {
+  if (process.env.OCR_MODEL_BLOCK === "1") return; // the hatch keeps its forced verdict
+  if (modelObserveInFlight) return; // never duplicate an observation in flight
+  const plan = modelRevalidatePlan(
+    modelStatus().state === "ready",
+    modelObservedAt,
+    Date.now(),
+    modelReadinessKnobs.minIntervalMs,
+  );
+  if (modelReadinessKnobs.disabled || plan.action !== "observe") return;
+  modelObserveInFlight = true;
+  try {
+    const res = await fetch(new URL("/provider", OPENCODE_URL));
+    if (res.ok) {
+      noteProviderCatalog(await res.json(), true);
+    } else {
+      noteProviderCatalog(null, false);
+      log("warn", "model re-observation failed — advertising unknown", { reason: `provider status ${res.status}` });
+    }
+  } catch {
+    noteProviderCatalog(null, false);
+    log("warn", "model re-observation failed — advertising unknown", { reason: "provider unreachable" });
+  } finally {
+    modelObserveInFlight = false;
+    // a failed observation consumes the budget too: at most one attempt per
+    // interval, whatever the outcome
+    modelObservedAt = Date.now();
+  }
 }
 
 // P2-231: document→PDF conversion readiness, probed EXACTLY ONCE at boot on
@@ -1338,9 +1391,14 @@ end tell`;
   }
   // P2-210: model-readiness status, mirroring the stt-status route shape
   // (available boolean + verdict state and actionable pt-BR message). Same
-  // auth, same tunnel — no new network surface. Reads ONLY the already-cached
-  // catalog summary (see noteProviderCatalog); it never fires its own fetch.
+  // auth, same tunnel — no new network surface. P3-397: the cached summary
+  // is re-observed lazily right before the verdict is answered (at most once
+  // per OCR_MODEL_READINESS_MIN_MS, gated inside the helper) — the route
+  // itself still fires no fetch of its own outside that ceiling gate, so a
+  // credential configured after the last catalog fetch is picked up without
+  // a daemon restart.
   if (req.path === "/__ocr/model/status" && req.method === "GET") {
+    await maybeReobserveModelCatalog();
     return { id: req.id, status: 200, body: modelStatus() };
   }
   if (req.path === "/__ocr/voice/tts" && req.method === "POST") {
@@ -4497,6 +4555,13 @@ async function main() {
   // invalid OCR_READINESS_* never falls back to the default silently.
   if (readinessKnobs.problems.length > 0) {
     for (const problem of readinessKnobs.problems) log("error", problem);
+    process.exit(1);
+    return;
+  }
+  // P3-397: same fail-closed contract for the model re-observation knobs —
+  // an invalid OCR_MODEL_READINESS_* never falls back to the default silently.
+  if (modelReadinessKnobs.problems.length > 0) {
+    for (const problem of modelReadinessKnobs.problems) log("error", problem);
     process.exit(1);
     return;
   }

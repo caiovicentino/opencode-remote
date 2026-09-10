@@ -123,7 +123,12 @@ private. That is the product: **local power, remote control, zero trust**.
   if a model is reachable anyway. The same verdict is served on
   `GET /__ocr/model/status` (`{ available, state, message }`, mirroring the
   stt-status route). `OCR_MODEL_BLOCK=1` on the daemon is a test hatch that
-  forces the no-provider verdict for deterministic screenshots
+  forces the no-provider verdict for deterministic screenshots. The verdict is
+  no longer frozen at the last catalog fetch: the status route re-observes the
+  provider catalog lazily while the verdict is not ready (at most once per
+  `OCR_MODEL_READINESS_MIN_MS`, default 60000 ms, ceiling 3600000; invalid
+  values fail the boot; `OCR_MODEL_READINESS_DISABLE=off` turns it off), so
+  configuring a credential is picked up without restarting the daemon
 - **opencode version readiness** — the Settings machine section warns when the
   opencode installed on the machine hosting the daemon is older than the
   minimum the daemon's API surface expects (`1.18.0`): a single calm line says
