@@ -49,7 +49,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   máquina (`ocr_gate_queue`) até o daemon responder, quando vira a primeira
   mensagem da primeira conversa; "nada se perde" deixa de ser promessa e
   vira fluxo exercitável no primeiro boot (Enter salva, confirmação calma no
-  próprio painel, fila sobrevive a restart do app)
+  próprio painel, fila sobrevive a restart do app). P3-386: o compositor é
+  pintado sobre o branco do card com borda de repouso mais firme — lê como
+  campo ativo que convida a digitar, não como campo desabilitado.
 - Menu Go no portão sem beco circular (P3-362): os itens de painel abrem os
   mesmos panes offline que o rail já abre (Mission Control, Artifacts, Browser,
   Ajustes) em vez de piscar um aviso de pareamento — que era circular no
