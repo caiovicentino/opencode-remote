@@ -173,7 +173,9 @@ export async function serverAccept(
 
 export async function acceptPayload(
   sessionKey: CryptoKey,
-  caps?: { transcribe?: boolean },
+  // P3-403: caps gains `tts` — the host's spoken-answer verdict (edge-tts
+  // installed), consumed by the PWA to place the per-session voice toggle.
+  caps?: { transcribe?: boolean; tts?: boolean },
 ): Promise<ServerAccept> {
   return { ok: true, confirm: await seal({ ok: true, caps }, sessionKey, te.encode(CONFIRM_AAD)) };
 }

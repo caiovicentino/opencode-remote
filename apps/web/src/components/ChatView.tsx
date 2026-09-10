@@ -48,6 +48,7 @@ import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, getDraft, setDraft, takeSendOnOpen } from "../lib/drafts";
 import { firstSentence, pressureLevel } from "../lib/context";
 import { getTtsLang, speakBrief } from "../lib/voice";
+import { deviceTtsAvailable, speakDevice, stopDeviceSpeech } from "../lib/speech";
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
 import {
   pastePlan,
@@ -88,6 +89,9 @@ interface Props {
   events: EventEnvelope[];
   connStatus: string;
   voice?: boolean;
+  /** P3-403: caps.tts from the pairing handshake — the host can speak. With
+   * the device's own Web Speech API this gates the per-session voice toggle. */
+  voiceTts?: boolean;
   /** P2-090: true while the right-hand Browser pane is the visible slot —
    * the browser (manual or P1-072 auto-open) keeps priority over the artifact
    * auto-open, which must never cover it. */
@@ -390,6 +394,7 @@ export default function ChatView({
   events,
   connStatus,
   voice,
+  voiceTts,
   browserActive,
   request,
   onBack,
@@ -461,6 +466,16 @@ export default function ChatView({
   const [speaking, setSpeaking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const spokenRef = useRef<string | null>(null);
+  // P3-403 camera-ask v2 "Voz": per-session voice mode. Answers are spoken on
+  // the DEVICE (Web Speech API) and transcribed mic questions go straight into
+  // the session transcript — a hands-free loop for the camera flow. The mode
+  // is scoped to the open session (never persisted) and only offered when both
+  // sides can speak: caps.tts from the handshake AND a device synthesizer.
+  const [voiceModeMap, setVoiceModeMap] = useState<Record<string, boolean>>({});
+  const voiceOn = !!voiceModeMap[sessionId];
+  const voiceModeAvailable = !!voiceTts && deviceTtsAvailable();
+  const [deviceSpeaking, setDeviceSpeaking] = useState(false);
+  const spokenVoiceRef = useRef<string | null>(null);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [uploading, setUploading] = useState(false);
   // P3-402: camera-ask sheet ("Olho") — lives above the composer; sending
@@ -2153,7 +2168,12 @@ export default function ChatView({
       setRecState("busy");
       const blob = await recorder.current!.stop();
       const text = await transcribeBlob(request, blob);
-      if (getVoiceSettings().autoSend && text.trim()) {
+      // P3-403: in the session voice loop the question lands directly in the
+      // transcript — a hands-free ask has no composer to review in between
+      // (the old autoSend path keeps its behavior when voice mode is off).
+      if (voiceOn && text.trim()) {
+        await send(text);
+      } else if (getVoiceSettings().autoSend && text.trim()) {
         await send(text);
       } else if (text) {
         appendToInput(text, sid);
@@ -2261,8 +2281,10 @@ export default function ChatView({
   // Speak the newest complete assistant reply while the toggle is on. The
   // small delay settles the streaming tail; the daemon pre-renders the mp3
   // at session.idle, so the request below usually hits a warm cache.
+  // P3-403: the session voice mode replaces this loop where it exists —
+  // the two engines must never speak over each other.
   useEffect(() => {
-    if (!ttsOn || !ttsReady) return;
+    if (!ttsOn || !ttsReady || voiceOn) return;
     let last: Bubble | undefined;
     for (let i = bubbles.length - 1; i >= 0; i--) {
       const b = bubbles[i];
@@ -2391,9 +2413,58 @@ export default function ChatView({
     if (next) spokenRef.current = null;
   }
 
+  // ── P3-403 session voice mode ("responder em voz") ───────────────────────
+  function toggleVoiceMode() {
+    stopDeviceSpeech();
+    setDeviceSpeaking(false);
+    spokenVoiceRef.current = null;
+    setVoiceModeMap((m) => ({ ...m, [sessionId]: !m[sessionId] }));
+  }
+
+  /** Play one answer aloud from a real user gesture — the iOS-standalone
+   * fallback for the first speech (auto-speak outside a gesture is dropped).
+   * A second tap while speaking stops the playback. */
+  function playAnswer(text: string) {
+    if (deviceSpeaking) {
+      stopDeviceSpeech();
+      setDeviceSpeaking(false);
+      return;
+    }
+    stopSpeaking();
+    setDeviceSpeaking(true);
+    void speakDevice(speakBrief(text), getTtsLang()).then(() => setDeviceSpeaking(false));
+  }
+
+  // Speak the newest complete assistant reply on the device while the session
+  // voice mode is on. Same discovery rule as the P2-125 loop below; the two
+  // engines never run at once — voice mode mutes the global toggle.
+  useEffect(() => {
+    if (!voiceOn) return;
+    let last: Bubble | undefined;
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+      const b = bubbles[i];
+      if (b && b.role === "assistant") {
+        last = b;
+        break;
+      }
+    }
+    if (!last || !last.messageID || last.pending || !last.text?.trim()) return;
+    if (spokenVoiceRef.current === last.messageID) return;
+    const id = last.messageID;
+    const timer = setTimeout(() => {
+      spokenVoiceRef.current = id;
+      setDeviceSpeaking(true);
+      void speakDevice(speakBrief(last!.text), getTtsLang()).then(() => setDeviceSpeaking(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [bubbles, voiceOn]);
+
   // switching sessions (or unmounting) stops any playing audio
   useEffect(() => {
-    return () => stopSpeaking();
+    return () => {
+      stopSpeaking();
+      stopDeviceSpeech();
+    };
   }, [sessionId]);
 
   // P1-079: pinned recap — the session summary when the backend provides one,
@@ -2673,17 +2744,31 @@ export default function ChatView({
               ) : (
                 renderBubbleText(b.text, request, setError)
               )}
-              {plan.verdict === "copy" && (
+              {((plan.verdict === "copy") ||
+                (voiceOn && b.role === "assistant" && !b.pending && !!b.text?.trim())) && (
                 <div className="msg-copy-row">
-                  <button
-                    className="msg-copy"
-                    data-copied={copied || undefined}
-                    aria-label={copied ? t("copied") : t("copyMessage")}
-                    title={t("copyMessage")}
-                    onClick={() => copyBubble(bubbleIdx, plan.text)}
-                  >
-                    {copied ? <IconCheck size={15} /> : <IconCopy size={15} />}
-                  </button>
+                  {voiceOn && b.role === "assistant" && !b.pending && !!b.text?.trim() && (
+                    <button
+                      className="msg-copy"
+                      data-speaking={deviceSpeaking || undefined}
+                      aria-label={deviceSpeaking ? t("stopSpeaking") : t("playAnswer")}
+                      title={deviceSpeaking ? t("stopSpeaking") : t("playAnswer")}
+                      onClick={() => playAnswer(b.text)}
+                    >
+                      <IconSpeaker size={15} />
+                    </button>
+                  )}
+                  {plan.verdict === "copy" && (
+                    <button
+                      className="msg-copy"
+                      data-copied={copied || undefined}
+                      aria-label={copied ? t("copied") : t("copyMessage")}
+                      title={t("copyMessage")}
+                      onClick={() => copyBubble(bubbleIdx, plan.text)}
+                    >
+                      {copied ? <IconCheck size={15} /> : <IconCopy size={15} />}
+                    </button>
+                  )}
                 </div>
               )}
               {b.role === "assistant" &&
@@ -3193,15 +3278,26 @@ export default function ChatView({
                 <IconMic />
               )}
             </button>
-            {ttsReady && (
+            {voiceModeAvailable ? (
               <button
-                className={`composer-btn composer-tts${ttsOn ? " composer-tts-on" : ""}${speaking ? " composer-tts-speaking" : ""}`}
-                onClick={toggleTts}
-                aria-label={speaking ? t("stopSpeaking") : ttsOn ? t("voiceReplyOn") : t("voiceReply")}
-                title={speaking ? t("stopSpeaking") : ttsOn ? t("voiceReplyOn") : t("voiceReply")}
+                className={`composer-btn composer-tts${voiceOn ? " composer-tts-on" : ""}${deviceSpeaking ? " composer-tts-speaking" : ""}`}
+                onClick={toggleVoiceMode}
+                aria-label={voiceOn ? t("voiceSessionOn") : t("voiceSession")}
+                title={voiceOn ? t("voiceSessionOn") : t("voiceSession")}
               >
                 <IconSpeaker />
               </button>
+            ) : (
+              ttsReady && (
+                <button
+                  className={`composer-btn composer-tts${ttsOn ? " composer-tts-on" : ""}${speaking ? " composer-tts-speaking" : ""}`}
+                  onClick={toggleTts}
+                  aria-label={speaking ? t("stopSpeaking") : ttsOn ? t("voiceReplyOn") : t("voiceReply")}
+                  title={speaking ? t("stopSpeaking") : ttsOn ? t("voiceReplyOn") : t("voiceReply")}
+                >
+                  <IconSpeaker />
+                </button>
+              )
             )}
             <div className="composer-spacer" />
             <div className="composer-model" ref={modelMenuRef}>

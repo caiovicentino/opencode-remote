@@ -65,6 +65,15 @@ private. That is the product: **local power, remote control, zero trust**.
   markdown-heavy bubbles), and a term with no hits gets a calm "no matches"
   state. Search covers the messages already loaded in the view — page in older
   history to search deeper
+- **Conversation search, server side (P3-400)** — the daemon answers
+  `GET /__ocr/search?q=…` over the content of ALL conversations (titles and
+  messages), not just the open one: matching ignores case and accents (the
+  term is never read as regex), results come back recency-sorted, one hit per
+  conversation with a short snippet around the occurrence. Hard caps — the 200
+  most recent conversations, the 200 newest messages each, a 1.5 s budget —
+  mark the answer `truncated` when hit, and an origin failure degrades to an
+  empty truncated answer instead of an error. Wiring this into the session
+  selector is the next slice; no screen consumes the route yet
 - **Copy message (P2-282)** — every chat bubble gets a copy action, so the
   phone (no right-click, no native context menu) can lift an answer — code
   included — out of the conversation. The action sits under each bubble: a
@@ -95,6 +104,21 @@ private. That is the product: **local power, remote control, zero trust**.
   `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
   missing-binary verdict so the disabled-mic UI can be evidenced
   deterministically even on hosts that do have whisper installed
+- **Answer by voice (P3-403)** — the camera-ask "Voz" loop turns one chat into
+  a hands-free conversation: a per-session toggle in the composer makes every
+  new agent reply speak itself on the DEVICE (Web Speech API — no daemon
+  round-trip) and transcribed mic questions go straight into the session
+  transcript instead of stopping at the input draft, so you can ask by voice
+  and hear the answer while the camera flow is open. The toggle only appears
+  when both sides can speak: the pairing handshake now carries `caps.tts`
+  (the host's spoken-answer verdict, next to `caps.transcribe`) and the device
+  must have a speech synthesizer — missing either, the toggle never shows and
+  the previous global spoken-replies button stays. Because the first
+  device-side utterance on iOS standalone is silently dropped outside a user
+  gesture, every answer card also carries a play action that speaks it from a
+  real tap. The daemon bounds the loop's cost with a per-session rate limit
+  (20 transcription/spoken-brief requests per minute; over the budget answers
+  with a calm "wait a few seconds" phrase instead of an error wall)
 - **Mic denied guidance (desktop)** — when the OS refuses the microphone
   inside the desktop app, the composer no longer shows the old Safari/iOS
   sentence: the shell reports what the system actually says (never asked yet,

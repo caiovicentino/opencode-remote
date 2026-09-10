@@ -48,6 +48,7 @@ import {
 } from "./identitybackup.js";
 import { appendAudit, readAuditTail } from "./auditlog.js";
 import { capMessagePage, parsePageLimit, shouldPaginateMessages, type HistoryRowLike } from "./paginate.js";
+import { runConversationSearch, SEARCH_MIN_TERM, type SearchOrigin } from "./searchindex.js";
 import { handleBrowse, probeBrowse } from "./browse.js";
 import { browseReadiness, type BrowseVerdict } from "./browsecap.js";
 import { settingsMirror } from "./settingsmirror.js";
@@ -65,6 +66,7 @@ import {
   validateTakeoverSessionId,
 } from "./pilotforensic.js";
 import { detectWhisperDetail, transcribeAudio, type WhisperTool } from "./whisper.js";
+import { createSessionLimiter } from "./sessionlimit.js";
 import { sttVerdict } from "./voicecap.js";
 import { ttsVerdict } from "./ttscap.js";
 import { modelReadyVerdict, providerSummary, type ProviderSummary } from "./modelready.js";
@@ -748,6 +750,66 @@ interface NotifySettings {
   permission: boolean;
   idle: boolean;
 }
+
+// P3-400: the search origin reads the SAME opencode endpoints the existing
+// passthrough serves (/session, /session/<id>/message) with the shared
+// credential and the shared upstream probe timeout. Every method returns null
+// on any failure — runConversationSearch turns that into an empty truncated
+// answer, so an origin hiccup can never throw a route.
+function opencodeSearchOrigin(): SearchOrigin {
+  const get = async (path: string): Promise<unknown | null> => {
+    try {
+      const res = await fetch(new URL(path, OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+        signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+  return {
+    async sessions() {
+      const rows = (await get("/session")) as
+        | Array<{ id?: unknown; title?: unknown; updatedAt?: unknown; time?: { updated?: unknown; created?: unknown } }>
+        | null;
+      if (!Array.isArray(rows)) return null;
+      const toMs = (v: unknown): number =>
+        typeof v === "number" && Number.isFinite(v) ? v
+        : typeof v === "string" && v ? Date.parse(v) : NaN;
+      // per-row tolerance, same as the matcher itself practices: one null or
+      // primitive row in the array is skipped, never fails the whole search
+      return rows
+        .filter((r) => r !== null && typeof r === "object")
+        .map((r) => {
+          const instant = [toMs(r.updatedAt), toMs(r.time?.updated), toMs(r.time?.created)]
+            .find((n) => Number.isFinite(n));
+          return {
+            id: typeof r.id === "string" ? r.id : "",
+            title: typeof r.title === "string" ? r.title : undefined,
+            instant: instant !== undefined ? instant : 0,
+          };
+        });
+    },
+    async messages(id) {
+      const rows = (await get(`/session/${encodeURIComponent(id)}/message`)) as
+        | Array<{ parts?: Array<{ type?: unknown; text?: unknown }> }>
+        | null;
+      if (!Array.isArray(rows)) return null;
+      const texts: string[] = [];
+      for (const row of rows) {
+        for (const part of row?.parts ?? []) {
+          if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
+            texts.push(part.text);
+          }
+        }
+      }
+      return texts;
+    },
+  };
+}
+
 interface AppSettings {
   name?: string;
   notify: NotifySettings;
@@ -788,7 +850,18 @@ function accessibleDownload(p: string): string | null {
   return DOWNLOAD_ROOTS.some((r) => abs === r || abs.startsWith(r + "/")) ? abs : null;
 }
 
-async function proxy(req: OpRequest): Promise<OpResponse> {
+// P3-403: per-session rate limit for the voice loop (camera-ask v2 "Voz").
+// Each transcription or spoken brief costs a whisper/edge-tts run on the host;
+// the window bounds what one paired session can spend per minute without
+// getting anywhere near a human's cadence. 429 carries the same calm pt-BR
+// phrase style as the capability verdicts — never a raw English error.
+const VOICE_OPS_PER_MIN = 20;
+const transcribeLimiter = createSessionLimiter(VOICE_OPS_PER_MIN);
+const ttsLimiter = createSessionLimiter(VOICE_OPS_PER_MIN);
+const VOICE_RATE_MESSAGE =
+  "Muitas solicitações de voz seguidas — espere alguns segundos e tente de novo.";
+
+async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
   // daemon-local endpoints never reach opencode
   if (req.path === "/__ocr/clip-style" && req.method === "GET") {
     const p = join(STATE_DIR, "clip-style.json");
@@ -837,6 +910,27 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
     const { id } = (req.body ?? {}) as { id?: string };
     saveSkills(loadSkills().filter((s) => s.id !== id));
     return { id: req.id, status: 200, body: { ok: true } };
+  }
+
+  // --- P3-400: server-side conversation search -------------------------------
+  // The matcher is the pure searchindex.ts; this route only materializes
+  // conversations from the /session endpoints the passthrough already serves
+  // (no new port, no new listener, no periodic timer). The hard caps — most
+  // recent conversations scanned, messages per conversation, total time
+  // budget with early exit — live in searchindex.ts and mark the answer
+  // `truncated` when hit. Origin failure degrades to an empty truncated list
+  // plus one coarse log line (no path, no secret). Wiring this into the
+  // conversation selector is the next slice; no screen consumes the route yet.
+  if (req.path === "/__ocr/search" && req.method === "GET") {
+    const q = typeof req.query?.q === "string" ? req.query.q : "";
+    if (q.trim().length < SEARCH_MIN_TERM) {
+      return { id: req.id, status: 400, body: { error: "valid q required" } };
+    }
+    const run = await runConversationSearch(q, opencodeSearchOrigin());
+    if (run.originFailed) {
+      log("warn", "conversation search degraded: origin unavailable");
+    }
+    return { id: req.id, status: 200, body: { results: run.results, truncated: run.truncated } };
   }
 
   // --- scheduled routines -----------------------------------------------------
@@ -1375,6 +1469,12 @@ end tell`;
     if (!entry) {
       return { id: req.id, status: 501, body: { error: "transcription upload not found" } };
     }
+    // P3-403: the per-session voice-loop budget — admitted before any staging
+    // work, since the whisper run is the spend being contained.
+    if (sessionFrom && !transcribeLimiter.allow(sessionFrom)) {
+      metrics.inc("ocr_voice_rate_limited_total");
+      return { id: req.id, status: 429, body: { error: VOICE_RATE_MESSAGE } };
+    }
     if (!whisperTool) {
       // P2-201: the actionable capability phrase (pt-BR, no script paths) from
       // the same verdict the status route serves — never the raw English hint.
@@ -1430,6 +1530,11 @@ end tell`;
     const { text, lang } = req.body as { text?: string; lang?: string };
     if (!text || typeof text !== "string" || text.length > 2000) {
       return { id: req.id, status: 400, body: { error: "text required (1..2000 chars)" } };
+    }
+    // P3-403: same per-session voice-loop budget as the transcription route.
+    if (sessionFrom && !ttsLimiter.allow(sessionFrom)) {
+      metrics.inc("ocr_voice_rate_limited_total");
+      return { id: req.id, status: 429, body: { error: VOICE_RATE_MESSAGE } };
     }
     if (!edgeTtsBin) {
       // P2-298: the actionable capability phrase (pt-BR, no tool names or
@@ -3193,7 +3298,7 @@ async function handleSealedFrame(frame: RelayFrame, ws: WebSocket) {
   session.lastSeq = seq;
   session.lastSeen = Date.now();
   metrics.inc("ocr_ops_total");
-  await proxy(envelope.req)
+  await proxy(envelope.req, frame.from)
     .then((res) => {
       if (res.status >= 400) metrics.inc("ocr_ops_errors_total");
       sendToSession(session, { type: "res", res });
@@ -3395,7 +3500,13 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       audit("client.connected", { fp: pubFingerprint(accepted.clientPub) });
       metrics.inc("ocr_handshakes_total");
       metrics.gauge("ocr_sessions_active", sessions.size);
-      const confirm = await acceptPayload(accepted.sessionKey, { transcribe: !!whisperTool });
+      // P3-403: caps now carries the host's spoken-answer verdict (edge-tts
+      // installed) next to transcription — the PWA gates the per-session
+      // "responder em voz" toggle on it (fail-closed: no verdict, no toggle).
+      const confirm = await acceptPayload(accepted.sessionKey, {
+        transcribe: !!whisperTool,
+        tts: !!edgeTtsBin,
+      });
       ws.send(
         JSON.stringify({
           room: daemon.room,

@@ -578,6 +578,19 @@ import {
 } from "../apps/daemon/src/artifactretention";
 
 import {
+  runConversationSearch,
+  SEARCH_MAX_MESSAGES_PER_SESSION,
+  SEARCH_MAX_RESULTS,
+  SEARCH_MAX_SESSIONS,
+  SEARCH_MIN_TERM,
+  SEARCH_SNIPPET_CHARS,
+  SEARCH_TIME_BUDGET_MS,
+  searchConversations,
+  type SearchConversation,
+  type SearchOrigin,
+} from "../apps/daemon/src/searchindex";
+
+import {
   UPLOAD_RETENTION_DEFAULTS,
   UPLOAD_RETENTION_DISABLE_ENV,
   UPLOAD_RETENTION_GRACE_HOURS,
@@ -34628,11 +34641,336 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
 }
 
+// --- P3-400: server-side conversation search (searchindex.ts) -------------------
+// The matcher (searchConversations) is table-tested; the request orchestrator
+// (runConversationSearch) is tested with an injected origin (buscador) proving
+// the three hard caps, the early exit and the truncated mark; source pins read
+// the real daemon proving the slice added no periodic timer.
+{
+  const conv = (id: string, instant: number, ...texts: string[]): SearchConversation => ({
+    id,
+    instant,
+    texts,
+  });
+
+  // --- matcher: fail-closed terms ---------------------------------------------
+  check(
+    "P3-400: empty / whitespace / too-short / non-string terms fail closed",
+    (() => {
+      const c = [conv("s1", 1, "payload with agulha here")];
+      return (
+        searchConversations("", c).length === 0 &&
+        searchConversations("   \t ", c).length === 0 &&
+        searchConversations("a", c).length === 0 &&
+        searchConversations("a".repeat(SEARCH_MIN_TERM - 1), c).length === 0 &&
+        searchConversations(undefined as unknown as string, c).length === 0
+      );
+    })(),
+  );
+  check(
+    "P3-400: a non-array conversation list fails closed",
+    searchConversations("agulha", null as unknown as SearchConversation[]).length === 0,
+  );
+
+  // --- matcher: accents, case, literal term ------------------------------------
+  check(
+    "P3-400: accents and case fold exactly like chatfind (cafe -> Café, nao -> NÃO)",
+    (() => {
+      const hits = searchConversations("cafe", [conv("s1", 10, "Café da manhã", "depois do CAFÉ")]);
+      const nao = searchConversations("nao", [conv("s2", 10, "NÃO esqueça")]);
+      return (
+        hits.length === 1 &&
+        hits[0]!.id === "s1" &&
+        nao.length === 1 &&
+        nao[0]!.snippet === "NÃO esqueça"
+      );
+    })(),
+  );
+  check(
+    "P3-400: the term is literal text, never interpreted as regex",
+    (() => {
+      const hits = searchConversations("a.b", [conv("s1", 1, "axb a.b axb")]);
+      const parens = searchConversations("(x)", [conv("s2", 1, "foo (x) foo")]);
+      return (
+        hits.length === 1 &&
+        hits[0]!.snippet.slice(hits[0]!.matchStart, hits[0]!.matchEnd) === "a.b" &&
+        parens.length === 1
+      );
+    })(),
+  );
+
+  // --- matcher: occurrences, ordering, title ------------------------------------
+  check(
+    "P3-400: multiple occurrences -> one hit per conversation, results by recency",
+    (() => {
+      const hits = searchConversations("agulha", [
+        conv("old", 1, "agulha um", "agulha dois"),
+        conv("new", 2, "agulha três"),
+      ]);
+      return (
+        hits.length === 2 &&
+        hits[0]!.id === "new" &&
+        hits[0]!.snippet === "agulha três" &&
+        hits[1]!.id === "old" &&
+        hits[1]!.snippet === "agulha um"
+      );
+    })(),
+  );
+  check(
+    "P3-400: the title is searched first and yields the title snippet",
+    (() => {
+      const hits = searchConversations("deploy", [
+        { id: "s1", title: "Deploy notes", instant: 1, texts: ["sem nada aqui"] },
+      ]);
+      return (
+        hits.length === 1 &&
+        hits[0]!.title === "Deploy notes" &&
+        hits[0]!.snippet === "Deploy notes"
+      );
+    })(),
+  );
+
+  // --- matcher: result cap and snippet ceiling -----------------------------------
+  check(
+    "P3-400: result cap — only the SEARCH_MAX_RESULTS most recent survive",
+    (() => {
+      const many: SearchConversation[] = [];
+      for (let i = 0; i < SEARCH_MAX_RESULTS + 10; i++) many.push(conv(`s${i}`, i, "achou aqui"));
+      const hits = searchConversations("achou", many);
+      return (
+        hits.length === SEARCH_MAX_RESULTS &&
+        hits[0]!.instant === SEARCH_MAX_RESULTS + 9 &&
+        hits[SEARCH_MAX_RESULTS - 1]!.instant === 10
+      );
+    })(),
+  );
+  check(
+    "P3-400: snippet cut — window ≤ SEARCH_SNIPPET_CHARS, centered, match offsets exact",
+    (() => {
+      const padding = "x".repeat(SEARCH_SNIPPET_CHARS + 50);
+      const text = `${padding} agulha ${padding}`;
+      const hits = searchConversations("agulha", [conv("s1", 1, text)]);
+      const h = hits[0]!;
+      return (
+        hits.length === 1 &&
+        h.snippet.length <= SEARCH_SNIPPET_CHARS &&
+        h.snippet.slice(h.matchStart, h.matchEnd) === "agulha" &&
+        h.matchStart > 0
+      );
+    })(),
+  );
+  check(
+    "P3-400: a term longer than the snippet cap keeps match offsets inside the snippet",
+    (() => {
+      // reachable via GET /__ocr/search (no q cap beyond the min length)
+      const term = "0123456789".repeat(15); // 150 chars > SEARCH_SNIPPET_CHARS
+      const hits = searchConversations(term, [conv("s1", 1, `prefix ${term} suffix`)]);
+      const h = hits[0]!;
+      const visible = h.snippet.slice(h.matchStart, h.matchEnd);
+      return (
+        hits.length === 1 &&
+        h.snippet.length <= SEARCH_SNIPPET_CHARS &&
+        h.matchStart >= 0 && // the reported bug: this went negative
+        h.matchEnd <= h.snippet.length &&
+        h.matchStart < h.matchEnd &&
+        term.includes(visible) // what is highlighted is part of the match
+      );
+    })(),
+  );
+
+  // --- matcher: malformed input ---------------------------------------------------
+  check(
+    "P3-400: malformed conversations are skipped, never thrown",
+    (() => {
+      const garbage = [
+        null,
+        42,
+        { id: "", instant: 1, texts: ["agulha"] },
+        { id: "ok", instant: 1 },
+        { id: "ok2", instant: 1, texts: "agulha" },
+        { id: "good", title: 7, instant: Number.NaN, texts: ["tem agulha aqui", 5, null] },
+      ] as unknown as SearchConversation[];
+      const hits = searchConversations("agulha", garbage);
+      return hits.length === 1 && hits[0]!.id === "good" && hits[0]!.title === "good";
+    })(),
+  );
+
+  // --- route orchestrator: injected origin (buscador) -----------------------------
+  const fakeOrigin = (
+    seeds: Array<{ id: string; title?: string; instant: number }>,
+    messages: (id: string) => string[] | null,
+    calls: string[],
+  ): SearchOrigin => ({
+    sessions: async () => {
+      calls.push(`sessions:${seeds.length}`);
+      return seeds;
+    },
+    messages: async (id) => {
+      calls.push(`messages:${id}`);
+      return messages(id);
+    },
+  });
+  const callsOf = (calls: string[]) => calls.filter((c) => c.startsWith("messages:")).length;
+
+  const capSeeds = Array.from({ length: SEARCH_MAX_SESSIONS + 7 }, (_, i) => ({ id: `s${i}`, instant: i }));
+  const capCalls: string[] = [];
+  const capRun = await runConversationSearch(
+    "agulha",
+    fakeOrigin(capSeeds, (id) => [`tem agulha em ${id}`], capCalls),
+  );
+  check(
+    "P3-400: sessions cap — only the SEARCH_MAX_SESSIONS most recent are scanned, marked truncated",
+    callsOf(capCalls) === SEARCH_MAX_SESSIONS && capRun.truncated === true,
+  );
+
+  const big = Array.from({ length: SEARCH_MAX_MESSAGES_PER_SESSION }, (_, i) => `msg ${i}`);
+  const dropped = await runConversationSearch(
+    "agulha",
+    fakeOrigin([{ id: "s1", instant: 1 }], () => ["agulha antiga fora do teto", ...big], []),
+  );
+  check(
+    "P3-400: messages cap — the old tail beyond SEARCH_MAX_MESSAGES_PER_SESSION is not searched, marked truncated",
+    dropped.results.length === 0 && dropped.truncated === true && dropped.originFailed === false,
+  );
+  const kept = await runConversationSearch(
+    "agulha",
+    fakeOrigin([{ id: "s1", instant: 1 }], () => ["agulha visível", ...big.slice(1)], []),
+  );
+  check(
+    "P3-400: a match inside the kept message window is found, untruncated",
+    kept.results.length === 1 && kept.truncated === false,
+  );
+
+  const cappedRun = await runConversationSearch(
+    "agulha",
+    fakeOrigin(
+      Array.from({ length: SEARCH_MAX_RESULTS + 5 }, (_, i) => ({ id: `c${i}`, instant: i })),
+      (id) => [`agulha em ${id}`],
+      [],
+    ),
+  );
+  check(
+    "P3-400: results cap — dropping matches past SEARCH_MAX_RESULTS marks truncated",
+    cappedRun.results.length === SEARCH_MAX_RESULTS &&
+      cappedRun.truncated === true &&
+      cappedRun.originFailed === false,
+  );
+  const exactRun = await runConversationSearch(
+    "agulha",
+    fakeOrigin(
+      Array.from({ length: SEARCH_MAX_RESULTS }, (_, i) => ({ id: `e${i}`, instant: i })),
+      (id) => [`agulha em ${id}`],
+      [],
+    ),
+  );
+  check(
+    "P3-400: exactly SEARCH_MAX_RESULTS matches are a complete answer, untruncated",
+    exactRun.results.length === SEARCH_MAX_RESULTS && exactRun.truncated === false,
+  );
+
+  let clockCall = 0;
+  const clock = (): number => {
+    clockCall += 1;
+    return clockCall === 1 ? 0 : clockCall === 2 ? 1000 : SEARCH_TIME_BUDGET_MS + 999;
+  };
+  const budgetCalls: string[] = [];
+  const budgetRun = await runConversationSearch(
+    "agulha",
+    fakeOrigin(
+      [1, 2, 3].map((i) => ({ id: `t${i}`, instant: i })),
+      (id) => [`agulha em ${id}`],
+      budgetCalls,
+    ),
+    clock,
+  );
+  check(
+    "P3-400: time budget — early exit keeps the partial result and marks it truncated",
+    budgetRun.truncated === true &&
+      budgetRun.results.length === 1 &&
+      budgetRun.results[0]!.id === "t3" &&
+      callsOf(budgetCalls) === 1,
+  );
+
+  const boom: SearchOrigin = {
+    sessions: async () => {
+      throw new Error("boom");
+    },
+    messages: async () => [],
+  };
+  const boomRun = await runConversationSearch("agulha", boom);
+  const nullRun = await runConversationSearch("agulha", {
+    sessions: async () => null,
+    messages: async () => null,
+  });
+  const midScanRun = await runConversationSearch(
+    "agulha",
+    fakeOrigin(
+      [{ id: "a", instant: 2 }, { id: "b", instant: 1 }],
+      (id) => (id === "a" ? ["agulha aqui"] : null),
+      [],
+    ),
+  );
+  check(
+    "P3-400: origin failure never throws — empty list, truncated, originFailed",
+    boomRun.results.length === 0 &&
+      boomRun.truncated === true &&
+      boomRun.originFailed === true &&
+      nullRun.results.length === 0 &&
+      nullRun.truncated === true &&
+      nullRun.originFailed === true &&
+      midScanRun.originFailed === true &&
+      midScanRun.truncated === true &&
+      midScanRun.results.length === 0,
+  );
+
+  const shortRun = await runConversationSearch("a", {
+    sessions: async () => {
+      throw new Error("origin must not be touched for a too-short term");
+    },
+    messages: async () => [],
+  });
+  check(
+    "P3-400: too-short term fails closed without touching the origin",
+    shortRun.results.length === 0 && shortRun.truncated === false && shortRun.originFailed === false,
+  );
+
+  // --- source pins: the real daemon gained no periodic timer -----------------------
+  const searchModuleSrc = readFileSync(new URL("../apps/daemon/src/searchindex.ts", import.meta.url), "utf8");
+  check(
+    "P3-400: searchindex stays pure — no node: builtins, no fetch, no timers",
+    (() => {
+      const body = searchModuleSrc.replace(/^\/\/.*$/gm, "");
+      return !body.includes("node:") && !body.includes("fetch(") && !/setInterval|setTimeout/.test(body);
+    })(),
+  );
+  const daemonIndexSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+  const searchRouteAt = daemonIndexSrc.indexOf('"/__ocr/search" && req.method === "GET"');
+  const nextRouteAt = searchRouteAt >= 0 ? daemonIndexSrc.indexOf("if (req.path ===", searchRouteAt) : -1;
+  const searchRouteBlock = searchRouteAt >= 0 && nextRouteAt > searchRouteAt
+    ? daemonIndexSrc.slice(searchRouteAt, nextRouteAt)
+    : "";
+  check(
+    "P3-400: the search route drives the pure module and degrades on origin failure",
+    searchRouteBlock.includes("runConversationSearch(q, opencodeSearchOrigin())") &&
+      searchRouteBlock.includes("run.originFailed") &&
+      searchRouteBlock.includes("SEARCH_MIN_TERM") &&
+      searchRouteBlock.includes('body: { results: run.results, truncated: run.truncated }'),
+  );
+  check(
+    "P3-400: no periodic timer entered the search route (and the daemon interval count is unchanged)",
+    searchRouteBlock.length > 0 && !/setInterval|setTimeout/.test(searchRouteBlock) &&
+      (daemonIndexSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+  check(
+    "P3-400: the origin skips malformed session rows instead of failing the whole search",
+    daemonIndexSrc.includes('.filter((r) => r !== null && typeof r === "object")'),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
 }
 
 console.log("UNIT TESTS PASSED");
-
 process.exit(0);
