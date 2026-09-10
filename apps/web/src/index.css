@@ -2693,6 +2693,82 @@ button.desk-new:hover:not(:disabled) {
 .degraded-reconnect-btn:hover {
   background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
+/* ── P3-360: offline first-message queue on the calm card ───────────────────
+   Same flat-surface language as .degraded-local (bordered panel on the gray
+   ladder, no gradients); the composer inside borrows the shared composer
+   grammar so the box reads as "the chat, offline" — because it is. */
+.degraded-queue {
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  background: var(--surface);
+  display: grid;
+  gap: 8px;
+}
+/* Grid children refuse to shrink below min-content by default — at phone
+   widths the hint line and the save row would clip past the panel edge. */
+.degraded-queue > * {
+  min-width: 0;
+}
+.degraded-queue h3 {
+  margin: 0;
+  font-size: var(--font-size-md);
+  color: var(--fg);
+}
+.degraded-queue p {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+.degraded-queue-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--font-size-md);
+  line-height: 1.45;
+  padding: 8px 10px;
+  resize: none;
+  outline: none;
+  max-height: 145px;
+  overflow-y: auto;
+}
+.degraded-queue-input:focus-visible {
+  border-color: var(--fg);
+}
+.degraded-queue-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 28px;
+}
+.degraded-queue-saved {
+  flex: 1 1 auto;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.degraded-queue-save {
+  flex: none;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--fg);
+  border-color: var(--border);
+  background: transparent;
+}
+.degraded-queue-save:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.degraded-queue-save:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .degraded-local {
   text-align: left;
   border: 1px solid var(--border);

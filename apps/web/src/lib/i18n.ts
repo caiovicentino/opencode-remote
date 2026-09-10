@@ -295,6 +295,13 @@ export const dict = {
     retryAttempt: "attempt {n}",
     degradedDownHint:
       "Automatic retries stopped. Use Reconnect now — or just wait: the app reconnects by itself when the daemon is back.",
+    // P3-360: the offline first-message queue on the calm card — the "nothing
+    // is lost" promise becomes something a first-time user can actually do.
+    degradedQueueTitle: "Write your first message",
+    degradedQueueHint: "Saved on this machine and sent as soon as the daemon connects — nothing is lost.",
+    degradedQueuePlaceholder: "Type your first message…",
+    degradedQueueSave: "Save message",
+    degradedQueueSaved: "Saved — it sends when the daemon connects.",
     degradedLocalTitle: "Available offline",
     degradedLocalHint: "Language and theme live on this machine — they work right now.",
     degradedPairManually: "Pair another device manually",
@@ -1003,6 +1010,13 @@ export const dict = {
     degradedLocalTitle: "Disponível offline",
     degradedLocalHint: "Idioma e tema ficam nesta máquina — funcionam agora.",
     degradedPairManually: "Parear outro dispositivo manualmente",
+    // P3-360: fila offline da primeira mensagem no card calmo — a promessa
+    // "nada se perde" vira algo que um usuário de primeiro boot exercita.
+    degradedQueueTitle: "Escreva sua primeira mensagem",
+    degradedQueueHint: "Salva nesta máquina e enviada assim que o daemon conectar — nada se perde.",
+    degradedQueuePlaceholder: "Digite sua primeira mensagem…",
+    degradedQueueSave: "Salvar mensagem",
+    degradedQueueSaved: "Salva — é enviada quando o daemon conectar.",
     // P3-363: a escalada depois de um minuto de retry silencioso — o laço é
     // paciente por design, mas nunca pode parecer um congelamento.
     degradedEscalateTitle: "Sem resposta do daemon local há {m} min",

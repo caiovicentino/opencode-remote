@@ -41,6 +41,12 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   (P1-071: todo fluxo alcançável no primeiro boot). Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
   clássica centrada
+- Fila offline da primeira mensagem (P3-360): o card calmo ganha um compositor
+  de verdade — "Escreva sua primeira mensagem" — e o texto salvo fica na
+  máquina (`ocr_gate_queue`) até o daemon responder, quando vira a primeira
+  mensagem da primeira conversa; "nada se perde" deixa de ser promessa e
+  vira fluxo exercitável no primeiro boot (Enter salva, confirmação calma no
+  próprio painel, fila sobrevive a restart do app)
 - Menu Go no portão sem beco circular (P3-362): os itens de painel abrem os
   mesmos panes offline que o rail já abre (Mission Control, Artifacts, Browser,
   Ajustes) em vez de piscar um aviso de pareamento — que era circular no
