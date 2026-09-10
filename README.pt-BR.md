@@ -384,7 +384,12 @@ remoto, zero confiança**.
   e captura ao vivo escondidos — dependem do daemon) e a lista de artifacts mostra o
   estado vazio tranquilo no lugar do erro vermelho "sem pareamento ativo" do mundo
   pareado; o header do Mission Control também quebra em duas linhas na largura do pane
-  em vez de pintar as abas sobre o título
+  em vez de pintar as abas sobre o título, e no mundo pareado agora cabe nas próprias
+  dimensões no tamanho padrão do pane em 1440x900 (P3-376): pills compactas no padrão
+  do header do Browser, base flex natural no título para a quebra acontecer antes de o
+  título colapsar em reticências, e a aba renomeada para o curto "Dashboard" —
+  "Dashboard ao vivo" duplicava o pill vizinho "Ao vivo" e empurrava a linha além da
+  borda do pane
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
