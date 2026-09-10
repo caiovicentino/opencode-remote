@@ -1289,7 +1289,9 @@ export default function App() {
               reconnect={reconnectBtn}
               onPairManually={() => setPairManual(true)}
               upstream={upstream}
-              onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
+              // P3-363: always reachable from the calm card — the escalation
+              // block needs a diagnostics path even with no upstream notice.
+              onOpenHelp={() => setHelpOpen(true)}
               sidecarExit={sidecarExit}
               sidecarWedge={sidecarWedge}
             />
@@ -1398,7 +1400,9 @@ export default function App() {
               reconnect={reconnectBtn}
               onPairManually={() => setPairManual(true)}
               upstream={upstream}
-              onOpenHelp={upstream ? () => setHelpOpen(true) : undefined}
+              // P3-363: always reachable from the calm card — the escalation
+              // block needs a diagnostics path even with no upstream notice.
+              onOpenHelp={() => setHelpOpen(true)}
               sidecarExit={sidecarExit}
               sidecarWedge={sidecarWedge}
               // P3-365: the rail beside this card opens Artifacts, Browser and

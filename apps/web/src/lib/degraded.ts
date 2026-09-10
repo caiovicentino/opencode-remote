@@ -58,6 +58,27 @@ export function retryLineParts(
   return parts.join(" · ");
 }
 
+/** P3-363: the auto-retry loop is patient by design (the watchdog never gives
+ * up), but a permanent silent retry is indistinguishable from a hang. After
+ * this much cumulative retrying on one card mount, the calm card escalates:
+ * a diagnostic block names the unanswering dependency, points at
+ * `opencode-remote doctor` and offers the real diagnostics path (Settings →
+ * help). Time-based — attempts alone don't exist on a first contact. */
+export const RETRY_ESCALATE_AFTER_SEC = 60;
+
+/** Pure escalation decision: true once the card has spent at least
+ * RETRY_ESCALATE_AFTER_SEC seconds in the auto-retry state (cumulative across
+ * attempts — sustained failure is the signal, not any single attempt). */
+export function shouldEscalateRetry(totalRetrySec: number): boolean {
+  return totalRetrySec >= RETRY_ESCALATE_AFTER_SEC;
+}
+
+/** Minutes shown by the escalation title — clamped to 1 so the first paint of
+ * the block never reads "há 0 min" (same first-paint rule as retryLineParts). */
+export function escalationMinutes(totalRetrySec: number): number {
+  return Math.max(1, Math.floor(totalRetrySec / 60));
+}
+
 /** P3-331: the shell's local verdict is STICKY for the whole session. A poll
  * gap (state null) or a degraded push (daemon down) must never resurrect the
  * "connect to another machine" ceremony on a machine the shell already proved

@@ -2794,6 +2794,34 @@ button.desk-new:hover:not(:disabled) {
   color: var(--text);
   opacity: 0.85;
 }
+/* ── P3-363: sustained-retry escalation inside the calm card ─────────────────
+   Same flat-surface language as .degraded-upstream / .degraded-exit (P2-108:
+   one surface, never a second banner): bordered panel, 3px state accent on
+   the left edge. Wait amber, not error red — the daemon may simply not exist
+   yet; kind "down" owns the red story. The button reuses the shared
+   .degraded-upstream-help style (same underlined-link language). */
+.degraded-escalate {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-wait);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.degraded-escalate-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg);
+}
+.degraded-escalate-detail {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
 /* Settings help section (P2-138): the destination of the calm-card button. */
 .settings-help {
   border-left: 3px solid var(--status-wait);

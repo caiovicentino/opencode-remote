@@ -4,7 +4,7 @@ import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 // control ships here too, reading and persisting through the shared lib/theme
 // helpers (same ocr_theme key + applyTheme() path as the Settings card).
 import { applyTheme, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
-import { retryLineParts } from "../lib/degraded";
+import { escalationMinutes, retryLineParts, shouldEscalateRetry } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 import ReconnectButton from "./ReconnectButton";
 import PaneMap from "./PaneMap";
@@ -20,7 +20,10 @@ interface Props {
   /** P2-138: upstream (opencode) notice rendered INSIDE this calm card —
    * never a second banner (P2-108 single-surface rule). */
   upstream?: UpstreamNotice | null;
-  /** P2-138: secondary action — opens the Settings help section. */
+  /** P2-138: secondary action — opens the Settings help section. P3-363: the
+   * shell passes it unconditionally now so the escalation block can offer the
+   * real diagnostics path too (the upstream block still gates its own button
+   * on an existing notice). */
   onOpenHelp?: () => void;
   /** P2-140: why the local daemon died (exit classifier verdict), rendered
    * INSIDE this calm card — never a second banner (P2-108 rule). */
@@ -77,6 +80,31 @@ function RetryLine({ attempts }: { attempts?: number }) {
   );
 }
 
+/** P3-363: the escalation block the card earns after a minute of silent
+ * retrying (shouldEscalateRetry) — the counter keeps accumulating across
+ * attempts while the auto-retry line is visible and pauses when it is not
+ * (busy connect in flight, "down" already has its own copy). P3-333's lesson
+ * applied: the interval effect arms on [autoRetry] itself and the tick
+ * increments functionally, so a re-arm can never leave a stale cleared timer
+ * nor double-count; the total is deliberately never zeroed — sustained
+ * failure stays escalated for the life of the mount. */
+function EscalationBlock({ totalSec, onOpenHelp }: { totalSec: number; onOpenHelp?: () => void }) {
+  const t = useT();
+  return (
+    <div className="degraded-escalate" role="note">
+      <p className="degraded-escalate-title">
+        {t("degradedEscalateTitle", { m: escalationMinutes(totalSec) })}
+      </p>
+      <p className="degraded-escalate-detail">{t("degradedEscalateDetail")}</p>
+      {onOpenHelp && (
+        <button className="degraded-upstream-help" onClick={onOpenHelp}>
+          {t("degradedEscalateDiagnostics")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** P2-112: first-boot degraded journey (desktop shell). With the local daemon
  * unreachable the old flow stranded a first-time user on the pairing screen —
  * four central surfaces inaccessible, zero feedback. This view never
@@ -102,6 +130,15 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   // The visible auto-retry line: honest per state — the shell keeps probing
   // every few seconds unless the respawn budget is exhausted (kind "down").
   const autoRetry = !busy && kind !== "down";
+  // P3-363: cumulative seconds spent auto-retrying on this mount, and the
+  // escalation it unlocks — the "silent forever loop" gets a diagnostic path.
+  const [retryTotal, setRetryTotal] = useState(0);
+  useEffect(() => {
+    if (!autoRetry) return;
+    const id = setInterval(() => setRetryTotal((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [autoRetry]);
+  const escalated = autoRetry && shouldEscalateRetry(retryTotal);
   // P2-324: one calm band for both shell verdicts — the exit notice wins when
   // both exist (a dead daemon is the stronger story than a wedged one being
   // revived). Same classes, same tone, no new clickable target.
@@ -153,6 +190,7 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
           <RetryLine attempts={reconnectAttempts} />
         </p>
       )}
+      {escalated && <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} />}
       <div className="degraded-actions">
         <ReconnectButton className="degraded-reconnect-btn" reconnect={reconnect} />
       </div>
