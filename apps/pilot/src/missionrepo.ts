@@ -148,10 +148,10 @@ export function ensureMissionRepo(repoUrl: string, key: string, root = missionRo
   // contact: the researcher/strategist seed the skeleton locally (never pushed
   // by themselves) and land it inside their first guarded PR. (Same predicate
   // as backlog.ts's needsBacklogSkeleton — not imported here because backlog
-  // → metapush → missionrepo would close an import cycle.)
+  // → metapush → missionrepo would close an import cycle; the battery pins
+  // the two in agreement.)
   const md = exec(`git show ${shq(`origin/${def.branch}`)}:BACKLOG.md`, { cwd: dir, allowFail: true });
-  const backlog = md.ok ? md.output : null;
-  if (typeof backlog !== "string" || !/^## Ready$/m.test(backlog)) {
+  if (backlogSkeletonNeeded(md.ok ? md.output : null)) {
     logLine("info", "mission repo has no BACKLOG.md in the pilot format — the first aux landing seeds it (via PR)");
     emit("phase", { task: "mission", phase: "backlog", ok: true, detail: "no pilot-format BACKLOG.md yet — first aux PR seeds it" });
   }
@@ -159,11 +159,20 @@ export function ensureMissionRepo(repoUrl: string, key: string, root = missionRo
 }
 
 /**
+ * missionrepo's copy of backlog.ts's needsBacklogSkeleton (true when there is
+ * no file content or no `## Ready` section). NOT imported from backlog.ts
+ * because backlog → metapush → missionrepo would close an import cycle — the
+ * unit battery pins the two predicates in agreement so they cannot drift.
+ */
+export function backlogSkeletonNeeded(md: string | null | undefined): boolean {
+  return typeof md !== "string" || !/^## Ready$/m.test(md);
+}
+
+/**
  * The boot's "mission loaded" record — the exact log line + phase event the
  * dispatcher emits when mission.json parsed. Extracted so the battery asserts
  * the REAL line instead of grepping the source for it.
- */
-export function logMissionLoaded(mission: MissionSpec): void {
+ */export function logMissionLoaded(mission: MissionSpec): void {
   logLine("info", "mission loaded", { repoUrl: mission.repoUrl, prompt: mission.prompt?.slice(0, 160), models: mission.models, setAt: mission.setAt });
   emit("phase", { task: "mission", phase: "loaded", ok: true, detail: missionDetail(mission) });
 }

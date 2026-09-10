@@ -466,7 +466,7 @@ import {
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
 
-import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
+import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, normalizePilotConfig, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
 
 import type { PilotState } from "../apps/pilot/src/state";
 
@@ -643,7 +643,7 @@ import { deployPreflight } from "../apps/pilot/src/deploy";
 import { directionGuardDetail } from "../apps/pilot/src/deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_AFTER, DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal } from "../apps/pilot/src/deploybackoff";
 import { NIGHTLY_DRAIN_CAP_MS, NIGHTLY_START_HOUR, nightlyWindow } from "../apps/pilot/src/scheduler";
-import { bootMissionRepo, detectDefaultBranch, logMissionLoaded, parseRemoteShowHead, parseSymbolicHead, pipelineBaseBranch } from "../apps/pilot/src/missionrepo";
+import { backlogSkeletonNeeded, bootMissionRepo, detectDefaultBranch, logMissionLoaded, parseRemoteShowHead, parseSymbolicHead, pipelineBaseBranch } from "../apps/pilot/src/missionrepo";
 import { BACKLOG_SKELETON, backlogSkeletonEdit, needsBacklogSkeleton, seedBacklogSkeleton } from "../apps/pilot/src/backlog";
 import { activeModelSubstitutions, clearModelSubstitution, formatModelSubstitutions, readModelSubstitutions, recordModelSubstitution } from "../apps/pilot/src/modelsubst";
 import { formatModelSubstitutions as formatModelSubstitutionsView } from "../apps/web/src/components/MissionControlView";
@@ -773,6 +773,7 @@ import {
   verifyRollbackHealth,
   latestDeployableSha,
 } from "../apps/pilot/src/deploy";
+import { deploySkipReason } from "../apps/pilot/src/deployguard";
 
 import {
   dirtyGuardDetail,
@@ -17831,7 +17832,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "mission: foreign repo gates both deploy paths (pending deploy + post-merge launch)",
-    pilotIndexSrc.includes("!deployBusy && !foreignMission && state.deploys") && pilotIndexSrc.includes("if (foreignMission) {"),
+    pilotIndexSrc.includes("!deployBusy && !foreignMission && state.deploys") && pilotIndexSrc.includes("deploySkipReason(foreignMission, deployBusy"),
   );
   check("mission: strategist/researcher take the chat-defined prompt", pilotIndexSrc.includes("activeMission?.prompt ?? STRATEGIST_MISSION") && pilotIndexSrc.includes("runResearcher(aux, state, activeMission?.prompt, foreignMission)"));
   check(
@@ -19850,6 +19851,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const researcherSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "researcher.ts"), "utf8");
   check("index.ts/researcher: every BACKLOG-writing aux threads foreignMission into the skeleton seed", researcherSrc.includes("seedSkeleton: foreign") && researcherSrc.includes("baseBranch: cfg.baseBranch") && pilotIndexSrc.includes("syncWorkspace(aux.workspace, aux.baseBranch)"));
   check("P3-358: the base branch is validated in one place and falls back to main", pipelineBaseBranch("master") === "master" && pipelineBaseBranch(undefined) === "main" && pipelineBaseBranch("bad..branch") === "main" && pipelineBaseBranch("main") === "main");
+  // P3-358: missionrepo keeps a copy of backlog.ts's skeleton predicate (the
+  // import cycle forbids sharing) — the battery pins the two in agreement
+  check("P3-358: the mission-boot skeleton predicate agrees with backlog.ts's needsBacklogSkeleton (no drift)", ([null, undefined, "", "# x\n\n## Done\n", "# x\n\n## Ready\n\n## Done\n", "## Readyish\n", BACKLOG_SKELETON] as const).every((s) => backlogSkeletonNeeded(s) === needsBacklogSkeleton(s)));
+  // P3-358 round 3: a stale/typo'd baseBranch in pilot.json must never leak
+  // into the config — mission-derived keys are stripped at load time, so the
+  // dispatcher's origin/<base> interpolations only ever see the boot-derived,
+  // pipelineBaseBranch-validated value
+  const stripped = normalizePilotConfig({ baseBranch: "dev", missionKey: "acme--widgets", missionModels: { builder: "x/y" }, slots: 99 });
+  check("P3-358: loadConfig strips mission-derived keys — a stale baseBranch in pilot.json never reaches an origin/<base> interpolation", !("baseBranch" in stripped) && !("missionKey" in stripped) && !("missionModels" in stripped) && stripped.slots === 8);
 
   // --- P3-358: a master-default foreign mission runs END TO END ----------------
   // Real fixture, real git, fake GitHub (gh): bare origin with default branch
@@ -19992,10 +20002,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       check("P3-358: the old hardcoded read is blind here (why the parameter matters)", !taskMergedIn(slot, "P3-358"));
 
       // ── 0 deploy attempts: nothing gate-verified on the fixture → no target,
-      // and launchDeploy refuses foreign missions before even resolving one
+      // and launchDeploy's PURE gate (deployguard.deploySkipReason) refuses a
+      // foreign mission before target resolution — asserted behaviorally
       check("P3-358: latestDeployableSha on the base finds no verified merge — no deploy target", latestDeployableSha(slot, cfgLike.baseBranch) === null);
-      const pilotIndexSrc2 = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
-      check("P3-358: foreign missions are refused at launchDeploy before any deploy attempt", pilotIndexSrc2.includes("deploy skipped — foreign mission repo serves no production service here"));
+      check("P3-358: 0 deploy attempts — the launchDeploy gate refuses a foreign mission first (behavioral)", deploySkipReason(true, false, 0, 5) === "foreign-mission" && deploySkipReason(false, true, 0, 5) === "deploy-in-flight" && deploySkipReason(false, false, 5, 5) === "budget-reached" && deploySkipReason(false, false, 0, 5) === null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

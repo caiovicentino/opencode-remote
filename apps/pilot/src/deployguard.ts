@@ -168,6 +168,27 @@ export function pickDeployableSha(
 }
 
 /**
+ * P3-358: the launchDeploy pre-guards as a pure decision, so the battery
+ * proves the foreign-mission refusal BEHAVIORALLY (a foreign mission repo
+ * serves no production service here — a reset + build + kickstart of our
+ * services would only cause an outage) instead of grepping the dispatcher
+ * source. Null = no guard held, proceed to target resolution.
+ */
+export type DeploySkipReason = "foreign-mission" | "deploy-in-flight" | "budget-reached";
+
+export function deploySkipReason(
+  foreignMission: boolean,
+  deployBusy: boolean,
+  deploys: number,
+  maxDeploysPerDay: number,
+): DeploySkipReason | null {
+  if (foreignMission) return "foreign-mission";
+  if (deployBusy) return "deploy-in-flight";
+  if (deploys >= maxDeploysPerDay) return "budget-reached";
+  return null;
+}
+
+/**
  * The deploy-side verdict for a concrete sha — defense in depth: callers
  * already resolve their target with pickDeployableSha, but deploy() re-checks
  * the sha it was handed against the same lists. Null = allowed.

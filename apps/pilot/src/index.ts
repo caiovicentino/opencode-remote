@@ -10,6 +10,7 @@ import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
 import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDiffCmd, pilotInfraDrifted, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
+import { deploySkipReason } from "./deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
@@ -738,17 +739,20 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
  * newest gate-verified, non-quarantined sha; without one, nothing deploys.
  */
 function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: boolean) {
-  if (foreignMission) {
+  // P3-358: the pre-guards are the pure deploySkipReason (deployguard.ts) —
+  // the battery proves the foreign-mission refusal behaviorally
+  const skip = deploySkipReason(foreignMission, deployBusy, state.deploys, cfg.maxDeploysPerDay);
+  if (skip === "foreign-mission") {
     // the merge landed in the mission repo; nothing here runs from it, so a
     // reset + build + kickstart of OUR services would only cause an outage
     log("info", "deploy skipped — foreign mission repo serves no production service here", { task: task.id, sha: sha.slice(0, 7) });
     return;
   }
-  if (deployBusy) {
+  if (skip === "deploy-in-flight") {
     log("info", "deploy in flight — merge queued on main, next deploy will pick it up", { task: task.id });
     return;
   }
-  if (state.deploys >= cfg.maxDeploysPerDay) {
+  if (skip === "budget-reached") {
     log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });
     return;
   }
