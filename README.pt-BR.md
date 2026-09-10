@@ -437,7 +437,11 @@ remoto, zero confiança**.
   (P3-382): o header reusa o rótulo do rail verbatim ("Browser"/"Navegador"), e o botão
   Ir, estados de carregamento/vazio, labels de acessibilidade e copy de erro — incluindo
   os erros crus do fallback de screenshot — traduzem, com o mesmo travamento de deriva
-  guardando o pane (ele é alcançável no portão do primeiro boot)
+  guardando o pane (ele é alcançável no portão do primeiro boot). A linha de erro do
+  Mission Control no mundo pareado recebe o mesmo tratamento (P3-381): erros internos
+  como "daemon unreachable" ou "HTTP 502" não aparecem mais em inglês cru e vermelho —
+  resolvem, pelo humanizador de erros compartilhado, para a mesma frase calma de falha
+  de carregamento que o celular já mostra
 
 ## Quick Start (Mac → iPhone, ~5 min)
 
