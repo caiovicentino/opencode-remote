@@ -11641,12 +11641,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
   const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
-  // Four rows, named exactly like the rail (nav* keys), each with a one-line
+  // Five rows (P3-389 added Settings: the gate rail opens it offline too),
+  // named exactly like the rail (nav* keys), each with a one-line
   // description and the per-row lock glyph.
-  const rowKeys = ["navConversations", "navArtifacts", "navBrowser", "navMission"];
-  const descKeys = ["paneMapChat", "paneMapArtifacts", "paneMapBrowser", "paneMapMission"];
+  const rowKeys = ["navConversations", "navArtifacts", "navBrowser", "navMission", "navSettings"];
+  const descKeys = ["paneMapChat", "paneMapArtifacts", "paneMapBrowser", "paneMapMission", "paneMapSettings"];
   check(
-    "P3-364: PaneMap lists the four locked panes with descriptions and lock glyphs",
+    "P3-364: PaneMap lists the five panes with descriptions and lock glyphs",
     rowKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
       descKeys.every((k) => mapSrc.includes(`t("${k}")`)) &&
       // P3-365: the title key became reachable-conditional (both spellings).
@@ -11705,11 +11706,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       mapSrc.includes("p.locked && <IconLock"),
   );
   // Only Conversations stays locked in the reachable variant (the chat rail
-  // slot is the disabled one; the other three are one rail-click away).
+  // slot is the disabled one; the other four are one rail-click away).
   check(
     "P3-365: reachable variant locks only Conversations",
     (mapSrc.match(/locked: true/g) ?? []).length === 1 &&
-      (mapSrc.match(/locked: !reachable/g) ?? []).length === 3,
+      (mapSrc.match(/locked: !reachable/g) ?? []).length === 4,
   );
   // DegradedView forwards the flag; App passes it ONLY on the skeleton hero
   // (the classic centered screen keeps the fully locked map).

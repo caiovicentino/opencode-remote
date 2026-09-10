@@ -416,11 +416,12 @@ private. That is the product: **local power, remote control, zero trust**.
   component
 - **Pairing gate with a map (P3-364)** — the unpaired screens (manual ceremony and the
   degraded first boot) carry a persistent "After pairing" card listing the panes that stay
-  locked until connection — Conversations, Artifacts, Browser, Mission Control — each with a
+  locked until connection — Conversations, Artifacts, Browser, Mission Control, Settings — each with a
   one-line description and a lock glyph, so a first-time user sees what pairing unlocks
   instead of a transient toast flashing the only explanation away. On the first-boot shell
   skeleton (P3-365) the card retitles to "Before pairing" and keeps the lock glyph only on
-  Conversations — the rail beside it already opens the other panes
+  Conversations — the rail beside it already opens the other panes, including Settings
+  offline (P3-389)
 - **Offline panes stay calm at the gate (P3-327)** — behind the first-boot gate shell the
   reachable panes read as expected empty worlds, not errors: Mission Control opens on the
   forensic view with its "no sessions recorded yet" copy (the dashboard and live-shot
