@@ -122,7 +122,7 @@ export default function FilesView({
     <div className="screen">
       <header>
         <button onClick={onBack}>←</button>
-        <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>Files on {""}this machine</h1>
+        <h1 className="pane-title">Files on {""}this machine</h1>
         <button onClick={load} aria-label="Refresh">
           ↻
         </button>
