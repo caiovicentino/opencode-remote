@@ -1603,6 +1603,24 @@ from inside the app); on the phone it points back to the computer itself or to
 pairing another device manually — both locales written, chosen by the same
 desktop-shell verdict the app already computes.
 
+**A missing agent server comes with the whole install journey (P3-392)**: when
+the classifier's "unreachable" verdict is the never-installed split (connection
+refused AND no opencode binary on this machine, P2-149) the desktop shell stops
+showing the generic "check that opencode is installed (opencode serve)" line —
+which sent laypeople to a terminal — and resolves the notice to a dedicated
+title instead: "The agent server is not installed on this machine". The calm
+card (and the welcome wizard's agent step) then carries three real actions:
+"Copy install command" puts the official per-platform one-liner on the clipboard
+(macOS/Linux: `curl -fsSL https://opencode.ai/install | bash`; Windows:
+`irm https://opencode.ai/install.ps1 | iex`), "Open install instructions" opens
+the official docs through the shell's external-link gate, and "Check again"
+re-runs the shell's health poll and always lands in a terminal state — the
+notice goes away by itself once the install finishes, never a permanent
+spinner. The phone keeps the previous generic copy with no actions. For
+deterministic visual evidence on machines that DO have opencode, the daemon
+honors the `OCR_OPENCODE_MISSING=1` test hatch, which forces the binary-absent
+half of the split (the upstream probe itself stays real).
+
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
 for the whole session — poll gaps and degraded states no longer resurrect the

@@ -3,6 +3,7 @@ import { useT } from "../lib/i18n";
 import type { DegradedKind, UpstreamNotice } from "../lib/degraded";
 import { qrWaitVerdict, QR_WAIT_TIMEOUT_MS } from "../lib/qrWait";
 import ReconnectButton from "./ReconnectButton";
+import UpstreamMissingActions from "./UpstreamMissingActions";
 
 interface Props {
   kind: DegradedKind;
@@ -27,6 +28,9 @@ interface Props {
   onPairManually?: () => void;
   /** Finish (or skip) — App stamps the flag and unmounts the onboarding. */
   onDone: () => void;
+  /** P3-392: re-runs the shell's pairing tick for the missing-binary
+   * "check again" action (app:recheckWebApp). Absent in the plain browser. */
+  onRecheck?: () => void;
 }
 
 /** P1-056: step-3 inline ceremony — opts into remote pairing on mount, shows
@@ -141,7 +145,7 @@ function InlinePair({
  * banner per P2-108), step 3 invites pairing a phone with an explicit "do
  * this later". Zero emoji (P2-107), P3-083 tokens only, 150–300ms motion
  * that dies under prefers-reduced-motion (P3-087). */
-export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onPairManually, onDone }: Props) {
+export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onPairManually, onDone, onRecheck }: Props) {
   const t = useT();
   const [step, setStep] = useState(1);
 
@@ -212,6 +216,10 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
                     {[upstream.reason, upstream.hint].filter(Boolean).join(" — ")}
                   </p>
                 )}
+                {/* P3-392: the binary-missing verdict carries the whole
+                    install journey on the desktop shell too — first boot is
+                    exactly where the leigo meets it (P1-071). */}
+                {upstream.missingBinary && <UpstreamMissingActions onRecheck={onRecheck} />}
               </div>
             )}
             <ReconnectButton className="welcome-retry" reconnect={reconnect} />

@@ -13,6 +13,7 @@ import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotic
 import { readGateQueue, writeGateQueue } from "../lib/gatequeue";
 import { clampComposerHeight } from "../lib/composer";
 import ReconnectButton from "./ReconnectButton";
+import UpstreamMissingActions from "./UpstreamMissingActions";
 import PaneMap from "./PaneMap";
 
 interface Props {
@@ -50,6 +51,9 @@ interface Props {
    * picks the escalation detail: the desktop points at the adjacent in-app
    * diagnostics button; the phone points back to the computer itself. */
   desktopShell?: boolean;
+  /** P3-392: re-runs the shell's pairing tick for the missing-binary
+   * "check again" action (app:recheckWebApp). Absent in the plain browser. */
+  onRecheck?: () => void;
 }
 
 /** P3-372: the auto-retry line with live feedback — seconds tick since the
@@ -136,7 +140,7 @@ function EscalationBlock({ totalSec, onOpenHelp, reconnect, desktopShell }: { to
  * "daemon fell" for a daemon the machine never met), a visible auto-retry
  * line with the attempt counter, a reconnect action with real feedback, the
  * purely-local data that keeps working, and manual pairing one click away. */
-export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable, desktopShell }: Props) {
+export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable, desktopShell, onRecheck }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
@@ -241,6 +245,12 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
               {t("upstreamHelpAction")}
             </button>
           )}
+          {/* P3-392: the binary-missing verdict carries the whole install
+              journey — copy the official command, open the official steps,
+              re-check. Only rendered for the desktop-shell notice (the
+              upstreamNotice resolution already guarantees it: on the phone
+              missingBinary stays false and today's copy is unchanged). */}
+          {upstream.missingBinary && <UpstreamMissingActions onRecheck={onRecheck} />}
         </div>
       )}
       {autoRetry && (

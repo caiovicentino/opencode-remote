@@ -1057,7 +1057,10 @@ export default function App() {
   // P2-138: upstream (opencode) verdict — null for ok/unknown/legacy payloads.
   // Rendered ONLY inside existing calm surfaces (degraded card, Settings help
   // section), never as a second banner (P2-108 single-surface rule).
-  const upstream = upstreamNotice(pairingState?.opencode);
+  // P3-392: the resolution is shell-aware — on the desktop the "unreachable
+  // AND binary absent" split resolves to the install-journey copy; the phone
+  // keeps today's generic unreachable copy.
+  const upstream = upstreamNotice(pairingState?.opencode, !!desktopBridge());
   // P2-140: why the local daemon died — null unless the shell attached an
   // exit verdict. Rendered ONLY inside the degraded calm card (P2-108 rule).
   const sidecarExit = sidecarExitNotice(pairingState?.sidecarExit);
@@ -1286,6 +1289,9 @@ export default function App() {
             setPairManual(true);
           }}
           onDone={finishWelcome}
+          // P3-392: "check again" re-runs the shell's pairing tick; the next
+          // push carries a fresh opencode verdict.
+          onRecheck={desktopBridge()?.recheckWebApp ? () => desktopBridge()?.recheckWebApp?.() : undefined}
         />
       </div>
     );
@@ -1388,6 +1394,9 @@ export default function App() {
               // P3-394: the same shell verdict the install hint uses — it
               // picks the escalation detail (in-app diagnostics vs phone).
               desktopShell={!!desktopBridge()}
+              // P3-392: "check again" re-runs the shell's pairing tick; the
+              // next push carries a fresh opencode verdict.
+              onRecheck={desktopBridge()?.recheckWebApp ? () => desktopBridge()?.recheckWebApp?.() : undefined}
             />
           ) : (
             <PairingView
@@ -1506,6 +1515,9 @@ export default function App() {
               // P3-394: the same shell verdict the install hint uses — it
               // picks the escalation detail (in-app diagnostics vs phone).
               desktopShell={!!desktopBridge()}
+              // P3-392: "check again" re-runs the shell's pairing tick; the
+              // next push carries a fresh opencode verdict.
+              onRecheck={desktopBridge()?.recheckWebApp ? () => desktopBridge()?.recheckWebApp?.() : undefined}
               // P3-365: the rail beside this card opens Artifacts, Browser and
               // Mission Control pre-pairing — the hero's pane map must not
               // claim those panes are locked.

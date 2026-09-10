@@ -2240,10 +2240,20 @@ let binaryPick: OpencodeBinaryPick = { path: null, source: null };
 let binaryCheckedAt = 0;
 
 /** Re-resolve the opencode binary (rate-limited to one check per minute
- * unless forced); the pick feeds binaryFound/binarySource — never the path. */
+ * unless forced); the pick feeds binaryFound/binarySource — never the path.
+ * P3-392: OCR_OPENCODE_MISSING=1 is a documented test hatch (same spirit as
+ * OCR_MODEL_BLOCK) — it forces the binary-absent half of the P2-149 split so
+ * the desktop's install journey can be evidenced deterministically on hosts
+ * that DO have the binary. The upstream probe itself stays real: with a dead
+ * OPENCODE_URL the connection refusal + this forced absent pick fall out of
+ * the classifier as the binary-missing verdict, unchanged. */
 function refreshOpencodeBinary(force = false): void {
   if (!force && Date.now() - binaryCheckedAt < 60_000) return;
   binaryCheckedAt = Date.now();
+  if (process.env.OCR_OPENCODE_MISSING === "1") {
+    binaryPick = { path: null, source: null };
+    return;
+  }
   binaryPick = pickOpencodeBinary(opencodeCandidates(process.env, process.platform, homedir(), nodeVersionDirs()), (p) => {
     try {
       accessSync(p, constants.X_OK);

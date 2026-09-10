@@ -165,7 +165,9 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // the first 360s run stayed green through the second-to-last beat and died at
 // the P2-152 close-to-tray boot, so it lands at 420s. P3-394 added the
 // escalation beat (the ?escalate=1 hatch + the desktop-phrase probe) inside
-// the same budget.
+// the same budget; P3-392 added the binary-missing install-journey beat (the
+// OCR_OPENCODE_MISSING=1 daemon hatch + welcome agent-step actions + paired
+// Settings copy) inside it too.
 const startedAt = Date.now();
 const DEADLINE_MS = 420_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -3661,6 +3663,207 @@ try {
     killDaemon3("SIGKILL");
     killFake401();
     rmSync(daemonHome3, { recursive: true, force: true });
+  }
+
+  // --- P3-392: binary-missing install journey (OCR_OPENCODE_MISSING=1) --------
+  // The documented daemon hatch (same spirit as OCR_MODEL_BLOCK) forces the
+  // binary-absent half of the P2-149 split; with a dead OPENCODE_URL the
+  // classifier falls into the "refused AND binary not found" verdict. The
+  // desktop shell resolves it to the install-journey copy (P3-392) and the
+  // calm surfaces carry three real actions: copy the official install
+  // command, open the official instructions through the extlink gate, and
+  // re-check (always landing in a terminal state — P3-327). The beat drives
+  // the welcome wizard's agent step (the first-boot surface where a layperson
+  // meets this verdict) and then the paired Settings help card.
+  phase("P3-392: binary-missing install journey (hatch daemon)");
+  const daemonHome4 = mkdtempSync(join(tmpdir(), "ocr-flow-missing-"));
+  const localStateFile4 = join(daemonHome4, ".opencode-remote", "daemon.json");
+  const port4 = await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+  const localDaemon4 = spawn(daemonSpawn().command, daemonSpawn().args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: daemonHome4,
+      OCR_METRICS_PORT: String(port4),
+      // Dead upstream: connection refused, deterministically, on any host.
+      OPENCODE_URL: "http://127.0.0.1:1",
+      // The hatch under test: the binary pick is forced absent even though
+      // this host may have opencode installed.
+      OCR_OPENCODE_MISSING: "1",
+      RELAY_URL: "ws://127.0.0.1:1",
+      OCR_LOG_LEVEL: "error",
+    },
+    stdio: ["ignore", "ignore", "ignore"],
+    detached: true,
+  });
+  const killDaemon4 = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    if (!localDaemon4.pid) return;
+    try {
+      process.kill(-localDaemon4.pid, signal);
+    } catch {
+      /* already gone */
+    }
+  };
+  process.on("exit", () => killDaemon4("SIGKILL"));
+  const missingEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-missing`,
+    OCR_DESKTOP_LOCAL_STATE: localStateFile4,
+    OCR_DAEMON_METRICS_PORT: String(port4),
+  };
+  let missingBooted = false;
+  try {
+    const token4 = await waitForDaemonStateFile(localStateFile4, port4);
+    check("P3-392: hermetic daemon (missing-binary hatch) published the 0600 state file", !!token4);
+    // daemon-side proof: the classifier verdict + the forced absent pick both
+    // ride /api/health — this is exactly what the renderer's verdict consumes.
+    const missingHealth = token4
+      ? await fetch(`http://127.0.0.1:${port4}/api/health`, { headers: { authorization: `Bearer ${token4}` } })
+          .then((r) => r.json() as Promise<{ opencode?: { state?: string; binaryFound?: boolean } }>)
+          .catch(() => null)
+      : null;
+    check(
+      "P3-392: /api/health carries unreachable + binaryFound=false",
+      missingHealth?.opencode?.state === "unreachable" && missingHealth?.opencode?.binaryFound === false,
+      JSON.stringify(missingHealth?.opencode ?? null),
+    );
+    if (token4 && missingHealth?.opencode?.state === "unreachable" && missingHealth.opencode.binaryFound === false) {
+      const open4 = run("P3-392: open (hermetic launch)", ["open"], 45_000, missingEnv);
+      missingBooted = open4.ok;
+      if (open4.ok) {
+        // The welcome wizard is the first-boot surface — walk INTO step 2
+        // (the agent step) instead of skipping it.
+        run("P3-392: welcome step 1 → start", ["click", ".welcome-next"], 15_000, missingEnv);
+        const actionsUp = await waitProbe(
+          "P3-392: install-journey block rendered",
+          "!!document.querySelector('.degraded-upstream-actions')",
+          (v) => /true/.test(v),
+          missingEnv,
+        );
+        if (actionsUp) {
+          // Capture wrappers BEFORE the real clicks: the clipboard write is
+          // recorded (the real write still happens) and window.open is
+          // intercepted so the beat never launches a host browser — the
+          // extlink gate itself is main-side and unit-tested.
+          run(
+            "P3-392: seed the action captures",
+            [
+              "ipc",
+              "window.__ocrCopy=''; window.__ocrDocs=''; " +
+                "const w = navigator.clipboard.writeText.bind(navigator.clipboard); " +
+                "navigator.clipboard.writeText = (t) => { window.__ocrCopy = t; return w(t); }; " +
+                "window.open = (u) => { window.__ocrDocs = String(u); return null; }; 'seeded'",
+            ],
+            15_000,
+            missingEnv,
+          );
+          // Copy: the REAL clipboard write is captured by wrapping the async
+          // Clipboard API before the click — the payload must be the official
+          // platform command, not a placeholder.
+          const install = run("P3-392: copy install command", ["click", ".degraded-missing-copy"], 15_000, missingEnv);
+          if (install.ok) {
+            await waitProbe(
+              "P3-392: copied feedback is a terminal state",
+              "document.querySelector('.degraded-upstream-copied')?.textContent ?? ''",
+              (v) => /Command copied|Comando copiado/.test(v),
+              missingEnv,
+            );
+            const payload = run(
+              "P3-392: clipboard payload",
+              ["ipc", "window.__ocrCopy ?? ''"],
+              15_000,
+              missingEnv,
+            );
+            if (payload.ok) {
+              check(
+                "P3-392: clipboard carries the official install command",
+                /opencode\.ai\/install/.test(payload.stdout),
+                payload.stdout,
+              );
+            }
+          }
+          // Docs: the real click must go through window.open — the shell
+          // routes it through the P2-178 extlink gate (https passes).
+          const docs = run("P3-392: open install instructions", ["click", ".degraded-missing-docs"], 15_000, missingEnv);
+          if (docs.ok) {
+            const opened = run(
+              "P3-392: window.open target",
+              ["ipc", "window.__ocrDocs ?? ''"],
+              15_000,
+              missingEnv,
+            );
+            if (opened.ok) {
+              check("P3-392: instructions opened at the official docs", /opencode\.ai/.test(opened.stdout), opened.stdout);
+            }
+          }
+          // Re-check: transient "checking" then the TERMINAL "still missing"
+          // line within the bounded wait — never a permanent spinner.
+          const recheck = run("P3-392: check again", ["click", ".degraded-missing-recheck"], 15_000, missingEnv);
+          if (recheck.ok) {
+            await waitProbe(
+              "P3-392: recheck lands in the terminal still-missing state",
+              "document.querySelector('.degraded-upstream-still')?.textContent ?? ''",
+              (v) => /wasn't found|ainda não foi encontrado/.test(v),
+              missingEnv,
+              12,
+              1_000,
+            );
+          }
+          const shotMissing1440 = join(shotsDir, "P3-392-missing-1440.png");
+          const shotMissing390 = join(shotsDir, "P3-392-missing-390.png");
+          const m1 = run("P3-392: 1440x900 evidence shot", ["shot", shotMissing1440, "1440", "900"], 15_000, missingEnv);
+          if (m1.ok) check("P3-392: 1440x900 shot is a real PNG", pngSize(shotMissing1440).join("x") === "1440x900");
+          const m2 = run("P3-392: 390 evidence shot", ["shot", shotMissing390, "390", "844"], 15_000, missingEnv);
+          if (m2.ok) check("P3-392: 390 shot is a real PNG", pngSize(shotMissing390)[0] === 390);
+        }
+        // Paired surface: skip the wizard (the daemon is healthy — local
+        // auto-connect has already paired in the background) and prove the
+        // Settings help card carries the MISSING copy, not the generic one.
+        run("P3-392: skip the rest of the welcome", ["click", ".welcome-skip"], 15_000, missingEnv);
+        await waitProbe(
+          "P3-392: app paired with the hatch daemon",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          missingEnv,
+        );
+        run("P3-392: open Settings pane", ["menu-click", "go-pane-settings"], 15_000, missingEnv);
+        const helpMissing = await waitProbe(
+          "P3-392: Settings help card rendered",
+          "!!document.querySelector('.settings-help')",
+          (v) => /true/.test(v),
+          missingEnv,
+          12,
+          500,
+        );
+        if (helpMissing) {
+          const missingCopy = run(
+            "P3-392: Settings help copy probe",
+            ["ipc", "document.querySelector('.settings-help')?.textContent ?? ''"],
+            15_000,
+            missingEnv,
+          );
+          if (missingCopy.ok) {
+            check(
+              "P3-392: Settings help names the missing install, never the generic line",
+              /not installed on this machine|Falta instalar o servidor do agente/.test(missingCopy.stdout) &&
+                !/Agent server not found|Servidor do agente não encontrado/.test(missingCopy.stdout),
+              missingCopy.stdout,
+            );
+          }
+        }
+      }
+    }
+  } finally {
+    if (missingBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: missingEnv });
+    killDaemon4("SIGKILL");
+    rmSync(daemonHome4, { recursive: true, force: true });
   }
 
   // --- P2-140: daemon-down card explains WHY the daemon died ------------------

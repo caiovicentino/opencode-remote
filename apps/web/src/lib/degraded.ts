@@ -125,44 +125,81 @@ export function autoConnectAllowed(
 
 /** P2-138: tolerant view of the daemon's /api/health `opencode` object (the
  * P2-135 classifier verdict). Fields are validated, never trusted — a legacy
- * daemon omits the object entirely. */
+ * daemon omits the object entirely. P3-392: binaryFound rides along (the
+ * P2-149 split) — absent/legacy stays undefined, never a verdict. */
 export interface UpstreamHealth {
   state?: unknown;
   reason?: unknown;
   hint?: unknown;
   checkedAt?: unknown;
+  binaryFound?: unknown;
 }
 
 export type UpstreamNoticeTone = "warn" | "info";
 
 /** One upstream notice: tone (drives the accent of the single in-card block),
- * i18n keys for headline + suggested action, and the daemon's own reason/hint
- * as SECONDARY detail — plain strings rendered by React as text, never HTML. */
+ * i18n keys for headline + suggested action, the daemon's own reason/hint as
+ * SECONDARY detail — plain strings rendered by React as text, never HTML —
+ * and the P3-392 binary-missing verdict (true only for the "refused AND the
+ * opencode binary was not found on this machine" split, AND only when the
+ * notice was resolved for the desktop shell; the phone keeps today's copy). */
 export interface UpstreamNotice {
   tone: UpstreamNoticeTone;
   titleKey: string;
   actionKey: string;
   reason: string;
   hint: string;
+  missingBinary: boolean;
 }
+
+/** P3-392: official opencode install command per platform, copied to the
+ * clipboard by the calm card's install journey (the layperson never types
+ * anything — copy + paste into a terminal IS the whole journey). The install
+ * script URL is the one the opencode docs publish; linux shares the macOS
+ * curl script, Windows uses the official PowerShell one. Pure so the eval
+ * battery pins the exact commands. */
+export function installCommandFor(platform: string): string {
+  const win = platform.toLowerCase().startsWith("win");
+  return win
+    ? "irm https://opencode.ai/install.ps1 | iex"
+    : "curl -fsSL https://opencode.ai/install | bash";
+}
+
+/** P3-392: official install instructions, opened through the shell's
+ * external-open gate (apps/desktop/src/extlink.ts — https passes). */
+export const INSTALL_DOCS_URL = "https://opencode.ai/docs";
+
+/** P3-392: how long the "check again" action may stay in its transient
+ * checking state before landing in the terminal "still missing" line — the
+ * P3-327 lesson: a recovery action never ends on a permanent spinner. */
+export const UPSTREAM_RECHECK_TIMEOUT_MS = 8_000;
 
 /** Map the P2-135 classifier state to a user-facing notice. Returns null for
  * `ok` (nothing to say), `unknown` (first probe pending), an absent object
  * (legacy daemon) and any malformed payload — silence is always safe. The
- * classifier has exactly five states; the four non-ok ones map to notices. */
-export function upstreamNotice(health: UpstreamHealth | null | undefined): UpstreamNotice | null {
+ * classifier has exactly five states; the four non-ok ones map to notices.
+ * P3-392: on the desktop shell, the "unreachable AND binary absent" split
+ * resolves to the dedicated install-journey copy (new keys, both locales);
+ * on the phone the generic unreachable copy stays exactly as it was. */
+export function upstreamNotice(
+  health: UpstreamHealth | null | undefined,
+  desktopShell = false,
+): UpstreamNotice | null {
   const state = typeof health?.state === "string" ? health.state : "";
   const reason = typeof health?.reason === "string" ? health.reason : "";
   const hint = typeof health?.hint === "string" ? health.hint : "";
+  const missingBinary = state === "unreachable" && health?.binaryFound === false && desktopShell;
   switch (state) {
     case "unauthorized":
-      return { tone: "warn", titleKey: "upstreamUnauthorizedTitle", actionKey: "upstreamUnauthorizedAction", reason, hint };
+      return { tone: "warn", titleKey: "upstreamUnauthorizedTitle", actionKey: "upstreamUnauthorizedAction", reason, hint, missingBinary: false };
     case "unreachable":
-      return { tone: "info", titleKey: "upstreamUnreachableTitle", actionKey: "upstreamUnreachableAction", reason, hint };
+      return missingBinary
+        ? { tone: "info", titleKey: "upstreamMissingTitle", actionKey: "upstreamMissingAction", reason, hint, missingBinary: true }
+        : { tone: "info", titleKey: "upstreamUnreachableTitle", actionKey: "upstreamUnreachableAction", reason, hint, missingBinary: false };
     case "timeout":
-      return { tone: "warn", titleKey: "upstreamTimeoutTitle", actionKey: "upstreamTimeoutAction", reason, hint };
+      return { tone: "warn", titleKey: "upstreamTimeoutTitle", actionKey: "upstreamTimeoutAction", reason, hint, missingBinary: false };
     case "unhealthy":
-      return { tone: "warn", titleKey: "upstreamUnhealthyTitle", actionKey: "upstreamUnhealthyAction", reason, hint };
+      return { tone: "warn", titleKey: "upstreamUnhealthyTitle", actionKey: "upstreamUnhealthyAction", reason, hint, missingBinary: false };
     default:
       return null;
   }
