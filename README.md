@@ -417,7 +417,11 @@ private. That is the product: **local power, remote control, zero trust**.
   its header reuses the rail's label verbatim ("Browser"/"Navegador"), and the
   Go button, loading/empty states, aria labels and error copy — including the
   screenshot fallback's raw throws — all localize, with the same drift lock
-  guarding the pane (it is reachable from the unpaired first-boot gate)
+  guarding the pane (it is reachable from the unpaired first-boot gate).
+  Mission Control's paired-world error line gets the same treatment (P3-381):
+  internal throws like "daemon unreachable" or "HTTP 502" no longer paint raw
+  English in red — they resolve to the same calm load-failed sentence the
+  phone shows, through the shared error humanizer
 - **Pairing gate with a map (P3-364)** — the unpaired screens (manual ceremony and the
   degraded first boot) carry a persistent "After pairing" card listing the panes that stay
   locked until connection — Conversations, Artifacts, Browser, Mission Control, Settings — each with a
