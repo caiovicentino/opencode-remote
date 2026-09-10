@@ -297,12 +297,17 @@ export interface HealthWaitOptions {
 
 /** P2-138: upstream (agent server / opencode) detail from /api/health — the
  * P2-135 classifier verdict as-is. Static pt-BR strings from the daemon; the
- * renderer only ever renders them as text. */
+ * renderer only ever renders them as text. P3-392: binaryFound rides along
+ * (additive, tolerant — a legacy daemon omits it) so the renderer can separate
+ * "server stopped" from "server never installed" (the P2-149 split). */
 export interface DaemonUpstreamDetail {
   state: string;
   reason: string;
   hint: string;
   checkedAt: string | null;
+  /** P3-392: false only when the daemon actually proved the binary absent;
+   * null when absent/malformed (legacy daemon or non-boolean payload). */
+  binaryFound: boolean | null;
 }
 
 export interface DaemonHealthInfo {
@@ -322,13 +327,16 @@ export interface DaemonHealthInfo {
  * passes; anything else degrades to null instead of leaking junk into the UI. */
 function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
   if (typeof raw !== "object" || raw === null) return null;
-  const o = raw as { state?: unknown; reason?: unknown; hint?: unknown; checkedAt?: unknown };
+  const o = raw as { state?: unknown; reason?: unknown; hint?: unknown; checkedAt?: unknown; binaryFound?: unknown };
   if (typeof o.state !== "string" || o.state === "") return null;
   return {
     state: o.state,
     reason: typeof o.reason === "string" ? o.reason : "",
     hint: typeof o.hint === "string" ? o.hint : "",
     checkedAt: typeof o.checkedAt === "string" ? o.checkedAt : null,
+    // P3-392: only a real boolean travels; anything else stays null so the
+    // renderer's missing-binary verdict can never fire on legacy payloads.
+    binaryFound: typeof o.binaryFound === "boolean" ? o.binaryFound : null,
   };
 }
 

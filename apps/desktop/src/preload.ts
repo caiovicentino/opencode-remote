@@ -25,12 +25,14 @@ export interface LocalLink {
 
 /** P2-138: upstream (agent server / opencode) health detail from the daemon's
  * /api/health — the P2-135 classifier verdict, passed through verbatim.
- * reason/hint are static daemon strings and are rendered as text only. */
+ * reason/hint are static daemon strings and are rendered as text only.
+ * P3-392: binaryFound rides along additively (null for legacy daemons). */
 export interface DaemonUpstreamDetail {
   state: string;
   reason: string;
   hint: string;
   checkedAt: string | null;
+  binaryFound?: boolean | null;
 }
 
 /** First-run pairing state pushed/pulled from the main process (P2-007). */

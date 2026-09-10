@@ -428,7 +428,21 @@ remoto, zero confiança**.
   `null`): o daemon resolve o binário executável do opencode no boot (e no máximo
   uma vez por minuto com o upstream inalcançável) para separar "opencode parado"
   ("verifique se o opencode está rodando") de "opencode nunca instalado" ("instale
-  o opencode primeiro"); nenhum caminho absoluto entra em `reason`, `hint` ou payload
+   o opencode primeiro"); nenhum caminho absoluto entra em `reason`, `hint` ou payload
+- **Jornada de instalação quando falta o servidor (P3-392)** — no shell desktop, o
+  split "conexão recusada E sem binário do opencode nesta máquina" (P2-149) do aviso
+  de upstream deixa de mostrar a linha genérica que mandava o leigo pro terminal e
+  resolve para um título próprio: "Falta instalar o servidor do agente nesta máquina".
+  O card calmo (e o passo do agente no wizard de boas-vindas) ganha três ações reais:
+  "Copiar comando de instalação" põe no clipboard o one-liner oficial da plataforma
+  (macOS/Linux: `curl -fsSL https://opencode.ai/install | bash`; Windows:
+  `irm https://opencode.ai/install.ps1 | iex`), "Abrir instruções de instalação" abre
+  a documentação oficial pelo portão de links externos do shell, e "Verificar de novo"
+  re-sonda a saúde e sempre termina em estado terminal — o aviso some sozinho quando a
+  instalação termina, nunca um spinner permanente. No telefone a copy anterior segue
+  intacta, sem ações. Para evidência visual determinística em máquinas que TÊM
+  opencode, o daemon honra o hatch de teste `OCR_OPENCODE_MISSING=1`, que força a
+  metade "binário ausente" do split (a sonda de upstream em si continua real)
 - **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
   `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
   (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o

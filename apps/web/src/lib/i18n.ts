@@ -333,6 +333,20 @@ export const dict = {
     upstreamUnhealthyAction: "Restart opencode on this machine and check the server version.",
     upstreamHelpAction: "Open setup help",
     upstreamHelpTitle: "Agent server help",
+    // P3-392: the binary-missing split of "unreachable" (P2-149), desktop shell
+    // only — the app's promise is no command line, so the card carries the
+    // whole install journey: copy the official command, open the official
+    // steps, re-check. The re-check always lands in a final state (P3-327).
+    upstreamMissingTitle: "The agent server is not installed on this machine",
+    upstreamMissingAction:
+      "Install opencode — the app connects by itself as soon as the install finishes. Copy the command below or follow the official steps.",
+    upstreamMissingCopyCmd: "Copy install command",
+    upstreamMissingCopied: "Command copied",
+    upstreamMissingOpenDocs: "Open install instructions",
+    upstreamMissingRecheck: "Check again",
+    upstreamMissingChecking: "Checking…",
+    upstreamMissingStill:
+      "opencode still wasn't found on this machine. This notice goes away on its own once the install finishes.",
     // P2-140: why the local daemon died — inside the same calm degraded card.
     // Honest, actionable, one surface; no paths, tokens or secrets in copy.
     sidecarPortBusyTitle: "Another app took the daemon's port",
@@ -1092,6 +1106,21 @@ export const dict = {
     upstreamUnhealthyAction: "Reinicie o opencode nesta máquina e confira a versão do servidor.",
     upstreamHelpAction: "Abrir ajuda da configuração",
     upstreamHelpTitle: "Ajuda do servidor de agente",
+    // P3-392: split de "unreachable" sem binário (P2-149), só no shell desktop
+    // — a promessa do app é não ter linha de comando, então o card carrega a
+    // jornada inteira de instalação: copiar o comando oficial, abrir o passo a
+    // passo oficial, verificar de novo. O re-check sempre termina em estado
+    // final (lição P3-327: nunca spinner permanente).
+    upstreamMissingTitle: "Falta instalar o servidor do agente nesta máquina",
+    upstreamMissingAction:
+      "Instale o opencode — o app conecta sozinho assim que a instalação terminar. Copie o comando abaixo ou siga o passo a passo oficial.",
+    upstreamMissingCopyCmd: "Copiar comando de instalação",
+    upstreamMissingCopied: "Comando copiado",
+    upstreamMissingOpenDocs: "Abrir instruções de instalação",
+    upstreamMissingRecheck: "Verificar de novo",
+    upstreamMissingChecking: "Verificando…",
+    upstreamMissingStill:
+      "opencode ainda não foi encontrado nesta máquina. Este aviso some sozinho quando a instalação terminar.",
     // P2-140: por que o daemon local morreu — dentro do mesmo card calmo.
     // Tom honesto e acionável, uma superfície só; sem caminhos nem segredos.
     sidecarPortBusyTitle: "Outro programa ocupou a porta do daemon",

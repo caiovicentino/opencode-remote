@@ -71,6 +71,14 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   botão "Abrir diagnósticos" do lado (o relatório já é copiado dentro do app)
   e no celular fala em conferir o próprio computador ou parear outro
   dispositivo, escolhido pelo mesmo veredito de shell que o app já calcula
+- Jornada de instalação quando falta o servidor do agente (P3-392): no desktop,
+  o split "recusado E sem binário" do veredito de upstream resolve para um
+  título próprio ("Falta instalar o servidor do agente nesta máquina") e o card
+  calmo — e o passo do agente no wizard de boas-vindas — ganha três ações reais:
+  copiar o comando oficial da plataforma pro clipboard, abrir as instruções
+  oficiais pelo portão de links externos, e "Verificar de novo", que re-sonda e
+  sempre termina em estado terminal (o aviso some sozinho quando a instalação
+  termina). No celular a copy anterior segue intacta
 - Painel Mission guiado com daemon caído (P3-377): no mundo pareado, a falha de
   carga do pane deixa de ser a linha vermelha solta em inglês ("daemon
   unreachable") e vira um card calmo — o que quebrou (o daemon local não

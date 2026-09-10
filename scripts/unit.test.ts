@@ -358,7 +358,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
-import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, shouldEscalateRetry, escalationMinutes, escalateDetailKey, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, shouldEscalateRetry, escalationMinutes, escalateDetailKey, installCommandFor, INSTALL_DOCS_URL, UPSTREAM_RECHECK_TIMEOUT_MS, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -13299,13 +13299,19 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   })());
 
   // Copy parity: every notice key resolves in both locales (no raw-key leak),
-  // and the Settings help section keys exist too.
+  // and the Settings help section keys exist too. P3-392 adds the
+  // binary-missing install-journey keys to the same pinned set (lesson
+  // P3-377/P3-385: a missing dict entry must fail the battery, not ship).
   const noticeKeys = [
     "upstreamUnreachableTitle", "upstreamUnreachableAction",
     "upstreamUnauthorizedTitle", "upstreamUnauthorizedAction",
     "upstreamTimeoutTitle", "upstreamTimeoutAction",
     "upstreamUnhealthyTitle", "upstreamUnhealthyAction",
     "upstreamHelpAction", "upstreamHelpTitle",
+    "upstreamMissingTitle", "upstreamMissingAction",
+    "upstreamMissingCopyCmd", "upstreamMissingCopied",
+    "upstreamMissingOpenDocs", "upstreamMissingRecheck",
+    "upstreamMissingChecking", "upstreamMissingStill",
   ];
   check(
     "P2-138: notice copy resolves per locale (en + pt) and never leaks the raw key",
@@ -13322,6 +13328,43 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       return !s.includes("<") && !s.includes(">") && !s.includes("`") && !s.includes("{") && !s.includes("}");
     }),
   ));
+
+  // P3-392: the "unreachable AND binary absent" split (P2-149) gets the
+  // dedicated install-journey copy — but ONLY on the desktop shell. The
+  // phone's copy stays exactly as it was (generic unreachable keys).
+  check("P3-392: missing binary on the desktop shell resolves the install journey", (() => {
+    const n = upstreamNotice({ ...health("unreachable", "conexão recusada e o opencode não foi encontrado", "instale o opencode"), binaryFound: false }, true);
+    return !!n && n.missingBinary === true && n.tone === "info" &&
+      n.titleKey === "upstreamMissingTitle" && n.actionKey === "upstreamMissingAction";
+  })());
+  check("P3-392: phone (no shell) keeps the generic unreachable copy", (() => {
+    const n = upstreamNotice({ ...health("unreachable"), binaryFound: false });
+    return !!n && n.missingBinary === false && n.titleKey === "upstreamUnreachableTitle" && n.actionKey === "upstreamUnreachableAction";
+  })());
+  check("P3-392: desktop resolution without the desktopShell flag is the generic copy", (() => {
+    const n = upstreamNotice({ ...health("unreachable"), binaryFound: false }, false);
+    return !!n && n.missingBinary === false && n.actionKey === "upstreamUnreachableAction";
+  })());
+  check("P3-392: binary present (or unknown) never fires the missing verdict on the desktop", (() => {
+    const present = upstreamNotice({ ...health("unreachable"), binaryFound: true }, true);
+    const absentField = upstreamNotice(health("unreachable"), true);
+    const nonBool = upstreamNotice({ ...health("unreachable"), binaryFound: "no" }, true);
+    return !!present && !!absentField && !!nonBool &&
+      !present.missingBinary && !absentField.missingBinary && !nonBool.missingBinary &&
+      present.actionKey === "upstreamUnreachableAction";
+  })());
+  check("P3-392: other states never inherit the missing verdict even with binaryFound=false", (() => {
+    const n = upstreamNotice({ ...health("timeout"), binaryFound: false }, true);
+    return !!n && n.missingBinary === false && n.actionKey === "upstreamTimeoutAction";
+  })());
+
+  // P3-392: the official per-platform install command (clipboard payload) —
+  // macOS/linux share the curl script, Windows uses the PowerShell one.
+  check("P3-392: installCommandFor maps darwin to the official curl script", installCommandFor("darwin") === "curl -fsSL https://opencode.ai/install | bash");
+  check("P3-392: installCommandFor maps win32 to the official PowerShell script", installCommandFor("win32") === "irm https://opencode.ai/install.ps1 | iex");
+  check("P3-392: installCommandFor is case-tolerant and linux-safe", installCommandFor("WIN32") === installCommandFor("win32") && installCommandFor("linux") === installCommandFor("darwin"));
+  check("P3-392: docs URL is https and passes the extlink scheme bar", INSTALL_DOCS_URL.startsWith("https://") && !INSTALL_DOCS_URL.includes("<") && !INSTALL_DOCS_URL.includes('"'));
+  check("P3-392: recheck wait is bounded (terminal state, never a permanent spinner)", UPSTREAM_RECHECK_TIMEOUT_MS > 0 && UPSTREAM_RECHECK_TIMEOUT_MS <= 15_000);
 }
 
 

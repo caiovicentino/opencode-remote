@@ -2965,6 +2965,34 @@ button.desk-new:disabled {
 .degraded-upstream-help:hover {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
+/* ── P3-392: the binary-missing install journey (desktop shell only) ─────────
+   Lives inside .degraded-upstream. Buttons reuse the shared
+   .degraded-upstream-help style (same quiet bordered-link language); the row
+   wraps so the 390px card never overflows. Feedback lines are terminal
+   states by contract — never a spinner. */
+.degraded-upstream-actions {
+  display: grid;
+  gap: 4px;
+}
+.degraded-upstream-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.degraded-upstream-copied,
+.degraded-upstream-still {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
+.degraded-upstream-still {
+  color: var(--text);
+  opacity: 0.85;
+}
+.degraded-upstream-help:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 /* ── P2-140: sidecar-exit verdict inside the calm card ───────────────────────
    Same flat-surface language as .degraded-upstream (P2-108: one surface, never
    a second banner): bordered panel on the gray ladder, 3px state accent on
