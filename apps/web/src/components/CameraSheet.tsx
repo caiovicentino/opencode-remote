@@ -3,13 +3,13 @@ import { feedVerdict } from "../lib/qrFeed";
 import { torchConstraint, torchSupported } from "../lib/camshot";
 import { useT } from "../lib/i18n";
 import { errorReason, type CameraAccessVerdict, type ScanReason } from "./QrScanner";
-import { IconCamera, IconSwitchCamera, IconX, IconZap } from "./icons";
+import { IconCamera, IconChevronDown, IconChevronUp, IconSwitchCamera, IconX, IconZap } from "./icons";
 
 /** A shutter capture staged LOCALLY in the sheet: the frame is transmitted
  * only when the parent's send path uploads it (P3-402 — camPrivacy promises
  * the photo leaves the device when you send it, so capture never calls the
- * network). thumb is an object: URL of the captured blob whose ownership
- * transfers to the caller on send (the composer chip reuses it). */
+ * network). thumb is an object: URL of the captured blob, owned — and
+ * revoked — by the sheet until the send consumes it. */
 export interface StagedCameraShot {
   file: File;
   thumb: string;
@@ -18,17 +18,25 @@ export interface StagedCameraShot {
 interface Props {
   onClose: () => void;
   /** Send the typed question with the locally staged shots — the parent
-   * uploads them here, at send time, through the normal attach pipeline. */
-  onSend: (question: string, shots: StagedCameraShot[]) => void;
+   * uploads them here, at send time, through the normal attach pipeline.
+   * Resolves true when the shots are consumed (sent, or recovered by the
+   * parent); false keeps them staged here (streaming guard, upload failure —
+   * nothing was transmitted). */
+  onSend: (question: string, shots: StagedCameraShot[]) => Promise<boolean>;
   /** P3-402: camera-permission verdict (desktop shell only, same bridge the
    * QrScanner uses). Absent on the phone — the dictionary copy stays. */
   getCamAccess?: () => Promise<CameraAccessVerdict | null>;
   /** Chat is uploading an attachment or sending — gates shutter + send. */
   busy?: boolean;
+  /** The agent is streaming — send() would drop the message, so the sheet
+   * disables sending until the reply settles (the composer does the same). */
+  sendBlocked?: boolean;
   /** The composer already has something to send (text typed or attachment). */
   canSend?: boolean;
-  /** Last chat/send error — surfaced here as the vision-degradation card. */
+  /** Camera-path error only (never the composer's mic/paste errors). */
   error?: string;
+  /** The "switch models" advice rides attachment-bearing failures only. */
+  errorHint?: boolean;
 }
 
 /** P3-402 camera-ask v1 ("Olho"): a live viewfinder over the SAME proven
@@ -37,14 +45,17 @@ interface Props {
  * dead-feed watchdog via lib/qrfeed). Nothing streams and capture does no
  * I/O: the shutter only stages the frame in memory — the frame leaves the
  * device when the send button runs the upload. The sheet stays open after
- * sending so a follow-up question never reopens the camera. */
+ * sending so a follow-up question never reopens the camera, and minimizes to
+ * a live thumbnail so the reply can be read without killing the camera. */
 export default function CameraSheet({
   onClose,
   onSend,
   getCamAccess,
   busy,
+  sendBlocked,
   canSend,
   error,
+  errorHint,
 }: Props) {
   const t = useT();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -54,9 +65,12 @@ export default function CameraSheet({
   const [facing, setFacing] = useState<"environment" | "user">("environment");
   const [torchOn, setTorchOn] = useState(false);
   const [torchReady, setTorchReady] = useState(false);
+  const [switchReady, setSwitchReady] = useState(false);
   const [question, setQuestion] = useState("");
   const [flash, setFlash] = useState(false);
   const [shots, setShots] = useState<StagedCameraShot[]>([]);
+  const [minimized, setMinimized] = useState(false);
+  const [sendBusy, setSendBusy] = useState(false);
   const trackRef = useRef<MediaStreamTrack | null>(null);
   const camAccessRef = useRef(getCamAccess);
   camAccessRef.current = getCamAccess;
@@ -78,6 +92,11 @@ export default function CameraSheet({
     let cancelled = false;
     let frames = 0;
     let startedAt = performance.now();
+
+    // every (re)start lands back on the viewfinder first — a camera switch
+    // from the unavailable panel must not inherit the stale error state
+    setPhase("looking");
+    setCamVerdict(null);
 
     function fail(r: ScanReason) {
       if (cancelled) return;
@@ -142,8 +161,19 @@ export default function CameraSheet({
         trackRef.current = track ?? null;
         setTorchOn(false);
         setTorchReady(torchSupported(track?.getCapabilities?.() ?? null));
+        // P3-402 r3: the flip is a real feature only with >1 capture device —
+        // a single-camera phone shows no dead button (spec: "se suportado")
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        if (!cancelled) setSwitchReady(devices.filter((d) => d.kind === "videoinput").length > 1);
         const video = videoRef.current;
-        if (!video) return;
+        if (!video) {
+          // unavailable panel has no <video> — never leave the camera lit
+          // behind the error state (round-3 review)
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          trackRef.current = null;
+          return;
+        }
         // iOS: attributes must be set before srcObject
         video.setAttribute("playsinline", "true");
         video.muted = true;
@@ -193,7 +223,7 @@ export default function CameraSheet({
 
   function capture() {
     const video = videoRef.current;
-    if (!video || !video.videoWidth || busy) return;
+    if (!video || !video.videoWidth || busy || sendBusy) return;
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -217,17 +247,24 @@ export default function CameraSheet({
     );
   }
 
-  const sendQuestion = () => {
-    if (busy) return;
+  async function sendQuestion() {
+    if (busy || sendBusy || sendBlocked) return;
     const q = question.trim();
     if (!q && !canSend && shots.length === 0) return;
-    setQuestion("");
-    // ownership of the shot thumbs transfers to the caller (the composer chip
-    // reuses the object URL) — only unsent URLs are revoked on unmount
-    const payload = shots;
-    setShots([]);
-    onSend(q, payload);
-  };
+    setSendBusy(true);
+    try {
+      // the shots stay staged (and their URLs alive) until the parent
+      // confirms consumption — a failed send returns them untouched
+      const consumed = await onSend(q, shots);
+      if (consumed) {
+        setQuestion("");
+        for (const s of shots) URL.revokeObjectURL(s.thumb);
+        setShots([]);
+      }
+    } finally {
+      setSendBusy(false);
+    }
+  }
 
   // P3-402: the system-panel action only when the system is in the way —
   // same gating as the scanner's panel CTA (P2-319).
@@ -239,21 +276,41 @@ export default function CameraSheet({
       ? camVerdict.settingsTarget
       : null;
 
+  // P3-402 r3: the scanner's no-signal sentence is pairing-specific ("paste
+  // the pairing code instead") — the sheet carries its own copy for that
+  // reason; the other scanner reasons are surface-neutral and shared.
+  const reasonKey = reason === "no-signal" ? "camErr_no-signal" : `scanErr_${reason}`;
+
   const lastShot = shots.length > 0 ? (shots[shots.length - 1]?.thumb ?? "") : "";
 
   return (
-    <div className="cam-sheet" role="dialog" aria-modal="true" aria-label={t("camTitle")}>
+    <div
+      className={`cam-sheet${minimized ? " cam-sheet-min" : ""}`}
+      role="dialog"
+      aria-modal={!minimized}
+      aria-label={t("camTitle")}
+    >
       <header className="cam-head">
         <h1 className="cam-title">{t("camTitle")}</h1>
-        <button className="cam-close" onClick={onClose} aria-label={t("camClose")}>
-          <IconX size={18} />
-        </button>
+        <div className="cam-head-actions">
+          <button
+            className="cam-close"
+            onClick={() => setMinimized((m) => !m)}
+            aria-label={minimized ? t("camExpand") : t("camMinimize")}
+            title={minimized ? t("camExpand") : t("camMinimize")}
+          >
+            {minimized ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
+          </button>
+          <button className="cam-close" onClick={onClose} aria-label={t("camClose")}>
+            <IconX size={16} />
+          </button>
+        </div>
       </header>
 
       {phase === "unavailable" ? (
         <div className="cam-stage cam-unavailable" role="alert">
           <p className="cam-unavailable-title">
-            {reason === "permission" && camVerdict?.phrase ? camVerdict.phrase : t(`scanErr_${reason}`)}
+            {reason === "permission" && camVerdict?.phrase ? camVerdict.phrase : t(reasonKey)}
           </p>
           {camPanel && (
             <button
@@ -280,7 +337,7 @@ export default function CameraSheet({
       {error && (
         <div className="cam-warn" role="alert">
           <p className="cam-warn-text">{error}</p>
-          <p className="cam-warn-hint">{t("camVisionHint")}</p>
+          {errorHint && <p className="cam-warn-hint">{t("camVisionHint")}</p>}
         </div>
       )}
 
@@ -301,20 +358,22 @@ export default function CameraSheet({
         <button
           className="cam-shutter"
           onClick={capture}
-          disabled={phase !== "preview" || busy}
+          disabled={phase !== "preview" || busy || sendBusy}
           aria-label={t("camCapture")}
           title={t("camCapture")}
         >
           <IconCamera size={22} />
         </button>
-        <button
-          className="cam-side"
-          onClick={() => setFacing((f) => (f === "environment" ? "user" : "environment"))}
-          aria-label={t("camSwitch")}
-          title={t("camSwitch")}
-        >
-          <IconSwitchCamera size={18} />
-        </button>
+        {switchReady && (
+          <button
+            className="cam-side"
+            onClick={() => setFacing((f) => (f === "environment" ? "user" : "environment"))}
+            aria-label={t("camSwitch")}
+            title={t("camSwitch")}
+          >
+            <IconSwitchCamera size={18} />
+          </button>
+        )}
       </div>
 
       <div className="cam-ask">
@@ -332,7 +391,7 @@ export default function CameraSheet({
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              sendQuestion();
+              void sendQuestion();
             }
           }}
           placeholder={t("camQuestionPlaceholder")}
@@ -340,10 +399,11 @@ export default function CameraSheet({
         />
         <button
           className="primary cam-send"
-          onClick={sendQuestion}
-          disabled={busy || (!question.trim() && !canSend && shots.length === 0)}
+          onClick={() => void sendQuestion()}
+          disabled={busy || sendBusy || !!sendBlocked || (!question.trim() && !canSend && shots.length === 0)}
+          title={sendBlocked ? t("streamingWait") : undefined}
         >
-          {busy ? "…" : t("send")}
+          {busy || sendBusy ? "…" : t("send")}
         </button>
       </div>
 

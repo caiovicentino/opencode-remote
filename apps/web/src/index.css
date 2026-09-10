@@ -2316,6 +2316,11 @@ button.desk-new:disabled {
   justify-content: space-between;
   gap: 12px;
 }
+.cam-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .cam-title {
   margin: 0;
   font-size: 0.95rem;
@@ -2507,6 +2512,36 @@ button.desk-new:disabled {
   text-align: center;
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+/* Minimized "Olho" (P3-402 r3): the sheet collapses to a small live
+   thumbnail pinned to the corner, so the reply can be read in the chat —
+   and a follow-up probe re-expands without reopening the camera. The
+   stream stays alive; only the controls hide. */
+.cam-sheet-min {
+  inset: auto 16px 16px auto;
+  width: 248px;
+  max-width: calc(100vw - 32px);
+  gap: 8px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 28px color-mix(in srgb, #000 32%, transparent);
+  overflow: hidden;
+}
+.cam-sheet-min .cam-title {
+  font-size: 0.85rem;
+}
+.cam-sheet-min .cam-stage {
+  flex: 0 0 auto;
+  aspect-ratio: 16 / 10;
+}
+.cam-sheet-min .cam-controls,
+.cam-sheet-min .cam-ask,
+.cam-sheet-min .cam-privacy,
+.cam-sheet-min .cam-warn {
+  display: none;
 }
 
 /* first-run splash (P1-050): wordmark, value line, 3-step onboarding */

@@ -481,6 +481,16 @@ export default function ChatView({
   // P3-402: camera-ask sheet ("Olho") — lives above the composer; sending
   // from it keeps it open so a follow-up question never reopens the camera.
   const [camOpen, setCamOpen] = useState(false);
+  // P3-402 r3: the sheet's error card shows ONLY camera-path failures (never
+  // the composer's mic/paste errors) and camErrorHint gates the "switch
+  // models" advice to attachment-bearing failures.
+  const [camError, setCamError] = useState("");
+  const [camErrorHint, setCamErrorHint] = useState(false);
+  useEffect(() => {
+    if (!camError) return;
+    const timer = setTimeout(() => setCamError(""), 10_000);
+    return () => clearTimeout(timer);
+  }, [camError]);
   const { models, model, pickModel } = useModelSelector(request);
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   // P3-086: inline agent/model dropdown in the composer (Claude Desktop parity)
@@ -1784,12 +1794,19 @@ export default function ChatView({
     });
   }
 
-  async function send(override?: string, extraAttachments?: PendingImage[]) {
+  async function send(
+    override?: string,
+    extraAttachments?: PendingImage[],
+  ): Promise<{ status: "ok" | "blocked" | "error"; message?: string }> {
     // P3-402: extraAttachments are the camera sheet's locally staged shots —
     // already uploaded by the time send() runs (send-time transmission).
+    // The camera path reads the outcome: "blocked" means the streaming guard
+    // tripped and NOTHING was sent — the caller must keep its staged shots.
     const staged = extraAttachments ?? [];
     const text = (override ?? input).trim();
-    if ((!text && images.length === 0 && staged.length === 0) || sending || liveText || liveThinking) return;
+    if ((!text && images.length === 0 && staged.length === 0) || sending || liveText || liveThinking) {
+      return { status: "blocked" };
+    }
     // the reader's own message always lands on the newest tail
     atBottomRef.current = true;
     setAtBottom(true);
@@ -1850,17 +1867,23 @@ export default function ChatView({
         // an attachment problem at all — say so instead of the misleading copy.
         markPending(false);
         if (attached.length === 0) {
-          setError(t("errUpstreamGone"));
+          const gone = t("errUpstreamGone");
+          setError(gone);
+          return { status: "error", message: gone };
         } else {
           const kept = attached.filter((img) => img.raw);
           setImages(kept);
           if (text) updateInput(text);
-          setError(kept.length === attached.length ? t("errAttachmentExpiredKept") : t("errAttachmentExpiredLost"));
+          const expired = kept.length === attached.length ? t("errAttachmentExpiredKept") : t("errAttachmentExpiredLost");
+          setError(expired);
+          return { status: "error", message: expired };
         }
       } else if (res.status !== 200) {
-        setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
+        const upstream = `opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`;
+        setError(upstream);
         markPending(false);
         if (text && res.status >= 500) setRetryText(text);
+        return { status: "error", message: upstream };
       } else {
         markPending(false);
         setRetryText("");
@@ -1890,14 +1913,18 @@ export default function ChatView({
       if (text) {
         enqueue(text);
         markPending("queued");
-        setError(`offline — message queued (${msg})`);
+        const queued = `offline — message queued (${msg})`;
+        setError(queued);
+        return { status: "error", message: queued };
       } else {
         markPending(false);
         setError(msg);
+        return { status: "error", message: msg };
       }
     } finally {
       setSending(false);
     }
+    return { status: "ok" };
   }
 
   async function downscaleImage(file: File): Promise<{ bytes: Uint8Array; mime: string }> {
@@ -2122,30 +2149,58 @@ export default function ChatView({
   // so the chunked ocr-upload:// upload runs HERE — at send time, never at
   // capture; abandoning the sheet transmits nothing. Staged shots ride the
   // same downscale ≤1568px q0.75 + send() path as any composer attachment,
-  // and the sheet stays open for a follow-up probe.
-  function sendFromCamera(question: string, shots: StagedCameraShot[]) {
-    void (async () => {
-      if (shots.length === 0) {
-        await send(question || undefined);
-        return;
+  // and the sheet stays open for a follow-up probe. Resolves true when the
+  // shots are consumed (sent, or handed back to the composer on a send-level
+  // failure) and false when the sheet must KEEP them staged (streaming guard,
+  // upload failure — nothing was transmitted).
+  async function sendFromCamera(question: string, shots: StagedCameraShot[]): Promise<boolean> {
+    setCamError("");
+    setCamErrorHint(false);
+    // the same streaming guard send() applies — checked BEFORE anything leaves
+    // the device, so a follow-up while the agent streams never silently drops
+    // photos (the sheet keeps them staged and its button re-enables later)
+    if (sending || !!liveText || !!liveThinking) return false;
+    if (shots.length === 0) {
+      const r = await send(question || undefined);
+      if (r.status === "blocked") return false;
+      if (r.status === "error") {
+        setCamError(r.message ?? "");
+        return true;
       }
-      setUploading(true);
-      setError("");
-      try {
-        const staged: PendingImage[] = [];
-        for (const shot of shots) {
-          const { bytes, mime } = await downscaleImage(shot.file);
-          const filename = `shot-${Date.now()}.jpg`;
-          const id = await uploadBytes(bytes, mime, filename);
-          staged.push({ id, mime, filename, thumb: shot.thumb, raw: bytes });
-        }
-        await send(question || undefined, staged);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setUploading(false);
+      return true;
+    }
+    setUploading(true);
+    try {
+      const staged: PendingImage[] = [];
+      for (const shot of shots) {
+        const { bytes, mime } = await downscaleImage(shot.file);
+        const filename = `shot-${Date.now()}.jpg`;
+        const id = await uploadBytes(bytes, mime, filename);
+        staged.push({ id, mime, filename, thumb: "", raw: bytes });
       }
-    })();
+      const r = await send(question || undefined, staged);
+      if (r.status === "blocked") {
+        // the agent started streaming while the uploads ran: the message was
+        // not sent, but the frames did leave the device — hand the ready
+        // attachments to the composer (410-path pattern) instead of dropping
+        // them, and say why nothing happened yet
+        setImages((prev) => [...prev, ...staged]);
+        setCamError(t("streamingWait"));
+        return true;
+      }
+      if (r.status === "error") {
+        setCamError(r.message ?? "");
+        setCamErrorHint(true);
+      }
+      return true;
+    } catch (err) {
+      // upload failure — nothing was transmitted; the sheet keeps the shots
+      setCamError(err instanceof Error ? err.message : String(err));
+      setCamErrorHint(true);
+      return false;
+    } finally {
+      setUploading(false);
+    }
   }
 
   async function micDown() {
@@ -3597,12 +3652,17 @@ export default function ChatView({
       )}
       {camOpen && (
         <CameraSheet
-          onClose={() => setCamOpen(false)}
+          onClose={() => {
+            setCamOpen(false);
+            setCamError("");
+          }}
           onSend={sendFromCamera}
           getCamAccess={getCamAccess}
           busy={uploading || sending}
+          sendBlocked={!!liveText || !!liveThinking}
           canSend={input.trim().length > 0 || images.length > 0}
-          error={error}
+          error={camError}
+          errorHint={camErrorHint}
         />
       )}
     </div>

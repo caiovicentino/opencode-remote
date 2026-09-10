@@ -464,6 +464,24 @@ remoto, zero confiança**.
    copy por superfície, nunca uma chave em duas superfícies). `OCR_MODEL_BLOCK=1`
    no daemon segue sendo o hatch documentado que força o veredito `no-provider`
    para screenshots determinísticos
+- **Câmera-pergunta "Olho" (P3-402)** — um botão de câmera no composer abre um
+  viewfinder ao vivo em sheet: o shutter prepara o frame localmente (canvas →
+  JPEG em memória, sem upload), você digita a pergunta e aponta enviar — só
+  então cada foto preparada é reduzida (≤1568px) e sobe pelo mesmo pipeline
+  de anexo chunked das imagens de arquivo, com foto e texto numa mensagem só;
+  o sheet permanece aberto pra pergunta de follow-up sem reabrir a câmera, e
+  abandoná-lo não transmite nada. Nada de streaming: o frame só sai do
+  dispositivo quando o botão de enviar é pressionado ("a foto só sai quando
+  você envia", na própria UI). A máquina de estados reusa os padrões provados
+  do scanner de QR (câmera traseira primeiro, retry de abort do iOS, watchdog
+  de feed morto) e, no shell desktop, a mesma ponte de veredito de permissão
+  de câmera com atalho pro painel do sistema; lanterna e alternar câmera
+  aparecem só quando o dispositivo suporta. Enquanto o agente responde, o
+  botão de enviar bloqueia junto com o do composer (nada é transmitido e as
+  fotos permanecem preparadas), e o sheet minimiza pra uma miniatura ao vivo
+  no canto — dá pra ler a resposta no chat e reabrir pra perguntar de novo.
+  Se o modelo rejeita imagens, o erro legível do daemon/opencode vira card de
+  aviso sugerindo trocar de modelo
 - **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
   `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
   (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o

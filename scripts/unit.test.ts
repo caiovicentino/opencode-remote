@@ -1592,8 +1592,19 @@ const cameraSendBody = chatViewSource.slice(
   chatViewSource.indexOf("function sendFromCamera"),
   chatViewSource.indexOf("async function micDown"),
 );
+const camCssSource = readFileSync(new URL("../apps/web/src/index.css", import.meta.url), "utf8");
 check("camera shots upload at send time, never at capture", cameraSendBody.includes("downscaleImage") && cameraSendBody.includes("uploadBytes") && cameraSendBody.includes("send("));
 check("camera sheet performs no network of its own", !cameraSheetSource.includes("fetch(") && !cameraSheetSource.includes("request(") && !cameraSheetSource.includes("XMLHttpRequest"));
+check("camera send re-checks the streaming guard before uploading", cameraSendBody.includes("liveText") && cameraSendBody.includes("liveThinking"));
+check("camera upload failure keeps the shots staged (returned to the sheet)", cameraSendBody.includes("return false"));
+check("camera error card is camera-path only, not the composer's global error", chatViewSource.includes("error={camError}"));
+check("camera sheet carries its own dead-feed copy, not the pairing sentence", cameraSheetSource.includes("camErr_no-signal"));
+check("camera flip renders only with a second capture device", cameraSheetSource.includes("switchReady"));
+check("camera sheet minimizes to a live thumbnail so the reply is readable", cameraSheetSource.includes("cam-sheet-min") && camCssSource.includes(".cam-sheet-min"));
+check(
+  "camera minimize/expand copy exists in both languages",
+  (i18nSource.match(/camMinimize:/g) ?? []).length === 2 && (i18nSource.match(/camExpand:/g) ?? []).length === 2,
+);
 
 check("torchSupported fails closed on absent capabilities", torchSupported(null) === false && torchSupported(undefined) === false && torchSupported({}) === false);
 check("torchSupported admits a real torch capability", torchSupported({ torch: true }) && torchSupported({ torch: false, width: 1280 }));
