@@ -6464,6 +6464,62 @@ check(
       cssSource.includes(".pair-gate-hint-action:hover"),
   );}
 
+// --- P3-362: the gate toast names the request; the Go menu matches the rail ------
+// The explorer journey caught the dead-end class: every Go-menu pane pressed at
+// the gate flashed the SAME generic "pair first" sentence (nothing said which
+// pane was requested), while the gate shell's own rail (P3-365) opened the
+// offline panes — demanding pairing with a QR the down daemon would have to
+// mint is circular. The menu must open what the rail opens, and the toast must
+// name the action everywhere else.
+{
+  const appSource = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const hintSource = readFileSync(new URL("../apps/web/src/components/GateHint.tsx", import.meta.url), "utf8");
+  // The gate branch of runMenuAction: the gate-shell verdict routes offline
+  // panes to openPane BEFORE the toast bump (which stays for the rest).
+  const menuOpenAt = appSource.indexOf("gateShellUp && GATE_SHELL_PANES.has(slot)");
+  const openPaneAt = appSource.indexOf("openPane(slot);", menuOpenAt);
+  const bumpAt = appSource.indexOf("setGateHintTick((n) => n + 1)");
+  check(
+    "P3-362: the Go menu opens the gate-shell panes (rail parity) before any toast",
+    menuOpenAt > -1 && openPaneAt > menuOpenAt && bumpAt > openPaneAt &&
+      appSource.includes('GATE_SHELL_PANES = new Set<string>(["artifacts", "browser", "mission", "settings"])'),
+  );
+  // Every Go action carries a label key — the toast can name all of them.
+  const labelMapAt = appSource.indexOf("GATE_ACTION_LABELS");
+  const labelMap = labelMapAt > -1 ? appSource.slice(labelMapAt, labelMapAt + 400) : "";
+  check(
+    "P3-362: every Go action maps to a label key and the bump records it",
+    ["newChat", "palette", "pane:chat", "pane:artifacts", "pane:browser", "pane:files", "pane:settings", "pane:mission"]
+      .every((id) => labelMap.includes(`"${id}"`)) &&
+      appSource.includes("setGateHintWhat(GATE_ACTION_LABELS[id] ?? null)"),
+  );
+  // The toast renders the specific sentence only when a label exists.
+  check(
+    "P3-362: GateHint interpolates the requested label into the named copy",
+    hintSource.includes("what?: string | null") &&
+      hintSource.includes('t("pairFirstHintFor", { pane: what })') &&
+      appSource.includes("what={gateHintWhat ? t(gateHintWhat) : null}"),
+  );
+  // One verdict for menu and render: the gate render reuses gateShellUp.
+  const gateRenderAt = appSource.indexOf("if (!gateShellUp) {");
+  check(
+    "P3-362: the gate render and the Go menu share one gateShellUp verdict",
+    gateRenderAt > appSource.indexOf("const gateShellUp =") && gateRenderAt > -1,
+  );
+  // Copy resolves in both locales, substitutes the pane, stays emoji-free.
+  const allLabels = ["navConversations", "navArtifacts", "navBrowser", "navFiles", "navSettings", "navMission", "paletteNewChat", "paletteName"];
+  check(
+    "P3-362: the named toast resolves for every action label in en and pt",
+    (["en", "pt"] as const).every((lang) =>
+      allLabels.every((k) => {
+        const label = translate(lang, k);
+        const s = translate(lang, "pairFirstHintFor", { pane: label });
+        return label !== k && s.includes(label) && !s.includes("{pane}") && !/\p{Extended_Pictographic}/u.test(s);
+      }),
+    ),
+  );
+}
+
 // --- P3-366: desktop paste-first holds on every PairingView call site -----------
 {
   // P2-117's rule is global to the desktop shell: whatever path reaches the

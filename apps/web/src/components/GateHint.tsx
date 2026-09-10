@@ -22,15 +22,21 @@ const WINDOW_MS = 4_000;
  * ceremony instead of leaving the user to find the small link above.
  * onDismiss zeroes the App-owned timestamp: closing must survive the
  * branch-switch remount (a local flag would be re-seeded and the toast
- * would resurrect over the ceremony it just left). */
+ * would resurrect over the ceremony it just left).
+ *
+ * P3-362: `what` is the label of the action that triggered this toast —
+ * "Artifacts", "Command palette", … — so the sentence names the request
+ * instead of flashing one generic pane-agnostic line for every Go item. */
 export default function GateHint({
   trigger,
   at,
+  what,
   onPairNow,
   onDismiss,
 }: {
   trigger: number;
   at: number;
+  what?: string | null;
   onPairNow?: () => void;
   onDismiss?: () => void;
 }) {
@@ -50,7 +56,7 @@ export default function GateHint({
   if (!visible) return null;
   return (
     <div className="ocr-toast pair-gate-hint" role="status">
-      {t("pairFirstHint")}
+      {what ? t("pairFirstHintFor", { pane: what }) : t("pairFirstHint")}
       {onPairNow && (
         <button
           type="button"

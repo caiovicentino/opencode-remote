@@ -41,6 +41,13 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   (P1-071: todo fluxo alcançável no primeiro boot). Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
   clássica centrada
+- Menu Go no portão sem beco circular (P3-362): os itens de painel abrem os
+  mesmos panes offline que o rail já abre (Mission Control, Artifacts, Browser,
+  Ajustes) em vez de piscar um aviso de pareamento — que era circular no
+  primeiro boot, pois o QR nasce do daemon que está caído; onde o painel ainda
+  não tem alvo (Conversas, nova conversa, paleta, Arquivos), o toast passa a
+  nomear o que foi pedido ("Pareie com sua máquina primeiro para abrir
+  Artifacts.") em vez de uma frase genérica igual pra tudo
 - Marca do produto com escala tipográfica própria (P3-336): o h1 "OpenCode
   Remote" das telas de primeiro contato (boas-vindas, pareamento, jornada
   degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo

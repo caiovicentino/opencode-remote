@@ -284,6 +284,13 @@ o ceremony já está na tela; o beat P3-367 do desktop-flow rearma o hint, clica
 de verdade no "Parear agora" e prova a saída (toast dispensado + ceremony
 manual visível) — probes em `join('|')` porque `JSON.stringify` dentro do
 `ipc` volta com escape `\"` do harness e false-faila no regex;
+P3-362 acabou com o toast genérico e circular do portão: o menu Go agora abre
+na tela de portão os mesmos panes offline que o rail já abre (P3-365:
+Mission Control, Artifacts, Browser, Settings — `GATE_SHELL_PANES`), em vez de
+exigir pareamento com um QR que o próprio daemon caído teria que gerar; nos
+demais casos o toast nomeia o que foi pedido ("Pareie com sua máquina primeiro
+para abrir Artifacts." — `pairFirstHintFor` com `{pane}`), e um só veredito
+`gateShellUp` decide menu e render pra nunca divergirem;
 P3-366 estendeu a regra paste-first do desktop (P2-117) ao escape manual do
 degradado: o PairingView alcançado por "Parear outro dispositivo manualmente"
 (e pelo escape do wizard) recebe `preferPaste={!!desktopBridge()}` — "Parear"

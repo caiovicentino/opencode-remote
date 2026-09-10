@@ -530,6 +530,27 @@ try {
   const gateHeroBack = run("P3-365: hero back after the panes close", ["ipc", "(() => { const p = document.querySelector('.desk-pane'); return 'pane:' + (p ? getComputedStyle(p).display : 'gone'); })()"], 15_000);
   if (gateHeroBack.ok) check("P3-365: pane closed returns to the hero", /pane:none|pane:gone/.test(gateHeroBack.stdout), gateHeroBack.stdout);
 
+  // --- P3-362: the Go menu matches the rail behind the gate --------------------
+  // P3-365 gave the gate shell a working rail; P3-362 extends the same targets
+  // to the Go menu: a real menu-click on an offline pane OPENS it — no toast
+  // demanding pairing (circular: the QR is minted by the daemon that is down).
+  // Still 1440x900 and pairManual=false here; the classic-screen toast beats
+  // (P3-328/P3-367) run later, after the P2-112 manual-hatch click.
+  run("P3-362: Go-menu Mission Control at the gate shell", ["menu-click", "go-pane-mission"], 15_000);
+  const gateMenuPane = run(
+    "P3-362: mission opens from the menu, no gate toast",
+    ["ipc", "(() => { const p = document.querySelector('.desk-pane'); return [p ? getComputedStyle(p).display : 'gone', !!document.querySelector('.desk-pane .mission'), !!document.querySelector('.pair-gate-hint')].join('|'); })()"],
+    15_000,
+  );
+  check(
+    "P3-362: menu-click opens the pane with no pair toast",
+    gateMenuPane.ok && /^block\|true\|false$/.test(gateMenuPane.stdout.replace(/"/g, "").trim()),
+    gateMenuPane.stdout,
+  );
+  run("P3-362: close the menu-opened pane", ["click", ".desk-pane .screen.mission > header > button:first-child"], 15_000);
+  const gateMenuBack = run("P3-362: hero again after the menu-opened pane closes", ["ipc", "(() => { const p = document.querySelector('.desk-pane'); return 'pane:' + (p ? getComputedStyle(p).display : 'gone'); })()"], 15_000);
+  if (gateMenuBack.ok) check("P3-362: pane closed returns to the hero", /pane:none|pane:gone/.test(gateMenuBack.stdout), gateMenuBack.stdout);
+
   // --- P2-112: first boot with a dead daemon degrades, never dead-ends --------
   // The old journey stranded a first-time user on the pairing wall with a red
   // "daemon fell" alert for a daemon this machine had never met. Now the
@@ -828,6 +849,13 @@ try {
   check(
     "P3-328: dropped pane action surfaces the pair-first hint (en|pt)",
     gateHint.ok && /Pair with your machine first|Pareie com sua máquina primeiro/.test(gateHint.stdout),
+    gateHint.stdout,
+  );
+  // P3-362: the toast names WHAT was requested — "Artifacts" reads the same
+  // in both locales (navArtifacts), and the toast text rides the same probe.
+  check(
+    "P3-362: the gate toast names the requested pane, not a generic line",
+    gateHint.ok && /Artifacts/.test(gateHint.stdout),
     gateHint.stdout,
   );
   check(
