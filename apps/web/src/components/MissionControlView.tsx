@@ -207,6 +207,10 @@ export default function MissionControlView({
   const [shots, setShots] = useState<string[]>([]);
   const [filter, setFilter] = useState<KindFilter>("all");
   const [error, setError] = useState("");
+  // P3-377: the cards load failing is the pane's guided dead-daemon state —
+  // distinct from the generic error line (timeline/takeover/live failures).
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [taking, setTaking] = useState(false);
   const [taken, setTaken] = useState<string | null>(null);
   const [liveShot, setLiveShot] = useState<string | null>(null);
@@ -244,6 +248,7 @@ export default function MissionControlView({
       const list = (json?.cards as SessionCard[]) ?? [];
       setCards(list);
       setError("");
+      setLoadFailed(false);
       setSelected((cur) => (cur && list.some((c) => c.id === cur) ? cur : (list[0]?.id ?? null)));
     } catch (err) {
       // P3-327: behind the gate a dead daemon is the expected state — render
@@ -251,9 +256,11 @@ export default function MissionControlView({
       if (prePairing) {
         setCards([]);
         setError("");
+        setLoadFailed(false);
         return;
       }
       setError(err instanceof Error ? err.message : String(err));
+      setLoadFailed(true);
     }
   }, [daemonApi, prePairing]);
 
@@ -301,6 +308,21 @@ export default function MissionControlView({
   useEffect(() => {
     if (selected) void loadTimeline(selected);
   }, [selected, loadTimeline]);
+
+  /** P3-377: the guided dead-daemon state's manual escape — one click reloads
+   * everything the pane reads, instead of waiting for the next 6s poll. */
+  const retryLoad = useCallback(async () => {
+    setRetrying(true);
+    try {
+      await Promise.all([
+        loadCards(),
+        loadMission(),
+        selected ? loadTimeline(selected) : Promise.resolve(),
+      ]);
+    } finally {
+      setRetrying(false);
+    }
+  }, [loadCards, loadMission, loadTimeline, selected]);
 
   async function takeover(task: string) {
     if (!daemonApi) return;
@@ -404,7 +426,28 @@ export default function MissionControlView({
         )}
       </header>
       {phone && <p className="muted mission-phone-intro">{t("missionPhoneIntro")}</p>}
-      {error && <p className="mission-error">{phone ? t("missionLoadFailed") : missionErrorText(error, t)}</p>}
+      {error && phone && <p className="mission-error">{t("missionLoadFailed")}</p>}
+      {loadFailed && !phone && (
+        // P3-377: the old lone red "daemon unreachable" line — English in a
+        // pt-BR app, no way out — becomes a guided state: what broke, the
+        // auto-reload promise, the reconnect card beside the pane, and a
+        // manual retry that skips the wait for the next poll.
+        <div className="mission-down" role="note">
+          <p className="mission-down-title">{t("missionDownTitle")}</p>
+          <p className="mission-down-detail">{t("missionDownDetail")}</p>
+          <p className="mission-down-detail">{t("missionDownHint")}</p>
+          <div className="mission-down-actions">
+            <button type="button" onClick={() => void retryLoad()} disabled={retrying}>
+              {retrying ? "…" : t("missionDownRetry")}
+            </button>
+          </div>
+        </div>
+      )}
+      {error && !phone && !loadFailed && (
+        // P3-381: remaining failures (timeline, takeover, live) keep the
+        // humanized single line — sentinel throws resolve to dedicated keys.
+        <p className="mission-error">{missionErrorText(error, t)}</p>
+      )}
       {view === "dash" && dashUrl && (
         <iframe
           src={dashUrl}

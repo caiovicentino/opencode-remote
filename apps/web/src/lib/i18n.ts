@@ -754,6 +754,12 @@ export const dict = {
     missionPhoneClearConfirm: "Tap again to confirm — the fleet goes back to self-improvement.",
     missionNone: "No mission set — the fleet is in self-improvement mode.",
     missionLoadFailed: "Could not read the fleet records — the machine did not answer.",
+    // P3-377: the pane's load failure is a guided state, not a lone red string —
+    // one line per job: what broke, the auto-reload promise, the way back.
+    missionDownTitle: "Mission Control can't reach the local daemon",
+    missionDownDetail: "This pane reads the pilot's records straight from the daemon on this machine, and it didn't answer. The list reloads by itself once it's back.",
+    missionDownHint: "To bring it back sooner, use “Reconnect now” on the status card next to the pane.",
+    missionDownRetry: "Try again",
     // ── EVAL4-A (fable r4, product track) ──────────────────────────────
     // F1: pairing-screen errors with a next step (lib/pairerror.ts kinds)
     pairErrRejected: "This device isn't authorized on that machine.",
@@ -1484,6 +1490,12 @@ export const dict = {
     missionPhoneClearConfirm: "Toque de novo pra confirmar — a frota volta ao modo de auto-melhoria.",
     missionNone: "Nenhuma missão definida — a frota está em modo de auto-melhoria.",
     missionLoadFailed: "Não deu pra ler os registros da frota — a máquina não respondeu.",
+    // P3-377: falha de carga do painel vira estado guiado, não uma linha vermelha
+    // solta — um verso por função: o que quebrou, a promessa de recarga, o caminho de volta.
+    missionDownTitle: "O Mission Control não alcança o daemon local",
+    missionDownDetail: "Este painel lê os registros do pilot direto do daemon desta máquina, e ele não respondeu. Quando ele voltar, os dados recarregam sozinhos.",
+    missionDownHint: "Pra adiantar isso, use “Reconectar agora” no card de status ao lado do painel.",
+    missionDownRetry: "Tentar novamente",
     // ── EVAL4-A (fable r4, trilha produto) ─────────────────────────────
     // F1: erros da tela de pareamento com próximo passo (lib/pairerror.ts)
     pairErrRejected: "Este aparelho não está autorizado nessa máquina.",
