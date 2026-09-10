@@ -65,6 +65,15 @@ private. That is the product: **local power, remote control, zero trust**.
   markdown-heavy bubbles), and a term with no hits gets a calm "no matches"
   state. Search covers the messages already loaded in the view — page in older
   history to search deeper
+- **Conversation search, server side (P3-400)** — the daemon answers
+  `GET /__ocr/search?q=…` over the content of ALL conversations (titles and
+  messages), not just the open one: matching ignores case and accents (the
+  term is never read as regex), results come back recency-sorted, one hit per
+  conversation with a short snippet around the occurrence. Hard caps — the 200
+  most recent conversations, the 200 newest messages each, a 1.5 s budget —
+  mark the answer `truncated` when hit, and an origin failure degrades to an
+  empty truncated answer instead of an error. Wiring this into the session
+  selector is the next slice; no screen consumes the route yet
 - **Copy message (P2-282)** — every chat bubble gets a copy action, so the
   phone (no right-click, no native context menu) can lift an answer — code
   included — out of the conversation. The action sits under each bubble: a
