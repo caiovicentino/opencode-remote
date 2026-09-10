@@ -98,7 +98,7 @@ fallback de merge local.
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
 | `scribe` | após o merge: destila até 3 lições do diff (P1-075: só o diff — findings de review não entram no prompt) → `docs/EXPERIENCE.md` | 10 min |
 | `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida e pousa via PR `pilot/meta` com guard) | 25 min |
-| `red team` (1x/dia, janela >= 2h ocioso) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
+| `red team` (1x/dia, janela reservada 02:00–04:00 — P3-356) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
 
 Builders e reviewers rodam em **clone isolado** (`~/.opencode-remote/pilot/repo`);
@@ -322,7 +322,7 @@ a fila do `origin/main` **dele** e roda builders/reviewers/judge lá (perfil
 genérico acima). Um repo externo **nunca dispara deploy**: nada de produção
 roda a partir dele, então reset/build/kickstart dos nossos serviços seria só
 uma queda. A **camada nightly inteira** (redteam, explorer, forensic,
-manutenção de experiência — `nightlyLayer()` em `scheduler.ts`) também fica
+manutenção de experiência — `nightlyWindow()` em `scheduler.ts`) também fica
 **desligada** numa missão externa: auto-evolução é sobre o nosso repo; o repo
 do usuário recebe só o pipeline de missão (nem o registro "nightly skipped" é
 gravado). **Primeiro contato com o repo externo**: o clone pina o `main`
@@ -633,8 +633,24 @@ intacto). Bloco opcional:
   se repete (2ª vez seguida na mesma task), emite o evento `alert`
   (`phase: verifyFindings`, detail com até 2 razões de drop por reviewer
   all-dropped) + notify — o fail-closed em si fica inalterado.
-- **Forensic semanal**: na passada noturna (primeira janela >= 2h ocioso do
-  dia — P1-095), um agente analisa as últimas
+- **Janela noturna reservada (P3-356)**: a passada noturna não depende mais de
+  2h de ociosidade (P1-095) — uma frota de 4 slots nunca produz esse vão. Das
+  **02:00 às 04:00 locais** (`NIGHTLY_START_HOUR - 1` até `NIGHTLY_START_HOUR + 1`,
+  `nightlyWindow()` em `scheduler.ts`) o loop **para de fazer picks novos**
+  (mesmo mecanismo `drainNewPicks` do P1-104 — sinal separado, somado no gate do
+  eager-fill para nunca limpar o drain de um self-reload em voo) e a passada
+  roda no primeiro tick com `running.size === 0`. **Teto de espera de 90min**
+  (`NIGHTLY_DRAIN_CAP_MS`): depois disso a passada roda mesmo com **1** slot
+  ocupado, desde que o slot 1 — o worktree que os agentes noturnos compartilham
+  — esteja livre (2+ slots ocupados continuam esperando; o registro honesto
+  abaixo é a saída). Um `nightlySkipped` agora nomeia **quantos slots seguravam
+  e desde quando** (`reserved window passed with 3/4 slots busy since 02:14`).
+  A frota já ociosa >= 2h (P1-095) dispara mais cedo pelo caminho OR; missão
+  estrangeira mantém a camada toda desligada. O início real da passada emite
+  `phase: run` (task `nightly`) no events.jsonl — o rastro "3 noites seguidas"
+  que o critério de aceitação pede.
+- **Forensic semanal**: na passada noturna (janela reservada ou primeira
+  ocorrência >= 2h ocioso do dia — P3-356/P1-095), um agente analisa as últimas
   100 failure lessons (`lessons.jsonl`), os carryovers de gate-fail e o
   `git log -50` e escreve a taxonomia de falhas (padrões, causas raiz,
   recomendações) em `~/.opencode-remote/pilot/forensic-latest.md` + digest no
@@ -1610,8 +1626,8 @@ endpoint de autenticação.
 
 ## Explorer noturno: computer-use agentic async (P3-052)
 
-Junto do pass noturno do red team (primeira janela >= 2h ocioso do dia —
-P1-095), o pilot acorda um agente
+Junto do pass noturno do red team (janela reservada 02:00–04:00 ou primeira
+janela >= 2h ocioso do dia — P3-356/P1-095), o pilot acorda um agente
 com **visão** para explorar o app desktop **de verdade** — via harness hermético
 do P1-051 (`tools/desktop.mjs`, sem daemon de produção). É a camada exploratória
 que complementa os reviewers adversariais: em vez de olhar diffs, olha o
