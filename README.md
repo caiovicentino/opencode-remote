@@ -421,6 +421,12 @@ private. That is the product: **local power, remote control, zero trust**.
   instead of a transient toast flashing the only explanation away. On the first-boot shell
   skeleton (P3-365) the card retitles to "Before pairing" and keeps the lock glyph only on
   Conversations — the rail beside it already opens the other panes
+- **Offline panes stay calm at the gate (P3-327)** — behind the first-boot gate shell the
+  reachable panes read as expected empty worlds, not errors: Mission Control opens on the
+  forensic view with its "no sessions recorded yet" copy (the dashboard and live-shot
+  actions stay hidden — they need the daemon), and the artifact list shows its quiet empty
+  state instead of the paired-world red "not paired" error; Mission Control's header also
+  wraps to a second row at pane width instead of painting its view tabs over the title
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
   shell title included (P3-373: the build-5 token bump had briefly promoted it

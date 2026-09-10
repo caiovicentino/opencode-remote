@@ -1170,6 +1170,25 @@ export default function App() {
   // P2-138's quiet stub: every daemon-backed fetch becomes a no-op while the
   // purely-local settings (language, theme) keep working.
   const gateSettingsNode = settingsView(() => Promise.resolve({ status: 0, body: {} }));
+  // P3-327: the gate shell's artifact list runs on the same quiet stub as the
+  // gate Settings — every daemon fetch answers empty, so the pane shows its
+  // calm "no artifacts yet" copy instead of the paired-world red "not paired"
+  // error for a machine nothing has paired yet.
+  const gateArtifactsNode = (
+    <ArtifactsView
+      request={() => Promise.resolve({ status: 0, body: {} })}
+      onBack={goBack}
+      onOpenInChat={openArtifactInChat}
+    />
+  );
+  // P3-327: Mission Control behind the gate runs in pre-pairing mode — a dead
+  // daemon is the EXPECTED first-boot state there, so the loaders answer with
+  // the calm empty world instead of the red "daemon unreachable" line.
+  const gateMissionNode = (
+    <ErrorBoundary>
+      <MissionControlView daemonApi={daemonApi} browse={browseFn} onBack={goBack} request={request} prePairing />
+    </ErrorBoundary>
+  );
   const filesNode = <FilesView request={request} onBack={goBack} />;
   const artifactsNode = <ArtifactsView request={request} onBack={goBack} onOpenInChat={openArtifactInChat} />;
   const browseNode = <BrowserView browse={browseFn} onBack={goBack} />;
@@ -1494,13 +1513,13 @@ export default function App() {
             )}
             {top !== "browser" && top !== "mission" && (
               <div className="pane-view" key={top}>
-                {top === "artifacts" && artifactsNode}
+                {top === "artifacts" && gateArtifactsNode}
                 {top === "files" && filesNode}
                 {top === "settings" && gateSettingsNode}
                 {top === "share" && shareNode}
               </div>
             )}
-            {top === "mission" && missionNode}
+            {top === "mission" && gateMissionNode}
           </section>
         </div>
         {gateHintNode}

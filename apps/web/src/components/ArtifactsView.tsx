@@ -84,7 +84,7 @@ export default function ArtifactsView({
       <div className="list">
         {/* P3-365: the pane is reachable from the unpaired gate shell — a
             "not connected" raw throw becomes the humanized not-paired copy. */}
-        {error && <p style={{ color: "var(--danger)" }}>{humanizeError(error, t)}</p>}
+        {error && <p className="artifacts-error" style={{ color: "var(--danger)" }}>{humanizeError(error, t)}</p>}
         {artifacts.length === 0 && !error && (
           <p className="muted">{t("artifactsEmpty")}</p>
         )}
