@@ -286,7 +286,9 @@ export class OcrClient {
   status: Status = "connecting";
   machineName: string;
   vapidKey?: string;
-  caps: { transcribe?: boolean } = {};
+  // P3-403: caps.tts — the host's spoken-answer verdict from the pairing
+  // handshake; gates the per-session "responder em voz" toggle.
+  caps: { transcribe?: boolean; tts?: boolean } = {};
   onStatus: ((s: Status) => void) | null = null;
   /** P1-061: transport of the current dial ("local" loopback or "relay"). */
   transport: Transport = "relay";
@@ -909,7 +911,7 @@ export class OcrClient {
         } else if (confirm.ok && confirm.confirm) {
           const check = await openSealed<{
             ok: boolean;
-            caps?: { transcribe?: boolean };
+            caps?: { transcribe?: boolean; tts?: boolean };
           }>(confirm.confirm, this.key, new TextEncoder().encode("ocr-confirm"));
           if (check?.ok) {
             this.markAlive();

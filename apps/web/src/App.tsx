@@ -1617,6 +1617,9 @@ export default function App() {
       events={events}
       connStatus={connStatus}
       voice={clientRef.current?.caps?.transcribe === true}
+      // P3-403: the host's spoken-answer verdict gates the per-session voice
+      // toggle (with the device's own Web Speech API availability in ChatView)
+      voiceTts={clientRef.current?.caps?.tts === true}
       browserActive={top === "browser"}
       onBack={goBack}
       paneArtifact={paneArtifact}

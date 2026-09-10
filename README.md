@@ -95,6 +95,21 @@ private. That is the product: **local power, remote control, zero trust**.
   `OCR_STT_BLOCK=1` on the daemon is a test hatch that forces the
   missing-binary verdict so the disabled-mic UI can be evidenced
   deterministically even on hosts that do have whisper installed
+- **Answer by voice (P3-403)** — the camera-ask "Voz" loop turns one chat into
+  a hands-free conversation: a per-session toggle in the composer makes every
+  new agent reply speak itself on the DEVICE (Web Speech API — no daemon
+  round-trip) and transcribed mic questions go straight into the session
+  transcript instead of stopping at the input draft, so you can ask by voice
+  and hear the answer while the camera flow is open. The toggle only appears
+  when both sides can speak: the pairing handshake now carries `caps.tts`
+  (the host's spoken-answer verdict, next to `caps.transcribe`) and the device
+  must have a speech synthesizer — missing either, the toggle never shows and
+  the previous global spoken-replies button stays. Because the first
+  device-side utterance on iOS standalone is silently dropped outside a user
+  gesture, every answer card also carries a play action that speaks it from a
+  real tap. The daemon bounds the loop's cost with a per-session rate limit
+  (20 transcription/spoken-brief requests per minute; over the budget answers
+  with a calm "wait a few seconds" phrase instead of an error wall)
 - **Mic denied guidance (desktop)** — when the OS refuses the microphone
   inside the desktop app, the composer no longer shows the old Safari/iOS
   sentence: the shell reports what the system actually says (never asked yet,
