@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizeHttpUrl } from "../lib/preview";
+import { useT } from "../lib/i18n";
 
 /**
  * Browser pane (P2-011, P1-072): in the desktop shell it renders a real,
@@ -37,6 +38,18 @@ declare module "react" {
 
 function isDesktopShell(): boolean {
   return typeof window !== "undefined" && Boolean((window as unknown as { ocrDesktop?: unknown }).ocrDesktop);
+}
+
+type TFn = (key: string, vars?: Record<string, string | number>) => string;
+
+// P3-382: known internal throws resolve to their own dict key; a daemon-
+// provided message rides the {msg} detail of one localized sentence — the
+// pane never paints a bare English literal again.
+function browserErrorText(raw: string, t: TFn): string {
+  if (/unreachable/i.test(raw)) return t("browserErrUnreachable");
+  if (/desktop only/i.test(raw)) return t("browserErrDesktopOnly");
+  if (/unexpected response/i.test(raw)) return t("browserErrUnexpected");
+  return t("browserErrGeneric", { msg: raw });
 }
 
 export default function BrowserView({
@@ -78,6 +91,7 @@ function WebViewPane({
   onToggleMaximize?: () => void;
   onBack: () => void;
 }) {
+  const t = useT();
   const [src, setSrc] = useState<string>(() => previewUrl ?? DEFAULT_URL);
   const [input, setInput] = useState(() => previewUrl ?? DEFAULT_URL);
   const [error, setError] = useState("");
@@ -144,10 +158,10 @@ function WebViewPane({
       const d = e as unknown as { errorCode?: number; errorDescription?: string; isMainFrame?: boolean };
       // -3 = aborted navigation (user clicked elsewhere) — not a failure
       if (d.isMainFrame === false || d.errorCode === -3) return;
-      setError(d.errorDescription || "Não foi possível carregar a página.");
+      setError(d.errorDescription || t("browserLoadFailed"));
       setLoading(false);
     };
-    const onCrashed = () => setError("O renderizador da página caiu — recarregue.");
+    const onCrashed = () => setError(t("browserCrashed"));
     wv.addEventListener("did-navigate", onNavigate);
     wv.addEventListener("did-navigate-in-page", onNavigate);
     wv.addEventListener("did-start-loading", onStart);
@@ -168,7 +182,7 @@ function WebViewPane({
     // only http/https reach the webview — file:// and friends are rejected
     const normalized = normalizeHttpUrl(target.trim());
     if (!normalized) {
-      setError("URL inválida — use http(s)://…");
+      setError(t("browserInvalidUrl"));
       return;
     }
     setError("");
@@ -192,13 +206,13 @@ function WebViewPane({
   return (
     <div className="browser-pane">
       <header className="browser-header">
-        <button onClick={onBack} aria-label="Voltar ao chat">←</button>
-        <h1 className="pane-title">Browser</h1>
+        <button onClick={onBack} aria-label={t("browserBack")}>←</button>
+        <h1 className="pane-title">{t("navBrowser")}</h1>
         {onToggleMaximize && (
           <button
             onClick={onToggleMaximize}
-            aria-label={maximized ? "Restaurar painel" : "Maximizar painel"}
-            title={maximized ? "Restaurar painel" : "Maximizar painel"}
+            aria-label={maximized ? t("browserRestore") : t("browserMaximize")}
+            title={maximized ? t("browserRestore") : t("browserMaximize")}
           >
             {maximized ? "⤡" : "⤢"}
           </button>
@@ -213,7 +227,7 @@ function WebViewPane({
           spellCheck={false}
           style={{ flex: 1 }}
         />
-        <button onClick={reload} aria-label="Recarregar" title="Recarregar">↻</button>
+        <button onClick={reload} aria-label={t("browserReload")} title={t("browserReload")}>↻</button>
       </div>
       {error && <p className="browser-error">{error}</p>}
       <div className="browser-frame" ref={frameRef}>
@@ -234,6 +248,7 @@ function WebViewPane({
 /* ── screenshot mode (PWA fallback, unchanged P2-011 behavior) ────────────── */
 
 function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack: () => void }) {
+  const t = useT();
   const [input, setInput] = useState(DEFAULT_URL);
   const [info, setInfo] = useState<BrowseInfo | null>(null);
   const [shot, setShot] = useState("");
@@ -335,12 +350,12 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack}>←</button>
-        <h1 className="pane-title">Browser</h1>
-        <button onClick={() => setShowText((v) => !v)} aria-label="Toggle text">
+        <button onClick={onBack} aria-label={t("back")}>←</button>
+        <h1 className="pane-title">{t("navBrowser")}</h1>
+        <button onClick={() => setShowText((v) => !v)} aria-label={t("browserToggleText")}>
           ≡
         </button>
-        <button onClick={() => void refresh()} aria-label="Refresh screenshot">
+        <button onClick={() => void refresh()} aria-label={t("browserRefreshShot")}>
           ↻
         </button>
       </header>
@@ -354,23 +369,23 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
           spellCheck={false}
         />
         <button onClick={() => void open(input)} disabled={busy}>
-          Go
+          {t("browserGo")}
         </button>
       </div>
       <div className="list" style={{ overflow: "auto" }}>
-        {error && <p style={{ color: "var(--danger)", padding: "0 10px" }}>{error}</p>}
+        {error && <p style={{ color: "var(--danger)", padding: "0 10px" }}>{browserErrorText(error, t)}</p>}
         <div style={{ position: "relative" }}>
           {shot ? (
             <img
               ref={imgRef}
               src={shot}
-              alt="host browser"
+              alt={t("browserShotAlt")}
               style={{ width: "100%", display: "block", cursor: "crosshair" }}
               onClick={onClickImage}
             />
           ) : (
             <p className="muted" style={{ padding: 10 }}>
-              {busy ? "Loading…" : "No page loaded."}
+              {busy ? t("browserLoading") : t("browserNoPage")}
             </p>
           )}
           {busy && shot && (
