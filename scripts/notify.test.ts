@@ -2,7 +2,7 @@
  * P3-357 — supervisor notify eval: fake transport that fails then accepts.
  * The pending queue must drain with no duplicates, failures must carry the
  * real reason into the pilot log + the shared audit trail, repeated refusals
-// ── 5. repeated refusal → one "needs operator" push digest per episode ──
+ * must fire one "needs operator" push digest per episode, and entries older
  * than the 24h TTL must expire instead of replaying.
  * Run: npx tsx scripts/notify.test.ts
  */
@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   NOTIFY_DIGEST_THRESHOLD,
+  NOTIFY_PENDING_MAX,
   NOTIFY_PENDING_TTL_MS,
   flushPending,
   notifySupervisor,
@@ -198,6 +199,94 @@ function pendingLines(dir: string): string[] {
   const healDeps = depsFor(dir, heal.transport);
   await notifySupervisor("HEAL", true, "back", healDeps.deps);
   check("recovery drains the refusals", pendingLines(dir).length === 0 && pushes.length === 1);
+}
+
+// ── 6. cap: the pending file never exceeds NOTIFY_PENDING_MAX lines ────────
+{
+  const dir = mkDir(true);
+  const { transport } = transportOf("http-503");
+  const { deps } = depsFor(dir, transport);
+  for (let i = 0; i < NOTIFY_PENDING_MAX + 5; i++) {
+    await notifySupervisor(`CAP-${String(i).padStart(3, "0")}`, false, "overflow", deps);
+  }
+  const lines = pendingLines(dir);
+  check("pending file capped at NOTIFY_PENDING_MAX lines", lines.length === NOTIFY_PENDING_MAX, `lines=${lines.length}`);
+  check("oldest entries dropped first", lines.length === NOTIFY_PENDING_MAX && JSON.parse(lines[0]).task === "CAP-005" && JSON.parse(lines[lines.length - 1]).task === "CAP-104");
+}
+
+// ── 7. a park landing mid-flush survives the flush's rewrite ───────────────
+{
+  const dir = mkDir(true);
+  let resolveSlow: () => void = () => {};
+  const slowGate = new Promise<void>((r) => {
+    resolveSlow = r;
+  });
+  const slowSends: string[] = [];
+  const transport: NotifyTransport = async (_url, init) => {
+    const body = JSON.parse(init.body) as { text: string };
+    if (body.text.includes("SLOW-ENTRY")) {
+      slowSends.push(body.text);
+      await slowGate;
+      return { ok: true, status: 200, json: async () => ({ delivered: true }) };
+    }
+    return { ok: false, status: 503, json: async () => ({}) };
+  };
+  mkdirSync(join(dir, "pilot"), { recursive: true });
+  writeFileSync(
+    join(dir, "pilot", "notify-pending.jsonl"),
+    JSON.stringify({ ts: Date.now(), task: "SLOW", ok: false, text: "SLOW-ENTRY body" }) + "\n",
+  );
+  const { deps } = depsFor(dir, transport);
+  const flushing = flushPending({ session: "ses_test", token: "tok" }, transport, deps);
+  const parking = notifySupervisor("NEW-TASK", false, "parked during flush", deps);
+  await new Promise((r) => setTimeout(r, 30));
+  resolveSlow();
+  await flushing;
+  await parking;
+  const lines = pendingLines(dir);
+  check("park-during-flush survives the rewrite", lines.length === 1 && lines[0].includes("NEW-TASK"), `lines=${JSON.stringify(lines)}`);
+  check("slow entry delivered exactly once", slowSends.length === 1, `sends=${slowSends.length}`);
+}
+
+// ── 8. concurrent flushes serialize: each entry delivered once ─────────────
+{
+  const dir = mkDir(true);
+  let resolveGate: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    resolveGate = r;
+  });
+  const sends: string[] = [];
+  const transport: NotifyTransport = async (_url, init) => {
+    const body = JSON.parse(init.body) as { text: string };
+    sends.push(body.text);
+    if (sends.length === 1) await gate;
+    return { ok: true, status: 200, json: async () => ({ delivered: true }) };
+  };
+  mkdirSync(join(dir, "pilot"), { recursive: true });
+  writeFileSync(
+    join(dir, "pilot", "notify-pending.jsonl"),
+    JSON.stringify({ ts: Date.now(), task: "DUP", ok: false, text: "dup-entry" }) + "\n",
+  );
+  const f1 = flushPending({ session: "ses_test", token: "tok" }, transport, depsFor(dir, transport).deps);
+  const f2 = flushPending({ session: "ses_test", token: "tok" }, transport, depsFor(dir, transport).deps);
+  await new Promise((r) => setTimeout(r, 30));
+  resolveGate();
+  await f1;
+  await f2;
+  check("concurrent flushes deliver each entry once", sends.filter((s) => s === "dup-entry").length === 1, `sends=${sends.length}`);
+  check("queue empty after both flushes", pendingLines(dir).length === 0);
+}
+
+// ── 9. corrupt config: the warn carries the real parse reason ──────────────
+{
+  const dir = mkDir(true);
+  writeFileSync(join(dir, "pilot.json"), "{corrupt");
+  const { transport } = transportOf("deliver");
+  const { deps, logs } = depsFor(dir, transport);
+  const ok = await notifySupervisor("CORRUPT", true, "x", deps);
+  check("corrupt config returns false", ok === false);
+  check("corrupt config reports the parse failure, not a missing field", logs.some((l) => l.level === "warn" && /pilot\.json unparseable/.test(String((l.data as { reason?: string })?.reason ?? ""))));
+  check("corrupt config parks nothing", !existsSync(join(dir, "pilot", "notify-pending.jsonl")));
 }
 
 if (failures) process.exit(1);

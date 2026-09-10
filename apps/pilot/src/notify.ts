@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { appendAudit } from "../../daemon/src/auditlog";
@@ -77,6 +77,9 @@ export interface PendingEntry {
 interface NotifyConfig {
   session?: string;
   token?: string;
+  /** Real parse-failure reason (file named); a MISSING file is just the
+   * normal not-configured state and must not be misreported (P3-357 r2). */
+  error?: string;
 }
 
 function stateDir(deps: NotifyDeps): string {
@@ -87,14 +90,36 @@ function pendingFile(dir: string): string {
   return join(dir, "pilot", "notify-pending.jsonl");
 }
 
+function errText(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.slice(0, REASON_CAP);
+}
+
 function readConfig(dir: string): NotifyConfig {
+  const out: NotifyConfig = {};
+  let raw: string;
   try {
-    const cfg = JSON.parse(readFileSync(join(dir, "pilot.json"), "utf8")) as { supervisorSession?: string };
-    const token = (JSON.parse(readFileSync(join(dir, "daemon.json"), "utf8")) as { apiToken?: string }).apiToken;
-    return { session: cfg.supervisorSession, token };
+    raw = readFileSync(join(dir, "pilot.json"), "utf8");
   } catch {
-    return {};
+    return out; // missing/unreadable file = the normal not-configured state
   }
+  try {
+    out.session = (JSON.parse(raw) as { supervisorSession?: string }).supervisorSession;
+  } catch (err) {
+    out.error = `pilot.json unparseable: ${errText(err)}`;
+    return out;
+  }
+  try {
+    raw = readFileSync(join(dir, "daemon.json"), "utf8");
+  } catch {
+    return out;
+  }
+  try {
+    out.token = (JSON.parse(raw) as { apiToken?: string }).apiToken;
+  } catch (err) {
+    out.error = `daemon.json unparseable: ${errText(err)}`;
+  }
+  return out;
 }
 
 /** Build the message body for a fresh notification. */
@@ -111,6 +136,7 @@ async function deliver(
   transport: NotifyTransport,
   text: string,
 ): Promise<NotifyResult> {
+  if (cfg.error) return { delivered: false, reason: cfg.error };
   if (!cfg.session) return { delivered: false, reason: "no supervisorSession in pilot.json" };
   if (!cfg.token) return { delivered: false, reason: "no apiToken in daemon.json" };
   try {
@@ -170,23 +196,32 @@ function readPending(dir: string): PendingEntry[] {
 function writePending(dir: string, entries: PendingEntry[]): void {
   try {
     mkdirSync(join(dir, "pilot"), { recursive: true });
+    // mode applies at creation only — existing permissions are never touched
     if (entries.length === 0) {
-      writeFileSync(pendingFile(dir), "");
+      writeFileSync(pendingFile(dir), "", { mode: 0o600 });
       return;
     }
-    writeFileSync(pendingFile(dir), entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    writeFileSync(pendingFile(dir), entries.map((e) => JSON.stringify(e)).join("\n") + "\n", { mode: 0o600 });
   } catch {}
 }
 
-/** Append one failed delivery; returns the fresh (< TTL) queue size after. */
+// P3-357 r2: every pending-file mutation is serialized behind one promise
+// chain. A flush awaits up to NOTIFY_TIMEOUT_MS per entry, so an unsynchronized
+// park landing mid-flush was erased by the flush's final rewrite, and two
+// overlapping flushes delivered the same entry twice (reviewer repro).
+let queueLock: Promise<unknown> = Promise.resolve();
+function withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queueLock.then(fn, fn);
+  queueLock = run.catch(() => undefined);
+  return run;
+}
+
+/** Append one failed delivery under the queue lock; returns the fresh (< TTL)
+ * queue size after. The rewrite is the ONLY place the cap is enforced — the
+ * oldest entries are dropped first (append alone would grow the file forever). */
 function parkPending(dir: string, entry: PendingEntry, nowMs: number): number {
-  const all = [...readPending(dir), entry].slice(-NOTIFY_PENDING_MAX);
-  try {
-    mkdirSync(join(dir, "pilot"), { recursive: true });
-    appendFileSync(pendingFile(dir), JSON.stringify(entry) + "\n", { mode: 0o600 });
-  } catch {}
-  // parkPending appends; the bound rewrite keeps the file from growing forever
-  if (all.length > NOTIFY_PENDING_MAX) writePending(dir, all.slice(-NOTIFY_PENDING_MAX));
+  const all = [...readPending(dir), entry];
+  writePending(dir, all.slice(-NOTIFY_PENDING_MAX));
   return all.filter((e) => nowMs - e.ts < NOTIFY_PENDING_TTL_MS).length;
 }
 
@@ -201,8 +236,19 @@ function stampDelivered(dir: string, nowMs: number): void {
 /**
  * Replay the pending queue through `transport`. Delivered entries are removed
  * (no duplicates), stale entries expire, failed entries stay exactly once.
+ * The whole read-deliver-rewrite cycle runs under the queue lock: concurrent
+ * flushes serialize instead of double-delivering, and a park landing mid-flush
+ * survives the final rewrite.
  */
-export async function flushPending(
+export function flushPending(
+  cfg: NotifyConfig,
+  transport: NotifyTransport,
+  deps: NotifyDeps = {},
+): Promise<number> {
+  return withQueueLock(() => flushPendingLocked(cfg, transport, deps));
+}
+
+async function flushPendingLocked(
   cfg: NotifyConfig,
   transport: NotifyTransport,
   deps: NotifyDeps = {},
@@ -257,7 +303,7 @@ export async function notifySupervisor(
   if (!cfg.session || !cfg.token) {
     logFn("warn", "supervisor notify skipped — not configured", {
       task,
-      reason: !cfg.session ? "no supervisorSession in pilot.json" : "no apiToken in daemon.json",
+      reason: cfg.error ?? (!cfg.session ? "no supervisorSession in pilot.json" : "no apiToken in daemon.json"),
     });
     return false;
   }
@@ -278,14 +324,20 @@ export async function notifySupervisor(
   // unknown outcome (timeout while the daemon may still be delivering) is
   // never queued — a replay would duplicate the message in the supervisor chat
   if (outcome.unknown) return false;
-  const freshCount = parkPending(dir, { ts: nowMs, task, ok, text }, nowMs);
-  // repeated refusal → one digest copy marked "needs operator" per episode
-  if (freshCount === NOTIFY_DIGEST_THRESHOLD) {
-    const copy = readPending(dir)
+  // park + digest copy under the queue lock: a concurrent flush's rewrite must
+  // never erase the fresh entry, and the copy must reflect the parked set
+  const { freshCount, copy } = await withQueueLock(async () => {
+    const entry: PendingEntry = { ts: nowMs, task, ok, text };
+    const count = parkPending(dir, entry, nowMs);
+    const warnings = readPending(dir)
       .filter((e) => nowMs - e.ts < NOTIFY_PENDING_TTL_MS)
       .slice(-NOTIFY_DIGEST_THRESHOLD)
       .map((e) => `${e.task}: ${e.ok ? "ok" : "fail"}`)
       .join(" | ");
+    return { freshCount: count, copy: warnings };
+  });
+  // repeated refusal → one digest copy marked "needs operator" per episode
+  if (freshCount === NOTIFY_DIGEST_THRESHOLD) {
     try {
       await (deps.push ?? digest)(
         "📮 Pilot notify: needs operator",
