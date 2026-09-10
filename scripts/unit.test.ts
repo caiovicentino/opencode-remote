@@ -728,7 +728,7 @@ import {
   type AssetProbe,
 } from "../apps/relay/src/webroot";
 
-import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONFLICT_OPERATOR_MARKER, CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, readWorkflowTexts, workflowsExpectPrChecks, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, shq, prTitle, PR_TITLE_MAX, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
+import { touchedUiFromDiff, needsEscalation, parseFindings, verifyFindings, isTaskMergeSha, parseVerdict, reviewerOk, tagUnverified, tagUnverifiedBlocking, arbiterApproveHolds, arbiterSpanVerified, parseApprovalBullets, isBlockingFinding, findingsRepeat, writeAuxSandboxConfig , CONFLICT_OPERATOR_MARKER, CONSTITUTION, PR_MERGE_CONFIRM_DELAY_MS, PR_MERGE_CONFIRM_POLLS, PR_READINESS_POLLS, PrMergeIo, RESUME_MAX_TASK_IDS, TASK_ID_RE, awaitMergeReadiness, mergeReadiness, readinessInfraKind, readWorkflowTexts, workflowsExpectPrChecks, builderPrompt, codeChanges, commitSpec, commitSpecWithReason, crashRoundDecision, lessonsBlock, mergeBlockReason, mergePrForTask, needsPlanner, parseScribeLessons, plannerPrompt, plannerRetryPolicy, rebaseOutcome, resumeBlock, reviewerPrompt, setupTaskBranch, shq, prTitle, PR_TITLE_MAX, specPathFor, specRejectReason, updateResumeState, validateSpec } from "../apps/pilot/src/pipeline";
 
 
 import { latestUiShot, pruneShots } from "../apps/pilot/src/shot";
@@ -4351,6 +4351,48 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
   );
   const tagged = tagUnverified([["- `ghost.ts:1` — real leak"], [], ["- `real.ts:2` — off-by-one", "- `ghost.ts:1` — real leak"]]);
   check("p1-102: tagUnverified tags deduped dropped findings for the builder", tagged.join("\n") === "[unverified] - `ghost.ts:1` — real leak\n[unverified] - `real.ts:2` — off-by-one");
+  rmSync(ws, { recursive: true, force: true });
+}
+
+// --- P3-355: span-proofed arbiter approval + [unverified BLOCKING] carry -----
+{
+  const ws = mkdtempSync(join(tmpdir(), "p3-355-"));
+  writeFileSync(join(ws, "real.ts"), "alpha\nbeta\n\n   \ndelta\n");
+  const diff = "diff --git a/real.ts b/real.ts\n+beta touched\n";
+  const approveNoSpan = [
+    "I double-checked both reviews; the findings look like verifier noise.",
+    "The diff is correct and the concerns do not survive a second look.",
+    "",
+    "VERDICT: APPROVE",
+  ].join("\n");
+  const approveWithSpan = [
+    "Both reviews hallucinated, but I checked the code myself:",
+    "- `real.ts:2` — the dropped concern misreads this line; beta is intended here.",
+    "",
+    "VERDICT: APPROVE",
+  ].join("\n");
+  // acceptance table: all-dropped×2 + arbiter APPROVE without a verifiable
+  // span does NOT merge; with a verified span it merges
+  const cases: Array<[string, boolean, boolean, string, boolean]> = [
+    ["all-dropped×2 + span-less APPROVE does not merge", true, true, approveNoSpan, false],
+    ["all-dropped×2 + APPROVE with verified span merges", true, true, approveWithSpan, true],
+    ["all-dropped×2 + rejecting arbiter never merges", false, true, approveWithSpan, false],
+    ["single all-dropped + span-less APPROVE keeps old semantics", true, false, approveNoSpan, true],
+  ];
+  for (const [label, approve, bothDropped, output, expected] of cases) {
+    check(`p3-355: ${label}`, arbiterApproveHolds(approve, bothDropped, output, ws, diff) === expected);
+  }
+  check("p3-355: span-less APPROVE carries zero verifiable proof", !arbiterSpanVerified(approveNoSpan, ws, diff) && arbiterSpanVerified(approveWithSpan, ws, diff));
+  check("p3-355: parseApprovalBullets reads rationale bullets under APPROVE", parseApprovalBullets(approveWithSpan).length === 1 && parseApprovalBullets(approveWithSpan)[0]!.includes("real.ts:2"));
+  check("p3-355: parseApprovalBullets caps at 12 candidates", parseApprovalBullets(Array.from({ length: 20 }, (_, i) => `- item ${i}`).join("\n")).length === 12);
+  // dropped [BLOCKING] findings are sampled into the next round's carry
+  const carry = tagUnverifiedBlocking([
+    ["- [BLOCKING] `ghost.ts:75` — repair loses conflict markers", "- [NIT] `real.ts:2` — wording"],
+    ["- `real.ts:99` — untagged concern"],
+  ]);
+  check("p3-355: carry samples only BLOCKING dropped findings, tagged", carry.length === 2 && carry[0] === "[unverified BLOCKING] - [BLOCKING] `ghost.ts:75` — repair loses conflict markers");
+  check("p3-355: untagged dropped finding fails closed into the carry", carry[1] === "[unverified BLOCKING] - `real.ts:99` — untagged concern");
+  check("p3-355: nit-only dropped list yields no carry", tagUnverifiedBlocking([["- [NIT] `real.ts:2` — taste"]]).length === 0);
   rmSync(ws, { recursive: true, force: true });
 }
 
@@ -9247,6 +9289,17 @@ check(
       gateAvg.length === 1 && gateAvg[0]?.phase === "gatekeeper" && gateAvg[0]?.avgMs === 3_000 && gateAvg[0]?.n === 1,
     );
     check("P1-101: merge no longer closes the gatekeeper phase", !gateAvg.some((p) => p.phase === "merge"));
+
+    // P3-355: the escalation phases fire between reviewers/reviewers-done —
+    // they must not clobber the reviewers opener
+    const escFlow: PilotEvent[] = [
+      { ts: t(0), type: "phase", task: "PC", phase: "reviewers" },
+      { ts: t(1), type: "phase", task: "PC", phase: "review-escalation", detail: "round 1" },
+      { ts: t(2), type: "phase", task: "PC", phase: "escalation", ok: false, detail: "kept 0, dropped 1" },
+      { ts: t(3), type: "phase", task: "PC", phase: "reviewers-done", ok: false },
+    ];
+    const escAvg = avgPhaseDurations(escFlow);
+    check("P3-355: escalation phases don't break the reviewers pairing; one sample", escAvg.length === 1 && escAvg[0]?.phase === "reviewers" && escAvg[0]?.avgMs === 3_000 && escAvg[0]?.n === 1);
 
     // clearing audit mode also drops the persisted diagnosis (chip hygiene)
     const st = loadState(file);

@@ -839,6 +839,10 @@ export function reviewerPrompt(
   const uiShotNote = uiShot
     ? `\n- UI evidence (P2-011): the most recent available screenshot for this task is "${uiShot}". It may predate this diff (captured after an earlier deploy) — treat it as a regression baseline, not proof of this diff. Read it (it is an image), say what it shows, and state explicitly whether the diff could plausibly regress it. You can take a fresh screenshot of your local build: \`node tools/browse.mjs shot <path>.png\`.`
     : "";
+  const escalationNote =
+    role === "ESCALATION"
+      ? `\n- Span proof (P3-355): when both adversarial reviewers' findings all failed mechanical verification, your APPROVE is only trusted if at least one bullet in your output cites a verifiable \`path/file.ext:LINE\` or quotes a literal snippet from the diff — proof you actually read the code. A span-free APPROVE is downgraded to REQUEST_CHANGES.`
+      : "";
   // P1-077 cache-aware assembly: stable role line, rules, CONSTITUTION and the
   // verdict contract first (byte-identical across tasks within a role); the
   // variable tail (task, focus, conditional notes) and the DIFF come last.
@@ -865,7 +869,7 @@ Rules:
   acceptance criteria, or regresses behavior) or \`[NIT]\` (style, wording,
   taste). Example: \`- [BLOCKING] src/auth.ts:42 — replay window reopened\`.
   An untagged bullet is treated as BLOCKING; a review whose findings are all
-  \`[NIT]\` approves, so do not escalate taste to BLOCKING.
+  \`[NIT]\` approves, so do not escalate taste to BLOCKING.${escalationNote}
 
 Your LAST lines must be exactly one of:
 VERDICT: APPROVE
@@ -997,6 +1001,60 @@ function findingKey(f: string): string {
 export function tagUnverified(droppedLists: string[][]): string[] {
   const all = droppedLists.flat();
   return all.filter((f, i) => all.indexOf(f) === i).map((f) => `[unverified] ${f.trim()}`);
+}
+
+/**
+ * P3-355: dropped [BLOCKING] findings are sampled into the next round's
+ * gate-fail carry so the builder is explicitly asked to respond — a BLOCKING
+ * concern that died in the mechanical verifier (the P3-341 incident: the only
+ * [BLOCKING] finding of the corpus was dropped as hallucinated and the builder
+ * merged without ever addressing it) must not vanish with the drop. Pure;
+ * pinned by the unit battery.
+ */
+export function tagUnverifiedBlocking(droppedLists: string[][]): string[] {
+  const all = droppedLists.flat().filter(isBlockingFinding);
+  return all.filter((f, i) => all.indexOf(f) === i).map((f) => `[unverified BLOCKING] ${f.trim()}`);
+}
+
+/**
+ * P3-355: candidate span carriers from an arbiter APPROVE — `parseFindings`
+ * yields nothing under APPROVE (P2-038: rationale bullets are not findings),
+ * so the proof-of-contact check scans the bullet lines of the whole output.
+ * Pure; pinned by the unit battery.
+ */
+export function parseApprovalBullets(output: string): string[] {
+  return output
+    .split("\n")
+    .filter((l) => /^\s*[-*]/.test(l))
+    .slice(0, 12);
+}
+
+/** P3-355: does the arbiter's APPROVE cite at least one span that survives
+ * mechanical verification against the reviewed diff — proof of contact with
+ * the code? Pure over verifyFindings; pinned by the unit battery. */
+export function arbiterSpanVerified(output: string, ws: string, diff: string): boolean {
+  return verifyFindings(parseApprovalBullets(output), ws, diff).kept.length > 0;
+}
+
+/**
+ * P3-355: does the tier-B arbiter's approval stand? When BOTH adversarial
+ * reviewers' findings died in mechanical verification, an APPROVE that cites
+ * no verifiable span proves nothing about having read the code — it is
+ * downgraded and the round continues as REQUEST_CHANGES with [unverified]
+ * hints. The span proof is only demanded in that both-all-dropped case; a
+ * rejecting arbiter never holds either way. Pure over verifyFindings; pinned
+ * by the unit battery table.
+ */
+export function arbiterApproveHolds(
+  escApprove: boolean,
+  bothAllDropped: boolean,
+  output: string,
+  ws: string,
+  diff: string,
+): boolean {
+  if (!escApprove) return false;
+  if (!bothAllDropped) return true;
+  return arbiterSpanVerified(output, ws, diff);
 }
 
 export interface PipelineResult {
@@ -1237,8 +1295,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
   const failFile = gateFailFile(cfg.stateRoot, t.id);
   try {
     if (failFile) {
-      const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; tail?: string };
-      if (prev.task === t.id && prev.tail) findings += `[previous gatekeeper failure]\n${prev.tail}\n`;
+      const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; step?: string; tail?: string };
+      // P3-355: an "unverified-blocking" carry is not a gatekeeper failure — it
+      // samples dropped [BLOCKING] findings the builder must respond to.
+      if (prev.task === t.id && prev.tail)
+        findings +=
+          prev.step === "unverified-blocking"
+            ? `[dropped BLOCKING findings from the last review — mechanically unverifiable, but you must respond to each: fix it or restate it with verifiable path:line evidence]\n${prev.tail}\n`
+            : `[previous gatekeeper failure]\n${prev.tail}\n`;
     }
   } catch {}
   // P1-079: a context recap recorded by an earlier cycle's checkpoint (or by
@@ -1732,7 +1796,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       const escParsed = parseFindings(esc.output);
       const escVerified = verifyFindings(escParsed, ws, reviewDiff);
       for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d, escVerified.reasons[d] ?? "unknown");
-      const escApprove = reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
+      // P3-355: when BOTH reviewers were all-dropped, the arbiter's APPROVE is
+      // only trusted with mechanical proof of contact with the code — at least
+      // one span in its output must survive verifyFindings against the diff.
+      // Otherwise the approval is downgraded and the round continues as
+      // REQUEST_CHANGES fed by [unverified] hints (fail-closed).
+      const bothAllDropped = secAllDropped && qualAllDropped;
+      const escApproveRaw = reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
+      const escApprove = arbiterApproveHolds(escApproveRaw, bothAllDropped, esc.output, ws, reviewDiff);
+      const approveDowngraded = escApproveRaw && !escApprove;
       if (escApprove) {
         gateSecOk = true;
         gateQualOk = true;
@@ -1742,12 +1814,20 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         escalationFindings = escVerified.kept;
         escalationDropped = escVerified.dropped;
       }
+      // P3-355: the arbiter becomes observable — kept/dropped land on the
+      // events feed (the escalation path had zero occurrences in the log).
+      emit("phase", {
+        task: t.id,
+        phase: "escalation",
+        ok: escApprove,
+        detail: `kept ${escVerified.kept.length}, dropped ${escVerified.dropped.length}${approveDowngraded ? " — span-less approve downgraded" : ""}`,
+      });
       console.log(
         JSON.stringify({
           ts: nowLocalISO(),
           level: "info",
           msg: "review escalation done",
-          data: { task: t.id, round, approve: escApprove, kept: escVerified.kept.length },
+          data: { task: t.id, round, approve: escApprove, kept: escVerified.kept.length, dropped: escVerified.dropped.length, downgraded: approveDowngraded },
         }),
       );
     }
@@ -1824,6 +1904,17 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       findings = [...deduped, ...unverified].join("\n");
       if ((secAllDropped || qualAllDropped) && escalationFindings === null) {
         findings = `${findings}\n[a reviewer voted REQUEST_CHANGES but every finding failed mechanical verification — if the concern is real, restate it citing verifiable path:line evidence from the diff]`.trim();
+      }
+      // P3-355: every dropped [BLOCKING] finding rides the gate-fail carry into
+      // the next round as "[unverified BLOCKING]" — the builder must respond to
+      // it (fix or restate with verifiable evidence), never merge past it.
+      const blockingCarry = tagUnverifiedBlocking([
+        secOk ? [] : secVerified.dropped,
+        qualOk ? [] : qualVerified.dropped,
+        escalationDropped,
+      ]);
+      if (blockingCarry.length > 0 && round < cfg.maxReviewRounds) {
+        writeGateFailCarry(cfg.stateRoot, t.id, "unverified-blocking", blockingCarry.join("\n"));
       }
       if (round === cfg.maxReviewRounds) {
         // P2-031: the carryover file must reflect the REAL last failure — a task

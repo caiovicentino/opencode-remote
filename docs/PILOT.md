@@ -616,6 +616,19 @@ intacto). Bloco opcional:
   fail-closed (P1-073): o veredito de rejeição permanece e o builder recebe a
   instrução de reformular a concern citando evidência verificável
   `path:line` do diff; findings unverificados nunca mais aprovam por padrão.
+  P3-355: quando **os dois** reviewers tiveram 100% dos findings descartados,
+  o APPROVE do árbitro só vale com **prova mecânica de contato com o código** —
+  ao menos um span do output dele precisa sobreviver ao `verifyFindings` contra
+  o diff; APPROVE sem span é rebaixado e a rodada segue como REQUEST_CHANGES
+  com hints `[unverified]`. O desfecho do árbitro vai pro feed como evento
+  `phase: escalation` (kept/dropped + rebaixamento, quando houver) e as fases
+  `escalation`/`review-escalation` não quebram o pareamento `reviewers` das
+  métricas de duração.
+- **Carry de BLOCKING unverificável (P3-355)**: cada finding `[BLOCKING]`
+  descartado como alucinado (`finding hallucinated, dropped`) entra no
+  gate-fail carry da próxima rodada como `[unverified BLOCKING]` — o builder é
+  instruído a responder cada um (consertar ou reformular com evidência
+  verificável `path:line`), em vez de mergear por cima do descarte.
 - **Alerta de guard repetido (P2-115)**: o caminho fail-closed de cima, quando
   se repete (2ª vez seguida na mesma task), emite o evento `alert`
   (`phase: verifyFindings`, detail com até 2 razões de drop por reviewer
@@ -1404,6 +1417,9 @@ verified BLOCKING finding — a nit-only review approves, an untagged bullet
 fails closed as BLOCKING. Dropped findings are not erased either: a rejecting
 reviewer's (or tier-B arbiter's) dropped list is repassed to the builder tagged
 `[unverified]` (P1-102); the reviewer prompt documents the citation contract.
+P3-355: dropped `[BLOCKING]` findings are additionally sampled into the next
+round's gate-fail carry tagged `[unverified BLOCKING]` so the builder must
+respond to each instead of merging past the drop.
 Pinned by unit tests in `scripts/unit.test.ts` (one valid citation with a real
 path, one hallucinated path — only the invalid one is dropped).
 
