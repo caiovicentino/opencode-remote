@@ -3,12 +3,14 @@ import { dropVerdict, type DropSurface, type DropVerdict } from "./dropgate";
 
 /**
  * P3-398: window-level drag/drop absorption for one surface. App computes the
- * current surface (gate while unpaired, home on any paired non-chat view,
- * null when ChatView's own listeners own the window) and the verdict action;
- * this hook owns the listener mechanics: dragover paints the shared
- * dragging-files highlight, drop clears it and hands the delivered FileList
- * plus the lib/dropgate verdict to the caller. The Electron window never
- * navigates to a dropped file while the hook is live.
+ * current surface from mount truth via lib/dropgate's dropSurfaceFor (gate
+ * while unpaired, home while paired with no open session, null whenever the
+ * persistent ChatView is mounted — its own window listeners own the drop
+ * then) and the verdict action; this hook owns the listener mechanics:
+ * dragover paints the shared dragging-files highlight, drop clears it and
+ * hands the delivered FileList plus the lib/dropgate verdict to the caller.
+ * The Electron window never navigates to a dropped file while the hook is
+ * live.
  *
  * Kept out of App.tsx on purpose — the P2-220 pin holds App at zero window
  * listeners; the gesture lives here next to the pure verdict it consumes.

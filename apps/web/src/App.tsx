@@ -42,7 +42,7 @@ import ChatView, { type MicAccessVerdict } from "./components/ChatView";
 import { type CameraAccessVerdict } from "./components/QrScanner";
 import HomeView from "./components/HomeView";
 import GateHint from "./components/GateHint";
-import { type DropSurface } from "./lib/dropgate";
+import { dropSurfaceFor, type DropSurface } from "./lib/dropgate";
 import { useDropAbsorb } from "./lib/dropwindow";
 import { setDraft, markSendOnOpen } from "./lib/drafts";
 import SettingsView, {
@@ -990,16 +990,19 @@ export default function App() {
   }, [phase, session, creating, gateShellUp]);
 
   // P3-398: window-level drop absorption for the surfaces ChatView's own
-  // listeners leave uncovered — the first-boot gate and the paired home (any
-  // non-chat view). The verdict comes from the pure lib/dropgate module (the
-  // listener mechanics live in lib/dropwindow, keeping App at zero window
-  // listeners per the P2-220 pin): the gate refuses into the existing
-  // GateHint calm warning (per-surface copy, bridge-aware), a home drop
-  // creates the conversation and delivers the files through the paneDrop
-  // traversal, a refusal on the home shows the calm reason in HomeView's
-  // error slot. Never a silent drop.
-  const dropSurface: DropSurface | null =
-    phase !== "paired" ? "gate" : top === "chat" && !!session ? null : "home";
+  // listeners leave uncovered — the first-boot gate and the paired home. The
+  // verdict comes from the pure lib/dropgate module (the listener mechanics
+  // live in lib/dropwindow, keeping App at zero window listeners per the
+  // P2-220 pin): the gate refuses into the existing GateHint calm warning
+  // (per-surface copy, bridge-aware), a home drop creates the conversation
+  // and delivers the files through the paneDrop traversal, a refusal on the
+  // home shows the calm reason in HomeView's error slot. Never a silent
+  // drop. P3-398 r2: the surface is mount truth via dropSurfaceFor — the
+  // chat is persistent (a raised pane never unmounts it), so any open
+  // session means ChatView's own window listeners own the drop and this
+  // absorber stands down; deciding from `top` would handle one drop twice
+  // (attach to the current chat AND spawn a new conversation).
+  const dropSurface: DropSurface | null = dropSurfaceFor(phase, !!session);
   useDropAbsorb(dropSurface, desktopBridge, (verdict, files) => {
     if (verdict.action === "open") {
       setHomeDropError(null);

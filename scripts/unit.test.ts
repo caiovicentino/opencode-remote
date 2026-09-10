@@ -349,6 +349,7 @@ import {
 } from "../apps/web/src/lib/pasteattach";
 
 import {
+  dropSurfaceFor,
   dropVerdict,
   DROP_MAX_FILES,
   DROP_REFUSE_GATE,
@@ -30796,11 +30797,33 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   // toast carries the drop refusal copy.
   const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
   const dropWindowSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "dropwindow.ts"), "utf8");
+  // surface table from mount truth (the r1 regression: deciding from `top`
+  // double-handled a drop with a session open under a raised pane — the
+  // persistent ChatView attached it AND the hook spawned a new conversation)
+  const surfaceTable: [string, boolean, DropSurface | null][] = [
+    ["unpaired", false, "gate"],
+    ["connecting", false, "gate"],
+    ["connecting", true, "gate"],
+    ["error", false, "gate"],
+    ["paired", false, "home"],
+    // any open session = ChatView mounted with its own window listeners,
+    // whether the chat is the raised view OR sits under a pane
+    ["paired", true, null],
+  ];
+  for (const [ph, open, want] of surfaceTable) {
+    check(
+      `P3-398 r2: surface for phase=${ph} + session=${String(open)} is ${String(want)}`,
+      dropSurfaceFor(ph, open) === want,
+    );
+  }
   check(
-    "P3-398: App computes the drop surface (gate unpaired, never over the chat) and absorbs via the hook",
-    appSrc.includes('phase !== "paired" ? "gate"') &&
-      appSrc.includes('top === "chat" && !!session ? null : "home"') &&
-      appSrc.includes("useDropAbsorb(dropSurface, desktopBridge"),
+    "P3-398 r2: App decides the surface from mount truth (never double-handled with the persistent chat)",
+    appSrc.includes("dropSurfaceFor(phase, !!session)") &&
+      !appSrc.includes('top === "chat" && !!session ? null : "home"'),
+  );
+  check(
+    "P3-398: App computes the drop surface via the hook and absorbs with the bridge",
+    appSrc.includes("useDropAbsorb(dropSurface, desktopBridge"),
   );
   check(
     "P3-398: the hook decides every drop through dropVerdict and paints the shared highlight",

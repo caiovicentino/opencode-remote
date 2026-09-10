@@ -54,6 +54,26 @@ export type DropSurface = "gate" | "home" | "chat";
 
 export type DropAction = "attach" | "open" | "refuse";
 
+/**
+ * P3-398 r2: which surface absorbs an OS file drop, decided from MOUNT truth
+ * so a single drop can never be handled twice. While the app is not paired
+ * the gate owns the screen. The moment a session exists the persistent
+ * ChatView is mounted — its own window drop listeners are live EVEN when a
+ * desktop pane (Settings, Artifacts, Files, Browser, Mission Control) is
+ * raised above the chat — so the App-level absorber must stand down (null),
+ * or one drop would both attach to the current chat and spawn an unwanted
+ * new conversation. With no session the home is the visible main surface
+ * (HomeView renders exactly there) and the drop opens a conversation.
+ * Unit-tested as a table in scripts/unit.test.ts.
+ */
+export function dropSurfaceFor(
+  phase: string,
+  sessionOpen: boolean,
+): DropSurface | null {
+  if (phase !== "paired") return "gate";
+  return sessionOpen ? null : "home";
+}
+
 export interface DropVerdict {
   action: DropAction;
   /** Static reason key (i18n) when action is "refuse", otherwise "". */
