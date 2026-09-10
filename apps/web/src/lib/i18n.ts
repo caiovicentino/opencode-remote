@@ -474,6 +474,7 @@ export const dict = {
     paneMapArtifacts: "Documents and files the agent produces, ready to open",
     paneMapBrowser: "See and steer the machine's browser",
     paneMapMission: "Live dashboard of the autonomous fleet",
+    paneMapSettings: "Language, theme and connection preferences, even before pairing",
     // chat composer + header (P2-049)
     send: "Send",
     messagePlaceholder: "Message the agent…",
@@ -1188,6 +1189,7 @@ export const dict = {
     paneMapArtifacts: "Documentos e arquivos que o agente produz, prontos para abrir",
     paneMapBrowser: "Veja e controle o navegador da máquina",
     paneMapMission: "Painel ao vivo da frota autônoma",
+    paneMapSettings: "Idioma, tema e preferências de conexão, antes mesmo de parear",
     // chat composer + header (P2-049)
     send: "Enviar",
     messagePlaceholder: "Mensagem pro agente…",

@@ -1,5 +1,5 @@
 import { useT } from "../lib/i18n";
-import { IconChat, IconGlobe, IconLayers, IconLock, IconRadar } from "./icons";
+import { IconChat, IconGlobe, IconLayers, IconLock, IconRadar, IconSettings } from "./icons";
 
 /** P3-364: the persistent counterpart to the transient gate toast. The Go
  * menu stays enabled at the pairing gate (P3-328), but Artifacts, Browser and
@@ -16,6 +16,11 @@ import { IconChat, IconGlobe, IconLayers, IconLock, IconRadar } from "./icons";
  * the daemon. Default (unreachable) stays the full locked map the manual
  * ceremony shows.
  *
+ * P3-389: Settings joins the map — the same gate rail also opens it offline
+ * (App's gateSettingsNode, P3-362's GATE_SHELL_PANES), so omitting it
+ * under-reported what a first-boot user can actually do. Same rule as the
+ * other rail panes: unlocked when reachable, locked in the ceremony.
+ *
  * Own class names on purpose: the desktop-flow battery pins the ceremony's
  * `.pair-section` count and `.pair-section-title` order (P2-106/P3-334) —
  * reusing them here would read as a third pairing section (P3-334 lesson). */
@@ -26,6 +31,7 @@ export default function PaneMap({ reachable = false }: { reachable?: boolean }) 
     { icon: <IconLayers size={14} />, label: t("navArtifacts"), desc: t("paneMapArtifacts"), locked: !reachable },
     { icon: <IconGlobe size={14} />, label: t("navBrowser"), desc: t("paneMapBrowser"), locked: !reachable },
     { icon: <IconRadar size={14} />, label: t("navMission"), desc: t("paneMapMission"), locked: !reachable },
+    { icon: <IconSettings size={14} />, label: t("navSettings"), desc: t("paneMapSettings"), locked: !reachable },
   ];
   return (
     <section className="pane-map" aria-label={t(reachable ? "paneMapTitleBefore" : "paneMapTitle")}>

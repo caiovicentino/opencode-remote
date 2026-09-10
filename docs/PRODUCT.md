@@ -37,8 +37,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   offline-capables (Mission Control, lista de artifacts, Ajustes) — em vez de
   uma tela cheia; o card calmo "Conectando pela primeira vez…" segue como herói
   da coluna principal, e o mapa de panes do herói troca pra variante "Antes de
-  parear" (cadeado só em Conversas) pra não contradizer o rail ao lado
-  (P1-071: todo fluxo alcançável no primeiro boot). Janela
+   parear" (cadeado só em Conversas) pra não contradizer o rail ao lado
+   (P1-071: todo fluxo alcançável no primeiro boot); o mapa lista também
+   Ajustes, que o rail abre offline no primeiro boot (P3-389). Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
   clássica centrada. Os panes abertos no portão mostram mundos vazios
   esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control
