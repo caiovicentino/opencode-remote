@@ -356,8 +356,10 @@ export interface UpdateCheckOptions {
 /** What the consent dialog needs from its host (main.ts wires Electron's dialog). */
 export interface UpdateDialogSinks {
   /** Resolve with "install" (Restart now) or "later" (deferred). Applying the
-   * downloaded release is the updater's own job (quitAndInstall). */
-  askInstall(version: string): Promise<"install" | "later">;
+   * downloaded release is the updater's own job (quitAndInstall). P3-393: the
+   * raw feed release notes ride along (FeedInfo.notes) so the dialog can show
+   * what changed — the host sanitizes them before rendering (updatenotes.ts). */
+  askInstall(version: string, notes?: string): Promise<"install" | "later">;
 }
 
 /**
@@ -373,13 +375,16 @@ interface DownloadedState {
   declined: Set<string>;
   /** Last resolved version for the tray label. */
   version: string | null;
+  /** P3-393: the release notes the feed carried for `version` (raw — the
+   * dialog host sanitizes them). Absent when the feed had none. */
+  notes?: string;
 }
 const downloaded = new WeakMap<UpdaterLike, DownloadedState>();
 
 function stateFor(updater: UpdaterLike): DownloadedState {
   let st = downloaded.get(updater);
   if (!st) {
-    st = { offering: null, declined: new Set(), version: null };
+    st = { offering: null, declined: new Set(), version: null, notes: "" };
     downloaded.set(updater, st);
   }
   return st;
@@ -519,7 +524,9 @@ async function offerInstall(
   if (!version || !shouldOfferInstall(st, version)) return;
   st.offering = version;
   try {
-    const choice = await hooks.dialog.askInstall(version);
+    // P3-393: the notes the feed advertised for this release ride along —
+    // the dialog host sanitizes them (updatenotes.ts) before rendering.
+    const choice = await hooks.dialog.askInstall(version, st.notes ?? "");
     if (choice === "install") {
       hooks.log(`update install: restarting to apply ${version}`);
       st.offering = null;
@@ -643,6 +650,10 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
       const dialog = opts.dialog ?? { askInstall: async () => "later", quitAndInstall: () => {} };
       attachUpdateListeners(updater, { log, dialog, onStatus: opts.onStatus, installLocation: opts.installLocation, onProgress: opts.onProgress });
       stateFor(updater).version = feed.version;
+      // P3-393: the feed's release notes are remembered here, at the only
+      // point the FeedInfo exists, so the update-downloaded handler can hand
+      // them to the consent dialog later (no new fetch, no new channel).
+      stateFor(updater).notes = feed.notes;
       try {
         updater.setFeedURL({ url: feedUrl, serverType: "json" });
         updater.checkForUpdates();

@@ -1,4 +1,5 @@
-// P2-276: the language of the native shell — menu bar and tray. The web UI
+// P2-276: the language of the native shell — menu bar, tray and, since
+// P3-393, the update consent dialog. The web UI
 // has had a language selector since P2-118 (apps/web/src/lib/i18n.ts stores
 // en | pt), but the OS surfaces never knew: menu.ts wrote its labels in
 // pt-BR and traystatus.ts phrased its tooltips in pt-BR no matter what the
@@ -123,6 +124,27 @@ export interface ShellTrayPhrase {
   menuLine: string;
 }
 
+/**
+ * P3-393: the update consent dialog's vocabulary — the one dialog every user
+ * sees at the end of the auto-update flow. The version is interpolated into
+ * the message; every other phrase is static, emoji-free, path-free,
+ * address-free and secret-free like the rest of the shell copy.
+ */
+export interface ShellUpdateLabels {
+  /** Dialog window title. */
+  title: string;
+  /** Main message with the offered version interpolated. */
+  message: (version: string) => string;
+  /** Static base detail (what a restart does and keeps). */
+  detail: string;
+  /** Static lead-in line above the sanitized release notes. */
+  whatsNew: string;
+  /** Accept button: restart now and apply the downloaded release. */
+  restart: string;
+  /** Defer button: keep the current version until the next restart. */
+  later: string;
+}
+
 /** The full tray journey vocabulary (mirrors traystatus.ts's rule table). */
 export interface ShellTrayLabels {
   down: ShellTrayPhrase;
@@ -141,6 +163,8 @@ export interface ShellTrayLabels {
 export interface ShellLabels {
   menu: ShellMenuLabels;
   tray: ShellTrayLabels;
+  /** P3-393: the update consent dialog's vocabulary. */
+  update: ShellUpdateLabels;
 }
 
 const EN: ShellLabels = {
@@ -200,6 +224,14 @@ const EN: ShellLabels = {
       tooltip: "OpenCode Remote — all set: the phone reaches this machine",
       menuLine: "All set — the phone reaches this machine",
     },
+  },
+  update: {
+    title: "A new version is ready",
+    message: (version) => `OpenCode Remote ${version} was downloaded and is ready to install`,
+    detail: "Restart the app now to apply the update. Your pairing and conversations are kept.",
+    whatsNew: "What's new:",
+    restart: "Restart now",
+    later: "Later",
   },
 };
 
@@ -262,6 +294,14 @@ const PT: ShellLabels = {
       tooltip: "OpenCode Remote — tudo pronto: o celular alcança esta máquina",
       menuLine: "Tudo pronto — o celular alcança esta máquina",
     },
+  },
+  update: {
+    title: "Uma nova versão está pronta",
+    message: (version) => `O OpenCode Remote ${version} foi baixado e está pronto para instalar`,
+    detail: "Reinicie o app agora para aplicar a atualização. Seu pareamento e suas conversas são mantidos.",
+    whatsNew: "Novidades:",
+    restart: "Reiniciar agora",
+    later: "Depois",
   },
 };
 

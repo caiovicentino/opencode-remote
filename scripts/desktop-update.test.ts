@@ -52,6 +52,9 @@ const {
   winDownloadDecision,
   MAX_INSTALLER_NAME,
 } = await import("../apps/desktop/src/winupdate.ts");
+// P3-393: release-notes sanitizer for the consent dialog + shell vocabulary.
+const { sanitizeUpdateNotes, UPDATE_NOTES_LIMITS } = await import("../apps/desktop/src/updatenotes.ts");
+const { shellLabels } = await import("../apps/desktop/src/shelllang");
 
 // --- feedUrlFromEnv ----------------------------------------------------------
 check("feedUrlFromEnv: unset → null", feedUrlFromEnv({}) === null);
@@ -984,6 +987,175 @@ releaseName: 0.9.0
   check(
     "P2-233: update-installer-ready has its own tray/menu label",
     updateMenuLabel("update-installer-ready") === "Update downloaded — installer ready",
+  );
+}
+
+// --- P3-393: sanitizeUpdateNotes (updatenotes.ts) ------------------------------
+{
+  const L = UPDATE_NOTES_LIMITS;
+  // Missing, non-textual and empty input → "" (dialog shows the base detail).
+  check("P3-393: notes absent → empty", sanitizeUpdateNotes(undefined) === "" && sanitizeUpdateNotes(null) === "");
+  check(
+    "P3-393: notes non-textual → empty",
+    sanitizeUpdateNotes(42) === "" && sanitizeUpdateNotes({ text: "x" }) === "" && sanitizeUpdateNotes(["a"]) === "",
+  );
+  check("P3-393: notes empty or blank → empty", sanitizeUpdateNotes("") === "" && sanitizeUpdateNotes("   \n  ") === "");
+
+  // Markup removal.
+  check(
+    "P3-393: markdown headings, emphasis and code are stripped",
+    sanitizeUpdateNotes("# Title\nSome **bold** and `code` here") === "Title\nSome bold and code here",
+  );
+  check("P3-393: list markers are stripped", sanitizeUpdateNotes("- first\n* second\n1. third") === "first\nsecond\nthird");
+  check("P3-393: HTML tags are stripped", sanitizeUpdateNotes("<p>Hello</p>\n<br/>world") === "Hello\nworld");
+  check(
+    "P3-393: markdown links keep the visible text, images are dropped",
+    sanitizeUpdateNotes("See [the notes](https://x.invalid/a) now\n![logo](https://x.invalid/logo.png)") === "See the notes now",
+  );
+
+  // Control characters.
+  check(
+    "P3-393: control characters are removed (tab becomes a space)",
+    sanitizeUpdateNotes("a\u0007b\u001fc\tkeep") === "abc keep",
+  );
+
+  // Paths and addresses.
+  check(
+    "P3-393: URLs, www hosts and e-mails are removed",
+    sanitizeUpdateNotes("Baixe em https://example.com/x?a=b agora\nveja www.exemplo.pt ou a@b.com fim") ===
+      "Baixe em agora\nveja ou fim",
+  );
+  check(
+    "P3-393: POSIX, home and Windows paths are removed",
+    sanitizeUpdateNotes("Arquivo em /Users/alguem/Downloads/app.zip fim\nem ~/Downloads/app.zip ou C:\\Users\\alguem\\app.exe") ===
+      "Arquivo em fim\nem ou",
+  );
+  check("P3-393: bare IPv4 hosts are removed", sanitizeUpdateNotes("served de 192.168.0.10 hoje") === "served de hoje");
+
+  // Blank-line collapse + whitespace normalization.
+  check(
+    "P3-393: blank-line runs collapse and lines are trimmed",
+    sanitizeUpdateNotes("primeira\n\n\n\nsegunda     espaçada\n\n   \nterceira") === "primeira\nsegunda espaçada\nterceira",
+  );
+
+  // Documented ceilings: lines first, then characters.
+  {
+    const manyLines = Array.from({ length: L.maxLines + 4 }, (_, i) => `linha-${i + 1}`).join("\n");
+    const byLines = sanitizeUpdateNotes(manyLines);
+    check(
+      "P3-393: line ceiling holds",
+      byLines.split("\n").length === L.maxLines && byLines.startsWith("linha-1") && !byLines.includes(`linha-${L.maxLines + 1}`),
+    );
+    const longLine = "x".repeat(L.maxChars + 80);
+    const byChars = sanitizeUpdateNotes(longLine);
+    check("P3-393: character ceiling holds", byChars.length === L.maxChars);
+    check(
+      "P3-393: the documented limits are the defaults",
+      L.maxLines > 0 && L.maxChars > L.maxLines && Object.isFrozen(L),
+    );
+  }
+
+  // Fail-empty: input whose only content is markup/addresses is not clutter.
+  check("P3-393: notes with no useful content → empty", sanitizeUpdateNotes("https://so.links/here\n***") === "");
+  check(
+    "P3-393: deterministic across calls",
+    sanitizeUpdateNotes("# a\nbody **b** https://c.invalid/d") === sanitizeUpdateNotes("# a\nbody **b** https://c.invalid/d"),
+  );
+}
+
+// --- P3-393: the consent dialog speaks the shell language ----------------------
+{
+  const probe = (lang: "en" | "pt") => {
+    const u = shellLabels(lang).update;
+    return [u.title, u.detail, u.whatsNew, u.restart, u.later, u.message("9.9.9")];
+  };
+  check(
+    "P3-393: every update label resolves non-empty in en and in pt",
+    probe("en").every((s) => s.length > 0) && probe("pt").every((s) => s.length > 0),
+  );
+  check(
+    "P3-393: the version is interpolated into the message in both languages",
+    shellLabels("en").update.message("9.9.9").includes("9.9.9") && shellLabels("pt").update.message("9.9.9").includes("9.9.9"),
+  );
+  check(
+    "P3-393: en and pt update tables have exact key parity",
+    JSON.stringify(Object.keys(shellLabels("en").update)) === JSON.stringify(Object.keys(shellLabels("pt").update)),
+  );
+  check(
+    "P3-393: no update label carries an emoji, a path or an address",
+    ["en", "pt"].every((lang) =>
+      probe(lang as "en" | "pt").every(
+        (s) => !/\p{Extended_Pictographic}/u.test(s) && !s.includes("/") && !s.includes("\\") && !/:\d/.test(s),
+      ),
+    ),
+  );
+
+  // The raw English literals are gone from the real main.ts (comments
+  // excluded — only rendered copy counts).
+  const mainSrc = readFileSync(new URL("../apps/desktop/src/main.ts", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*/g, " ");
+  check(
+    "P3-393: the raw literals Update ready and Restart now are gone from main.ts",
+    !mainSrc.includes("Update ready") && !mainSrc.includes("Restart now") && !mainSrc.includes("is ready to install"),
+  );
+  check(
+    "P3-393: main.ts renders the consent dialog through the shell vocabulary + sanitizer",
+    mainSrc.includes("currentShellLabels().update") && mainSrc.includes("sanitizeUpdateNotes("),
+  );
+}
+
+// --- P3-393: the feed's release notes reach the consent dialog -----------------
+{
+  const notesFeed = JSON.stringify({
+    url: "http://127.0.0.1:9/release.zip",
+    name: "0.3.0",
+    notes: "# Correções\n- https://example.invalid/dl\n- Pareamento mais estável",
+  });
+  const asked: { version: string; notes: string }[] = [];
+  const notesUpdater = fakeEmitter();
+  await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: notesUpdater as never,
+    fetchImpl: fakeFetcher(notesFeed),
+    log: () => {},
+    dialog: {
+      askInstall: (version, notes) => {
+        asked.push({ version, notes: notes ?? "<absent>" });
+        return Promise.resolve("later");
+      },
+    },
+  });
+  notesUpdater.emit("update-downloaded", null, "release notes", "0.3.0");
+  await new Promise((r) => setTimeout(r, 5));
+  check(
+    "P3-393: askInstall receives the version AND the raw FeedInfo notes",
+    asked.length === 1 && asked[0].version === "0.3.0" && asked[0].notes.includes("Pareamento mais estável"),
+    JSON.stringify(asked),
+  );
+  // A feed without notes still reaches the dialog — as an empty string, which
+  // makes the host render the base detail only (updatenotes.ts → "").
+  const silentUpdater = fakeEmitter();
+  await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: silentUpdater as never,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://127.0.0.1:9/y.zip", name: "0.4.0", notes: "" })),
+    log: () => {},
+    dialog: {
+      askInstall: (version, notes) => {
+        asked.push({ version, notes: notes ?? "<absent>" });
+        return Promise.resolve("later");
+      },
+    },
+  });
+  silentUpdater.emit("update-downloaded", null, "release notes", "0.4.0");
+  await new Promise((r) => setTimeout(r, 5));
+  check(
+    "P3-393: a notes-less feed offers the dialog with no notes (base detail only)",
+    asked.length === 2 && asked[1].version === "0.4.0" && asked[1].notes === "",
+    JSON.stringify(asked),
   );
 }
 

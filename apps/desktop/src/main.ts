@@ -113,6 +113,7 @@ import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, 
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
 import { checkForUpdatesOnBoot, installBlocksUpdate, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
+import { sanitizeUpdateNotes } from "./updatenotes";
 import { UPDATE_DOWNLOADED_TRAY_LABEL, UPDATE_REMIND_LIMITS, updateReminderPlan, type UpdateOfferRecord } from "./updateremind";
 import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./winupdate";
 import { menuSpec, type MenuItemSpec } from "./menu";
@@ -814,20 +815,48 @@ async function showBootHealthRecoveryDialog(): Promise<void> {
 // wired. Listener attachment is idempotent per updater instance there, so
 // calling this repeatedly never stacks dialogs or stale handlers.
 
+// P3-393 test hatch (same test-only OCR_* policy as OCR_DESKTOP_QUIT_DIALOG_
+// ANSWER): OCR_DESKTOP_UPDATE_DIALOG_ANSWER=install|later makes the consent
+// sink auto-answer in place of the modal AND forces the offer once at boot
+// with the fixture below — a hermetic session never opens a window, and the
+// composed payload (labels + interpolated version + sanitized notes) lands
+// in desktop.log for the gate to assert on. Never set in production.
+const UPDATE_DIALOG_HATCH_VERSION = "9.9.9";
+// Raw feed-style fixture on purpose: markup, an address and a path the
+// sanitized payload must NOT carry.
+const UPDATE_DIALOG_HATCH_NOTES =
+  "# Notas da versão\nCorreções de estabilidade no pareamento.\nDetalhes em https://example.invalid/notes\n- **Novo** indicador de status";
+
 /** Consent dialog the updater module calls back into; applying the downloaded
- * release is the updater's own quitAndInstall (Squirrel.Mac swaps the bundle). */
+ * release is the updater's own quitAndInstall (Squirrel.Mac swaps the bundle).
+ * P3-393: every phrase comes from the shell vocabulary (shelllang.ts) and the
+ * feed's release notes — already sanitized by updatenotes.ts — are appended
+ * under a static what's-new line, so the user sees what changed before
+ * restarting. */
 const updateDialogSinks: UpdateDialogSinks = {
-  askInstall: async (version) => {
+  askInstall: async (version, notes) => {
     // P2-257: the offer's instant and count are recorded the moment the
     // consent dialog is actually shown — the single recording point shared by
     // the original flow and the reminder reopen (process memory only).
     recordUpdateOffer(version);
+    const labels = currentShellLabels().update;
+    const cleanNotes = sanitizeUpdateNotes(notes);
+    const detail = cleanNotes ? `${labels.detail}\n\n${labels.whatsNew}\n${cleanNotes}` : labels.detail;
+    // P3-393: the hatch answers in place — the composed payload is logged
+    // (single line; line breaks become " · ") instead of opening a modal.
+    const preset = process.env.OCR_DESKTOP_UPDATE_DIALOG_ANSWER;
+    if (preset === "install" || preset === "later") {
+      log(
+        `[desktop] update dialog auto-answered by test hatch: ${preset} | ${labels.title} | ${labels.message(version)} | ${detail.replace(/\n/g, " · ")} | ${labels.restart} / ${labels.later}`,
+      );
+      return preset;
+    }
     const options: Electron.MessageBoxOptions = {
       type: "info",
-      title: "Update ready",
-      message: `Version ${version} is ready to install`,
-      detail: "Restart OpenCode Remote now to apply the update. Your pairing and conversations are kept.",
-      buttons: ["Restart now", "Later"],
+      title: labels.title,
+      message: labels.message(version),
+      detail,
+      buttons: [labels.restart, labels.later],
       defaultId: 0,
       cancelId: 1,
       noLink: true,
@@ -1436,6 +1465,15 @@ async function onReady(): Promise<void> {
   // feed must never delay window creation. The resolved status is mirrored
   // into the tray menu by the onStatus callback in runUpdateCheck().
   runUpdateCheck("boot");
+
+  // P3-393: with the answer hatch set, the consent offer is also forced once
+  // with a fixture FeedInfo (version + raw notes) so the gate can assert on
+  // the composed payload in desktop.log — the modal itself is replaced by the
+  // auto-answer inside the sink below (a hermetic session never opens one).
+  const updateDialogPreset = process.env.OCR_DESKTOP_UPDATE_DIALOG_ANSWER;
+  if (updateDialogPreset === "install" || updateDialogPreset === "later") {
+    void updateDialogSinks.askInstall(UPDATE_DIALOG_HATCH_VERSION, UPDATE_DIALOG_HATCH_NOTES);
+  }
 
   ipcMain.handle("app:version", () => app.getVersion());
   // P1-050: "Copy diagnostic" (Settings) — versions, daemon state, the
