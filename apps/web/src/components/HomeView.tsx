@@ -6,9 +6,10 @@ import { greetingKey, homeIdeas, timeGreetingKey, type HomeIdeaIcon } from "../l
 import { clampComposerHeight, composerSelectorLabel } from "../lib/composer";
 import { useModelSelector } from "../lib/models";
 import { transcribeBlob, useSttStatus } from "../lib/transcribe";
-import { useModelStatus } from "../lib/modelstatus";
+import { modelHintKey, useModelStatus } from "../lib/modelstatus";
 import { WavRecorder } from "../lib/recorder";
 import ModelMenuItems from "./ModelMenuItems";
+import ModelMissingActions from "./ModelMissingActions";
 import {
   IconArrowUp,
   IconBookOpen,
@@ -38,6 +39,11 @@ type Props = {
   /** "desktop" (P2-123 living home with ideas) | "mobile" (Bug 2 PWA home:
    * time-of-day greeting + mark, bottom-anchored composer, nothing else) */
   variant?: "desktop" | "mobile";
+  /** P3-396: the same shell verdict the App computes (desktopBridge() !==
+   * null). On the desktop shell the model hint resolves to dedicated copy +
+   * a real credential journey; the phone keeps the daemon sentence, no
+   * actions (per-surface keys, lesson P3-394). */
+  desktopShell?: boolean;
 };
 
 type RecState = "idle" | "rec" | "busy";
@@ -47,7 +53,7 @@ type RecState = "idle" | "rec" | "busy";
  * clickable ideas. Every string comes from the dict. Bug 2 adds the mobile
  * variant: the same composer, anchored to the bottom, under a centered
  * greeting — no ideas, no cards. */
-export default function HomeView({ machineName, request, voice, creating, onStart, variant = "desktop" }: Props) {
+export default function HomeView({ machineName, request, voice, creating, onStart, variant = "desktop", desktopShell }: Props) {
   const t = useT();
   const mobile = variant === "mobile";
   const [input, setInput] = useState("");
@@ -82,8 +88,12 @@ export default function HomeView({ machineName, request, voice, creating, onStar
   // conversation because a probe says the machine has no credentials would be
   // worse than the late raw upstream error this calm line replaces. The
   // reason it exists at all is to explain the failure BEFORE the first send.
-  const modelStatus = useModelStatus(request);
+  // P3-396: bumping modelProbe re-probes (the hint block's "check again");
+  // on the desktop shell the hint resolves to dedicated copy + real actions.
+  const [modelProbe, bumpModelProbe] = useState(0);
+  const modelStatus = useModelStatus(request, modelProbe);
   const modelHint = modelStatus && modelStatus.state !== "ready" ? modelStatus : null;
+  const modelHintText = modelHint ? modelHintKey(modelHint.state, !!desktopShell) : null;
 
   // close the model menu on outside clicks, like the ChatView dropdown
   useEffect(() => {
@@ -159,9 +169,19 @@ export default function HomeView({ machineName, request, voice, creating, onStar
 
         <div className="home-composer">
           {modelHint && (
-            <p className="composer-hint" role="status">
-              {modelHint.message}
-            </p>
+            <>
+              <p className="composer-hint" role="status">
+                {/* P3-396: desktop shell resolves the verdict to its own copy
+                    (unit battery pins both locales); the phone keeps the
+                    daemon's sentence untouched. */}
+                {modelHintText ? t(modelHintText) : modelHint.message}
+              </p>
+              {/* P3-396: the credential journey — only when the desktop key
+                  resolved (never on the phone, never for unknown). */}
+              {modelHintText && (
+                <ModelMissingActions status={modelHint} onRecheck={() => bumpModelProbe((n) => n + 1)} />
+              )}
+            </>
           )}
           <div className="composer">
             <textarea

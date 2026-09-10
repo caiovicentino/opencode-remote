@@ -347,6 +347,23 @@ export const dict = {
     upstreamMissingChecking: "Checking…",
     upstreamMissingStill:
       "opencode still wasn't found on this machine. This notice goes away on its own once the install finishes.",
+    // P3-396: the model-credential journey — desktop shell only. On the
+    // desktop the person reading the hint IS the machine manager, so the copy
+    // speaks to "you" and carries real actions (copy the official login
+    // command, open the official steps, re-check that always ends in a final
+    // state); the phone keeps the daemon's own sentence. Per-surface keys,
+    // lesson P3-394.
+    modelMissingProviderDesktop:
+      "This machine has no model credential yet — you can add it yourself: copy the login command, follow the official steps, then check again.",
+    modelMissingModelDesktop:
+      "This machine has model credentials, but none of them expose models yet — finish the setup, then check again.",
+    modelMissingCopyCmd: "Copy login command",
+    modelMissingCopied: "Command copied",
+    modelMissingOpenDocs: "Open setup instructions",
+    modelMissingRecheck: "Check again",
+    modelMissingChecking: "Checking…",
+    modelMissingStill:
+      "The credential still isn't ready on this machine. This hint goes away on its own once the setup finishes.",
     // P2-140: why the local daemon died — inside the same calm degraded card.
     // Honest, actionable, one surface; no paths, tokens or secrets in copy.
     sidecarPortBusyTitle: "Another app took the daemon's port",
@@ -1121,6 +1138,22 @@ export const dict = {
     upstreamMissingChecking: "Verificando…",
     upstreamMissingStill:
       "opencode ainda não foi encontrado nesta máquina. Este aviso some sozinho quando a instalação terminar.",
+    // P3-396: jornada da credencial de modelo — só no shell desktop. No desktop
+    // quem lê o aviso É quem gerencia a máquina, então a copy fala com "você" e
+    // carrega ações reais (copiar o comando oficial de login, abrir o passo a
+    // passo oficial, verificar de novo sempre em estado final); no telefone a
+    // frase do daemon segue intacta. Chaves por superfície, lição P3-394.
+    modelMissingProviderDesktop:
+      "Esta máquina ainda não tem nenhuma credencial de modelo — você mesmo pode adicionar: copie o comando de login, siga o passo a passo oficial e verifique de novo.",
+    modelMissingModelDesktop:
+      "Esta máquina tem credenciais de modelo, mas nenhuma delas tem modelos disponíveis — conclua a configuração e verifique de novo.",
+    modelMissingCopyCmd: "Copiar comando de login",
+    modelMissingCopied: "Comando copiado",
+    modelMissingOpenDocs: "Abrir instruções de configuração",
+    modelMissingRecheck: "Verificar de novo",
+    modelMissingChecking: "Verificando…",
+    modelMissingStill:
+      "A credencial ainda não ficou pronta nesta máquina. Este aviso some sozinho quando a configuração terminar.",
     // P2-140: por que o daemon local morreu — dentro do mesmo card calmo.
     // Tom honesto e acionável, uma superfície só; sem caminhos nem segredos.
     sidecarPortBusyTitle: "Outro programa ocupou a porta do daemon",

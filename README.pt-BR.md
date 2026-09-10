@@ -441,8 +441,22 @@ remoto, zero confiança**.
   re-sonda a saúde e sempre termina em estado terminal — o aviso some sozinho quando a
   instalação termina, nunca um spinner permanente. No telefone a copy anterior segue
   intacta, sem ações. Para evidência visual determinística em máquinas que TÊM
-  opencode, o daemon honra o hatch de teste `OCR_OPENCODE_MISSING=1`, que força a
-  metade "binário ausente" do split (a sonda de upstream em si continua real)
+   opencode, o daemon honra o hatch de teste `OCR_OPENCODE_MISSING=1`, que força a
+   metade "binário ausente" do split (a sonda de upstream em si continua real)
+- **Jornada de credencial de modelo (P3-396)** — o aviso de prontidão de modelo no
+   compositor (P2-210) mandava "pedir a quem gerencia a máquina" para adicionar a
+   credencial; no shell desktop quem lê o aviso É a pessoa sentada no computador.
+   Com a ponte do shell presente e o veredito `no-provider` ou `no-model`, o aviso
+   resolve para copy própria falando com o leitor e ganha três ações reais:
+   "Copiar comando de login" põe o `opencode auth login` oficial no clipboard (o
+   comando do CLI é uniforme entre plataformas), "Abrir instruções de configuração"
+   abre a documentação oficial de providers pelo portão de links externos do shell,
+   e "Verificar de novo" re-sonda o veredito e sempre termina em estado final — o
+   aviso inteiro some sozinho quando a credencial entra (nunca um spinner
+   permanente). No telefone a frase do daemon segue intacta, sem ações (chaves de
+   copy por superfície, nunca uma chave em duas superfícies). `OCR_MODEL_BLOCK=1`
+   no daemon segue sendo o hatch documentado que força o veredito `no-provider`
+   para screenshots determinísticos
 - **Auto-preview** — quando o agent menciona uma URL `http(s)://localhost:<porta>` /
   `127.0.0.1:<porta>` na resposta, o daemon emite um evento sintético `ocr.preview`
   (parse determinístico de URL, dedupe por sessão por 10 minutos) e o app desktop abre o

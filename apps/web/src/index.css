@@ -2993,6 +2993,31 @@ button.desk-new:disabled {
   opacity: 0.6;
   cursor: default;
 }
+/* ── P3-396: the model-credential journey (desktop shell only) ───────────────
+   Sits inside the composer hint block on the home/chat composers. Buttons
+   reuse the shared quiet bordered-link language (.degraded-upstream-help);
+   the row wraps so the 390px composer never overflows. Feedback lines are
+   terminal states by contract — never a spinner. */
+.model-hint-actions {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+.model-hint-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.model-hint-copied,
+.model-hint-still {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
+.model-hint-still {
+  color: var(--text);
+  opacity: 0.85;
+}
 /* ── P2-140: sidecar-exit verdict inside the calm card ───────────────────────
    Same flat-surface language as .degraded-upstream (P2-108: one surface, never
    a second banner): bordered panel on the gray ladder, 3px state accent on
