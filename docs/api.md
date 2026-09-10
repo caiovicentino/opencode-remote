@@ -264,6 +264,34 @@ the HTTP twin of the E2E `/__ocr` routes and never mutate anything:
 Both require the bearer token, are bound to `127.0.0.1` like every daemon
 route, and answer `401` without a valid token.
 
+### Conversation search (P3-400)
+
+`GET /__ocr/search?q=<term>` searches the CONTENT of every conversation, not
+just the titles — the server-side slice that lets a search find an old
+discussion by what was said. The matcher lives in the pure
+`apps/daemon/src/searchindex.ts` and reuses the exact fold of the in-chat find
+bar (accent- and case-insensitive; the term is NEVER read as regex), scanning
+the title first and then the messages of each conversation. It answers one hit
+per conversation — sorted by recency, each carrying a snippet around the
+occurrence (≤ 120 chars, with `matchStart`/`matchEnd` offsets inside the
+snippet) — and fails closed on empty/too-short/malformed input (`400` when
+`q` is shorter than 2 chars, otherwise an empty result list).
+
+Hard caps, enforced before any result is produced and each marking the answer
+`truncated: true` so the caller knows the answer is partial:
+
+| Cap | Value | Meaning |
+|---|---|---|
+| conversations scanned | 200 | only the most recent sessions |
+| messages per conversation | 200 | only the newest messages |
+| time budget | 1500 ms | the scan exits early with the partial result |
+
+An origin failure never throws: the answer is an empty list marked truncated,
+plus one coarse log line (no path, no secret). No new port, no new listener,
+no periodic timer — the search only runs while a request is in flight. Wiring
+this into the conversation selector is the next slice; no screen consumes the
+route yet.
+
 ### Browser self-driving (P2-011)
 
 `/api/browse/*` drives a headless Chromium on the host (Playwright). Sessions
