@@ -273,5 +273,8 @@ async function scanConversations(
     hits.push(...searchConversations(term, [conv]));
   }
   hits.sort((a, b) => b.instant - a.instant); // recency, ties keep scan order
+  // results cap: matches past SEARCH_MAX_RESULTS are dropped — mark the
+  // answer partial, exactly like the scan caps do (the header's promise)
+  truncated = truncated || hits.length > SEARCH_MAX_RESULTS;
   return { results: hits.slice(0, SEARCH_MAX_RESULTS), truncated, originFailed: false };
 }

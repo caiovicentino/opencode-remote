@@ -34706,6 +34706,33 @@ import { REPLY_NOTIFY_BODY, REPLY_NOTIFY_MIN_INTERVAL_MS, REPLY_NOTIFY_TITLE, re
     kept.results.length === 1 && kept.truncated === false,
   );
 
+  const cappedRun = await runConversationSearch(
+    "agulha",
+    fakeOrigin(
+      Array.from({ length: SEARCH_MAX_RESULTS + 5 }, (_, i) => ({ id: `c${i}`, instant: i })),
+      (id) => [`agulha em ${id}`],
+      [],
+    ),
+  );
+  check(
+    "P3-400: results cap — dropping matches past SEARCH_MAX_RESULTS marks truncated",
+    cappedRun.results.length === SEARCH_MAX_RESULTS &&
+      cappedRun.truncated === true &&
+      cappedRun.originFailed === false,
+  );
+  const exactRun = await runConversationSearch(
+    "agulha",
+    fakeOrigin(
+      Array.from({ length: SEARCH_MAX_RESULTS }, (_, i) => ({ id: `e${i}`, instant: i })),
+      (id) => [`agulha em ${id}`],
+      [],
+    ),
+  );
+  check(
+    "P3-400: exactly SEARCH_MAX_RESULTS matches are a complete answer, untruncated",
+    exactRun.results.length === SEARCH_MAX_RESULTS && exactRun.truncated === false,
+  );
+
   let clockCall = 0;
   const clock = (): number => {
     clockCall += 1;
@@ -34798,6 +34825,10 @@ import { REPLY_NOTIFY_BODY, REPLY_NOTIFY_MIN_INTERVAL_MS, REPLY_NOTIFY_TITLE, re
     "P3-400: no periodic timer entered the search route (and the daemon interval count is unchanged)",
     searchRouteBlock.length > 0 && !/setInterval|setTimeout/.test(searchRouteBlock) &&
       (daemonIndexSrc.match(/setInterval\(/g) || []).length === 5,
+  );
+  check(
+    "P3-400: the origin skips malformed session rows instead of failing the whole search",
+    daemonIndexSrc.includes('.filter((r) => r !== null && typeof r === "object")'),
   );
 }
 

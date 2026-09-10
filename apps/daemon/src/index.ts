@@ -777,15 +777,19 @@ function opencodeSearchOrigin(): SearchOrigin {
       const toMs = (v: unknown): number =>
         typeof v === "number" && Number.isFinite(v) ? v
         : typeof v === "string" && v ? Date.parse(v) : NaN;
-      return rows.map((r) => {
-        const instant = [toMs(r.updatedAt), toMs(r.time?.updated), toMs(r.time?.created)]
-          .find((n) => Number.isFinite(n));
-        return {
-          id: typeof r.id === "string" ? r.id : "",
-          title: typeof r.title === "string" ? r.title : undefined,
-          instant: instant !== undefined ? instant : 0,
-        };
-      });
+      // per-row tolerance, same as the matcher itself practices: one null or
+      // primitive row in the array is skipped, never fails the whole search
+      return rows
+        .filter((r) => r !== null && typeof r === "object")
+        .map((r) => {
+          const instant = [toMs(r.updatedAt), toMs(r.time?.updated), toMs(r.time?.created)]
+            .find((n) => Number.isFinite(n));
+          return {
+            id: typeof r.id === "string" ? r.id : "",
+            title: typeof r.title === "string" ? r.title : undefined,
+            instant: instant !== undefined ? instant : 0,
+          };
+        });
     },
     async messages(id) {
       const rows = (await get(`/session/${encodeURIComponent(id)}/message`)) as
