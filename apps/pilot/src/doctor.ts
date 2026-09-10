@@ -66,7 +66,7 @@ export function doctorRefs(ws: string, run: RunFn = realRun(ws), base = "main"):
   const steps = ["git fetch origin", "git checkout -q main", `git reset -q --hard origin/${base}`, "git clean -qfd"];
   const failed: string[] = [];
   for (const cmd of steps) {
-    // fetch is best-effort (offline repair still resets to the local origin/main ref)
+    // fetch is best-effort (offline repair still resets to the local base ref)
     if (!run(cmd).ok && !cmd.startsWith("git fetch")) failed.push(cmd);
   }
   const after = run("git rev-parse HEAD").output.trim();
@@ -571,7 +571,7 @@ function main() {
   let ok = true;
   switch (cmd) {
     case "refs": {
-      const r = doctorRefs(cfg.workspace);
+      const r = doctorRefs(cfg.workspace, realRun(cfg.workspace), cfg.baseBranch ?? "main");
       log(r.ok ? "info" : "warn", "doctor: refs", { ws: cfg.workspace, ...r });
       ok = r.ok;
       break;

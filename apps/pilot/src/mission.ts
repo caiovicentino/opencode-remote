@@ -249,3 +249,13 @@ export function removeMissionFile(file = MISSION_FILE, io: Pick<MissionFileIo, "
     throw err;
   }
 }
+
+/** One-line human summary of a mission (dashboard + the `mission loaded`
+ * phase event). P3-358: lives here next to MissionSpec so the battery can
+ * execute the real boot path without importing the dispatcher. */
+export function missionDetail(spec: MissionSpec): string {
+  const target = spec.repoUrl ?? "this repo";
+  const base = spec.prompt ? `${target} — ${spec.prompt.slice(0, 120)}` : target;
+  const models = spec.models ? Object.entries(spec.models).map(([r, m]) => `${r}=${m}`).join(",") : "";
+  return models ? `${base} [models: ${models}]` : base;
+}

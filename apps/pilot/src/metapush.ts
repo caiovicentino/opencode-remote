@@ -4,16 +4,17 @@ import { basename } from "node:path";
 
 /**
  * P1-076 — meta commits land via the long-lived `pilot/meta` branch + auto-merge
- * PR, never via direct pushes to main. Every bookkeeping flow (backlog refills,
- * scribe lessons, mark-done, corpus growth, explorer findings, circuit breaker)
- * re-bases `pilot/meta` on origin/main, applies its deterministic edit, pushes
- * with a lease and arms the squash PR — success is only reported after the
- * squash merge is confirmed on GitHub with our commit still the PR/merged head
- * (state MERGED + headRefOid === pushed sha at the same poll), and a landing
- * still pending on its checks is waited out, never rewound. A hostile
- * deviation can therefore no longer camouflage itself inside a trusted
- * bookkeeping push: branch protection on `main` rejects everything that did
- * not travel through a PR (operator runbook in docs/PILOT.md).
+ * PR, never via direct pushes to the base branch. Every bookkeeping flow (backlog
+ * refills, scribe lessons, mark-done, corpus growth, explorer findings, circuit
+ * breaker) re-bases `pilot/meta` on `origin/<base>` (P3-358: the pipeline base
+ * branch — the repo's default branch, `main` here), applies its deterministic
+ * edit, pushes with a lease and arms the squash PR — success is only reported
+ * after the squash merge is confirmed on GitHub with our commit still the
+ * PR/merged head (state MERGED + headRefOid === pushed sha at the same poll),
+ * and a landing still pending on its checks is waited out, never rewound. A
+ * hostile deviation can therefore no longer camouflage itself inside a trusted
+ * bookkeeping push: branch protection on the base branch rejects everything
+ * that did not travel through a PR (operator runbook in docs/PILOT.md).
  */
 
 export const META_BRANCH = "pilot/meta";
@@ -205,13 +206,13 @@ async function waitPendingMetaPr(io: MetaPushIo): Promise<boolean> {
 
 /**
  * Deterministic meta landing (P1-076): fetch → wait out any pending meta PR →
- * re-base `pilot/meta` on origin/main → apply the caller's edit → commit →
+ * re-base `pilot/meta` on `origin/<base>` → apply the caller's edit → commit →
  * push guard → push → auto-merge PR, retried up to `attempts` times because
- * concurrent slots move origin/main (and the shared meta branch) underneath
+ * concurrent slots move the base branch (and the shared meta branch) underneath
  * us. The push is --force-with-lease (a peer landing pushed after our fetch
  * fails instead of being overwritten) and success is only reported when BOTH
  * verifications hold: our commit is still an ancestor of origin/pilot/meta,
- * and GitHub confirmed the squash merge into main with our sha as the merged
+ * and GitHub confirmed the squash merge into the base with our sha as the merged
  * head (state MERGED + headRefOid === pushedSha). Anything unverifiable fails
  * closed — it is retried and, at worst, honestly reported as "failed". The
  * guard is re-read from the actual branch diff on every attempt; a refused

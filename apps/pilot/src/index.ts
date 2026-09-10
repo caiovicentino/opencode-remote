@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { attemptsKey, missionDrifted, missionWorkspaceKey, readMission, type MissionSpec } from "./mission";
+import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, type MissionSpec } from "./mission";
 import { emit } from "./events";
 import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
 import { nowLocalISO } from "./log";
@@ -12,8 +12,8 @@ import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, bud
 import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDiffCmd, pilotInfraDrifted, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
 import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
 import { digest } from "./push";
-import { addTask, appendCommitAndPush, auxPushIo, blockTask, needsBacklogSkeleton, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
-import { detectDefaultBranch, pipelineBaseBranch } from "./missionrepo";
+import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
+import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
@@ -115,8 +115,7 @@ async function main() {
     log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})");
   }
   if (activeMission) {
-    log("info", "mission loaded", { repoUrl: activeMission.repoUrl, prompt: activeMission.prompt?.slice(0, 160), models: activeMission.models, setAt: activeMission.setAt });
-    emit("phase", { task: "mission", phase: "loaded", ok: true, detail: missionDetail(activeMission) });
+    logMissionLoaded(activeMission);
   }
   const missionKey = missionWorkspaceKey(activeMission);
   if (activeMission?.repoUrl && missionKey) {
@@ -124,9 +123,7 @@ async function main() {
     // worktrees derive from it and the queue is read from ITS default branch
     // (P3-358: the origin/HEAD detection is the pipeline base branch — a
     // master-default repo runs end to end, no hardcoded origin/main anywhere)
-    const missionRepo = ensureMissionRepo(activeMission.repoUrl, missionKey);
-    cfg.repo = missionRepo.dir;
-    cfg.baseBranch = pipelineBaseBranch(missionRepo.defaultBranch);
+    bootMissionRepo(activeMission.repoUrl, missionKey, cfg);
     foreignMission = true;
   }
   // slot worktrees live under pilot/ for this repo, under pilot/mission/<key>/
@@ -854,7 +851,7 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
   // the pass (best-effort by design — never blocks the loop)
   let wsReady = true;
   try {
-    syncWorkspace(cfg.workspace);
+    syncWorkspace(cfg.workspace, cfg.baseBranch);
   } catch {
     wsReady = false;
     log("warn", "nightly workspace sync failed — nightly passes skipped");
@@ -1095,68 +1092,6 @@ function lastGateFail(taskId: string): { step?: string; tail?: string } | undefi
  */
 function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-/** One-line mission summary for logs/events — prompt truncated, never secrets. */
-function missionDetail(spec: MissionSpec): string {
-  const target = spec.repoUrl ?? "this repo";
-  const base = spec.prompt ? `${target} — ${spec.prompt.slice(0, 120)}` : target;
-  const models = spec.models ? Object.entries(spec.models).map(([r, m]) => `${r}=${m}`).join(",") : "";
-  return models ? `${base} [models: ${models}]` : base;
-}
-
-/**
- * Self-serve mission on a foreign repo: clone it once under
- * pilot/mission/<org--repo>/repo (a plain clone of the GitHub URL — nothing is
- * shared with the production checkout) and refresh it on every boot. Slot
- * worktrees are then derived from this clone exactly like they are from the
- * production checkout (ensureSlotWorkspace), so the whole pipeline — builders,
- * reviewers, judge — runs against the target repo. The URL was validated by
- * the mission parser (GitHub https shape, safe charset) and is shell-quoted.
- * Returns the clone dir AND the remote's default branch — since P3-358 it is
- * the pipeline base branch (`origin/<base>` everywhere), not just a pin source.
- */
-function ensureMissionRepo(repoUrl: string, key: string): { dir: string; defaultBranch: string } {
-  const dir = join(homedir(), ".opencode-remote", "pilot", "mission", key, "repo");
-  if (!existsSync(join(dir, ".git"))) {
-    mkdirSync(dirname(dir), { recursive: true });
-    const clone = exec(`git clone ${shq(repoUrl)} ${shq(dir)}`, { cwd: dirname(dir), timeoutMin: 10, allowFail: true });
-    if (!clone.ok) {
-      rmSync(dir, { recursive: true, force: true }); // partial clone would block the retry
-      throw new Error(`mission repo clone failed (${repoUrl}): ${clone.output.slice(-300)}`);
-    }
-    log("info", "mission repo cloned", { repoUrl, dir });
-  } else {
-    exec("git fetch -q origin", { cwd: dir, allowFail: true });
-  }
-  // Pin a local `main` from the remote's ACTUAL default branch (main on most
-  // repos, master on older ones — read from origin/HEAD, never assumed). The
-  // old `checkout -B main origin/main` failed silently on master-default
-  // repos and every later step then failed with unrelated-looking errors.
-  const def = detectDefaultBranch({ exec: (cmd) => exec(cmd, { cwd: dir, allowFail: true }) });
-  const pin = exec(`git checkout -q -B main ${shq(`origin/${def.branch}`)}`, { cwd: dir, allowFail: true });
-  if (!pin.ok) {
-    log("error", "mission repo: cannot pin main to the default branch", { repoUrl, defaultBranch: def.branch, source: def.source, tail: pin.output.slice(-200) });
-    emit("phase", { task: "mission", phase: "default-branch", ok: false, detail: `cannot pin main to origin/${def.branch}` });
-  } else if (def.branch !== "main") {
-    // P3-358: no longer a limitation — the detected branch IS the pipeline
-    // base branch (cfg.baseBranch threads it through queue reads, task
-    // branches, meta landings and merges). Logged loudly so the shape stays
-    // visible in the boot record.
-    log("info", "mission repo default branch pinned — pipeline base branch parameterized", { repoUrl, defaultBranch: def.branch, source: def.source });
-    emit("phase", { task: "mission", phase: "default-branch", ok: true, detail: `pipeline base branch: ${def.branch} (origin/HEAD)` });
-  } else {
-    log("info", "mission repo default branch", { repoUrl, defaultBranch: def.branch, source: def.source });
-  }
-  // A target repo without a pilot-format BACKLOG.md is normal on first
-  // contact: the researcher/strategist seed the skeleton locally (never pushed
-  // by themselves) and land it inside their first guarded PR.
-  const md = exec(`git show ${shq(`origin/${def.branch}`)}:BACKLOG.md`, { cwd: dir, allowFail: true });
-  if (needsBacklogSkeleton(md.ok ? md.output : null)) {
-    log("info", "mission repo has no BACKLOG.md in the pilot format — the first aux landing seeds it (via PR)", { repoUrl });
-    emit("phase", { task: "mission", phase: "backlog", ok: true, detail: "no pilot-format BACKLOG.md yet — first aux PR seeds it" });
-  }
-  return { dir, defaultBranch: def.branch };
 }
 
 /**

@@ -624,6 +624,7 @@ import {
   missionHash,
   missionModelFor,
   missionWorkspaceKey,
+  missionDetail,
   normalizeRepoUrl,
   parseMissionModels,
   parseMissionSpec,
@@ -634,6 +635,7 @@ import {
   validRepoUrl,
   writeMissionSpec,
   type MissionFileIo,
+  type MissionSpec,
 } from "../apps/pilot/src/mission";
 
 import { CATALOG_TTL_MS, fetchAvailableModels, parseProviderCatalog, pickMissionModel, resetCatalogCache } from "../apps/pilot/src/modelcatalog";
@@ -641,7 +643,7 @@ import { deployPreflight } from "../apps/pilot/src/deploy";
 import { directionGuardDetail } from "../apps/pilot/src/deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_AFTER, DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal } from "../apps/pilot/src/deploybackoff";
 import { NIGHTLY_DRAIN_CAP_MS, NIGHTLY_START_HOUR, nightlyWindow } from "../apps/pilot/src/scheduler";
-import { detectDefaultBranch, parseRemoteShowHead, parseSymbolicHead, pipelineBaseBranch } from "../apps/pilot/src/missionrepo";
+import { bootMissionRepo, detectDefaultBranch, logMissionLoaded, parseRemoteShowHead, parseSymbolicHead, pipelineBaseBranch } from "../apps/pilot/src/missionrepo";
 import { BACKLOG_SKELETON, backlogSkeletonEdit, needsBacklogSkeleton, seedBacklogSkeleton } from "../apps/pilot/src/backlog";
 import { activeModelSubstitutions, clearModelSubstitution, formatModelSubstitutions, readModelSubstitutions, recordModelSubstitution } from "../apps/pilot/src/modelsubst";
 import { formatModelSubstitutions as formatModelSubstitutionsView } from "../apps/web/src/components/MissionControlView";
@@ -19872,23 +19874,34 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       g(`git remote add origin ${JSON.stringify(originDir)} && git push -q origin master`, seed);
       g("git symbolic-ref HEAD refs/heads/master", originDir);
 
-      // ── boot: ensureMissionRepo shape — clone, detect via origin/HEAD, pin main
-      const mission = join(root, "mission");
-      mkdirSync(mission);
-      g(`git clone -q ${JSON.stringify(originDir)} .`, mission);
+      // ── boot: the REAL mission-boot path (index.ts main() shape) ───────────
+      // logMissionLoaded IS the "mission loaded" log + phase event the
+      // dispatcher emits at boot; bootMissionRepo IS the cfg.repo/baseBranch
+      // wiring (clone → origin/HEAD detection → local-main pin). Both live in
+      // missionrepo.ts because index.ts runs main() on import — the battery
+      // executes the real functions instead of re-implementing the boot.
+      const missionSpec = { v: 1, repoUrl: originDir, setAt: "2026-09-10T10:00:00-03:00" } as unknown as MissionSpec;
+      const bootLogs: string[] = [];
+      const origConsoleLog = console.log;
+      console.log = (line: unknown) => {
+        bootLogs.push(String(line));
+      };
+      try {
+        logMissionLoaded(missionSpec);
+      } finally {
+        console.log = origConsoleLog;
+      }
+      check("P3-358: mission loaded — the real boot log line names the fixture repo", bootLogs.some((l) => l.includes("mission loaded") && l.includes(originDir)));
+
+      const cfgLike: PilotConfig = { repo: "", workspace: "", slots: 1, maxTasksPerDay: 1, maxDeploysPerDay: 1, maxReviewRounds: 1, maxAttemptsPerTask: 1, taskTimeoutMin: 1, reviewTimeoutMin: 1, monitorMin: 1, digest: false, corpusEveryNMerges: 5, stateRoot: root };
+      const boot = bootMissionRepo(originDir, "fixture--p3358", cfgLike, root);
+      const mission = cfgLike.repo;
+      check(
+        "P3-358: boot wiring — cfg.repo is the mission clone, cfg.baseBranch is the detected master (origin/HEAD)",
+        cfgLike.baseBranch === "master" && boot.defaultBranch === "master" && mission === join(root, "fixture--p3358", "repo") && existsSync(join(mission, ".git")) && !existsSync(join(root, "fixture--p3358", "repo", "BACKLOG.md")),
+      );
+      check("P3-358: the boot pinned the local main to origin/master and logged the default branch", g("git rev-parse --abbrev-ref HEAD", mission).trim() === "main" && g("git rev-parse main", mission).trim() === g("git rev-parse origin/master", mission).trim());
       g("git config user.email t@t.local && git config user.name t", mission);
-      const def = detectDefaultBranch({
-        exec: (cmd: string) => {
-          try {
-            return { ok: true, output: g(cmd, mission) };
-          } catch (e) {
-            return { ok: false, output: String(e) };
-          }
-        },
-      });
-      check("P3-358: mission loaded — origin/HEAD detection reports master (symbolic-ref)", def.branch === "master" && def.source === "symbolic-ref");
-      check("P3-358: the detected branch passes the pipeline validator", pipelineBaseBranch(def.branch) === "master");
-      g("git checkout -q -B main origin/master", mission);
 
       // ── researcher/strategist landing: seedSkeleton + master base (real git)
       let metaMerged = false;
@@ -19922,21 +19935,22 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         },
         sleep: () => Promise.resolve(),
       };
-      const land = await appendCommitAndPush(mission, ["- [ ] (P3-358) [P2] Foreign fixture task — spec: x (area: infra)"], "pilot(researcher): frontier scan", metaIoFixture, 3, { seedSkeleton: true, baseBranch: "master" });
+      const land = await appendCommitAndPush(mission, ["- [ ] (P3-358) [P2] Foreign fixture task — spec: x (area: infra)"], "pilot(researcher): frontier scan", metaIoFixture, 3, { seedSkeleton: true, baseBranch: cfgLike.baseBranch });
       check("P3-358: aux landing with seedSkeleton on a master-default repo pushes", land === "pushed");
-      const backlogOnMaster = g("git show origin/master:BACKLOG.md", mission);
+      const backlogOnMaster = g(`git show origin/${cfgLike.baseBranch}:BACKLOG.md`, mission);
       check("P3-358: skeleton + task line are COMMITTED on origin/master", backlogOnMaster.startsWith("# BACKLOG") && backlogOnMaster.includes("(P3-358)") && /^## Ready$/m.test(backlogOnMaster));
       check("P3-358: queue read straight from the base branch sees the task", parseBacklog(backlogOnMaster).some((t) => t.id === "P3-358"));
 
-      // ── slot workspace: ensureSlotWorkspace pin + setupTaskBranch on the base
+      // ── slot workspace: the ensureSlotWorkspace pin (hand-cloned — the real
+      // one also runs npm ci) + setupTaskBranch on the boot-derived base
       const slot = join(root, "slot");
       mkdirSync(slot);
       g(`git clone -q ${JSON.stringify(originDir)} .`, slot);
       g("git config user.email t@t.local && git config user.name t", slot);
-      g("git fetch -q origin && git checkout -q -B main origin/master", slot);
-      const baseSha = g("git rev-parse origin/master", slot).trim();
-      check("P3-358: setupTaskBranch births the task branch at origin/master (no origin/main exists)", setupTaskBranch(slot, "P3-358", 0, "master") === false && g("git rev-parse refs/heads/pilot/P3-358", slot).trim() === baseSha);
-      check("P3-358: taskMergedIn on the base branch is false before the merge", !taskMergedIn(slot, "P3-358", "master"));
+      g(`git fetch -q origin && git checkout -q -B main origin/${cfgLike.baseBranch}`, slot);
+      const baseSha = g(`git rev-parse origin/${cfgLike.baseBranch}`, slot).trim();
+      check("P3-358: setupTaskBranch births the task branch at the base (no origin/main exists)", setupTaskBranch(slot, "P3-358", 0, cfgLike.baseBranch) === false && g("git rev-parse refs/heads/pilot/P3-358", slot).trim() === baseSha);
+      check("P3-358: taskMergedIn on the base branch is false before the merge", !taskMergedIn(slot, "P3-358", cfgLike.baseBranch));
 
       // ── builder work + PR merge with fail-closed confirmation (real git, fake gh)
       writeFileSync(join(slot, "fix.txt"), "work\n");
@@ -19971,15 +19985,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         },
         sleep: () => Promise.resolve(),
       };
-      const merge = await mergePrForTask(prIoFixture, { branch: "pilot/P3-358", title: "pilot(P3-358): Foreign fixture task", body: "b", pushedSha, ciExpected: false, base: "master" });
+      const merge = await mergePrForTask(prIoFixture, { branch: "pilot/P3-358", title: "pilot(P3-358): Foreign fixture task", body: "b", pushedSha, ciExpected: false, base: cfgLike.baseBranch });
       check("P3-358: the task PR is created AND confirmed merged against the master base", merge.ok === true && taskPrMerged && merge.detail.includes("head confirmed"));
       g("git fetch -q origin", slot);
-      check("P3-358: 1 task merged — taskMergedIn sees it on origin/master", taskMergedIn(slot, "P3-358", "master"));
+      check("P3-358: 1 task merged — taskMergedIn sees it on origin/master", taskMergedIn(slot, "P3-358", cfgLike.baseBranch));
       check("P3-358: the old hardcoded read is blind here (why the parameter matters)", !taskMergedIn(slot, "P3-358"));
 
       // ── 0 deploy attempts: nothing gate-verified on the fixture → no target,
       // and launchDeploy refuses foreign missions before even resolving one
-      check("P3-358: latestDeployableSha on the master base finds no verified merge — no deploy target", latestDeployableSha(slot, "master") === null);
+      check("P3-358: latestDeployableSha on the base finds no verified merge — no deploy target", latestDeployableSha(slot, cfgLike.baseBranch) === null);
       const pilotIndexSrc2 = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
       check("P3-358: foreign missions are refused at launchDeploy before any deploy attempt", pilotIndexSrc2.includes("deploy skipped — foreign mission repo serves no production service here"));
     } finally {

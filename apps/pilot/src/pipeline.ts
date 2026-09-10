@@ -2491,7 +2491,7 @@ export function readinessInfraKind(ready: MergeReadiness): InfraFailureKind {
 /**
  * P3-341: one automatic conflict-repair pass on the task branch — thin runner
  * over the pure `repairPlan`, all I/O here. Closed ordered plan: fetch →
- * `git merge --no-edit origin/main` → on conflict, read every unmerged path
+ * `git merge --no-edit origin/<base>` → on conflict, read every unmerged path
  * (NUL-delimited `-z` output — never newline-split, never shell-parsed)
  * through the io sinks → `repairPlan` decides. Escalate ⇒ `git merge --abort`
  * (branch intact, nothing pushed); resolve ⇒ write the union, `git add` with
@@ -2587,7 +2587,7 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
  * an error. P2-134: the poll also reads `mergeable`/`mergeStateStatus` and bails
  * out immediately with infra "conflict" when GitHub already marks the PR
  * CONFLICTING/DIRTY (P3-341: when the repair sinks are wired, that skip first
- * triggers ONE automatic repair — merge origin/main in the slot, resolve
+ * triggers ONE automatic repair — merge the base branch in the slot, resolve
  * trivial conflicts, push the new head, re-probe — see repairConflictedBranch;
  * semantic conflicts escalate to the operator with CONFLICT_OPERATOR_MARKER).
  * If nothing confirms within the budget the outcome is honest infra ("timeout"): the
@@ -2906,10 +2906,10 @@ async function mergeTask(
     state.mergesSinceCorpus = 0;
     try {
       const files = await captureGateCorpus(ws, t.id, rerunResults, metaIo(ws), base);
-    if (files.length) {
-      emit("phase", { task: t.id, phase: "corpus", ok: true, detail: `${files.length} sample(s)` });
-      exec(`git pull -q origin ${base}`, { cwd: ws, allowFail: true });
-    }
+      if (files.length) {
+        emit("phase", { task: t.id, phase: "corpus", ok: true, detail: `${files.length} sample(s)` });
+        exec(`git pull -q origin ${base}`, { cwd: ws, allowFail: true });
+      }
     } catch (err) {
       console.log(
         JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "corpus capture failed", data: { task: t.id, err: String(err).slice(0, 200) } }),
