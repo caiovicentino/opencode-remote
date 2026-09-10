@@ -4109,11 +4109,17 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       const pwaAlert = pwaOriginAlert(allEvents);
       let state: unknown = {};
       let heartbeatMs: number | null = null;
+      let notifyLastMs: number | null = null;
       try {
         state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
       } catch {}
       try {
         heartbeatMs = Date.now() - Number(readFileSync(join(dir, "heartbeat"), "utf8"));
+      } catch {}
+      // P3-357: age of the last supervisor notification actually delivered
+      // (pilot/src/notify.ts stamps pilot/notify-last) — drives the NOTIFY hud
+      try {
+        notifyLastMs = Date.now() - Number(readFileSync(join(dir, "notify-last"), "utf8"));
       } catch {}
       let cfg: unknown = {};
       try {
@@ -4135,7 +4141,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           } catch {}
         }
       } catch {}
-      send(200, { state, heartbeatMs, events, cfg, lastAux, failSteps, rollbackUnhealthy: rbAlert !== null, rollbackDetail: rbAlert?.detail ?? "", pwaDown: pwaAlert?.down === true, pwaDetail: pwaAlert?.detail ?? "", priceSource: PRICE_SOURCE_LABEL });
+      send(200, { state, heartbeatMs, notifyLastMs, events, cfg, lastAux, failSteps, rollbackUnhealthy: rbAlert !== null, rollbackDetail: rbAlert?.detail ?? "", pwaDown: pwaAlert?.down === true, pwaDetail: pwaAlert?.detail ?? "", priceSource: PRICE_SOURCE_LABEL });
       return true;
     }
     // GET /api/pilot-history — P2-043 history.jsonl digest: 7-day burn-down and
