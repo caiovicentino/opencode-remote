@@ -1621,7 +1621,10 @@ fills the row (P3-335) — it is the only host-pairing action, so it must be
 discoverable at a glance. It carries no inner border (P3-370): one container
 per idea, the section card is the only frame. An invalid pairing code
 renders a styled error block with an inline helper showing the expected
-`opencode-remote://pair?…` format (announced to screen readers), and on the
+`opencode-remote://pair?…` format (announced to screen readers). An empty
+paste box is answered the same way instead of dead-ending (P3-361): "Pair"
+stays live, the form shows an inline "paste the code first" hint with focus
+moving to the field, and the hint clears as soon as typing starts. On the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
 primary element on that screen. The paste field reads as the same care
 (P3-369): a compact two-row mono box with the resize grip removed, spellcheck

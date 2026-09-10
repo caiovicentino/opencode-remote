@@ -2586,6 +2586,15 @@ button.desk-new:hover:not(:disabled) {
   border-color: var(--danger);
   background: transparent;
 }
+/* P3-361: empty-submit nudge — the paste form answers an empty "Pair" click
+   with the same small, quiet voice as the invalid-code hint, inline with the
+   field (no bordered block; the mistake is obvious without one). */
+.pair-empty-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
 /* P3-331: quiet return from the manual pairing escape hatch to the calm
    degraded card — same underlined-link language as .degraded-manual. */
 .pair-back {

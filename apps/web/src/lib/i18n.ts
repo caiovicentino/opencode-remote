@@ -437,6 +437,8 @@ export const dict = {
     // shape of a well-formed pairing URI so the fix is obvious.
     invalidCodeHint:
       "Expected format: opencode-remote://pair?v=2&relay=… — copy the whole code, exactly as the other machine shows it.",
+    // P3-361: empty "Pair" click — the form answers instead of the dead button.
+    pairEmptyCode: "Paste the pairing code first — copy the whole code the other machine shows.",
     // P3-328: Go-menu pane actions stay enabled at the pairing gate — pressing
     // one now surfaces this hint instead of silently doing nothing.
     pairFirstHint: "Pair with your machine first — the panes unlock once connected.",
@@ -1132,6 +1134,9 @@ export const dict = {
     // esperado pra correção ser óbvia.
     invalidCodeHint:
       "Formato esperado: opencode-remote://pair?v=2&relay=… — copie o código inteiro, exatamente como a outra máquina mostra.",
+    // P3-361: clique em "Parear" com o campo vazio — o formulário responde
+    // em vez de o botão ficar morto.
+    pairEmptyCode: "Cole o código de pareamento primeiro — copie o código inteiro que a outra máquina mostra.",
     // P3-328: ações de painel do menu Go ficam habilitadas no portão de
     // pareamento — apertar uma agora mostra este aviso em vez de não fazer nada.
     pairFirstHint: "Pareie com sua máquina primeiro — os painéis ficam disponíveis depois de conectar.",

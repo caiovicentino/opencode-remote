@@ -36,7 +36,21 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [emptyHint, setEmptyHint] = useState(false);
   const busy = phase === "connecting";
+
+  // P3-361: an empty "Parear" click is a validation event, not a no-op — the
+  // button stays live and the form answers with an inline hint + focus on the
+  // paste box, the same recovery voice an invalid code already gets.
+  const submit = useCallback(() => {
+    if (!code.trim()) {
+      setEmptyHint(true);
+      requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".pair-code")?.focus());
+      return;
+    }
+    setEmptyHint(false);
+    onPair(code);
+  }, [code, onPair]);
 
   const handleScan = useCallback(
     (text: string) => {
@@ -77,7 +91,10 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
         rows={2}
         placeholder="opencode-remote://pair?v=2&relay=…"
         value={code}
-        onChange={(e) => setCode(e.target.value)}
+        onChange={(e) => {
+          setCode(e.target.value);
+          setEmptyHint(false);
+        }}
         disabled={busy}
         spellCheck={false}
         autoCapitalize="off"
@@ -86,11 +103,16 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
       />
       <button
         className={preferPaste ? "pair-submit primary" : "pair-submit"}
-        disabled={busy || !code.trim()}
-        onClick={() => onPair(code)}
+        disabled={busy}
+        onClick={submit}
       >
         {busy ? (localMode ? t("localConnecting") : t("connecting")) : t("pairBtn")}
       </button>
+      {emptyHint && (
+        <p className="pair-empty-hint" role="alert">
+          {t("pairEmptyCode")}
+        </p>
+      )}
     </>
   );
 
