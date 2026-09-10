@@ -35,6 +35,10 @@ export default function ArtifactsView({
   const t = useT();
   const [listing, setListing] = useState<ArtifactListing>({ artifacts: [], titles: {} });
   const [error, setError] = useState("");
+  // P3-375: a load failing with "not connected" is the expected never-paired
+  // state (first boot, machine switch) — an empty world to render calmly, not
+  // a failure to dress in red. Only unexpected failures keep .artifacts-error.
+  const [offline, setOffline] = useState(false);
   const [viewer, setViewer] = useState<ArtifactMeta | null>(null);
   // P3-087: the overlay slides out before unmounting — keep the last meta
   // so the exit animation has content to render
@@ -45,11 +49,20 @@ export default function ArtifactsView({
 
   function load() {
     setError("");
+    setOffline(false);
     void (async () => {
       try {
         setListing(await listArtifactsDetailed(request));
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        const raw = err instanceof Error ? err.message : String(err);
+        // P3-375: the same signal humanizeError maps to the "not paired" copy —
+        // but a never-paired user has nothing to "pair again"; the calm empty
+        // state below carries a sync hint instead of the red error line.
+        if (/not connected/i.test(raw)) {
+          setOffline(true);
+          return;
+        }
+        setError(raw);
       }
     })();
   }
@@ -82,11 +95,15 @@ export default function ArtifactsView({
         </button>
       </header>
       <div className="list">
-        {/* P3-365: the pane is reachable from the unpaired gate shell — a
-            "not connected" raw throw becomes the humanized not-paired copy. */}
+        {/* P3-365/P3-375: the pane is reachable before any pairing — a "not
+            connected" throw is the expected offline state and renders the calm
+            empty world; only unexpected failures take the red error line. */}
         {error && <p className="artifacts-error" style={{ color: "var(--danger)" }}>{humanizeError(error, t)}</p>}
         {artifacts.length === 0 && !error && (
-          <p className="muted">{t("artifactsEmpty")}</p>
+          <div className="artifacts-empty">
+            <p className="muted">{t("artifactsEmpty")}</p>
+            {offline && <p className="muted artifacts-offline-hint">{t("artifactsOfflineHint")}</p>}
+          </div>
         )}
         {[...groups.entries()].map(([sid, items]) => (
           <div key={sid}>

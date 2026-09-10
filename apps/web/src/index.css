@@ -187,6 +187,19 @@ textarea {
   height: 18px;
 }
 
+/* P3-375: the never-paired pane state — the muted empty copy plus a quiet
+   sync hint (no red, no CTA choir: the header refresh stays the one action) */
+.artifacts-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 2px;
+}
+.artifacts-offline-hint {
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 .list {
   display: flex;
   flex-direction: column;

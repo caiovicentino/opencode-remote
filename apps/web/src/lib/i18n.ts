@@ -749,6 +749,9 @@ export const dict = {
     artifactsTitle: "Artifacts",
     artifactsRefresh: "Refresh",
     artifactsEmpty: "No artifacts yet. Ask the agent to produce a document (html, md, csv, pdf) and it will show up here.",
+    // P3-375: the never-paired pane state — the empty copy plus this quiet
+    // sync hint instead of a red "not paired" error.
+    artifactsOfflineHint: "They sync on their own once the machine connects — nothing is lost.",
     artifactLargeFile: "Large file — showing the first 500 KB. Use Save to get it whole.",
     // Mission Control on the phone (sealed tunnel fallback)
     missionPhoneIntro: "Read-only view of the fleet from your phone. To set or change the mission, ask for it in any conversation — the agent writes the spec.",
@@ -1491,6 +1494,9 @@ export const dict = {
     artifactsTitle: "Artifacts", // product term kept in pt (see openArtifact)
     artifactsRefresh: "Atualizar",
     artifactsEmpty: "Nenhum artefato ainda. Peça ao agente um documento (html, md, csv, pdf) e ele aparece aqui.",
+    // P3-375: estado nunca-pareado — a cópia vazia mais este aviso calmo de
+    // sincronização, no lugar do erro vermelho "sem pareamento".
+    artifactsOfflineHint: "Eles sincronizam sozinhos quando a máquina conectar — nada se perde.",
     artifactLargeFile: "Arquivo grande — mostrando os primeiros 500 KB. Use Salvar pra ter o arquivo inteiro.",
     missionPhoneIntro: "Visão somente leitura da frota pelo celular. Pra definir ou mudar a missão, peça em qualquer conversa — o agente escreve a especificação.",
     missionPhoneAsk: "Definir uma missão no chat",
