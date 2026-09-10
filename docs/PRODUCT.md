@@ -51,6 +51,12 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   mensagem da primeira conversa; "nada se perde" deixa de ser promessa e
   vira fluxo exercitável no primeiro boot (Enter salva, confirmação calma no
   próprio painel, fila sobrevive a restart do app)
+- Escalada com um caminho só de recuperação (P3-385): quando o card calmo
+  escala ("Sem resposta do daemon local há 1 min" + "Abrir diagnósticos"), o
+  botão laranja "Reconectar agora" para de aparecer empilhado logo abaixo —
+  vira um link discreto dentro do bloco de escalada, ao lado do botão de
+  diagnósticos (mesmo feedback: spinner, estado "tentando", toast de
+  resultado) — para a coluna nunca mostrar dois CTAs da mesma peso
 - Menu Go no portão sem beco circular (P3-362): os itens de painel abrem os
   mesmos panes offline que o rail já abre (Mission Control, Artifacts, Browser,
   Ajustes) em vez de piscar um aviso de pareamento — que era circular no

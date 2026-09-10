@@ -93,8 +93,13 @@ function RetryLine({ attempts }: { attempts?: number }) {
  * applied: the interval effect arms on [autoRetry] itself and the tick
  * increments functionally, so a re-arm can never leave a stale cleared timer
  * nor double-count; the total is deliberately never zeroed — sustained
- * failure stays escalated for the life of the mount. */
-function EscalationBlock({ totalSec, onOpenHelp }: { totalSec: number; onOpenHelp?: () => void }) {
+ * failure stays escalated for the life of the mount. P3-385: the block is
+ * also where the manual reconnect action lives once escalation fires — the
+ * standalone orange button that used to stack right below is suppressed, so
+ * the column keeps ONE calm recovery path; the retry returns demoted to a
+ * quiet text link beside the diagnostics button (same feedback contract as
+ * the old button: trying state, spinner, result toast). */
+function EscalationBlock({ totalSec, onOpenHelp, reconnect }: { totalSec: number; onOpenHelp?: () => void; reconnect?: () => Promise<boolean> }) {
   const t = useT();
   return (
     <div className="degraded-escalate" role="note">
@@ -102,10 +107,15 @@ function EscalationBlock({ totalSec, onOpenHelp }: { totalSec: number; onOpenHel
         {t("degradedEscalateTitle", { m: escalationMinutes(totalSec) })}
       </p>
       <p className="degraded-escalate-detail">{t("degradedEscalateDetail")}</p>
-      {onOpenHelp && (
-        <button className="degraded-upstream-help" onClick={onOpenHelp}>
-          {t("degradedEscalateDiagnostics")}
-        </button>
+      {(onOpenHelp || reconnect) && (
+        <div className="degraded-escalate-actions">
+          {onOpenHelp && (
+            <button className="degraded-upstream-help" onClick={onOpenHelp}>
+              {t("degradedEscalateDiagnostics")}
+            </button>
+          )}
+          {reconnect && <ReconnectButton className="degraded-reconnect-link" reconnect={reconnect} />}
+        </div>
       )}
     </div>
   );
@@ -221,10 +231,16 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
           <RetryLine attempts={reconnectAttempts} />
         </p>
       )}
-      {escalated && <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} />}
-      <div className="degraded-actions">
-        <ReconnectButton className="degraded-reconnect-btn" reconnect={reconnect} />
-      </div>
+      {/* P3-385: once escalated the escalation block owns the recovery path —
+          the standalone orange reconnect button folds into it (demoted to a
+          text link) so two same-weight CTAs never stack in one column. */}
+      {escalated ? (
+        <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} reconnect={reconnect} />
+      ) : (
+        <div className="degraded-actions">
+          <ReconnectButton className="degraded-reconnect-btn" reconnect={reconnect} />
+        </div>
+      )}
       {/* P3-360: the offline first-message queue — the core chat surface,
           reachable on the very first boot. Enter submits (Shift+Enter is a
           newline), same composer grammar as the home. */}
