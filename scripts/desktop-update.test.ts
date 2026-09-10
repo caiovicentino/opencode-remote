@@ -1018,6 +1018,10 @@ releaseName: 0.9.0
     "P3-393: control characters are removed (tab becomes a space)",
     sanitizeUpdateNotes("a\u0007b\u001fc\tkeep") === "abc keep",
   );
+  check(
+    "P3-397: a carriage return is removed too — it can never forge a line in the single-line hatch log",
+    sanitizeUpdateNotes("ok\u000DFAKE LINE") === "okFAKE LINE" && !sanitizeUpdateNotes("a\u000Db\nc").includes("\r"),
+  );
 
   // Paths and addresses.
   check(
