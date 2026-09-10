@@ -11762,9 +11762,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const browserKeys = [
     "browserBack", "browserMaximize", "browserRestore", "browserReload",
     "browserToggleText", "browserRefreshShot", "browserGo", "browserLoading",
-    "browserNoPage", "browserShotAlt", "browserInvalidUrl", "browserLoadFailed",
-    "browserCrashed", "browserErrUnreachable", "browserErrDesktopOnly",
-    "browserErrUnexpected", "browserErrGeneric", "browserEmptyHint",
+    "browserNoPage", "browserShotAlt", "browserInvalidUrl", "browserLocalFile",
+    "browserLoadFailed", "browserCrashed", "browserErrUnreachable",
+    "browserErrDesktopOnly", "browserErrUnexpected", "browserErrGeneric",
+    "browserEmptyHint",
   ];
   check(
     "P3-382: every browser key resolves per locale (no raw-key fallback)",
@@ -11786,6 +11787,35 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-379: BrowserView ships no default URL (no silent host-service reach)",
     !src.includes("8792") && !src.includes("DEFAULT_URL") && src.includes("browserEmptyHint"),
+  );
+}
+
+// --- P3-378: a typed non-http(s) URL is rejected with named, visible feedback --
+// Typing file:///… used to fall through to the generic "Invalid URL" line (or,
+// in the screenshot fallback, to the daemon's raw 400) — easy to miss over a
+// still-loaded page and it never said why the URL was refused. Both panes now
+// classify the rejection client-side: a URL that parses but isn't http(s) gets
+// the specific browserLocalFile sentence (sandbox + http.server way out), and
+// the address bar itself flags the rejection via aria-invalid.
+{
+  const src = readFileSync(new URL("../apps/web/src/components/BrowserView.tsx", import.meta.url), "utf8");
+  // the specific rejection rides the dict in both panes
+  const uses = src.split("rejectMessage(").length - 1;
+  check(
+    "P3-378: both panes classify rejected targets through rejectMessage (definition + 2 call sites)",
+    uses === 3 && src.includes("browserLocalFile"),
+  );
+  check(
+    "P3-378: rejection is flagged on the address bar (aria-invalid), not just the error line",
+    src.split("aria-invalid={rejected || undefined}").length - 1 === 2,
+  );
+  // the sandbox stay-out sentence carries the way out in every locale
+  check(
+    "P3-378: browserLocalFile names the sandbox and the http(s)-only rule in en+pt",
+    (["en", "pt"] as const).every((lang) => {
+      const s = translate(lang, "browserLocalFile");
+      return s.includes("http(s)") && (lang === "en" ? s.includes("sandboxed") : s.includes("sandbox"));
+    }),
   );
 }
 

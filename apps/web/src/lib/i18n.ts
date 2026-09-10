@@ -820,6 +820,9 @@ export const dict = {
     browserEmptyHint: "Type an address above, or open a preview from the chat.",
     browserShotAlt: "Host browser screenshot",
     browserInvalidUrl: "Invalid URL — use http(s)://…",
+    // P3-378: a typed URL that parses but isn't http(s) (file://, data:…) is a
+    // deliberate sandbox rejection — name it and give the way out
+    browserLocalFile: "Only http(s) pages open in this sandboxed pane — local files don't. Serve the folder over HTTP (e.g. python3 -m http.server) and open its localhost URL.",
     browserLoadFailed: "Could not load the page.",
     browserCrashed: "The page renderer crashed — reload.",
     browserErrUnreachable: "The machine did not answer — the host browser is unreachable.",
@@ -1558,6 +1561,9 @@ export const dict = {
     browserEmptyHint: "Digite um endereço acima ou abra uma prévia pelo chat.",
     browserShotAlt: "Captura do navegador da máquina",
     browserInvalidUrl: "URL inválida — use http(s)://…",
+    // P3-378: URL digitada que parseia mas não é http(s) (file://, data:…) é
+    // rejeição deliberada da sandbox — nomear e dar o caminho
+    browserLocalFile: "Só páginas http(s) abrem neste painel com sandbox — arquivos locais não. Sirva a pasta via HTTP (ex.: python3 -m http.server) e abra a URL localhost.",
     browserLoadFailed: "Não foi possível carregar a página.",
     browserCrashed: "O renderizador da página caiu — recarregue.",
     browserErrUnreachable: "A máquina não respondeu — o navegador do host está fora de alcance.",

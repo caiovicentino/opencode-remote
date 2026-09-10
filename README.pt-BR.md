@@ -354,10 +354,14 @@ remoto, zero confiança**.
   sandboxed (scroll, click e edit funcionam como num navegador; `contextIsolation`/`sandbox`
   ligados, `nodeIntegration` desligado, popups desligados), com barra de URL editável, reload
   e botão maximizar (~80% de largura). A primeira pintura do pane é um estado vazio de nova
-  aba (P3-379): nada carrega até você digitar um endereço ou chegar um evento de prévia —
-  o pane nunca navega sozinho para um serviço da máquina (a URL padrão antiga alcançava
-  silenciosamente o dashboard do daemon em boots sem pareamento). Um download iniciado no
-  pane segue a
+   aba (P3-379): nada carrega até você digitar um endereço ou chegar um evento de prévia —
+   o pane nunca navega sozinho para um serviço da máquina (a URL padrão antiga alcançava
+   silenciosamente o dashboard do daemon em boots sem pareamento). URL digitada que parseia
+   mas não é http(s) — `file://`, `data:`, … — é rejeitada com feedback nomeado (P3-378): a
+   barra de endereço fica vermelha e uma frase específica explica a regra http(s)-only da
+   sandbox e a saída (sirva a pasta via HTTP e abra a URL localhost), em vez do silêncio
+   anterior. Um download iniciado no
+   pane segue a
   política única de downloads do shell — nenhum diálogo nativo, nome saneado,
   salvo na pasta Downloads do sistema ou recusado com uma linha de log (P2-241). O modo
   screenshot via Playwright (`/api/browse`) segue
