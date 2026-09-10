@@ -39,7 +39,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   da coluna principal, e o mapa de panes do herói troca pra variante "Antes de
    parear" (cadeado só em Conversas) pra não contradizer o rail ao lado
    (P1-071: todo fluxo alcançável no primeiro boot); o mapa lista também
-   Ajustes, que o rail abre offline no primeiro boot (P3-389). Janela
+   Ajustes, que o rail abre offline no primeiro boot (P3-389). O botão primário
+   "+ Novo" fica visivelmente acinzentado e carrega o mesmo tooltip de dica do
+   rail até o pareamento bem-sucedido (P3-380) — o clique mais natural do
+   primeiro boot se explica em vez de morrer em silêncio. Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
   clássica centrada. Os panes abertos no portão mostram mundos vazios
   esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control

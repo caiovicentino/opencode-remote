@@ -984,6 +984,14 @@ button.desk-new:hover:not(:disabled) {
   background: var(--gray-hover);
   border-color: var(--border-strong);
 }
+/* P3-380: a disabled "+ Novo" must read as disabled — the gate shell holds
+   this button inert until pairing succeeds, so gray it (same quiet treatment
+   as .chat-btn/.composer-btn) instead of leaving full-strength chrome that
+   silently swallows clicks. */
+button.desk-new:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .desk-side-scroll {
   flex: 1;
   overflow-y: auto;
