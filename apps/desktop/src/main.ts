@@ -100,6 +100,7 @@ import { phonePaired, type PairingState } from "./pairing";
 import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { REPLY_NOTIFY_TITLE, replyNotifyDecision } from "./replynotify";
+import { ASK_NOTIFY_TITLE, askNotifyDecision, sanitizeAskCount } from "./asknotify";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
@@ -1768,6 +1769,18 @@ async function onReady(): Promise<void> {
   // P3-053: verification surface for tools/desktop.mjs ipc and the flow test —
   // reports the last count the renderer pushed (not an OS read-back).
   ipcMain.handle("app:unreadBadge", () => lastUnreadBadge);
+  // P3-399: the renderer publishes the pending permission-ask count on its own
+  // channel — same one-way push design as the unread channel above, but the
+  // unread state and the badge surface are untouched. The last known-good push
+  // is kept in process memory as the previous count; a malformed frame never
+  // poisons it (the verdict itself fails closed in asknotify.ts).
+  let lastAskCount = 0;
+  ipcMain.on("ocr:asks", (_e, n: unknown) => {
+    const prevAsks = lastAskCount;
+    const valid = sanitizeAskCount(n);
+    if (valid !== null) lastAskCount = valid;
+    applyAskNotification(prevAsks, n);
+  });
   // P2-276: the renderer publishes the language the app already chose — a
   // one-way push, same pattern as the ocr:unread channel above. An invalid
   // payload resolves exactly like an absent preference (the system language
@@ -2256,6 +2269,46 @@ function applyReplyNotification(prevUnread: unknown, nextRaw: unknown): void {
     log(`[desktop] reply notification shown`);
   } catch (err) {
     logError("[desktop] reply notification failed:", err);
+  }
+}
+
+// P3-399: pending-approval notification. The ask-count push the renderer
+// publishes on ocr:asks decides — through the pure verdict in asknotify.ts —
+// whether a native toast says the agent is waiting for approval (work parked,
+// the user is away). Process-memory state only, no timer: the verdict moves
+// exclusively inside the ocr:asks handler, and the unread surface is
+// untouched.
+let lastAskNotifyAt: number | null = null;
+
+function applyAskNotification(prevAsks: unknown, nextRaw: unknown): void {
+  let focused = false;
+  try {
+    focused = !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused();
+  } catch {
+    focused = false; // an unreadable window state never notifies (fail closed)
+  }
+  const now = Date.now();
+  const decision = askNotifyDecision(prevAsks, nextRaw, focused, now, lastAskNotifyAt);
+  // One log line, no count and no content — the verdict kind and reason only.
+  log(`[desktop] ask notify verdict: ${decision.kind} (${decision.reason})`);
+  if (decision.kind !== "notify") return;
+  lastAskNotifyAt = now;
+  // P1-081 order contract (asknotify.ts header): the hermetic test-session
+  // rule is consulted FIRST — a harness session only logs the verdict above
+  // and never constructs the native notification, so the operator's screen
+  // stays clean of test artifacts.
+  if (HERMETIC_E2E) return;
+  // Best-effort only, same discipline as applyReplyNotification(): an
+  // unsupporting platform never takes the shell down, and the click only
+  // focuses the window that already exists (showMainWindow).
+  try {
+    if (!Notification.isSupported()) return;
+    const toast = new Notification({ title: ASK_NOTIFY_TITLE, body: decision.body, silent: false });
+    toast.on("click", () => showMainWindow());
+    toast.show();
+    log(`[desktop] ask notification shown`);
+  } catch (err) {
+    logError("[desktop] ask notification failed:", err);
   }
 }
 

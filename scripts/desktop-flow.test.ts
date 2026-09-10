@@ -1121,6 +1121,61 @@ try {
     }
   }
 
+  // --- P3-399: pending-approval notification verdict -----------------------------
+  // The ask-count push (ocr:asks) now also decides a native "the agent asks
+  // approval" toast — the inverse of P2-326: here work is parked waiting for
+  // the human. In a hermetic session the verdict is log-only (P1-081), so the
+  // beat boots a FRESH userData (the last-notification instant starts clean)
+  // and pushes ask counts with the window out of focus (the hermetic boot
+  // opens no window at all): exactly one notify verdict in that boot's
+  // desktop.log, then quiet on a rise inside the documented minimum interval
+  // and on an equal count.
+  const askEnv = { ...process.env, OCR_DESKTOP_SESSION: `${session}-asknotify` };
+  let askBooted = false;
+  try {
+    const askOpen = run("P3-399: open (hermetic launch, fresh userData)", ["open"], 45_000, askEnv);
+    askBooted = askOpen.ok;
+    if (askOpen.ok) {
+      const askUserData = (() => {
+        try {
+          return (JSON.parse(askOpen.stdout.trim()) as { userData?: string }).userData ?? "";
+        } catch {
+          return "";
+        }
+      })();
+      run("P3-399: push asks=1 (first rise, window out of focus)", ["ipc", "window.ocrDesktop.sendAsks(1)"], 15_000, askEnv);
+      run("P3-399: push asks=2 (rise inside the minimum interval)", ["ipc", "window.ocrDesktop.sendAsks(2)"], 15_000, askEnv);
+      run("P3-399: push asks=2 again (equal count never notifies)", ["ipc", "window.ocrDesktop.sendAsks(2)"], 15_000, askEnv);
+      const askLog = (() => {
+        try {
+          return readFileSync(join(askUserData, "logs", "desktop.log"), "utf8");
+        } catch {
+          return "";
+        }
+      })();
+      const askVerdicts = askLog.split("\n").filter((line) => line.includes("ask notify verdict:"));
+      const askNotifies = askVerdicts.filter((line) => line.includes("verdict: notify")).length;
+      const askQuiets = askVerdicts.filter((line) => line.includes("verdict: quiet")).length;
+      check(
+        "P3-399: exactly one ask-notification verdict, interval and equal-count pushes stay quiet",
+        askNotifies === 1 && askQuiets >= 2,
+        `notify=${askNotifies} quiet=${askQuiets}\n${askVerdicts.join("\n")}`,
+      );
+      check("P3-399: hermetic session never builds the native ask toast", !askLog.includes("ask notification shown"), askLog.slice(-2000));
+      // The verdict line names the decision only — never a count, a command or
+      // any content of the ask.
+      check(
+        "P3-399: verdict lines carry no count and no ask content",
+        askVerdicts.length > 0 && askVerdicts.every((line) => !/asks?=\d/.test(line) && !line.includes("permissionID") && !line.includes("command")),
+        askVerdicts.join("\n"),
+      );
+    }
+  } finally {
+    if (askBooted) {
+      spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: askEnv, timeout: 30_000 });
+    }
+  }
+
   // --- P3-393: the update consent dialog speaks the shell language ---------------
   // The one dialog every user sees at the end of the auto-update flow. With
   // the OCR_DESKTOP_UPDATE_DIALOG_ANSWER hatch set, main.ts forces the offer

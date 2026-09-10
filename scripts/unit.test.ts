@@ -34441,6 +34441,103 @@ import { REPLY_NOTIFY_BODY, REPLY_NOTIFY_MIN_INTERVAL_MS, REPLY_NOTIFY_TITLE, re
 }
 
 
+// --- P3-399: the pending-approval notification verdict (pure module) -----------
+// askNotifyDecision() receives the previous pending-ask count, the new one,
+// whether the main window is visible AND focused, the current instant and the
+// instant of the last notification, and returns a closed-set verdict: notify
+// (with one static pt-BR body) or quiet. Table below covers every acceptance
+// row: real rise, equal count, drop, focused window, malformed input, first
+// notification and the minimum interval.
+import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotifyDecision, sanitizeAskCount } from "../apps/desktop/src/asknotify";
+{
+  const MIN = ASK_NOTIFY_MIN_INTERVAL_MS;
+  const d = (prev: unknown, next: unknown, focused: boolean, now: number, last: number | null) =>
+    askNotifyDecision(prev, next, focused, now, last);
+
+  // The core table: rise/fall/equal × focus × interval.
+  check("P3-399: real rise with the window hidden notifies with the static body", d(0, 1, false, 1_000, null).kind === "notify" && d(0, 1, false, 1_000, null).body === ASK_NOTIFY_BODY);
+  check("P3-399: rise with the window visible and focused never notifies", d(0, 1, true, 1_000, null).kind === "quiet");
+  check("P3-399: equal count is quiet (an answered ask must never toast)", d(2, 2, false, 1_000, null).kind === "quiet");
+  check("P3-399: falling count is quiet (the ask was resolved)", d(2, 0, false, 1_000, null).kind === "quiet");
+  check("P3-399: first notification without a previous instant notifies", d(0, 1, false, 1_000, null).kind === "notify");
+  check("P3-399: second notification one ms before the minimum interval is quiet", d(0, 1, false, 1_000 + MIN - 1, 1_000).kind === "quiet");
+  check("P3-399: second notification exactly at the interval boundary notifies", d(0, 1, false, 1_000 + MIN, 1_000).kind === "notify");
+  check("P3-399: second notification after the interval notifies", d(0, 1, false, 1_000 + MIN + 1, 1_000).kind === "notify");
+
+  // Fail-closed sanitization, replynotify.ts discipline (no floor, no guess).
+  check(
+    "P3-399: missing count is quiet on either side",
+    [undefined, null].every((bad) => d(bad, 1, false, 1_000, null).kind === "quiet" && d(0, bad, false, 1_000, null).kind === "quiet"),
+  );
+  check("P3-399: negative count is quiet on either side", d(-1, 1, false, 1_000, null).kind === "quiet" && d(0, -1, false, 1_000, null).kind === "quiet");
+  check("P3-399: fractional count is quiet on either side (no floor)", d(0, 1.5, false, 1_000, null).kind === "quiet" && d(0.5, 1, false, 1_000, null).kind === "quiet");
+  check(
+    "P3-399: non-numeric count is quiet",
+    ["1", NaN, Infinity, -Infinity, true, false, {}, [1]].every((bad) => d(0, bad, false, 1_000, null).kind === "quiet"),
+  );
+  check("P3-399: a non-finite current instant is quiet (fail closed)", d(0, 1, false, NaN, null).kind === "quiet");
+  check("P3-399: a future last instant reads as just-notified (age never negative)", d(0, 1, false, 1_000, 2_000).kind === "quiet");
+  check("P3-399: sanitizeAskCount mirrors the decision's fail-closed gate", sanitizeAskCount(3) === 3 && [undefined, null, -1, 1.5, NaN, "3"].every((bad) => sanitizeAskCount(bad) === null));
+
+  // Determinism: the same input yields the exact same verdict on every call.
+  check(
+    "P3-399: determinism — the same input returns the identical verdict twice",
+    JSON.stringify(d(0, 1, false, 1_000, null)) === JSON.stringify(d(0, 1, false, 1_000, null)) &&
+      JSON.stringify(d(0, 1, false, 1_000 + MIN, 1_000)) === JSON.stringify(d(0, 1, false, 1_000 + MIN, 1_000)),
+  );
+
+  // The phrase discipline: short, static, no command, no path, no title, no secret.
+  check(
+    "P3-399: the body is one short static pt-BR phrase saying only that approval is asked",
+    ASK_NOTIFY_BODY.length > 0 &&
+      ASK_NOTIFY_BODY.length < 80 &&
+      !ASK_NOTIFY_BODY.includes("/") &&
+      !ASK_NOTIFY_BODY.includes("\\") &&
+      !ASK_NOTIFY_BODY.includes("\n") &&
+      ASK_NOTIFY_TITLE === "OpenCode Remote" &&
+      Number.isInteger(MIN) &&
+      MIN > 0,
+  );
+
+  // The real sources: purity of the module + the main.ts wiring order.
+  const askSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "asknotify.ts"), "utf8");
+  check(
+    "P3-399: purity — asknotify.ts has no import at all (no electron, no node:fs, no I/O)",
+    !/^import\b/m.test(askSrc) && !/(electron|node:fs|node:path|node:child_process|node:net)\b/.test(askSrc.replace(/^\/\/.*$/gm, "")),
+  );
+  check("P3-399: purity — no timer and no environment access in the module", !/setInterval|setTimeout|process\.env/.test(askSrc));
+
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const asksHandlerAt = mainSrc.indexOf('ipcMain.on("ocr:asks"');
+  const askApplyAt = mainSrc.indexOf("function applyAskNotification");
+  const askApplyEnd = askApplyAt >= 0 ? mainSrc.indexOf("\n}", askApplyAt) : -1;
+  const askWiring = askApplyAt >= 0 && askApplyEnd > askApplyAt ? mainSrc.slice(askApplyAt, askApplyEnd) : "";
+  check("P3-399: wiring — the ocr:asks handler exists on its own channel and applies the verdict", asksHandlerAt >= 0 && askWiring.includes("askNotifyDecision(") && mainSrc.includes('from "./asknotify"'));
+  check("P3-399: wiring — the ask channel never touches the unread state or the badge", (() => {
+    const handlerEnd = mainSrc.indexOf("});", asksHandlerAt);
+    const handler = handlerEnd > asksHandlerAt ? mainSrc.slice(asksHandlerAt, handlerEnd) : mainSrc.slice(asksHandlerAt, asksHandlerAt + 200);
+    return !handler.includes("badgePlan") && !handler.includes("setBadgeCount") && !handler.includes("applyOverlayBadge") && !handler.includes("ocr:unread");
+  })());
+  check("P3-399: wiring — the test-session rule is consulted before the ask notification is built", (() => {
+    const hermeticAt = askWiring.indexOf("HERMETIC_E2E");
+    const notificationAt = askWiring.indexOf("new Notification");
+    return hermeticAt >= 0 && notificationAt > hermeticAt && askWiring.indexOf("isSupported") > hermeticAt;
+  })());
+  check("P3-399: wiring — no periodic timer was introduced by the ask notification", !/setInterval|setTimeout/.test(askWiring) && !/setInterval|setTimeout/.test(mainSrc.slice(asksHandlerAt, asksHandlerAt + 400)));
+  check("P3-399: wiring — the notification click only focuses the existing window", askWiring.includes("showMainWindow()"));
+  check("P3-399: wiring — the verdict line carries no count and no content", askWiring.includes("ask notify verdict") && !/verdict: \$\{[^}]*count/.test(askWiring));
+
+  // The renderer publishes the actionable-ask count on the preload bridge,
+  // through the same design as sendUnreadToShell and without touching it.
+  const chatSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "ChatView.tsx"), "utf8");
+  const asksLibSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "asks.ts"), "utf8");
+  const preloadSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "preload.ts"), "utf8");
+  check("P3-399: web — ChatView pushes the actionable count on every change", chatSrc.includes("sendAskCountToShell(pending.length)") && /useEffect\(\(\) => \{\s+sendAskCountToShell\(pending\.length\);/.test(chatSrc));
+  check("P3-399: web — the push helper swallows a missing bridge and rides only ocrDesktop.sendAsks", asksLibSrc.includes("sendAsks?.(count)") && /catch \{/.test(asksLibSrc));
+  check("P3-399: preload — sendAsks is exposed on its own channel, unread untouched", preloadSrc.includes('send("ocr:asks", n)') && preloadSrc.includes('send("ocr:unread", n)'));
+}
+
+
 // --- P3-375: the Artifacts pane's never-paired state is an empty world, not a
 // red failure. A "not connected" throw (first boot, machine switch) used to
 // render the danger-toned "Sem pareamento ativo — reabra o app ou pareie de
