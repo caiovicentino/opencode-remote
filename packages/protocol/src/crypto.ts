@@ -132,10 +132,15 @@ export function seqAad(from: string, seq: number): Uint8Array {
 export async function clientHello(
   daemonPub: string,
   identity: Identity,
+  now: number = Date.now(),
 ): Promise<{ hello: DaemonHello; sessionKey: CryptoKey }> {
   const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));
   const sessionKey = await deriveAesKey(identity.privateKey, daemonPub, salt);
-  const token = await seal({ clientPub: identity.publicKey }, sessionKey, te.encode(HELLO_AAD));
+  // RT-390: the creation instant travels INSIDE the sealed token — the clear
+  // fields and the DaemonHello shape are unchanged, so the relay stays blind.
+  // The daemon refuses tokens older/newer than its skew window, which turns
+  // the eternal captured hello into a short-lived credential.
+  const token = await seal({ clientPub: identity.publicKey, ts: now }, sessionKey, te.encode(HELLO_AAD));
   return { hello: { clientPub: identity.publicKey, nonce: b64(salt), token }, sessionKey };
 }
 
@@ -143,20 +148,24 @@ export async function clientHello(
 export async function serverAccept(
   hello: DaemonHello,
   daemonIdentity: Identity,
-): Promise<{ clientPub: string; sessionKey: CryptoKey } | null> {
+): Promise<{ clientPub: string; sessionKey: CryptoKey; ts: number | null } | null> {
   try {
     const sessionKey = await deriveAesKey(
       daemonIdentity.privateKey,
       hello.clientPub,
       fromB64(hello.nonce),
     );
-    const token = await openSealed<{ clientPub: string }>(
+    const token = await openSealed<{ clientPub: string; ts?: unknown }>(
       hello.token,
       sessionKey,
       te.encode(HELLO_AAD),
     );
     if (!token || token.clientPub !== hello.clientPub) return null;
-    return { clientPub: hello.clientPub, sessionKey };
+    // RT-390: no policy here — freshness is the daemon's decision (helloguard).
+    // A missing/non-numeric stamp is surfaced as null so old clients fail
+    // closed upstream instead of being silently tolerated.
+    const ts = typeof token.ts === "number" && Number.isFinite(token.ts) ? token.ts : null;
+    return { clientPub: hello.clientPub, sessionKey, ts };
   } catch {
     return null;
   }
