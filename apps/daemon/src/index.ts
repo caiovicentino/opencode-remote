@@ -664,6 +664,19 @@ interface UploadEntry {
 const uploadChunks = new Map<string, UploadEntry>();
 const uploads = new Map<string, { buf: Buffer; mime: string; filename: string; at: number }>();
 
+// P3-404: screen-peek — the last frame the desktop shell uploaded, held in
+// memory only (never written to disk) for the PWA's "Tela da máquina" card.
+// Single frame on explicit request, never streaming: the frame is replaced
+// only when a new capture fulfills a request and ages out with the same
+// 30-minute TTL the attachment uploads use. `screenRequests` holds the
+// pending phone-asked capture ids so a late fulfillment can be matched (and
+// so stale requests expire without any shell activity).
+const SCREEN_FRAME_TTL_MS = 30 * 60_000;
+const SCREEN_REQUEST_TTL_MS = 30_000;
+const SCREEN_FRAME_MAX_BYTES = 8_000_000;
+let screenFrame: { buf: Buffer; mime: string; at: number } | null = null;
+const screenRequests = new Map<string, number>();
+
 // P2-181: shared staging path for the two chunk routes (upload + transcribe).
 // These requests arrive as E2E tunnel frames — not HTTP bodies — so the
 // P2-180 readBody ceiling never sees them. Every dimension is bounded here,
@@ -1600,6 +1613,84 @@ end tell`;
       if (Date.now() - v.at > 30 * 60_000) uploads.delete(k);
     }
     return { id: req.id, status: 200, body: { url: `ocr-upload://${id}` } };
+  }
+
+  // P3-404: screen-peek. Single frame on explicit request, never streaming —
+  // the same privacy posture as the voice/camera features: a frame exists
+  // only because someone asked for THAT frame. The capture itself always
+  // happens in the desktop shell (the TCC-responsible context); the daemon
+  // only matches request → frame and holds the last one in memory. Same E2E
+  // tunnel, no new network surface.
+  if (req.path === "/__ocr/screen/request" && req.method === "POST") {
+    const requestId = randomUUID();
+    const now = Date.now();
+    for (const [k, at] of screenRequests) {
+      if (now - at > SCREEN_REQUEST_TTL_MS) screenRequests.delete(k);
+    }
+    screenRequests.set(requestId, now);
+    broadcast({
+      type: "event",
+      event: { id: randomUUID(), type: "screen.capture-requested", properties: { requestId, at: now } },
+    });
+    metrics.inc("ocr_screen_requests_total");
+    log("info", "screen capture requested");
+    return { id: req.id, status: 200, body: { requestId, at: now } };
+  }
+  if (req.path === "/__ocr/screen/frames" && req.method === "POST") {
+    const { requestId, uploadId } = req.body as { requestId?: string; uploadId?: string };
+    // a frame exists only because someone asked for THAT frame: the id must
+    // be pending (created by /__ocr/screen/request, consumed here) — a room
+    // member cannot seed the stored frame without an explicit request, and a
+    // replayed fulfillment finds the id already consumed.
+    if (typeof requestId !== "string" || !screenRequests.has(requestId)) {
+      return { id: req.id, status: 409, body: { error: "no pending screen request" } };
+    }
+    const up = typeof uploadId === "string" ? uploads.get(uploadId) : undefined;
+    if (!up) return { id: req.id, status: 410, body: { error: "frame upload not found" } };
+    if (up.buf.length > SCREEN_FRAME_MAX_BYTES) {
+      return { id: req.id, status: 413, body: { error: "frame too large" } };
+    }
+    screenRequests.delete(requestId);
+    screenFrame = { buf: Buffer.from(up.buf), mime: up.mime || "image/jpeg", at: Date.now() };
+    metrics.inc("ocr_screen_frames_total");
+    log("info", "screen frame received", { bytes: up.buf.length });
+    broadcast({
+      type: "event",
+      event: {
+        id: randomUUID(),
+        type: "screen.frame",
+        properties: { requestId: typeof requestId === "string" ? requestId : "", at: screenFrame.at, bytes: up.buf.length },
+      },
+    });
+    return { id: req.id, status: 200, body: { ok: true, at: screenFrame.at, bytes: up.buf.length } };
+  }
+  if (req.path === "/__ocr/screen/failed" && req.method === "POST") {
+    const { requestId, reason } = req.body as { requestId?: string; reason?: string };
+    if (typeof requestId === "string") screenRequests.delete(requestId);
+    log("info", "screen capture failed in the shell", { reason: typeof reason === "string" ? reason.slice(0, 32) : "" });
+    broadcast({
+      type: "event",
+      event: {
+        id: randomUUID(),
+        type: "screen.capture-failed",
+        properties: {
+          requestId: typeof requestId === "string" ? requestId : "",
+          reason: typeof reason === "string" && reason ? reason.slice(0, 32) : "unknown",
+        },
+      },
+    });
+    return { id: req.id, status: 200, body: { ok: true } };
+  }
+  if (req.path === "/__ocr/screen/frame" && req.method === "GET") {
+    if (!screenFrame || Date.now() - screenFrame.at > SCREEN_FRAME_TTL_MS) {
+      screenFrame = null;
+      return { id: req.id, status: 404, body: { error: "no frame yet" } };
+    }
+    return {
+      id: req.id,
+      status: 200,
+      body: { b64: screenFrame.buf.toString("base64"), mime: screenFrame.mime, at: screenFrame.at, bytes: screenFrame.buf.length },
+    };
   }
 
   // resolve image attachments into data URLs before opencode sees them
