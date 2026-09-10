@@ -358,7 +358,7 @@ import { sessionTitleOf } from "../apps/web/src/lib/title";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
-import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, shouldEscalateRetry, escalationMinutes, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, shouldEscalateRetry, escalationMinutes, escalateDetailKey, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -10669,6 +10669,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     // P3-385: the escalation block's folded retry link renders this label —
     // once escalated it is the only surface still showing "Reconnect now".
     "reconnectNow",
+    // P3-394: the escalation detail split per surface — both must resolve in
+    // both locales or a raw-key fallback ships to a real user.
+    "degradedEscalateDetailDesktop", "degradedEscalateDetailPhone",
   ];
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",
@@ -10696,15 +10699,49 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       escalationMinutes(RETRY_ESCALATE_AFTER_SEC * 3 + 30) === 3,
   );
   check(
-    "P3-363: escalation copy resolves per locale, interpolates the minutes and names the doctor command",
+    "P3-363: escalation copy resolves per locale, interpolates the minutes and never names a terminal command",
     (["en", "pt"] as const).every((lang) => {
       const title = translate(lang, "degradedEscalateTitle", { m: 2 });
-      const detail = translate(lang, "degradedEscalateDetail");
+      const desktop = translate(lang, "degradedEscalateDetailDesktop");
+      const phone = translate(lang, "degradedEscalateDetailPhone");
       const action = translate(lang, "degradedEscalateDiagnostics");
       return title.includes("2") && !title.includes("{m}") &&
-        detail.includes("opencode-remote doctor") &&
+        desktop.trim() !== "" && desktop !== "degradedEscalateDetailDesktop" &&
+        phone.trim() !== "" && phone !== "degradedEscalateDetailPhone" &&
         action.trim() !== "" && action !== "degradedEscalateDiagnostics";
     }),
+  );
+  // --- P3-394: the escalation detail follows the surface -----------------------
+  // The desktop shell has the in-app diagnostics one click away (the report is
+  // copied from inside the app); the phone can't reach this machine — and a
+  // layperson is never told to open a terminal. The dictionary itself is read
+  // below: the doctor command and the terminal instruction must be GONE.
+  check(
+    "P3-394: the shell verdict picks the escalation detail key (desktop → in-app diagnostics, phone → the computer)",
+    escalateDetailKey(true) === "degradedEscalateDetailDesktop" &&
+      escalateDetailKey(false) === "degradedEscalateDetailPhone",
+  );
+  const dictSource = readFileSync(new URL("../apps/web/src/lib/i18n.ts", import.meta.url), "utf8");
+  check(
+    "P3-394: “opencode-remote doctor” is gone from the dictionary",
+    !dictSource.includes("opencode-remote doctor"),
+  );
+  const detailValues = (["degradedEscalateDetailDesktop", "degradedEscalateDetailPhone"] as const).map((key) => {
+    const m = dictSource.match(new RegExp(`${key}:\\s*\\n?\\s*"([^"]+)"`));
+    return { key, value: m?.[1] ?? "", found: !!m };
+  });
+  check(
+    "P3-394: both escalation details exist in the dict and never mention a terminal or the doctor command",
+    detailValues.every((d) => d.found && !/terminal|opencode-remote doctor/i.test(d.value)),
+    detailValues.map((d) => `${d.key}: found=${d.found}`).join(", "),
+  );
+  check(
+    "P3-394: the only remaining “Terminal” literals belong to the handoff feature (host terminal by explicit user action)",
+    dictSource
+      .split("\n")
+      .filter((l) => /terminal/i.test(l))
+      .every((l) => l.includes("missionTakenOver")) &&
+      dictSource.includes("missionTakenOver"),
   );
 }
 

@@ -377,7 +377,11 @@ remoto, zero confiança**.
   pareamento manual a um clique. O header de marca fica centrado no mesmo eixo do
   wizard de boas-vindas e agora abre com o glifo de destaque do wizard (P3-373),
   junto do wordmark serifado — as três primeiras telas da jornada compartilham o
-  mesmo tratamento de marca
+  mesmo tratamento de marca. Quando o retry silencioso escala (P3-385/P3-394), o
+  bloco de diagnóstico respeita a superfície: no desktop aponta o botão "Abrir
+  diagnósticos" do próprio app (o relatório é copiado de dentro dele) e no
+  celular fala em conferir o próprio computador ou parear outro dispositivo —
+  nunca um comando de terminal
 - **Motor local travado vivo (P2-324)** — enquanto o shell observa um daemon que
   parou de responder e o reanima sozinho, o mesmo cartão calmo avisa o que está
   acontecendo ("reanimando automaticamente — nada para fazer por agora"; ou "reinício

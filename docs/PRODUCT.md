@@ -66,6 +66,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   vira um link discreto dentro do bloco de escalada, ao lado do botão de
   diagnósticos (mesmo feedback: spinner, estado "tentando", toast de
   resultado) — para a coluna nunca mostrar dois CTAs da mesma peso
+- Escalada que respeita a superfície (P3-394): o detalhe do bloco de escalada
+  nunca mais manda ninguém pro terminal — no desktop ele aponta o próprio
+  botão "Abrir diagnósticos" do lado (o relatório já é copiado dentro do app)
+  e no celular fala em conferir o próprio computador ou parear outro
+  dispositivo, escolhido pelo mesmo veredito de shell que o app já calcula
 - Painel Mission guiado com daemon caído (P3-377): no mundo pareado, a falha de
   carga do pane deixa de ser a linha vermelha solta em inglês ("daemon
   unreachable") e vira um card calmo — o que quebrou (o daemon local não

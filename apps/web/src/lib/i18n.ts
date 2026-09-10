@@ -311,8 +311,14 @@ export const dict = {
     // P3-363: the escalation after a minute of silent retrying — the loop is
     // patient by design, but it must never be indistinguishable from a hang.
     degradedEscalateTitle: "No answer from the local daemon for {m} min",
-    degradedEscalateDetail:
-      "The app keeps trying on its own. To check this machine's side, run “opencode-remote doctor” in a terminal — or pair another device manually below.",
+    // P3-394: two audiences, two keys. The desktop shell already carries the
+    // diagnostics path one click away (the report is copied from inside the
+    // app — apps/desktop/src/diagnostics.ts), and the phone can't reach this
+    // machine's command line at all — a layperson is never told to open one.
+    degradedEscalateDetailDesktop:
+      "The app keeps trying on its own. For a checkup of this machine, open the diagnostics here in the app — they prepare a report you can copy and share.",
+    degradedEscalateDetailPhone:
+      "The app keeps trying on its own. This screen is your phone — check the computer itself or pair another device manually below.",
     degradedEscalateDiagnostics: "Open diagnostics",
     // P2-138: upstream (opencode) notice inside the calm card + the Settings
     // help section it links to. Four classifier states, honest and calm — the
@@ -1064,8 +1070,14 @@ export const dict = {
     // P3-363: a escalada depois de um minuto de retry silencioso — o laço é
     // paciente por design, mas nunca pode parecer um congelamento.
     degradedEscalateTitle: "Sem resposta do daemon local há {m} min",
-    degradedEscalateDetail:
-      "O app continua tentando sozinho. Para conferir o lado desta máquina, rode “opencode-remote doctor” no terminal — ou pareie outro dispositivo manualmente abaixo.",
+    // P3-394: duas audiências, duas chaves — no desktop o diagnóstico já vive
+    // dentro do app (botão ao lado, relatório pronto para copiar) e no
+    // celular a máquina está longe de quem lê: ninguém abre uma linha de
+    // comando aqui.
+    degradedEscalateDetailDesktop:
+      "O app continua tentando sozinho. Para checar esta máquina, abra os diagnósticos aqui no app — eles preparam um relatório pronto para copiar e compartilhar.",
+    degradedEscalateDetailPhone:
+      "O app continua tentando sozinho. Esta tela é o seu celular — confira no próprio computador ou pareie outro dispositivo manualmente abaixo.",
     degradedEscalateDiagnostics: "Abrir diagnósticos",
     // P2-138: aviso do upstream (opencode) dentro do card calmo + seção de
     // ajuda das Configurações. Quatro states do classificador, tom honesto e

@@ -4,7 +4,7 @@ import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 // control ships here too, reading and persisting through the shared lib/theme
 // helpers (same ocr_theme key + applyTheme() path as the Settings card).
 import { applyTheme, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
-import { escalationMinutes, retryLineParts, shouldEscalateRetry } from "../lib/degraded";
+import { escalationMinutes, escalateDetailKey, retryLineParts, shouldEscalateRetry, ESCALATE_HATCH_KEY, RETRY_ESCALATE_AFTER_SEC } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
 // P3-360: the offline first-message queue — text typed here is saved on this
 // machine (localStorage via lib/gatequeue) and becomes the first message of
@@ -45,6 +45,11 @@ interface Props {
    * classic centered screen (narrow window, stored-pairing errors) keeps the
    * fully locked map. */
   panesReachable?: boolean;
+  /** P3-394: which surface renders the card — the App passes the same verdict
+   * it already computes for the install hint (desktopBridge() !== null). It
+   * picks the escalation detail: the desktop points at the adjacent in-app
+   * diagnostics button; the phone points back to the computer itself. */
+  desktopShell?: boolean;
 }
 
 /** P3-372: the auto-retry line with live feedback — seconds tick since the
@@ -99,14 +104,17 @@ function RetryLine({ attempts }: { attempts?: number }) {
  * the column keeps ONE calm recovery path; the retry returns demoted to a
  * quiet text link beside the diagnostics button (same feedback contract as
  * the old button: trying state, spinner, result toast). */
-function EscalationBlock({ totalSec, onOpenHelp, reconnect }: { totalSec: number; onOpenHelp?: () => void; reconnect?: () => Promise<boolean> }) {
+function EscalationBlock({ totalSec, onOpenHelp, reconnect, desktopShell }: { totalSec: number; onOpenHelp?: () => void; reconnect?: () => Promise<boolean>; desktopShell?: boolean }) {
   const t = useT();
   return (
     <div className="degraded-escalate" role="note">
       <p className="degraded-escalate-title">
         {t("degradedEscalateTitle", { m: escalationMinutes(totalSec) })}
       </p>
-      <p className="degraded-escalate-detail">{t("degradedEscalateDetail")}</p>
+      {/* P3-394: the detail follows the surface — desktop names the in-app
+          diagnostics button right below, the phone points back to the
+          computer. No terminal command on either. */}
+      <p className="degraded-escalate-detail">{t(escalateDetailKey(!!desktopShell))}</p>
       {(onOpenHelp || reconnect) && (
         <div className="degraded-escalate-actions">
           {onOpenHelp && (
@@ -128,7 +136,7 @@ function EscalationBlock({ totalSec, onOpenHelp, reconnect }: { totalSec: number
  * "daemon fell" for a daemon the machine never met), a visible auto-retry
  * line with the attempt counter, a reconnect action with real feedback, the
  * purely-local data that keeps working, and manual pairing one click away. */
-export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable }: Props) {
+export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable, desktopShell }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
@@ -173,7 +181,16 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   const autoRetry = !busy && kind !== "down";
   // P3-363: cumulative seconds spent auto-retrying on this mount, and the
   // escalation it unlocks — the "silent forever loop" gets a diagnostic path.
-  const [retryTotal, setRetryTotal] = useState(0);
+  // P3-394: documented test hatch (ESCALATE_HATCH_KEY + reload, desktop-flow
+  // gate) — mounts the card already escalated, no 60s wait. Same policy as
+  // the other test-only hatches: read once at mount, persists nothing.
+  const [retryTotal, setRetryTotal] = useState(() => {
+    try {
+      return localStorage.getItem(ESCALATE_HATCH_KEY) === "1" ? RETRY_ESCALATE_AFTER_SEC : 0;
+    } catch {
+      return 0;
+    }
+  });
   useEffect(() => {
     if (!autoRetry) return;
     const id = setInterval(() => setRetryTotal((s) => s + 1), 1000);
@@ -235,7 +252,7 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
           the standalone orange reconnect button folds into it (demoted to a
           text link) so two same-weight CTAs never stack in one column. */}
       {escalated ? (
-        <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} reconnect={reconnect} />
+        <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} reconnect={reconnect} desktopShell={desktopShell} />
       ) : (
         <div className="degraded-actions">
           <ReconnectButton className="degraded-reconnect-btn" reconnect={reconnect} />
