@@ -10625,6 +10625,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "firstContactTitle", "firstContactHint", "degradedRetrying", "degradedDownHint",
     "degradedLocalTitle", "degradedLocalHint", "degradedPairManually",
     "reconnectTrying", "reconnectStarted", "reconnectFailed", "pairBack",
+    // P3-385: the escalation block's folded retry link renders this label —
+    // once escalated it is the only surface still showing "Reconnect now".
+    "reconnectNow",
   ];
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",

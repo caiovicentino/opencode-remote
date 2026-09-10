@@ -2936,6 +2936,31 @@ button.desk-new:hover:not(:disabled) {
   opacity: 0.85;
   overflow-wrap: anywhere;
 }
+/* ── P3-385: one calm recovery path once escalated ──────────────────────────
+   The standalone orange "Reconnect now" button no longer stacks below the
+   escalation block; it folds in as a quiet text link beside the diagnostics
+   button (.degraded-manual's underlined-link language), so the column never
+   shows two same-weight recovery CTAs. */
+.degraded-escalate-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 2px;
+}
+.degraded-reconnect-link {
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.degraded-reconnect-link:hover {
+  color: var(--text);
+  background: transparent;
+}
 /* Settings help section (P2-138): the destination of the calm-card button. */
 .settings-help {
   border-left: 3px solid var(--status-wait);

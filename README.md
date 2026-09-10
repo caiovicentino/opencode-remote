@@ -1555,9 +1555,18 @@ component always promised: seconds tick since the current attempt started
 ("há 12s · tentativa 3" / "12s · attempt 3"), resetting on every new attempt
 so the number doubles as a quiet countdown to the next probe, and the shell's
 attempt counter rides along once it exists. The ticking segment appears from
-the first full second (no awkward "há 0s" first paint) and uses tabular
-numerals (no per-second jitter); it is hidden from screen readers so the
-status live region is not re-announced every second.
+  the first full second (no awkward "há 0s" first paint) and uses tabular
+  numerals (no per-second jitter); it is hidden from screen readers so the
+  status live region is not re-announced every second.
+
+**One calm recovery path once escalated (P3-385)**: when the calm card
+escalates after a minute of silent retrying ("No answer from the local daemon
+for 1 min" + "Open diagnostics"), the standalone orange "Reconnect now" button
+no longer stacks directly beneath it as a second, same-weight call to action.
+The reconnect action folds into the escalation block — demoted to a quiet text
+link beside the diagnostics button, keeping its full feedback contract
+(spinner, trying state, result toast) — so the escalated column shows exactly
+one primary recovery path.
 
 **Local first boot never shows the pairing wall (P3-331)**: once the desktop
 shell proves the daemon on this machine (local mode), the verdict is sticky
