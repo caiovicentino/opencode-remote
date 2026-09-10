@@ -5,6 +5,13 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
+- [ ] (RT-390) [P0] Redteam finding 2026-09-10 — spec: 
+
+**Title: Replayed handshake resets the seq replay guard — a malicious relay can re-execute captured ops (hello-replay attack)**
+
+**Severity: HIGH** (within the project's own threat model — `apps/relay/src/index.ts:76-78` explicitly claims E2E guarantees hold against an untrusted relay)
+
+**Proof/attack sketch:** The handshake has no server-side freshness: `clientHello` (packages/protocol/src/crypto.ts:132-140) seals a static `{clientPub}` token under a key derived from a **client-chosen** salt, and the daemon's `serverAccept` (crypto.ts:143-163) accepts any such token forever — there is no ch
 - [ ] (P3-389) [P3] [fable][P3] "Antes de parear" pane map omits Configurações, which already works — spec: The map lists Conversas/Artifacts/Navegador/Mission Control, but the gate rail right beside it also opens Configurações offline (App.tsx:1518 `gateSettingsNode`) — the map under-reports what a first-boot user can actually do. Add the row (unlocked) or retitle the card so it doesn't claim to be the full pre-pairing map. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-chat-20260910.png, where: apps/web/src/components/PaneMap.tsx:24)
 - [ ] (P3-388) [P3] [fable][P3] Queue card states the same "salva quando conectar" promise twice — spec: The card subtitle (`degradedQueueHint`) and the post-save status line (DegradedView.tsx:254-256, `degradedQueueSaved`) are the same sentence, and both are visible at once after saving — redundant copy in a six-line card. Make the saved confirmation a distinct "Na fila — será a primeira mensagem." or drop the hint once saved. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-chat-20260910.png, where: apps/web/src/components/DegradedView.tsx:233)
 - [ ] (P3-387) [P3] [fable][P3] Brand wordmark shears against the viewport top when the gate column scrolls — spec: With a pane open, the gate main column (`<main className="desk-chat">` wrapping DegradedView) scrolls and the serif "OpenCode Remote" renders half-clipped flush at y=0. Add scroll padding (or top margin on `.degraded header`) so the brand never renders sheared mid-glyph. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-mission-control-20260910.png, where: apps/web/src/App.tsx:1483)
