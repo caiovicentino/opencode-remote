@@ -50,6 +50,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   máquina (`ocr_gate_queue`) até o daemon responder, quando vira a primeira
   mensagem da primeira conversa; "nada se perde" deixa de ser promessa e
   vira fluxo exercitável no primeiro boot (Enter salva, confirmação calma no
+  próprio painel, fila sobrevive a restart do app). P3-386: o compositor é
+  pintado sobre o branco do card com borda de repouso mais firme — lê como
+  campo ativo que convida a digitar, não como campo desabilitado.
   próprio painel, fila sobrevive a restart do app)
 - Escalada com um caminho só de recuperação (P3-385): quando o card calmo
   escala ("Sem resposta do daemon local há 1 min" + "Abrir diagnósticos"), o

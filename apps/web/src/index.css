@@ -2749,12 +2749,15 @@ button.desk-new:hover:not(:disabled) {
   margin: 0;
   font-size: var(--font-size-sm);
 }
+/* P3-386: the composer is the hero's core interactive element — paint it on
+   the white card (not the page gray, which read as a disabled field) with a
+   slightly stronger resting border so it invites typing. */
 .degraded-queue-input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--text);
   font-size: var(--font-size-md);
   line-height: 1.45;
