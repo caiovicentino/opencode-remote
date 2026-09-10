@@ -770,13 +770,14 @@ export async function quarantineWithEscalation(
 
 /**
  * P2-058: the deploy target — the newest gate-verified, non-quarantined merge
- * sha reachable from origin/main's first-parent history. Unverified bookkeeping
- * commits on top of main are walked past, so a direct push to main can never
- * become a deploy target. Null = nothing deployable (fail-closed).
+ * sha reachable from the base branch's first-parent history (origin/<base>;
+ * P3-358: `base` is the repo's default branch, `main` for this repo).
+ * Unverified bookkeeping commits on top are walked past, so a direct push to
+ * main can never become a deploy target. Null = nothing deployable (fail-closed).
  */
-export function latestDeployableSha(repo: string): string | null {
+export function latestDeployableSha(repo: string, base = "main"): string | null {
   exec("git fetch -q origin", { cwd: repo, allowFail: true });
-  const hist = exec("git log --first-parent --format=%H origin/main", { cwd: repo, allowFail: true });
+  const hist = exec(`git log --first-parent --format=%H origin/${base}`, { cwd: repo, allowFail: true });
   if (!hist.ok) return null;
   return pickDeployableSha(
     hist.output.split("\n").map((l) => l.trim()).filter(Boolean),

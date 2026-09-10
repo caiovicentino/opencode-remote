@@ -55,17 +55,18 @@ function realRun(ws: string): RunFn {
 // ── refs: fetch + reset the workspace clone to the source HEAD ───────────────
 
 /**
- * Mirror the workspace clone onto origin/main (same command sequence as the
- * scheduler's syncWorkspace, minus the trust assumptions — every step is
+ * Mirror the workspace clone onto the base branch (same command sequence as
+ * the scheduler's syncWorkspace, minus the trust assumptions — every step is
  * allowFail and the outcome is reported). `changed` reflects a HEAD move, so
  * running the doctor twice in a row logs "changed: false" the second time.
+ * P3-358: `base` is the pipeline base branch (foreign mission default branch).
  */
-export function doctorRefs(ws: string, run: RunFn = realRun(ws)): DoctorResult {
+export function doctorRefs(ws: string, run: RunFn = realRun(ws), base = "main"): DoctorResult {
   const before = run("git rev-parse HEAD").output.trim();
-  const steps = ["git fetch origin", "git checkout -q main", "git reset -q --hard origin/main", "git clean -qfd"];
+  const steps = ["git fetch origin", "git checkout -q main", `git reset -q --hard origin/${base}`, "git clean -qfd"];
   const failed: string[] = [];
   for (const cmd of steps) {
-    // fetch is best-effort (offline repair still resets to the local origin/main ref)
+    // fetch is best-effort (offline repair still resets to the local base ref)
     if (!run(cmd).ok && !cmd.startsWith("git fetch")) failed.push(cmd);
   }
   const after = run("git rev-parse HEAD").output.trim();
@@ -490,7 +491,7 @@ export function protectedBranchIds(st: PilotState): Set<string> {
  * still never blocks the boot.
  */
 export function runDoctor(
-  cfg: Pick<PilotConfig, "repo" | "models">,
+  cfg: Pick<PilotConfig, "repo" | "models" | "baseBranch">,
   workspaces: string[],
   log: typeof doctorLog = doctorLog,
   hooks?: { runTierB?: RunFn; notify?: typeof notifySupervisor; emitEvent?: typeof emit },
@@ -498,7 +499,7 @@ export function runDoctor(
   const st = loadState();
 
   const refsResults = workspaces.map((ws) => {
-    const r = safe(() => doctorRefs(ws), "refs");
+    const r = safe(() => doctorRefs(ws, realRun(ws), cfg.baseBranch ?? "main"), "refs");
     log(r.ok ? "info" : "warn", "doctor: refs", { ws, ...r });
     return r.ok;
   });
@@ -570,7 +571,7 @@ function main() {
   let ok = true;
   switch (cmd) {
     case "refs": {
-      const r = doctorRefs(cfg.workspace);
+      const r = doctorRefs(cfg.workspace, realRun(cfg.workspace), cfg.baseBranch ?? "main");
       log(r.ok ? "info" : "warn", "doctor: refs", { ws: cfg.workspace, ...r });
       ok = r.ok;
       break;

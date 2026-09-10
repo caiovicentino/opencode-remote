@@ -33,6 +33,10 @@ export interface PilotConfig {
    * (gate-fail/, pending-refill.json) — pilot/ for this repo,
    * pilot/mission/<key>/ for a foreign mission. */
   stateRoot: string;
+  /** P3-358: pipeline base branch — the mission repo's remote default branch
+   * (origin/HEAD detection in missionrepo.ts). Undefined = `main` (this repo);
+   * every origin/<base> read (queue, task branches, merges) derives from it. */
+  baseBranch?: string;
 }
 
 // ── P1-059: tiered cognition (strong models plan/judge, flash executes) ──────
@@ -104,27 +108,43 @@ export function clampSlots(n: unknown): number {
   return Math.min(v, 8);
 }
 
+/**
+ * P3-358: the pilot.json normalization, pure and pinned by the battery —
+ * mission-derived keys (`missionKey`/`missionModels`/`baseBranch`) are
+ * stripped so a stale or typo'd value in pilot.json can never reach
+ * `origin/${base}` shell interpolations when no foreign mission re-derives
+ * and validates them at boot (bootMissionRepo → pipelineBaseBranch).
+ */
+export function normalizePilotConfig(raw: Record<string, unknown>): PilotConfig {
+  const cfg = { ...DEFAULTS, ...raw } as PilotConfig;
+  if (!Number.isFinite(cfg.maxAttemptsPerTask) || cfg.maxAttemptsPerTask < 1)
+    cfg.maxAttemptsPerTask = DEFAULTS.maxAttemptsPerTask;
+  if (!Number.isFinite(cfg.corpusEveryNMerges) || cfg.corpusEveryNMerges < 1)
+    cfg.corpusEveryNMerges = DEFAULTS.corpusEveryNMerges;
+  cfg.slots = clampSlots(cfg.slots);
+  // P1-059: tolerate garbage in the models block — invalid content behaves
+  // exactly like an absent block (everything tier A)
+  const models = normalizeModels(cfg.models);
+  if (models) cfg.models = models;
+  else delete cfg.models;
+  // mission v2: these are derived by the scheduler from mission.json,
+  // never read from pilot.json (a stale key there must not leak in)
+  cfg.stateRoot = DEFAULTS.stateRoot;
+  delete cfg.missionKey;
+  delete cfg.missionModels;
+  // P3-358: the pipeline base branch is derived at boot by bootMissionRepo
+  // (origin/HEAD detection, validated by pipelineBaseBranch) — a stale or
+  // typo'd key from pilot.json must never reach `origin/${base}` shell
+  // interpolations when no foreign mission runs
+  delete cfg.baseBranch;
+  return cfg;
+}
+
 export function loadConfig(): PilotConfig {
   const p = join(homedir(), ".opencode-remote", "pilot.json");
   try {
     if (existsSync(p)) {
-      const cfg = { ...DEFAULTS, ...JSON.parse(readFileSync(p, "utf8")) } as PilotConfig;
-      if (!Number.isFinite(cfg.maxAttemptsPerTask) || cfg.maxAttemptsPerTask < 1)
-        cfg.maxAttemptsPerTask = DEFAULTS.maxAttemptsPerTask;
-      if (!Number.isFinite(cfg.corpusEveryNMerges) || cfg.corpusEveryNMerges < 1)
-        cfg.corpusEveryNMerges = DEFAULTS.corpusEveryNMerges;
-      cfg.slots = clampSlots(cfg.slots);
-      // P1-059: tolerate garbage in the models block — invalid content behaves
-      // exactly like an absent block (everything tier A)
-      const models = normalizeModels(cfg.models);
-      if (models) cfg.models = models;
-      else delete cfg.models;
-      // mission v2: these are derived by the scheduler from mission.json,
-      // never read from pilot.json (a stale key there must not leak in)
-      cfg.stateRoot = DEFAULTS.stateRoot;
-      delete cfg.missionKey;
-      delete cfg.missionModels;
-      return cfg;
+      return normalizePilotConfig(JSON.parse(readFileSync(p, "utf8")));
     }
   } catch {}
   return DEFAULTS;

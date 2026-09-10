@@ -333,13 +333,20 @@ manutenção de experiência — `nightlyWindow()` em `scheduler.ts`) também fi
 do usuário recebe só o pipeline de missão (nem o registro "nightly skipped" é
 gravado). **Primeiro contato com o repo externo**: o clone pina o `main`
 local a partir do **branch default real** do remoto (`refs/remotes/origin/HEAD`,
-depois `git remote show origin`, por fim `main` — `missionrepo.ts`); um
-default diferente de `main` é logado com warn + evento `mission/default-branch`
-em vez de falhar em silêncio (o restante do pipeline ainda usa `main` como
-base — parametrizar é follow-up). Sem `BACKLOG.md` no formato do pilot (sem
-`## Ready`), o strategist **semeia o esqueleto** (`## Ready` / `## Blocked` /
+depois `git remote show origin`, por fim `main` — `missionrepo.ts`); desde
+P3-358 esse default detectado é o **branch base do pipeline** (`cfg.baseBranch`
+via `pipelineBaseBranch`): leitura de fila (`git show origin/<base>:BACKLOG.md`),
+`setupTaskBranch` (branch da tarefa nasce em `origin/<base>`), spec do planner,
+`mergeTask` (pull/PR com confirmação contra a base), `taskMergedIn`,
+`landMetaCommit` (o `pilot/meta` re-basa na base e o PR aponta pra ela),
+`latestDeployableSha`, `syncWorkspace`/doctor — um repo com default `master`
+roda ponta a ponta, sem nenhum `origin/main` fixado no caminho (o `main`
+**local** continua existindo sempre, pinado ao default; o PR de tarefa usa o
+base default do próprio GitHub). Sem `BACKLOG.md` no formato do pilot (sem
+`## Ready`), **researcher e strategist** (e o reland de refill pendente)
+**semeiam o esqueleto** (`## Ready` / `## Blocked` /
 `## Done`, `seedBacklogSkeleton` em `backlog.ts`) dentro do passo `apply` do
-refill — local ao clone, nunca pushado por si; chega ao repo do usuário só
+landing — local ao clone, nunca pushado por si; chega ao repo do usuário só
 dentro do PR de refill, como qualquer landing. O protocolo de missão do chat
 manda o agente **avisar o usuário** que a frota trabalha via PRs (branches
 `pilot/<id>` e `pilot/meta`, squash em main) com as credenciais do `gh` desta
