@@ -1070,6 +1070,73 @@ try {
     }
   }
 
+  // --- P3-393: the update consent dialog speaks the shell language ---------------
+  // The one dialog every user sees at the end of the auto-update flow. With
+  // the OCR_DESKTOP_UPDATE_DIALOG_ANSWER hatch set, main.ts forces the offer
+  // once with a fixture FeedInfo (version + raw notes carrying markup, a path
+  // and an address on purpose) and the consent sink auto-answers in place of
+  // the modal, logging the COMPOSED payload (labels + interpolated version +
+  // sanitized notes) to desktop.log. The beat asserts: the shell language of
+  // the boot decides the copy, the version is interpolated, the what's-new
+  // line and the sanitized notes are present, and no path/address survives.
+  {
+    const updEnv = {
+      ...process.env,
+      OCR_DESKTOP_SESSION: `${session}-updatedialog`,
+      OCR_DESKTOP_UPDATE_DIALOG_ANSWER: "later",
+    };
+    let updBooted = false;
+    try {
+      const updOpen = run("P3-393: open (hermetic launch, fresh userData)", ["open"], 45_000, updEnv);
+      updBooted = updOpen.ok;
+      if (updOpen.ok) {
+        const updUserData = (() => {
+          try {
+            return (JSON.parse(updOpen.stdout.trim()) as { userData?: string }).userData ?? "";
+          } catch {
+            return "";
+          }
+        })();
+        const updLog = (() => {
+          try {
+            return readFileSync(join(updUserData, "logs", "desktop.log"), "utf8");
+          } catch {
+            return "";
+          }
+        })();
+        const payloads = updLog.split("\n").filter((line) => line.includes("update dialog auto-answered by test hatch"));
+        check("P3-393: exactly one forced consent offer, answered in place", payloads.length === 1, payloads.join("\n"));
+        const payload = payloads[0] ?? "";
+        const updLang = /shell language: (\w+)/.exec(updLog)?.[1] ?? "en";
+        const ptCopy = updLang === "pt";
+        check(
+          "P3-393: payload speaks the boot's shell language",
+          ptCopy
+            ? payload.includes("Uma nova versão está pronta") && payload.includes("Reiniciar agora") && payload.includes("Depois")
+            : payload.includes("A new version is ready") && payload.includes("Restart now") && payload.includes("Later"),
+          `lang=${updLang} ${payload.slice(0, 200)}`,
+        );
+        check("P3-393: payload carries the interpolated version", payload.includes("9.9.9"), payload.slice(0, 200));
+        check(
+          "P3-393: payload carries the what's-new line and the sanitized notes",
+          payload.includes(ptCopy ? "Novidades:" : "What's new:") &&
+            payload.includes("Correções de estabilidade no pareamento") &&
+            payload.includes("Novo indicador de status"),
+          payload.slice(0, 400),
+        );
+        check(
+          "P3-393: payload carries no address and no path from the fixture",
+          !payload.includes("https://") && !payload.includes("example.invalid") && !payload.includes("/notes"),
+          payload.slice(0, 400),
+        );
+      }
+    } finally {
+      if (updBooted) {
+        spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: updEnv, timeout: 30_000 });
+      }
+    }
+  }
+
   // --- P1-072: the shell must expose the real <webview> tag --------------------
   await testWebviewPane();
 

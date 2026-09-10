@@ -1846,7 +1846,13 @@ never produces an outbound request behind your back. When a newer `feed.json`
 is found on macOS, the release downloads in the background and a consent dialog
 offers **Restart now / Later** — nothing installs without an explicit click, a
 deferred version is not re-offered during the session, and repeated checks
-never stack stale offers. Staging a release is a plain copy:
+never stack stale offers. P3-393: the dialog now speaks the same language the
+rest of the native shell speaks (menu/tray vocabulary — the in-app language
+choice wins, then the system locale), interpolates the offered version and
+appends the release notes the feed carries under a "what's new" line — markup,
+control characters, paths and addresses are stripped first (fail-empty: a
+notes-less feed shows the base detail only), so what you read is exactly what
+changed before you restart. Staging a release is a plain copy:
 drop `<version>/` with the artifact under `~/.opencode-remote/updates/` and
 rewrite `feed.json` (see `docs/troubleshooting.md`). P2-161: the port recorded
 in `feed.json`'s absolute loopback `url` is resolved when the route serves the
@@ -2239,7 +2245,12 @@ cancelled, downgraded or re-downloaded by the label. Since
 P2-176 the app menu's **Ajuda** submenu mirrors both items (rebuilt on every
 status change, so its label never goes stale). Applying
 a release always goes through the consent dialog (P1-050): the updater asks
-"Restart now / Later" once the download finishes. P2-257: a deferred offer
+"Restart now / Later" once the download finishes. P3-393: the dialog copy now
+follows the shell language — the same menu/tray vocabulary, no raw English on
+a Portuguese desktop — interpolates the offered version and, when the feed
+carries release notes, shows them under a what's-new line after stripping
+markup, control characters, paths and addresses (a notes-less feed shows the
+base detail only). P2-257: a deferred offer
 comes back — up to two reminders, one every 4 h (three offers per version in
 total, carried by the same recheck timer) — and the tray item for a downloaded
 release tells the truth and reopens the same dialog on click; the update
