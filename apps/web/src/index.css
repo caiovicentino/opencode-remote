@@ -2631,6 +2631,24 @@ button.desk-new:hover:not(:disabled) {
 .degraded {
   justify-content: center;
 }
+/* P3-387: with a pane open the gate column narrows and the degraded stack
+   grows taller than the viewport. Plain centered flex overflows BOTH edges —
+   the serif wordmark rendered sheared flush at y=0 (explorer shot
+   journey-mission-control-20260910: top half of the glyphs clipped) and the
+   overflow above the start edge is unreachable. The same shear shows up in
+   the pair-wrap path on a narrow desktop window (390px probe). Overflow-safe
+   centering: when the stack fits it stays centered; when it overflows, `safe`
+   drops the alignment to the start edge and the screen itself becomes the
+   scroll container, so the brand header always renders whole below the
+   screen's own top padding and every card below stays reachable (P1-071).
+   .degraded is unique to DegradedView — no sibling screen reuses it (the
+   P3-330 lesson is about shared base classes; this is not one). */
+.screen.degraded {
+  overflow-y: auto;
+  justify-content: safe center;
+  /* focus-driven scroll-into-view keeps the screen's top inset (P3-387) */
+  scroll-padding-top: 16px;
+}
 /* P3-330: the degraded gate is the screen right after the welcome wizard, so
    its brand header sits on the same centered axis as the wizard's
    (.welcome header) and the pairing screen's (P3-339) — a flush-left
