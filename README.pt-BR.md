@@ -374,6 +374,13 @@ remoto, zero confiança**.
   parou de responder e o reanima sozinho, o mesmo cartão calmo avisa o que está
   acontecendo ("reanimando automaticamente — nada para fazer por agora"; ou "reinício
   automático suspenso" com o orçamento gasto), na mesma faixa e tom do aviso de saída
+- **Panes offline ficam calmos no portão (P3-327)** — atrás do esqueleto do shell de
+  primeiro boot, os panes alcançáveis mostram mundos vazios esperados, não erros: o
+  Mission Control abre na visão forense com o copy "nenhuma sessão registrada" (dashboard
+  e captura ao vivo escondidos — dependem do daemon) e a lista de artifacts mostra o
+  estado vazio tranquilo no lugar do erro vermelho "sem pareamento ativo" do mundo
+  pareado; o header do Mission Control também quebra em duas linhas na largura do pane
+  em vez de pintar as abas sobre o título
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a

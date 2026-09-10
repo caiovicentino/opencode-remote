@@ -513,6 +513,19 @@ try {
     15_000,
   );
   if (gateMission.ok) check("P3-365: mission pane visible while unpaired", /pane:block\|mission:true/.test(gateMission.stdout), gateMission.stdout);
+  // P3-327: a dead daemon is the EXPECTED state behind the gate — Mission
+  // Control answers with the calm empty world (no red error line, muted
+  // empty/loading copy in the cards column) instead of "daemon unreachable".
+  const gateMissionCalm = run(
+    "P3-327: Mission Control stays calm behind the gate",
+    ["ipc", "(() => { const m = document.querySelector('.desk-pane .mission'); return 'err:' + !!m?.querySelector('.mission-error') + '|empty:' + !!m?.querySelector('.mission-cards p.muted'); })()"],
+    15_000,
+  );
+  check(
+    "P3-327: mission pane renders the calm empty state",
+    gateMissionCalm.ok && /err:false\|empty:true/.test(gateMissionCalm.stdout.replace(/"/g, "").trim()),
+    gateMissionCalm.stdout,
+  );
   run("P3-365: open Artifacts from the rail", ["click", 'button[data-pane="artifacts"]'], 15_000);
   const gateArtifacts = run(
     "P3-365: artifact list renders behind the gate",
@@ -520,6 +533,18 @@ try {
     15_000,
   );
   if (gateArtifacts.ok) check("P3-365: artifact list visible while unpaired", /list:(block|flex)/.test(gateArtifacts.stdout), gateArtifacts.stdout);
+  // P3-327: the gate list runs on the quiet stub — no red "not paired" error
+  // for a machine nothing has paired yet, just the muted empty copy.
+  const gateArtifactsCalm = run(
+    "P3-327: artifact list stays calm behind the gate",
+    ["ipc", "(() => { const l = document.querySelector('.desk-pane .pane-view .list'); return 'err:' + !!l?.querySelector('.artifacts-error') + '|empty:' + !!l?.querySelector('p.muted'); })()"],
+    15_000,
+  );
+  check(
+    "P3-327: artifact pane renders the calm empty copy",
+    gateArtifactsCalm.ok && /err:false\|empty:true/.test(gateArtifactsCalm.stdout.replace(/"/g, "").trim()),
+    gateArtifactsCalm.stdout,
+  );
   // Restore the hero composition for the P2-112 beats below (the gate rail's
   // Conversas slot is disabled — the pane's own back button is the way back).
   // The selector must scope .pane-view: the hidden BrowserView wrapper also

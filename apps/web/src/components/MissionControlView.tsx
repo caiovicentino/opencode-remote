@@ -165,12 +165,18 @@ export default function MissionControlView({
   browse,
   onBack,
   request,
+  prePairing,
 }: {
   daemonApi: DaemonApiFn | null;
   browse: BrowseFn | null;
   onBack: () => void;
   /** EVAL4-B: sealed tunnel (phone). Used only when the bridge is absent. */
   request?: TunnelRequest;
+  /** P3-327: mounted behind the unpaired first-boot gate — a dead daemon is
+   * the expected state there, so a failed load answers with the calm empty
+   * world (forensic view, empty list) instead of the paired-shell red error,
+   * and the dashboard/live actions that need the daemon stay hidden. */
+  prePairing?: boolean;
 }) {
   const t = useT();
   // EVAL4-B: phone = no desktop bridge; the sealed tunnel takes its place for
@@ -193,7 +199,7 @@ export default function MissionControlView({
   // P2-123 follow-up: the pane's main surface is the LIVE orbital dashboard
   // (the same /dashboard/v3 the browser shows), embedded with self-auth via
   // the desktop bridge's local link. The forensic timeline stays one toggle away.
-  const [view, setView] = useState<"dash" | "forensic">(bridgeApi ? "dash" : "forensic");
+  const [view, setView] = useState<"dash" | "forensic">(bridgeApi && !prePairing ? "dash" : "forensic");
   const [dashUrl, setDashUrl] = useState<string | null>(null);
   // Self-serve mission: undefined = not loaded yet, null = none set.
   const [mission, setMission] = useState<MissionSpecView | null | undefined>(undefined);
@@ -225,9 +231,16 @@ export default function MissionControlView({
       setError("");
       setSelected((cur) => (cur && list.some((c) => c.id === cur) ? cur : (list[0]?.id ?? null)));
     } catch (err) {
+      // P3-327: behind the gate a dead daemon is the expected state — render
+      // the calm empty world instead of the paired-shell red error line.
+      if (prePairing) {
+        setCards([]);
+        setError("");
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [daemonApi]);
+  }, [daemonApi, prePairing]);
 
   const loadMission = useCallback(async () => {
     if (!daemonApi) return;
@@ -238,9 +251,12 @@ export default function MissionControlView({
       const subs = json?.modelSubstitutions;
       setModelSubs(Array.isArray(subs) ? (subs as ModelSubstitutionView[]) : []);
     } catch {
-      // best-effort: the cards error surface already reports a dead daemon
+      // best-effort: the cards error surface already reports a dead daemon.
+      // P3-327: behind the gate a failed probe IS the "no mission yet" state —
+      // otherwise the placeholder ellipsis would spin forever.
+      if (prePairing) setMission(null);
     }
-  }, [daemonApi]);
+  }, [daemonApi, prePairing]);
 
   const loadTimeline = useCallback(async (task: string) => {
     if (!daemonApi) return;
@@ -352,7 +368,7 @@ export default function MissionControlView({
         <h1 style={{ fontSize: "1rem", margin: 0, flex: 1 }}>
           <IconRadar size={16} /> Mission Control
         </h1>
-        {!phone && (
+        {!phone && !prePairing && (
           <>
             <button className={view === "dash" ? "on" : ""} onClick={() => setView("dash")} aria-label={t("missionDash")}>
               {t("missionDash")}
@@ -366,7 +382,7 @@ export default function MissionControlView({
             </button>
           </>
         )}
-        {browse && (
+        {browse && !prePairing && (
           <button onClick={() => void liveShotNow()} disabled={liveBusy} aria-label="live dashboard shot">
             {liveBusy ? "…" : t("missionLive")}
           </button>

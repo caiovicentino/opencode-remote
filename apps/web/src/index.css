@@ -3456,6 +3456,17 @@ button.desk-new:hover:not(:disabled) {
   color: var(--accent);
   border-color: var(--accent);
 }
+/* P3-327: the pane is reachable from the first-boot gate shell at ~500px —
+   the view tabs wrap to a second row instead of painting over a title that
+   the flex squeeze already clipped to nothing. */
+.mission header {
+  flex-wrap: wrap;
+}
+.mission header h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mission-grid {
   flex: 1;
   min-height: 0;
