@@ -1162,6 +1162,12 @@ button.desk-new:disabled {
   color: var(--danger);
   font-size: 0.85rem;
 }
+/* P3-378: a rejected typed URL (file://, data:…, garbage) flags the bar itself
+   — rejection must be unmissable over a still-loaded page, not a lone line. */
+.browser-bar input[aria-invalid="true"],
+.screen input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
 .browser-frame {
   flex: 1;
   min-height: 0;

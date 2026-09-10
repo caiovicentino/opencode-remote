@@ -385,7 +385,11 @@ private. That is the product: **local power, remote control, zero trust**.
   toggle or a window resize — instead of painting in a top strip (P2-092). The pane's first
   paint is a designed new-tab empty state (P3-379): nothing loads until you type an address
   or a preview event arrives — it never auto-navigates to a host service (the old default URL
-  silently reached the machine's daemon dashboard from unpaired boots). A download started
+  silently reached the machine's daemon dashboard from unpaired boots). A typed URL that
+  parses but isn't http(s) — `file://`, `data:`, … — is rejected with named feedback (P3-378):
+  the address bar flags red and a specific sentence explains the sandbox's http(s)-only rule
+  and the way out (serve the folder over HTTP and open its localhost URL) instead of leaving
+  the typed URL silently ignored. A download started
   in the pane follows the shell's one download policy — no native dialog, sanitized name,
   saved to the system Downloads folder or refused with a log line (P2-241). The Playwright
   screenshot mode (`/api/browse`) remains the fallback in the PWA

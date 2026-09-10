@@ -56,6 +56,18 @@ function browserErrorText(raw: string, t: TFn): string {
   return t("browserErrGeneric", { msg: raw });
 }
 
+/** P3-378: classifies a rejected address-bar target. A URL that parses but
+ * isn't http(s) (file://, data:…) is a deliberate sandbox rejection and gets
+ * its own explanation; unparseable input is the generic typo case. */
+function rejectMessage(t: TFn, target: string): string {
+  try {
+    new URL(target);
+    return t("browserLocalFile");
+  } catch {
+    return t("browserInvalidUrl");
+  }
+}
+
 export default function BrowserView({
   browse,
   onBack,
@@ -103,6 +115,9 @@ function WebViewPane({
   // A real page is (or was) loaded: the empty state only paints before that.
   const [started, setStarted] = useState(() => Boolean(previewUrl));
   const [error, setError] = useState("");
+  // P3-378: the bar itself flags a rejected typed URL (red border) — the lone
+  // red line under it was too easy to miss over a still-loaded page.
+  const [rejected, setRejected] = useState(false);
   const [loading, setLoading] = useState(false);
   const wvRef = useRef<WebviewElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -133,6 +148,7 @@ function WebViewPane({
     setStarted(true);
     setInput(previewUrl);
     setError("");
+    setRejected(false);
     const wv = wvRef.current;
     if (!wv) {
       setSrc(previewUrl); // not mounted yet — the attribute drives the first load
@@ -163,6 +179,7 @@ function WebViewPane({
       setStarted(true);
       setInput(u);
       setError("");
+      setRejected(false);
       setLoading(false);
     };
     const onStart = () => setLoading(true);
@@ -195,9 +212,11 @@ function WebViewPane({
     // only http/https reach the webview — file:// and friends are rejected
     const normalized = normalizeHttpUrl(target.trim());
     if (!normalized) {
-      setError(t("browserInvalidUrl"));
+      setRejected(true);
+      setError(rejectMessage(t, target.trim()));
       return;
     }
+    setRejected(false);
     setError("");
     setInput(normalized);
     setStarted(true);
@@ -220,6 +239,7 @@ function WebViewPane({
     const wv = wvRef.current;
     if (!wv) return;
     setError("");
+    setRejected(false);
     try {
       wv.reload();
     } catch {
@@ -250,6 +270,7 @@ function WebViewPane({
           onKeyDown={(e) => e.key === "Enter" && go(input)}
           placeholder="http://localhost:3000"
           spellCheck={false}
+          aria-invalid={rejected || undefined}
           style={{ flex: 1 }}
         />
         <button onClick={reload} aria-label={t("browserReload")} title={t("browserReload")}>↻</button>
@@ -289,6 +310,8 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
   const [viewport, setViewport] = useState<{ width: number; height: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // P3-378: mirrors the webview pane — the bar flags a rejected typed URL
+  const [rejected, setRejected] = useState(false);
   const [showText, setShowText] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -328,6 +351,16 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
 
   const open = useCallback(
     async (target: string) => {
+      // P3-378: same client-side rejection as the webview pane — a non-http(s)
+      // target (file://…) never reaches the daemon, whose raw 400 would only
+      // ride the generic {msg} sentence.
+      const normalized = normalizeHttpUrl(target.trim());
+      if (!normalized) {
+        setRejected(true);
+        setError(rejectMessage(t, target.trim()));
+        return;
+      }
+      setRejected(false);
       setBusy(true);
       setError("");
       try {
@@ -348,7 +381,7 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
         setBusy(false);
       }
     },
-    [callJson, refresh],
+    [callJson, refresh, t],
   );
 
   // P3-379: first paint stays on the empty state — the pane must not silently
@@ -400,6 +433,7 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
           onKeyDown={(e) => e.key === "Enter" && void open(input)}
           placeholder="https://…"
           spellCheck={false}
+          aria-invalid={rejected || undefined}
         />
         <button onClick={() => void open(input)} disabled={busy}>
           {t("browserGo")}
