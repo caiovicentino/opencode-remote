@@ -4,9 +4,11 @@
  * becomes the first message of the first conversation once the daemon
  * answers. Pins the contract of the pure queue lib (sanitize/read/write/clear
  * against a fake store — fail-safe on poisoned storage), the i18n keys in
- * every supported locale (result ≠ raw key, the P3-329 lesson), and the
+ * every supported locale (result ≠ raw key, the P3-329 lesson), the
  * source wiring: DegradedView renders the queue composer and App consumes it
- * on "paired" through the home composer's send-on-open flow.
+ * on "paired" through the home composer's send-on-open flow, and (P3-386)
+ * the index.css rule that keeps the composer an active-looking field on the
+ * white card (var(--surface) + var(--border-strong), never var(--bg)).
  * Run: npx tsx scripts/gate-queue.test.ts
  */
 import { readFileSync } from "node:fs";
@@ -110,6 +112,25 @@ const app = src("apps/web/src/App.tsx");
 check("App consumes the queue when the shell pairs", app.includes("readGateQueue(localStorage)"));
 check("App rides the send-on-open flow (markSendOnOpen + prefill)", app.includes("markSendOnOpen(queued)") && app.includes("createSession(queued)"));
 check("App clears the queue only after creation succeeds", /if \(!err\) clearGateQueue/.test(app));
+
+// --- P3-386: the composer reads as an active field on the white card -------------
+// Source pin for the restyle: a later refactor silently reverting the input to
+// the page gray (var(--bg)) would resurrect the disabled-looking hero element.
+const css = src("apps/web/src/index.css");
+const inputRule = css.match(/\.degraded-queue-input\s*\{[^}]*\}/);
+check("index.css styles .degraded-queue-input", inputRule !== null);
+check(
+  "composer paints on the white card (var(--surface))",
+  !!inputRule && /background:\s*var\(--surface\)/.test(inputRule[0]),
+);
+check(
+  "composer keeps a firmer resting border (1px solid var(--border-strong))",
+  !!inputRule && /border:\s*1px solid var\(--border-strong\)/.test(inputRule[0]),
+);
+check(
+  "composer never reverts to the disabled-looking page gray (var(--bg))",
+  !!inputRule && !inputRule[0].includes("var(--bg)"),
+);
 
 if (failures) {
   console.error(`\n${failures} failure(s)`);
