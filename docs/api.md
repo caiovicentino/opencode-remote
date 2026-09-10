@@ -211,7 +211,9 @@ exactly as it was. The verdict is no longer frozen at the last catalog fetch
 that already happened (the context ruler's on-miss refresh and the /provider
 passthrough): right before the route answers and ONLY while the current
 verdict is not `ready`, the daemon re-observes the already-existing opencode
-`/provider` catalog — at most once per `OCR_MODEL_READINESS_MIN_MS` (whole
+`/provider` catalog — with the same forwarded credential and the same upstream
+probe timeout every other upstream read uses — at most once per
+`OCR_MODEL_READINESS_MIN_MS` (whole
 milliseconds, default 60000, ceiling 3600000; invalid values fail the boot,
 fail-closed). A verdict that already says `ready` is never re-observed and a
 re-observation in flight is never duplicated. Set

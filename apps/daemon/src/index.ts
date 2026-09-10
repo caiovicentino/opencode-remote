@@ -564,14 +564,19 @@ async function maybeReobserveModelCatalog(): Promise<void> {
   if (modelReadinessKnobs.disabled || plan.action !== "observe") return;
   modelObserveInFlight = true;
   try {
-    const res = await fetch(new URL("/provider", OPENCODE_URL));
-    if (res.ok) {
-      noteProviderCatalog(await res.json(), true);
+    // round 2 review: the observation rides the shared catalog fetch — the
+    // forwarded credential and the upstream probe timeout included — so an
+    // authed server is never misread as "no model" and a hung upstream can
+    // never stall this polled route.
+    const got = await fetchProviderCatalog();
+    if (got.ok) {
+      noteProviderCatalog(got.catalog, true);
     } else {
       noteProviderCatalog(null, false);
-      log("warn", "model re-observation failed — advertising unknown", { reason: `provider status ${res.status}` });
+      log("warn", "model re-observation failed — advertising unknown", { reason: got.reason });
     }
   } catch {
+    // belt-and-braces: the observation itself must never take the route down
     noteProviderCatalog(null, false);
     log("warn", "model re-observation failed — advertising unknown", { reason: "provider unreachable" });
   } finally {
@@ -718,6 +723,26 @@ function stageChunk(
 const authHeader = OPENCODE_PASS
   ? `Basic ${Buffer.from(`${OPENCODE_USER}:${OPENCODE_PASS}`).toString("base64")}`
   : undefined;
+
+/** The one upstream read of the ALREADY-EXISTING opencode /provider catalog:
+ * forwards the same credential every other upstream fetch sends (a 401ing
+ * observation must never freeze the model verdict) and carries the shared
+ * upstream probe timeout, so a hung server cannot stall the caller (the
+ * model status route is polled). Never throws — every failure comes back as
+ * { ok: false } with a coarse reason (status code or fixed string — never a
+ * path, never a secret). */
+async function fetchProviderCatalog(): Promise<{ ok: true; catalog: unknown } | { ok: false; reason: string }> {
+  try {
+    const res = await fetch(new URL("/provider", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+      signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return { ok: false, reason: `provider status ${res.status}` };
+    return { ok: true, catalog: await res.json() };
+  } catch {
+    return { ok: false, reason: "provider unreachable" };
+  }
+}
 
 interface NotifySettings {
   permission: boolean;
@@ -910,11 +935,11 @@ async function proxy(req: OpRequest): Promise<OpResponse> {
         window = providerWindows.lookup(providerID, modelID);
         if (!window) {
           try {
-            const pres = await fetch(new URL("/provider", OPENCODE_URL), {
-              headers: authHeader ? { authorization: authHeader } : {},
-            });
-            if (pres.ok) {
-              const catalog = (await pres.json()) as Parameters<typeof providerWindows.refresh>[0];
+            // P3-397 round 2: the same shared, auth-forwarded, timeout-capped
+            // catalog fetch the lazy model re-observation rides.
+            const got = await fetchProviderCatalog();
+            if (got.ok) {
+              const catalog = got.catalog as Parameters<typeof providerWindows.refresh>[0];
               providerWindows.refresh(catalog);
               // P2-210: same catalog, already fetched — record the readiness
               // summary without a new request or a freshness-policy change.

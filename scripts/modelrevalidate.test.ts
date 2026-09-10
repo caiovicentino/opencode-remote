@@ -148,15 +148,29 @@ const NOW = 1_800_000_000_000; // arbitrary fixed "now" anchor (pure: no clock r
     route.includes("await maybeReobserveModelCatalog();") && route.includes("body: modelStatus()") && !route.includes("fetch("),
   );
 
-  // the ceiling gate precedes the fetch inside the helper (the "portão do teto")
+  // the ceiling gate precedes the shared catalog fetch (the "portão do teto")
   const helperAt = indexSrc.indexOf("async function maybeReobserveModelCatalog");
   const helper = helperAt >= 0 ? indexSrc.slice(helperAt, indexSrc.indexOf("\n}", helperAt) + 2) : "";
   check(
-    "wiring: the observation reuses the existing /provider catalog read behind the ceiling gate",
+    "wiring: the observation rides the shared catalog fetch behind the ceiling gate",
     helper.includes("modelRevalidatePlan(") &&
-      helper.indexOf("modelRevalidatePlan(") < helper.indexOf('fetch(new URL("/provider", OPENCODE_URL))') &&
+      helper.indexOf("modelRevalidatePlan(") < helper.indexOf("await fetchProviderCatalog()") &&
       helper.includes("noteProviderCatalog(") &&
       helper.includes("modelReadinessKnobs.disabled || plan.action !== \"observe\""),
+  );
+
+  // round 2 review: the ONE shared catalog fetch forwards the upstream
+  // credential (a 401ing observation must never freeze the verdict) and caps
+  // the wait at the documented upstream probe timeout (the route is polled);
+  // both catalog readers — the lazy re-observation and the context ruler's
+  // on-miss refresh — ride it.
+  const sharedAt = indexSrc.indexOf("async function fetchProviderCatalog");
+  const shared = sharedAt >= 0 ? indexSrc.slice(sharedAt, indexSrc.indexOf("\n}", sharedAt) + 2) : "";
+  check(
+    "wiring: the shared catalog fetch forwards the credential and caps the wait at the upstream probe timeout",
+    shared.includes("headers: authHeader ? { authorization: authHeader } : {}") &&
+      shared.includes("signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS)") &&
+      (indexSrc.match(/await fetchProviderCatalog\(\)/g) || []).length === 2,
   );
 
   // a failed observation never throws and never leaks a path or a secret:
