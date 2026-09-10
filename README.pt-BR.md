@@ -1314,6 +1314,11 @@ aberta com a janela em segundo plano, o ícone do app mostra o indicador —
 contagem no dock do macOS/Linux e um disco verde sobreposto ao ícone na
 barra de tarefas do Windows. Focar a janela limpa o indicador.
 
+**Aviso de resposta do agente (P2-326)**: quando o agente responde com a
+janela fora de foco, uma notificação nativa avisa no máximo uma vez por
+minuto — ela nunca carrega conteúdo da mensagem, e o clique traz a janela
+para a frente.
+
 O **Mission Control** (Cmd+6) é o pós-mortem navegável das runs autônomas do
 pilot: um card por tarefa de agente (objetivo, progresso, esforço em minuto,
 ETA enquanto roda) lido do `pilot.log`/`events.jsonl` real, mais a timeline
