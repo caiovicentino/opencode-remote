@@ -115,12 +115,14 @@ private. That is the product: **local power, remote control, zero trust**.
   `OCR_TTS_BLOCK=1` on the daemon is a test hatch that forces the
   missing-tool verdict for deterministic screenshots
 - **Camera ask ("Olho")** — a camera button in the composer opens a live
-  viewfinder sheet: the shutter captures the current frame (canvas → JPEG →
-  the same attachment pipeline as file images, downscaled to ≤1568px), you
-  type a question and send — photo and text ride one message, and the sheet
-  stays open so a follow-up question never reopens the camera. Nothing
-  streams: the frame leaves the device only when you press send, and the
-  sheet says so. The camera state machine reuses the pairing scanner's
+  viewfinder sheet: the shutter stages the current frame locally (canvas →
+  JPEG in memory, no upload), you type a question and press send — only then
+  is each staged photo downscaled (≤1568px) and uploaded through the same
+  chunked attachment pipeline as file images, so photo and text ride one
+  message; the sheet stays open so a follow-up question never reopens the
+  camera, and abandoning it transmits nothing. Nothing streams: the frame
+  leaves the device only when you press send, and the sheet says so. The
+  camera state machine reuses the pairing scanner's
   proven patterns (back camera first, iOS abort retry, dead-feed watchdog)
   and, inside the desktop shell, the same camera-permission verdict with the
   system-panel shortcut. If the model rejects images, the readable

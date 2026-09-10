@@ -2450,13 +2450,33 @@ button.desk-new:disabled {
   align-items: center;
   gap: 8px;
 }
+.cam-shot-wrap {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+}
 .cam-shot-thumb {
   width: 40px;
   height: 40px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   object-fit: cover;
-  flex-shrink: 0;
+  display: block;
+}
+.cam-shot-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
 }
 .cam-question {
   flex: 1;

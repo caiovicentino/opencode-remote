@@ -16,7 +16,7 @@ import { modelHintKey, useModelStatus } from "../lib/modelstatus";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
 import ModelMissingActions from "./ModelMissingActions";
-import CameraSheet from "./CameraSheet";
+import CameraSheet, { type StagedCameraShot } from "./CameraSheet";
 import { type CameraAccessVerdict } from "./QrScanner";
 import { saveFile } from "../lib/files";
 import { copyText } from "../lib/clipboard";
@@ -1769,9 +1769,12 @@ export default function ChatView({
     });
   }
 
-  async function send(override?: string) {
+  async function send(override?: string, extraAttachments?: PendingImage[]) {
+    // P3-402: extraAttachments are the camera sheet's locally staged shots —
+    // already uploaded by the time send() runs (send-time transmission).
+    const staged = extraAttachments ?? [];
     const text = (override ?? input).trim();
-    if ((!text && images.length === 0) || sending || liveText || liveThinking) return;
+    if ((!text && images.length === 0 && staged.length === 0) || sending || liveText || liveThinking) return;
     // the reader's own message always lands on the newest tail
     atBottomRef.current = true;
     setAtBottom(true);
@@ -1784,16 +1787,16 @@ export default function ChatView({
     // P1-088: clears ONLY the sending session's draft (it is the current one
     // at click time) — a half-typed draft in another session is never wiped.
     updateInput("");
+    const attached = [...images, ...staged];
     setBubbles((b) => [
       ...b,
       {
         role: "user",
-        text: text || attachmentLabel(images),
+        text: text || attachmentLabel(attached),
         pending: true,
       },
     ]);
     try {
-      const attached = [...images];
       const buildBody = (): Record<string, unknown> => {
         const fileParts = attached.map((img) => ({
           type: "file",
@@ -2099,16 +2102,35 @@ export default function ChatView({
     }
   }
 
-  // P3-402: camera-ask plumbing — the shutter feeds the SAME attach pipeline
-  // as attachImage (downscale ≤1568px q0.75 → chunked ocr-upload:// upload),
-  // and the sheet's send is the normal send() (photo + question ride one
-  // message; the sheet stays open for a follow-up probe).
-  function captureFromCamera(file: File) {
-    void attachImage(file);
-  }
-
-  function sendFromCamera(question: string) {
-    void send(question || undefined);
+  // P3-402: camera-ask plumbing. The shutter stages the frame LOCALLY inside
+  // the sheet (camPrivacy promises "the photo only leaves when you send it"),
+  // so the chunked ocr-upload:// upload runs HERE — at send time, never at
+  // capture; abandoning the sheet transmits nothing. Staged shots ride the
+  // same downscale ≤1568px q0.75 + send() path as any composer attachment,
+  // and the sheet stays open for a follow-up probe.
+  function sendFromCamera(question: string, shots: StagedCameraShot[]) {
+    void (async () => {
+      if (shots.length === 0) {
+        await send(question || undefined);
+        return;
+      }
+      setUploading(true);
+      setError("");
+      try {
+        const staged: PendingImage[] = [];
+        for (const shot of shots) {
+          const { bytes, mime } = await downscaleImage(shot.file);
+          const filename = `shot-${Date.now()}.jpg`;
+          const id = await uploadBytes(bytes, mime, filename);
+          staged.push({ id, mime, filename, thumb: shot.thumb, raw: bytes });
+        }
+        await send(question || undefined, staged);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setUploading(false);
+      }
+    })();
   }
 
   async function micDown() {
@@ -3480,7 +3502,6 @@ export default function ChatView({
       {camOpen && (
         <CameraSheet
           onClose={() => setCamOpen(false)}
-          onCapture={captureFromCamera}
           onSend={sendFromCamera}
           getCamAccess={getCamAccess}
           busy={uploading || sending}

@@ -137,11 +137,14 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   rotina, mais recente primeiro, com estado vazio falado)
 - Cmd+K: switcher de sessões com preview e teclas ←/→
 - Câmera-pergunta "Olho" (P3-402): botão de câmera no composer abre um
-  viewfinder ao vivo em sheet — o shutter captura o frame atual (canvas →
-  JPEG → mesmo pipeline de anexo das imagens de arquivo), o usuário digita a
-  pergunta e envia; foto e texto viajam numa mensagem só e o sheet permanece
-  aberto pra pergunta de follow-up sem reabrir a câmera. Nada de streaming: o
-  frame só sai no envio ("a foto só sai quando você envia", na própria UI). A
+  viewfinder ao vivo em sheet — o shutter prepara o frame localmente (canvas →
+  JPEG em memória, sem upload), o usuário digita a pergunta e envia; só no
+  envio cada foto preparada é reduzida (≤1568px) e sobe pelo mesmo pipeline
+  de anexo das imagens de arquivo, com foto e texto numa mensagem só, e o
+  sheet permanece aberto pra pergunta de follow-up sem reabrir a câmera.
+  Nada de streaming: o frame só sai do dispositivo quando o botão de envio é
+  pressionado ("a foto só sai quando você envia", na própria UI) — abandonar
+  o sheet não transmite nada. A
   máquina de estados da câmera reusa os padrões provados do scanner de QR
   (facingMode environment, retry de abort do iOS, watchdog de feed morto) e,
   no shell desktop, a mesma ponte de veredito de permissão com atalho pro

@@ -5,20 +5,27 @@ import { useT } from "../lib/i18n";
 import { errorReason, type CameraAccessVerdict, type ScanReason } from "./QrScanner";
 import { IconCamera, IconSwitchCamera, IconX, IconZap } from "./icons";
 
+/** A shutter capture staged LOCALLY in the sheet: the frame is transmitted
+ * only when the parent's send path uploads it (P3-402 — camPrivacy promises
+ * the photo leaves the device when you send it, so capture never calls the
+ * network). thumb is an object: URL of the captured blob whose ownership
+ * transfers to the caller on send (the composer chip reuses it). */
+export interface StagedCameraShot {
+  file: File;
+  thumb: string;
+}
+
 interface Props {
   onClose: () => void;
-  /** Shutter: the current frame as a JPEG File, ready for the attach pipeline
-   * (ChatView attachImage → downscale ≤1568px → chunked ocr-upload://). */
-  onCapture: (file: File) => void;
-  /** Send the typed question — the attachments staged via onCapture ride the
-   * same composer state, so the message carries photo + text in one part list. */
-  onSend: (question: string) => void;
+  /** Send the typed question with the locally staged shots — the parent
+   * uploads them here, at send time, through the normal attach pipeline. */
+  onSend: (question: string, shots: StagedCameraShot[]) => void;
   /** P3-402: camera-permission verdict (desktop shell only, same bridge the
    * QrScanner uses). Absent on the phone — the dictionary copy stays. */
   getCamAccess?: () => Promise<CameraAccessVerdict | null>;
   /** Chat is uploading an attachment or sending — gates shutter + send. */
   busy?: boolean;
-  /** The composer has something to send (text typed or attachment staged). */
+  /** The composer already has something to send (text typed or attachment). */
   canSend?: boolean;
   /** Last chat/send error — surfaced here as the vision-degradation card. */
   error?: string;
@@ -27,13 +34,12 @@ interface Props {
 /** P3-402 camera-ask v1 ("Olho"): a live viewfinder over the SAME proven
  * getUserMedia state machine as QrScanner (facingMode environment,
  * playsinline+muted before srcObject, one 400ms retry on the iOS AbortError,
- * dead-feed watchdog via lib/qrfeed). Nothing streams: the frame leaves the
- * device only when the shutter is pressed — the privacy line in the UI says
- * exactly that, and the sheet stays open after sending so a follow-up
- * question never reopens the camera. */
+ * dead-feed watchdog via lib/qrfeed). Nothing streams and capture does no
+ * I/O: the shutter only stages the frame in memory — the frame leaves the
+ * device when the send button runs the upload. The sheet stays open after
+ * sending so a follow-up question never reopens the camera. */
 export default function CameraSheet({
   onClose,
-  onCapture,
   onSend,
   getCamAccess,
   busy,
@@ -50,10 +56,20 @@ export default function CameraSheet({
   const [torchReady, setTorchReady] = useState(false);
   const [question, setQuestion] = useState("");
   const [flash, setFlash] = useState(false);
-  const [lastShot, setLastShot] = useState("");
+  const [shots, setShots] = useState<StagedCameraShot[]>([]);
   const trackRef = useRef<MediaStreamTrack | null>(null);
   const camAccessRef = useRef(getCamAccess);
   camAccessRef.current = getCamAccess;
+  const shotsRef = useRef<StagedCameraShot[]>([]);
+  shotsRef.current = shots;
+
+  // unsent staged shots stay in-memory frames on this device — on unmount
+  // their object URLs are released; nothing was ever transmitted
+  useEffect(() => {
+    return () => {
+      for (const s of shotsRef.current) URL.revokeObjectURL(s.thumb);
+    };
+  }, []);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -187,10 +203,14 @@ export default function CameraSheet({
     canvas.toBlob(
       (blob) => {
         if (!blob) return;
-        setLastShot(canvas.toDataURL("image/jpeg", 0.4));
+        // single encode — the display thumb is the same blob, object-URL'd
+        const thumb = URL.createObjectURL(blob);
+        setShots((prev) => [
+          ...prev,
+          { file: new File([blob], `shot-${Date.now()}.jpg`, { type: "image/jpeg" }), thumb },
+        ]);
         setFlash(true);
         setTimeout(() => setFlash(false), 220);
-        onCapture(new File([blob], `shot-${Date.now()}.jpg`, { type: "image/jpeg" }));
       },
       "image/jpeg",
       0.9,
@@ -200,9 +220,13 @@ export default function CameraSheet({
   const sendQuestion = () => {
     if (busy) return;
     const q = question.trim();
-    if (!q && !canSend) return;
+    if (!q && !canSend && shots.length === 0) return;
     setQuestion("");
-    onSend(q);
+    // ownership of the shot thumbs transfers to the caller (the composer chip
+    // reuses the object URL) — only unsent URLs are revoked on unmount
+    const payload = shots;
+    setShots([]);
+    onSend(q, payload);
   };
 
   // P3-402: the system-panel action only when the system is in the way —
@@ -214,6 +238,8 @@ export default function CameraSheet({
     (camVerdict.verdict === "blocked-by-system" || camVerdict.verdict === "unknown")
       ? camVerdict.settingsTarget
       : null;
+
+  const lastShot = shots.length > 0 ? (shots[shots.length - 1]?.thumb ?? "") : "";
 
   return (
     <div className="cam-sheet" role="dialog" aria-modal="true" aria-label={t("camTitle")}>
@@ -292,7 +318,12 @@ export default function CameraSheet({
       </div>
 
       <div className="cam-ask">
-        {lastShot && <img src={lastShot} alt="" className="cam-shot-thumb" />}
+        {lastShot && (
+          <span className="cam-shot-wrap">
+            <img src={lastShot} alt="" className="cam-shot-thumb" />
+            {shots.length > 1 && <span className="cam-shot-count">{shots.length}</span>}
+          </span>
+        )}
         <input
           className="cam-question"
           type="text"
@@ -310,7 +341,7 @@ export default function CameraSheet({
         <button
           className="primary cam-send"
           onClick={sendQuestion}
-          disabled={busy || (!question.trim() && !canSend)}
+          disabled={busy || (!question.trim() && !canSend && shots.length === 0)}
         >
           {busy ? "…" : t("send")}
         </button>

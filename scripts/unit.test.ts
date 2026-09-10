@@ -1571,6 +1571,17 @@ check("CameraSheet states the shutter-only privacy rule", cameraSheetSource.incl
 check("CameraSheet shutter emits a JPEG file for the attach pipeline", cameraSheetSource.includes('type: "image/jpeg"'));
 check("CameraSheet maps the missing-torch state, not a silent button", cameraSheetSource.includes("torchSupported") && cameraSheetSource.includes("torchConstraint"));
 
+// P3-402 round 2: the privacy line (camPrivacy) is only true when capture
+// does no I/O — the shutter stages locally and the upload runs in the send
+// path. The battery pins that split by function body, so a future refactor
+// cannot quietly move the upload back to capture time.
+const cameraSendBody = chatViewSource.slice(
+  chatViewSource.indexOf("function sendFromCamera"),
+  chatViewSource.indexOf("async function micDown"),
+);
+check("camera shots upload at send time, never at capture", cameraSendBody.includes("downscaleImage") && cameraSendBody.includes("uploadBytes") && cameraSendBody.includes("send("));
+check("camera sheet performs no network of its own", !cameraSheetSource.includes("fetch(") && !cameraSheetSource.includes("request(") && !cameraSheetSource.includes("XMLHttpRequest"));
+
 check("torchSupported fails closed on absent capabilities", torchSupported(null) === false && torchSupported(undefined) === false && torchSupported({}) === false);
 check("torchSupported admits a real torch capability", torchSupported({ torch: true }) && torchSupported({ torch: false, width: 1280 }));
 check("torchConstraint wraps the toggle in advanced", torchConstraint(true).advanced[0].torch === true && torchConstraint(false).advanced[0].torch === false);
