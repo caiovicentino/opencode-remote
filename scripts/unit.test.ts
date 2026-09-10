@@ -2993,7 +2993,7 @@ function ghMergingIo(realIo: { exec: (cmd: string) => { ok: boolean; output: str
       JSON.stringify({ date: "2026-01-01", tasks: 5, deploys: 3, failures: 2, taskAttempts: { "T-001": 3 } }),
     );
     const rolled = loadState(file);
-    const today = new Date().toLocaleDateString("en-CA");
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
     check("loadState rolls daily counters", rolled.date === today && rolled.tasks === 0 && rolled.deploys === 0);
     check("loadState keeps taskAttempts across midnight", rolled.taskAttempts["T-001"] === 3);
     writeFileSync(file, JSON.stringify({ date: today, tasks: 1, deploys: 1, failures: 1 }));
@@ -8522,7 +8522,7 @@ check(
   const dir = mkdtempSync(join(tmpdir(), "pilot-infra-state-"));
   try {
     const file = join(dir, "state.json");
-    writeFileSync(file, JSON.stringify({ date: new Date().toLocaleDateString("en-CA"), tasks: 1, deploys: 0, failures: 0, taskAttempts: {} }));
+    writeFileSync(file, JSON.stringify({ date: new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }), tasks: 1, deploys: 0, failures: 0, taskAttempts: {} }));
     check("infra: loadState backfills infraFails for legacy state", loadState(file).infraFails === 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -9078,7 +9078,7 @@ check(
     writeFileSync(file, JSON.stringify({ date: "2026-01-01", tasks: 5, deploys: 3, failures: 2, merges: 4, taskAttempts: {} }));
     const rolled = loadState(file);
     check("loadState rolls the daily merge counter at midnight", rolled.date !== "2026-01-01" && rolled.merges === 0);
-    writeFileSync(file, JSON.stringify({ date: new Date().toLocaleDateString("en-CA"), tasks: 1, deploys: 1, failures: 1 }));
+    writeFileSync(file, JSON.stringify({ date: new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }), tasks: 1, deploys: 1, failures: 1 }));
     const legacy = loadState(file);
     check("loadState backfills merges for legacy state", legacy.merges === 0 && legacy.tasks === 1);
 
