@@ -202,8 +202,18 @@ function WebViewPane({
     setInput(normalized);
     setStarted(true);
     const wv = wvRef.current;
-    if (wv) wv.loadURL(normalized);
-    else setSrc(normalized);
+    if (!wv) {
+      setSrc(normalized);
+      return;
+    }
+    try {
+      wv.loadURL(normalized);
+    } catch {
+      // P3-379: from the new-tab empty state the guest has no dom-ready yet and
+      // Electron throws on loadURL — the src attribute carries the first load
+      // (same escape as the preview effect above, P2-091).
+      setSrc(normalized);
+    }
   }
 
   function reload() {
@@ -213,10 +223,8 @@ function WebViewPane({
     try {
       wv.reload();
     } catch {
-      // P3-379: with no page loaded there is nothing to reload — the pane
-      // stays on its empty state instead of falling back to a default URL.
-      const url = wv.getURL();
-      if (url) wv.loadURL(url);
+      // P3-379: a guest with no page yet (fresh empty pane, remount race) has
+      // nothing to reload — the empty state (or pending src) stays as-is.
     }
   }
 
