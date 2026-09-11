@@ -13,6 +13,7 @@ import { join, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol";
 import { healthzHandler, healthzPayload, WEB_ENCODING_CACHE, type CertExpiryHealth, type HealthzState } from "../apps/relay/src/healthz";
 import { rejectionBreakdown, ROOM_REJECT_REASONS } from "../apps/relay/src/rejectreasons";
 import { certExpiryMetrics } from "../apps/relay/src/certmetrics";
@@ -78,13 +79,14 @@ const p = healthzPayload(
 );
 check("payload: ok is literal true", p.ok === true);
 check("payload: version is the monorepo version", p.version === "0.2.0");
+check("payload: protocol is the RELAY_WIRE_PROTOCOL constant (P2-331)", p.protocol === RELAY_WIRE_PROTOCOL);
 check("payload: uptimeS is whole seconds", p.uptimeS === 90);
 check("payload: rooms is the live count", p.rooms === 3);
 check("payload: roomsRejected is the live counter", p.roomsRejected === 5);
 check(
-  "payload: exactly the five specified fields",
+  "payload: exactly the six specified fields",
   JSON.stringify(Object.keys(p).sort()) ===
-    JSON.stringify(["ok", "rooms", "roomsRejected", "uptimeS", "version"]),
+    JSON.stringify(["ok", "protocol", "rooms", "roomsRejected", "uptimeS", "version"]),
 );
 check(
   "payload: clamps negative uptime",
@@ -115,11 +117,12 @@ check("handler: content-type application/json", ok.type === "application/json");
 const parsed = JSON.parse(ok.body) as {
   ok: boolean;
   version: string;
+  protocol: number;
   uptimeS: number;
   rooms: number;
   roomsRejected: number;
 };
-check("handler: body shape {ok,version,uptimeS,rooms,roomsRejected}", parsed.ok === true && typeof parsed.version === "string" && typeof parsed.uptimeS === "number" && Number.isInteger(parsed.uptimeS) && typeof parsed.rooms === "number" && typeof parsed.roomsRejected === "number");
+check("handler: body shape {ok,version,protocol,uptimeS,rooms,roomsRejected}", parsed.ok === true && typeof parsed.version === "string" && parsed.protocol === RELAY_WIRE_PROTOCOL && typeof parsed.uptimeS === "number" && Number.isInteger(parsed.uptimeS) && typeof parsed.rooms === "number" && typeof parsed.roomsRejected === "number");
 check("handler: rooms reflects live room count", parsed.rooms === 7);
 check("handler: roomsRejected reflects live counter", parsed.roomsRejected === 2);
 
@@ -262,7 +265,7 @@ const drainState = { version: "0.2.0", startedAt: DRAIN_START, rooms: () => 3, r
 check(
   "drain: healthy payload is byte-for-byte the pre-P2-145 body",
   JSON.stringify(healthzPayload(drainState, DRAIN_START + 90_000)) ===
-    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":3,"roomsRejected":5}',
+    '{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":3,"roomsRejected":5}',
 );
 const drainedPayload = healthzPayload(drainState, DRAIN_START + 90_000, true);
 check(
@@ -298,7 +301,7 @@ check(
   "drain: healthy body is byte-for-byte the pre-P2-145 format (exact key order, no draining field)",
   !probeHealthy.body.includes("draining") &&
     probeHealthy.body ===
-      `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probeHealthy.body) as { uptimeS: number }).uptimeS},"rooms":3,"roomsRejected":5}`,
+      `{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":${(JSON.parse(probeHealthy.body) as { uptimeS: number }).uptimeS},"rooms":3,"roomsRejected":5}`,
 );
 drainFlag.active = true;
 const probeDraining = await probe();
@@ -337,12 +340,12 @@ check(
     withBudget.roomsRejected === 0,
 );
 check(
-  "budget-counter: absent getter keeps the exact pre-P2-243 five-field body",
+  "budget-counter: absent getter keeps the exact pre-P2-243 six-field body",
   (() => {
     const p = healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 0, roomsRejected: () => 0 }, START);
     return (
       JSON.stringify(Object.keys(p).sort()) ===
-        JSON.stringify(["ok", "rooms", "roomsRejected", "uptimeS", "version"])
+        JSON.stringify(["ok", "protocol", "rooms", "roomsRejected", "uptimeS", "version"])
     );
   })(),
 );
@@ -931,7 +934,7 @@ check("webcsp: case-insensitive default-src detection", (() => {
   check("sec-headers: 405 carries none of the security headers", ALWAYS_ON_SECURITY_HEADERS.every((k) => notAllowed.headers[k] === undefined) && notAllowed.headers["strict-transport-security"] === undefined);
 
   const probe = await secRequest("GET", "/healthz");
-  check("sec-headers: /healthz body is byte-for-byte unchanged", probe.status === 200 && probe.body === `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`);
+  check("sec-headers: /healthz body is byte-for-byte unchanged", probe.status === 200 && probe.body === `{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":${(JSON.parse(probe.body) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`);
   check("sec-headers: /healthz carries no new header (LB contract intact)", ALWAYS_ON_SECURITY_HEADERS.every((k) => probe.headers[k] === undefined) && probe.headers["strict-transport-security"] === undefined && probe.headers["content-type"] === "application/json");
 
   secServer.close();
@@ -1137,25 +1140,25 @@ const certState = (cert: unknown): HealthzState => ({
   roomsRejected: () => 2,
   certExpiry: () => cert as CertExpiryHealth,
 });
-const FIVE_BASE_FIELDS = ["ok", "rooms", "roomsRejected", "uptimeS", "version"];
+const SIX_BASE_FIELDS = ["ok", "protocol", "rooms", "roomsRejected", "uptimeS", "version"];
 
 check(
   "cert: state without the getter keeps the exact pre-P2-290 body",
   JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 2 }, CERT_NOW)) ===
-    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2}',
+    '{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":2}',
 );
 check(
   "cert: absent verdict (getter answers undefined) adds nothing",
   (() => {
     const keys = Object.keys(healthzPayload(certState(undefined), CERT_NOW)).sort();
-    return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+    return JSON.stringify(keys) === JSON.stringify(SIX_BASE_FIELDS);
   })(),
 );
 check(
   "cert: non-textual verdict adds nothing",
   (() => {
     const keys = Object.keys(healthzPayload(certState({ verdict: 42, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)).sort();
-    return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+    return JSON.stringify(keys) === JSON.stringify(SIX_BASE_FIELDS);
   })(),
 );
 for (const outside of ["expired", "USE", "", "warn ", "healthy"]) {
@@ -1163,7 +1166,7 @@ for (const outside of ["expired", "USE", "", "warn ", "healthy"]) {
     `cert: verdict outside the documented table adds nothing (${JSON.stringify(outside)})`,
     (() => {
       const keys = Object.keys(healthzPayload(certState({ verdict: outside, expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW)).sort();
-      return JSON.stringify(keys) === JSON.stringify(FIVE_BASE_FIELDS);
+      return JSON.stringify(keys) === JSON.stringify(SIX_BASE_FIELDS);
     })(),
   );
 }
@@ -1176,7 +1179,7 @@ for (const verdict of ["use", "warn", "refuse-expired", "refuse-not-yet-valid"])
         p.certExpiryVerdict === verdict &&
         p.certExpiryInS === 50 &&
         JSON.stringify(Object.keys(p)) ===
-          JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"])
+          JSON.stringify(["ok", "version", "protocol", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"])
       );
     })(),
   );
@@ -1205,12 +1208,12 @@ check(
 check(
   "cert: additive fields ride the drain response without changing any other field",
   JSON.stringify(healthzPayload(certState({ verdict: "warn", expiresAtMs: CERT_NOW + 50_000 }), CERT_NOW, true)) ===
-    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2,"certExpiryVerdict":"warn","certExpiryInS":50,"draining":true}',
+    '{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":2,"certExpiryVerdict":"warn","certExpiryInS":50,"draining":true}',
 );
 check(
   "cert: drain response without the getter stays byte-for-byte the pre-P2-290 body",
   JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 2 }, CERT_NOW, true)) ===
-    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":2,"draining":true}',
+    '{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":2,"draining":true}',
 );
 check(
   "cert: identical input produces an identical body in two calls",
@@ -1236,7 +1239,7 @@ check(
     const body = JSON.stringify(planted);
     return (
       JSON.stringify(Object.keys(planted)) ===
-        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"]) &&
+        JSON.stringify(["ok", "version", "protocol", "uptimeS", "rooms", "roomsRejected", "certExpiryVerdict", "certExpiryInS"]) &&
       !body.includes("relay-secret") &&
       !body.includes("Evil") &&
       !body.includes("DEADBEEF") &&
@@ -1461,7 +1464,7 @@ check("encoding cache: the key binds path, size and mtime together", (() => {
       probe.headers["content-encoding"] === undefined &&
       probe.headers["vary"] === undefined &&
       probe.body.toString() ===
-        `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
+        `{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
   );
 
   gzipServer.close();
@@ -1635,7 +1638,7 @@ check("cond: an unterminated quote is just a non-match (send)", conditionalVerdi
     probe.status === 200 &&
       probe.headers.etag === undefined &&
       probe.body.toString() ===
-        `{"ok":true,"version":"0.2.0","uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
+        `{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":${(JSON.parse(probe.body.toString()) as { uptimeS: number }).uptimeS},"rooms":7,"roomsRejected":2}`,
   );
 
   condServer.close();
@@ -1735,38 +1738,38 @@ const rejectState = (counters: unknown): HealthzState => ({
   roomsRejected: () => 9,
   roomsRejectedBreakdown: () => counters,
 });
-const FIVE_FIELD_BODY = '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9}';
+const SIX_FIELD_BODY = '{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":9}';
 
 check(
   "reject-probe: state without the getter keeps the exact pre-P2-293 body",
-  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, REJECT_NOW)) === FIVE_FIELD_BODY,
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, REJECT_NOW)) === SIX_FIELD_BODY,
 );
 check(
   "reject-probe: state without the getter keeps the exact pre-P2-293 drain body",
   JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, REJECT_NOW, true)) ===
-    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"draining":true}',
+    '{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":9,"draining":true}',
 );
 check(
   "reject-probe: valid counters add exactly the two documented fields after the anchor fields",
   JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW)) ===
-    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2}',
+    '{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2}',
 );
 check(
   "reject-probe: the breakdown rides the drain response without changing any other field",
   JSON.stringify(healthzPayload(rejectState(VALID_COUNTS), REJECT_NOW, true)) ===
-    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2,"draining":true}',
+    '{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":9,"roomsRejectedInvalidRoomId":7,"roomsRejectedSocketRoomCap":2,"draining":true}',
 );
 check(
   "reject-probe: a getter answering undefined adds nothing",
-  JSON.stringify(healthzPayload(rejectState(undefined), REJECT_NOW)) === FIVE_FIELD_BODY,
+  JSON.stringify(healthzPayload(rejectState(undefined), REJECT_NOW)) === SIX_FIELD_BODY,
 );
 check(
   "reject-probe: a getter answering a non-object adds nothing",
-  (() => (["junk", 42, true, []] as unknown[]).every((v) => JSON.stringify(healthzPayload(rejectState(v), REJECT_NOW)) === FIVE_FIELD_BODY))(),
+  (() => (["junk", 42, true, []] as unknown[]).every((v) => JSON.stringify(healthzPayload(rejectState(v), REJECT_NOW)) === SIX_FIELD_BODY))(),
 );
 check(
   "reject-probe: a getter with non-numeric slots adds nothing",
-  JSON.stringify(healthzPayload(rejectState({ "invalid-room-id": "x", "socket-room-cap": 1 }), REJECT_NOW)) === FIVE_FIELD_BODY,
+  JSON.stringify(healthzPayload(rejectState({ "invalid-room-id": "x", "socket-room-cap": 1 }), REJECT_NOW)) === SIX_FIELD_BODY,
 );
 check(
   "reject-probe: identical input produces an identical body in two calls",
@@ -1790,7 +1793,7 @@ check(
     const body = JSON.stringify(planted);
     return (
       JSON.stringify(Object.keys(planted)) ===
-        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"]) &&
+        JSON.stringify(["ok", "version", "protocol", "uptimeS", "rooms", "roomsRejected", "roomsRejectedInvalidRoomId", "roomsRejectedSocketRoomCap"]) &&
       !body.includes("abc123") &&
       !body.includes("10.0.0.1") &&
       !body.includes("s1abcd") &&
@@ -2556,27 +2559,27 @@ const instanceState = (v: unknown): HealthzState => ({
 
 check(
   "instance-probe: state without the getter keeps the exact pre-P3-401 healthy body",
-  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, INSTANCE_NOW)) === FIVE_FIELD_BODY,
+  JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, INSTANCE_NOW)) === SIX_FIELD_BODY,
 );
 check(
   "instance-probe: state without the getter keeps the exact pre-P3-401 drain body",
   JSON.stringify(healthzPayload({ version: "0.2.0", startedAt: START, rooms: () => 1, roomsRejected: () => 9 }, INSTANCE_NOW, true)) ===
-    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"draining":true}',
+    '{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":9,"draining":true}',
 );
 check(
   "instance-probe: a valid value is exactly the previous keys plus one, verbatim",
   JSON.stringify(healthzPayload(instanceState("replica-b"), INSTANCE_NOW)) ===
-    '{"ok":true,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"instanceId":"replica-b"}',
+    '{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":9,"instanceId":"replica-b"}',
 );
 check(
   "instance-probe: the field rides the drain response additively, before draining",
   JSON.stringify(healthzPayload(instanceState("replica-b"), INSTANCE_NOW, true)) ===
-    '{"ok":false,"version":"0.2.0","uptimeS":90,"rooms":1,"roomsRejected":9,"instanceId":"replica-b","draining":true}',
+    '{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":90,"rooms":1,"roomsRejected":9,"instanceId":"replica-b","draining":true}',
 );
 for (const bad of [undefined, null, 42, true, {}, "", "   ", "a".repeat(INSTANCE_ID_MAX_LENGTH + 1), "relay 1", "relay_1", "réplica", "10.0.0.1:8787"]) {
   check(
     `instance-probe: out-of-grammar value adds nothing (${JSON.stringify(String(bad)).slice(0, 24)})`,
-    JSON.stringify(healthzPayload(instanceState(bad), INSTANCE_NOW)) === FIVE_FIELD_BODY,
+    JSON.stringify(healthzPayload(instanceState(bad), INSTANCE_NOW)) === SIX_FIELD_BODY,
   );
 }
 check(
@@ -2594,7 +2597,7 @@ check(
     const body = JSON.stringify(planted);
     return (
       JSON.stringify(Object.keys(planted)) ===
-        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected", "instanceId"]) &&
+        JSON.stringify(["ok", "version", "protocol", "uptimeS", "rooms", "roomsRejected", "instanceId"]) &&
       !body.includes("room-abc123def456") &&
       !body.includes("10.0.0.1") &&
       !body.includes("hunter2") &&
@@ -2622,6 +2625,74 @@ check(
 check(
   "instance-wiring: RELAY_INSTANCE_ID is a registered knob name (no unknown-variable warn at boot)",
   RELAY_KNOB_NAMES.includes(INSTANCE_ID_ENV),
+);
+
+// --- 32. wire protocol field (P2-331): always-announced RELAY_WIRE_PROTOCOL ---
+// The probe must let an installed machine distinguish "relay unreachable"
+// from "relay speaks a frame format this build never learned": the body
+// always carries the RELAY_WIRE_PROTOCOL constant — in the 200 and in the
+// 503 draining body alike — right after version, without moving, renaming
+// or dropping any existing field.
+const PROTOCOL_NOW = START + 90_000;
+const protocolState: HealthzState = {
+  version: "0.2.0",
+  startedAt: START,
+  rooms: () => 1,
+  roomsRejected: () => 2,
+};
+check(
+  "wire-protocol: the ok response announces protocol equal to the constant",
+  healthzPayload(protocolState, PROTOCOL_NOW).protocol === RELAY_WIRE_PROTOCOL,
+);
+check(
+  "wire-protocol: the draining (503) response announces protocol too",
+  healthzPayload(protocolState, PROTOCOL_NOW, true).protocol === RELAY_WIRE_PROTOCOL,
+);
+check(
+  "wire-protocol: protocol is a positive integer, independent from the package version",
+  Number.isInteger(RELAY_WIRE_PROTOCOL) && RELAY_WIRE_PROTOCOL > 0,
+);
+check(
+  "wire-protocol: existing fields keep set and relative order — protocol sits right after version",
+  (() => {
+    const keys = Object.keys(healthzPayload(protocolState, PROTOCOL_NOW));
+    return (
+      JSON.stringify(keys.filter((k) => k !== "protocol")) ===
+        JSON.stringify(["ok", "version", "uptimeS", "rooms", "roomsRejected"]) &&
+      keys.indexOf("protocol") === keys.indexOf("version") + 1
+    );
+  })(),
+);
+const protoServer: Server = createServer(healthzHandler(protocolState));
+await new Promise<void>((r) => protoServer.listen(0, "127.0.0.1", r));
+const protoPort = (protoServer.address() as { port: number }).port;
+const protoBody = await new Promise<string>((resolve) => {
+  get(`http://127.0.0.1:${protoPort}/healthz`, (res) => {
+    let b = "";
+    res.on("data", (c) => (b += c));
+    res.on("end", () => resolve(b));
+  }).end();
+});
+protoServer.close();
+check(
+  "wire-protocol: the handler publishes the constant over real HTTP",
+  (JSON.parse(protoBody) as { protocol: number }).protocol === RELAY_WIRE_PROTOCOL,
+);
+check(
+  "wire-protocol: healthz.ts sources the value from the imported constant, never a numeric literal",
+  (() => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../apps/relay/src/healthz.ts", import.meta.url)),
+      "utf8",
+    );
+    return (
+      src.includes('import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol/relaywire.js"') &&
+      src.includes("protocol: RELAY_WIRE_PROTOCOL,") &&
+      // a numeric literal assignment (protocol: 2,) never appears — comments
+      // mentioning "protocol: <n>" in prose do not end in a comma assignment
+      !/protocol:\s*\d+\s*,/.test(src)
+    );
+  })(),
 );
 
 if (failures) process.exit(1);

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { gzipSync } from "node:zlib";
+import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol/relaywire.js";
 import { contentTypeFor, cacheControlFor, resolveWebPath, spaFallbackPath } from "./webroot.js";
 import { securityHeaders } from "./webheaders.js";
 import {
@@ -151,6 +152,16 @@ import { isValidInstanceId } from "./instanceid.js";
  * the short opaque id — never a secret, an address, a room id or any peer
  * metadata. The drain response keeps the field, exactly like every other
  * one.
+ *
+ * P2-331: the body always carries `protocol` — the RELAY_WIRE_PROTOCOL
+ * constant from @ocr/protocol, the version of the RelayFrame format and of
+ * the join sequence — right after `version`. Unlike the getter-gated fields
+ * above this one is unconditional (a relay that cannot name its wire
+ * protocol is indistinguishable from one a peer cannot talk to), but the
+ * pattern is the same additive one: no existing field moved, was renamed or
+ * went away, no status code changed, and the field rides the 503 draining
+ * response too. It is independent from the package version and only bumps
+ * on an incompatible wire change.
  */
 
 /**
@@ -216,6 +227,9 @@ export interface HealthzState {
 export interface HealthzPayload {
   ok: boolean;
   version: string;
+  /** Additive (P2-331): the RELAY_WIRE_PROTOCOL wire version, always
+   *  present, right after version — in the 200 and in the 503 body alike. */
+  protocol: number;
   uptimeS: number;
   rooms: number;
   roomsRejected: number;
@@ -251,6 +265,9 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
   const base: HealthzPayload = {
     ok: !draining,
     version: s.version,
+    // P2-331: the wire protocol version — always announced, sourced from the
+    // @ocr/protocol constant so the probe and the frames can never drift
+    protocol: RELAY_WIRE_PROTOCOL,
     uptimeS: Math.max(0, Math.round((now - s.startedAt) / 1000)),
     rooms: s.rooms(),
     roomsRejected: s.roomsRejected(),

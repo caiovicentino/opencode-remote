@@ -17,7 +17,10 @@
  * probes are:
  *
  *   healthz         → GET /healthz answers 200 with today's counter body
- *                     (ok:true, version, uptimeS, rooms, roomsRejected)
+ *                     (ok:true, version, protocol, uptimeS, rooms,
+ *                     roomsRejected) with protocol equal to the
+ *                     RELAY_WIRE_PROTOCOL constant the image was built from
+ *                     (P2-331)
  *   web-root        → GET / answers 200, text/html, carrying every security
  *                     header P2-192 introduced (HSTS is TLS-gated and only
  *                     checked when present-allowed: the smoke runs over
@@ -35,6 +38,12 @@
  * Run: npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:<port> <user>
  */
 import { pathToFileURL } from "node:url";
+
+/** The wire protocol this tree ships. The relay-image job runs this script via
+ * bare `npx tsx` (no npm ci), so it cannot import @ocr/protocol; the literal is
+ * pinned against the package by scripts/unit.test.ts (P2-331) and the job may
+ * override it via env for out-of-tree runs. */
+const RELAY_WIRE_PROTOCOL = Number(process.env.OCR_RELAY_WIRE_PROTOCOL ?? 2);
 
 /** Per-request fetch timeout, documented in docs/RELAY-HOSTING.md. */
 export const FETCH_TIMEOUT_MS = 5000;
@@ -150,6 +159,19 @@ function parseCounters(body: string | undefined): string[] | string {
   if (counters["ok"] !== true) problems.push('counter "ok" is not true');
   if (typeof counters["version"] !== "string" || counters["version"] === "") {
     problems.push('counter "version" is not a non-empty string');
+  }
+  // P2-331: the image must announce the wire protocol it routes, and it must
+  // be the constant this very tree ships — an image answering a different
+  // (or absent, or non-integer) protocol is incompatible with the peers of
+  // this build and must not reach GHCR.
+  const protocol = counters["protocol"];
+  if (typeof protocol !== "number" || !Number.isInteger(protocol) || protocol <= 0) {
+    problems.push('counter "protocol" is not a positive integer');
+  } else if (protocol !== RELAY_WIRE_PROTOCOL) {
+    problems.push(
+      `counter "protocol" is ${protocol}, expected ${RELAY_WIRE_PROTOCOL} ` +
+        "(an incompatible relay wire protocol)",
+    );
   }
   for (const field of ["uptimeS", "rooms", "roomsRejected"]) {
     if (typeof counters[field] !== "number" || !Number.isFinite(counters[field] as number) || (counters[field] as number) < 0) {

@@ -5,6 +5,13 @@
  * opaque base64 ciphertext. It cannot read, alter or forge contents.
  */
 
+/**
+ * P2-331: the relay wire protocol version lives in relaywire.js — a plain
+ * JS module the tsc-compiled relay dist imports at runtime — and is
+ * re-exported here so the package root exports it too.
+ */
+export { RELAY_WIRE_PROTOCOL } from "./relaywire.js";
+
 /** Pairing URI scheme embedded in the QR code shown by the daemon. */
 export interface PairingInfo {
   /** protocol version */

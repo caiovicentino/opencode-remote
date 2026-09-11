@@ -15,6 +15,11 @@ COPY tsconfig.base.json ./
 COPY apps/relay/package.json apps/relay/package.json
 COPY apps/relay/tsconfig.build.json apps/relay/tsconfig.build.json
 COPY packages/protocol/package.json packages/protocol/package.json
+# P2-331: the relay dist imports RELAY_WIRE_PROTOCOL from the protocol
+# workspace at runtime — the constant module is plain JS (no TS stripping
+# needed); its .d.ts types the build. Both ship inside the image.
+COPY packages/protocol/src/relaywire.js packages/protocol/src/relaywire.js
+COPY packages/protocol/src/relaywire.d.ts packages/protocol/src/relaywire.d.ts
 # dev deps included: typescript lives in devDependencies until dist is emitted
 RUN npm ci --workspace apps/relay --workspace packages/protocol
 COPY apps/relay/src apps/relay/src
@@ -48,6 +53,8 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 COPY apps/relay/package.json apps/relay/package.json
 COPY packages/protocol/package.json packages/protocol/package.json
+# P2-331: the wire-protocol constant the dist imports at runtime (plain JS)
+COPY packages/protocol/src/relaywire.js packages/protocol/src/relaywire.js
 RUN npm ci --omit=dev --workspace apps/relay --workspace packages/protocol \
   && npm cache clean --force
 COPY --from=build /app/apps/relay/dist ./apps/relay/dist
