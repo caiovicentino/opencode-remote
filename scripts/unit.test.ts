@@ -676,7 +676,7 @@ import { BACKLOG_SKELETON, backlogSkeletonEdit, needsBacklogSkeleton, seedBacklo
 import { activeModelSubstitutions, clearModelSubstitution, formatModelSubstitutions, readModelSubstitutions, recordModelSubstitution } from "../apps/pilot/src/modelsubst";
 import { formatModelSubstitutions as formatModelSubstitutionsView, missionErrorText } from "../apps/web/src/components/MissionControlView";
 
-import { INFRA_STREAK_HARD_FAIL, clearTaskInfraStreak, infraStarvationReason, infraStreakExhausted, recordTaskInfraStreak } from "../apps/pilot/src/audit";
+import { INFRA_STREAK_HARD_FAIL, INFRA_DETAIL_MAX, INFRA_DETAIL_REDACTED, clearTaskInfraStreak, infraStarvationReason, infraStreakExhausted, recordTaskInfraStreak, sanitizeInfraDetail } from "../apps/pilot/src/audit";
 
 import { formatMissionModels } from "../apps/web/src/components/MissionControlView";
 
@@ -18615,6 +18615,31 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   clearTaskInfraStreak(st, key);
   check("infra streak: cleared by a non-infra outcome; clearing an unknown key is a no-op", st.infraStreaks?.[key] === undefined && (clearTaskInfraStreak(st, "nope"), true));
   check("infra starvation reason: names the kind, the count and the hard-failure decision (no secrets)", /"network" failed 3x in a row/.test(infraStarvationReason("network", 3)) && infraStarvationReason("network", 3).includes("hard failure"));
+  // P3-405: the last failure detail reaches the blocked reason, sanitized
+  {
+    const table: Array<[string, unknown, string | null]> = [
+      ["missing detail ⇒ null", undefined, null],
+      ["null detail ⇒ null", null, null],
+      ["non-string garbage ⇒ null", 42, null],
+      ["empty detail ⇒ null", "", null],
+      ["whitespace-only detail ⇒ null", "   \n\t  ", null],
+      ["control characters become single spaces", "gh pr view\tfailed\nbad\u0007stuff", "gh pr view failed bad stuff"],
+      ["URLs are redacted", "push to https://github.com/acme/widget.git/info/refs rejected", `push to ${INFRA_DETAIL_REDACTED} rejected`],
+      ["token-like runs are redacted (fixture built at runtime — a literal ghp_ token would trip the no-secrets invariant)", `bad header ghp_${"x".repeat(40)} refused`, `bad header ${INFRA_DETAIL_REDACTED} refused`],
+      ["long token ⇒ redacted (never echoed back)", "t".repeat(999), INFRA_DETAIL_REDACTED],
+      ["above the cap ⇒ cut at INFRA_DETAIL_MAX", "word ".repeat(200), "word ".repeat(200).trimEnd().slice(0, INFRA_DETAIL_MAX - 1) + "…"],
+    ];
+    for (const [label, raw, want] of table) check(`infra detail sanitizer: ${label}`, sanitizeInfraDetail(raw) === want);
+    check(
+      "infra starvation reason: a useful detail replaces the generic hypothesis, sanitized",
+      infraStarvationReason("ci-red", 3, "CI red: ci-gate aggregate failed (verify=FAILURE)").includes("endless free retry — last detail: CI red: ci-gate aggregate failed (verify=FAILURE)") &&
+        !infraStarvationReason("ci-red", 3, "CI red: verify=FAILURE\nhttps://token@gh").includes("https://") &&
+        infraStarvationReason("ci-red", 3, "CI red: verify=FAILURE\nhttps://token@gh").includes("last detail: CI red: verify=FAILURE [redacted]"),
+    );
+    check("infra starvation reason: no useful detail keeps the generic hypothesis", infraStarvationReason("network", 3).includes("read-only remote, dead gh, or unreachable API?") && infraStarvationReason("network", 3, "   ").includes("read-only remote, dead gh, or unreachable API?"));
+    const pilotIndexSource = readFileSync(new URL("../apps/pilot/src/index.ts", import.meta.url), "utf8");
+    check("P3-405 wiring: the infra-starvation block reason carries the real result detail (Blocked line + failure lesson)", /infraStarvationReason\(infra, streak, result\.detail\)/.test(pilotIndexSource));
+  }
   // streaks survive the midnight rollover and garbage is dropped on load
   const sdir = mkdtempSync(join(tmpdir(), "ocr-streak-"));
   try {
@@ -34184,6 +34209,10 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   check("readiness: ci-gate green overrules the advisory win failure ⇒ merge", gateGreenWinRed.verdict === "merge" && gateGreenWinRed.detail.includes("ci-gate green"));
   const gateRed = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("ci-gate", "COMPLETED", "FAILURE"), run("verify", "COMPLETED", "SUCCESS")] });
   check("readiness: ci-gate red ⇒ skip ci-red, named as the aggregate", gateRed.verdict === "skip" && gateRed.detail === "CI red: ci-gate aggregate failed");
+  // P3-405: a red aggregate names the red siblings of the same rollup (no new
+  // gh call) — the operator sees WHICH job failed, greens stay unnamed.
+  const gateRedJobs = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "UNSTABLE", statusCheckRollup: [run("ci-gate", "COMPLETED", "FAILURE"), run("verify", "COMPLETED", "FAILURE"), run("desktop-package-win", "COMPLETED", "SUCCESS")] });
+  check("P3-405: red ci-gate detail names verify=FAILURE and never the greens", gateRedJobs.verdict === "skip" && gateRedJobs.infra === "ci-red" && gateRedJobs.detail.includes("verify=FAILURE") && !gateRedJobs.detail.includes("desktop-package-win") && !gateRedJobs.detail.includes("ci-gate=FAILURE"));
   const gateRunning = mergeReadiness({ mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", statusCheckRollup: [run("ci-gate", "IN_PROGRESS", null), run("desktop-package-win", "COMPLETED", "FAILURE")] });
   check("readiness: ci-gate still running ⇒ pending (never decide from partial jobs)", gateRunning.verdict === "pending" && gateRunning.detail.includes("waiting for the ci-gate aggregate"));
   const conflict = mergeReadiness({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [run("verify", "COMPLETED", "SUCCESS")] });

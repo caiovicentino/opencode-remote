@@ -661,7 +661,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
         const streak = recordTaskInfraStreak(state, taskKey, infra);
         if (infraStreakExhausted(streak)) {
           clearTaskInfraStreak(state, taskKey);
-          const reason = infraStarvationReason(infra, streak);
+          const reason = infraStarvationReason(infra, streak, result.detail); // P3-405: the Blocked line + lesson name the real cause
           log("error", "pipeline infra-starvation", { task: task.id, kind: infra, streak, detail: result.detail.slice(0, 200) });
           emit("phase", { task: task.id, phase: "infra-starvation", ok: false, detail: reason });
           recordCycle(state, false, task.id);
