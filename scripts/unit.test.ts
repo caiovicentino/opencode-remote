@@ -21764,6 +21764,12 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       settingsSrc.includes("relayTesting ? t"),
   );
   check(
+    "P2-328: the verdict is tagged with the probed draft and renders only while the field still holds it",
+    settingsSrc.includes("const probed = relayDraft;") &&
+      settingsSrc.includes("setRelayTestResult({ url: probed, verdict: await testRelay(probed) })") &&
+      settingsSrc.includes("relayTestResult.url === relayDraft"),
+  );
+  check(
     "P2-328: the test button and result keys exist in BOTH locales",
     ["relayTest", "relayTesting", "relayTestFailed"].every(
       (k) =>
