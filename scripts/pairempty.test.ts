@@ -35,8 +35,13 @@ check("hint copy comes from pairEmptyCode", view.includes('t("pairEmptyCode")'))
 // typing clears the nudge — one dismissal per mistake, not a sticky label
 check("typing clears the hint", /onChange=\{\(e\) => \{[\s\S]{0,80}setCode\(e\.target\.value\);[\s\S]{0,40}setEmptyHint\(false\);/.test(view));
 
-// the valid path is untouched: submit still forwards the code verbatim
-check("non-empty submit still calls onPair(code)", /setEmptyHint\(false\);\s*\n\s*onPair\(code\);/.test(view));
+// P3-410: a usable code still forwards verbatim; an unusable one answers at
+// the form (acceptCode gate) instead of reaching onPair with garbage.
+check("valid submit still calls onPair(code)", /acceptCode\(code\)\) onPair\(code\);/.test(view));
+check("invalid submit is gated by acceptCode", /if \(acceptCode\(code\)\) onPair\(code\);/.test(view));
+check("QR scan is gated by acceptCode too", /acceptCode\(text\)\) onPair\(text\);/.test(view));
+check("invalid code renders the .pair-error block inline", /codeError && \(\s*\n\s*<div className="pair-error" role="alert" aria-live="assertive">/.test(view));
+check("invalid copy comes from invalidCode", view.includes('t(codeError === "version" ? "pairErrVersion" : "invalidCode")'));
 
 // both locales speak the hint, keys stay aligned (i18n-emoji contract)
 check("en has pairEmptyCode", typeof dict.en.pairEmptyCode === "string" && dict.en.pairEmptyCode.length > 0);

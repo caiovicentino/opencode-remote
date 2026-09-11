@@ -1815,7 +1815,13 @@ fills the row (P3-335) — it is the only host-pairing action, so it must be
 discoverable at a glance. It carries no inner border (P3-370): one container
 per idea, the section card is the only frame. An invalid pairing code
 renders a styled error block with an inline helper showing the expected
-`opencode-remote://pair?…` format (announced to screen readers). An empty
+`opencode-remote://pair?…` format (announced to screen readers). The verdict
+lives in the form itself on every surface that hosts it (P3-410) — the
+manual ceremony, the QR scan and the add-machine screen — so a garbled paste
+always answers where the code was typed instead of depending on the parent
+screen's state; a code from a different protocol version says exactly that
+("this pairing code is from a different app version") with its own recovery
+line, where the submit used to fail silently. An empty
 paste box is answered the same way instead of dead-ending (P3-361): "Pair"
 stays live, the form shows an inline "paste the code first" hint with focus
 moving to the field, and the hint clears as soon as typing starts. On the

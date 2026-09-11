@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import QrScanner, { type CameraAccessVerdict } from "./QrScanner";
 import PairRetry from "./PairRetry";
 import PaneMap from "./PaneMap";
+import { parsePairingUri } from "../lib/client";
 import { useT } from "../lib/i18n";
 
 interface Props {
@@ -41,7 +42,37 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
   const [emptyHint, setEmptyHint] = useState(false);
+  // P3-410: an unusable code answers AT the form, on every surface that
+  // hosts it — the App-level error block only renders when the parent's
+  // phase flows down (the add-machine screen pins phase="unpaired"), so a
+  // garbled paste used to die there in silence. Kind, not message (P3-375):
+  // "invalid" is the garbled-text case, "version" the parse's
+  // unsupported-protocol throw — each with its own localized copy.
+  const [codeError, setCodeError] = useState<"invalid" | "version" | null>(null);
   const busy = phase === "connecting";
+
+  // P3-410: shared gate for every onPair entry (paste submit + QR scan).
+  // Returns false — with the inline error block rendered — when the code
+  // can never start a handshake, so the parent's onPair only ever receives
+  // a parseable URI and feedback never depends on the parent's phase.
+  const acceptCode = useCallback(
+    (raw: string): boolean => {
+      try {
+        if (!parsePairingUri(raw)) {
+          setCodeError("invalid");
+          requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".pair-code")?.focus());
+          return false;
+        }
+      } catch {
+        setCodeError("version");
+        requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".pair-code")?.focus());
+        return false;
+      }
+      setCodeError(null);
+      return true;
+    },
+    [],
+  );
 
   // P3-361: an empty "Parear" click is a validation event, not a no-op — the
   // button stays live and the form answers with an inline hint + focus on the
@@ -53,15 +84,15 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
       return;
     }
     setEmptyHint(false);
-    onPair(code);
-  }, [code, onPair]);
+    if (acceptCode(code)) onPair(code);
+  }, [code, onPair, acceptCode]);
 
   const handleScan = useCallback(
     (text: string) => {
       setScanning(false);
-      onPair(text);
+      if (acceptCode(text)) onPair(text);
     },
-    [onPair],
+    [onPair, acceptCode],
   );
 
   // P2-117: the scanner's paste CTA returns to the primary form, focused —
@@ -98,6 +129,7 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
         onChange={(e) => {
           setCode(e.target.value);
           setEmptyHint(false);
+          setCodeError(null);
         }}
         disabled={busy}
         spellCheck={false}
@@ -116,6 +148,12 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
         <p className="pair-empty-hint" role="alert">
           {t("pairEmptyCode")}
         </p>
+      )}
+      {codeError && (
+        <div className="pair-error" role="alert" aria-live="assertive">
+          <p className="pair-error-msg">{t(codeError === "version" ? "pairErrVersion" : "invalidCode")}</p>
+          <p className="pair-error-hint">{t(codeError === "version" ? "pairErrVersionHint" : "invalidCodeHint")}</p>
+        </div>
       )}
     </>
   );
@@ -239,7 +277,11 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           )}
         </section>
       )}
-      {phase === "error" && (
+      {/* P3-410: the form's own invalid-code verdict wins over the App-level
+          block — the freshest submit is the relevant feedback, and one error
+          per screen (P2-108). Editing the field dissolves it and the parent
+          block (timeout, rejection…) shows again. */}
+      {phase === "error" && !codeError && (
         <div className="pair-error" role="alert" aria-live="assertive">
           <p className="pair-error-msg">{error}</p>
           {error === t("invalidCode") && (
