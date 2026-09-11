@@ -175,6 +175,7 @@ import {
   RELAY_PROBE_BODY_MAX,
   RELAY_PROBE_TIMEOUT_MS,
   relayHealthUrl,
+  relayProbeErrorName,
   relayProbeVerdict,
   type RelayProbeInput,
 } from "../apps/desktop/src/relayprobe";
@@ -21679,8 +21680,37 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-328: abort and timed-out dial → timeout",
     relayProbeVerdict(input({ errorName: "TimeoutError" })).state === "timeout" &&
-      relayProbeVerdict(input({ errorName: "AbortError" })).state === "timeout" &&
       relayProbeVerdict(input({ errorName: "net::ERR_CONNECTION_TIMED_OUT" })).state === "timeout",
+  );
+  // Wiring-level pins: the shapes below are the REAL rejections Electron 44's
+  // net.fetch delivers to main.ts's catch (measured against a hanging
+  // loopback server and a cancelled manual redirect) — normalized by
+  // relayProbeErrorName exactly as the IPC path does. A bare "AbortError"
+  // token never travels the wire: the DOMException's prose message does, and
+  // only the name is the reliable timeout signal.
+  check(
+    "P2-328: real timeout shapes from the IPC path (name wins over prose message) → timeout",
+    relayProbeErrorName({ name: "TimeoutError", message: "The operation was aborted due to timeout" }) ===
+      "TimeoutError" &&
+      relayProbeErrorName({ name: "AbortError", message: "The operation was aborted" }) === "AbortError" &&
+      relayProbeVerdict(
+        input({ errorName: relayProbeErrorName({ name: "TimeoutError", message: "The operation was aborted due to timeout" }) }),
+      ).state === "timeout" &&
+      relayProbeVerdict(input({ errorName: relayProbeErrorName({ name: "AbortError", message: "The operation was aborted" }) }))
+        .state === "timeout" &&
+      relayProbeVerdict(input({ errorName: relayProbeErrorName({ name: "Error", message: "net::ERR_ABORTED" }) })).state ===
+        "timeout",
+  );
+  check(
+    "P2-328: a cancelled manual redirect (Electron's real redirect shape) → not-a-relay",
+    relayProbeErrorName({ name: "Error", message: "Redirect was cancelled" }) === "Redirect was cancelled" &&
+      relayProbeVerdict(input({ errorName: "Redirect was cancelled" })).state === "not-a-relay",
+  );
+  check(
+    "P2-328: relayProbeErrorName degrades unknown shapes to an empty token, never throws",
+    relayProbeErrorName(null) === "" &&
+      relayProbeErrorName("boom") === "" &&
+      relayProbeErrorName({ cause: { code: "ECONNRESET" } }) === "ECONNRESET",
   );
   check(
     "P2-328: an unknown net::ERR code → unreachable",
@@ -21738,6 +21768,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       mainSrc.includes('redirect: "manual"') &&
       mainSrc.includes("AbortSignal.timeout(RELAY_PROBE_TIMEOUT_MS)") &&
       RELAY_PROBE_TIMEOUT_MS === 5_000,
+  );
+  check(
+    "P2-328: the IPC catch normalizes the rejection through relayProbeErrorName (timeout shapes classify)",
+    mainSrc.includes("errorName: relayProbeErrorName(err)"),
   );
   check(
     "P2-328: the probe body is read up to the documented 4KB ceiling",

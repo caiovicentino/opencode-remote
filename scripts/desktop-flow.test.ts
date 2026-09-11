@@ -920,6 +920,89 @@ try {
     check("P3-404: hermetic source list is the deterministic fake pair", /screen:1/.test(screenSources.stdout) && /screen:2/.test(screenSources.stdout), screenSources.stdout);
   }
 
+  // --- P2-328: relay "Test connection" — live IPC round-trip ------------------
+  // The classifier's unit table cannot see the wiring: here the REAL shell
+  // probes a REAL ephemeral loopback server that answers the relay's healthz
+  // JSON (→ ok) and a REAL closed port (→ refused). Both ports come from a
+  // bind-then-close probe — Chromium refuses some low ports outright
+  // (ERR_UNSAFE_PORT), which is not the "refused" the acceptance asks for.
+  // The server lives in a child process: every harness command below is a
+  // spawnSync, which would starve a same-process listener.
+  const freePortProbe = spawnSync(
+    process.execPath,
+    ["-e", "const s=require('node:http').createServer();s.listen(0,'127.0.0.1',()=>{console.log('PORT='+s.address().port);s.close()})"],
+    { encoding: "utf8" },
+  );
+  const relayHealthzPort = Number((freePortProbe.stdout.match(/PORT=(\d+)/) ?? [])[1]);
+  if (Number.isInteger(relayHealthzPort)) {
+    const healthzChild = [
+      "const http = require('node:http');",
+      "http.createServer((req, res) => {",
+      "  if (req.url === '/healthz') {",
+      "    res.writeHead(200, { 'content-type': 'application/json' });",
+      "    res.end(JSON.stringify({ ok: true, version: '9.9.9-p2-328', uptimeS: 1, rooms: 0, roomsRejected: 0 }));",
+      "    return;",
+      "  }",
+      "  res.writeHead(404); res.end();",
+      `}).listen(${relayHealthzPort}, '127.0.0.1');`,
+    ].join("\n");
+    const relayServer = spawn(process.execPath, ["-e", healthzChild], { stdio: "ignore", detached: true });
+    relayServer.unref();
+    try {
+      // Readiness wait: the child is a detached spawn with no stdout channel,
+      // so poll its /healthz directly until it accepts (else the ok dial below
+      // could race the bind and answer refused).
+      let healthzReady = false;
+      for (let i = 0; i < 50 && !healthzReady; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        healthzReady = await fetch(`http://127.0.0.1:${relayHealthzPort}/healthz`)
+          .then((r) => r.ok)
+          .catch(() => false);
+      }
+      check("P2-328: the ephemeral relay child answers its own /healthz", healthzReady, freePortProbe.stdout);
+      // The closed-port probe runs AFTER the child holds its port, so the OS
+      // cannot mint the same port for both roles.
+      const closedPortProbe = spawnSync(
+        process.execPath,
+        ["-e", "const s=require('node:http').createServer();s.listen(0,'127.0.0.1',()=>{console.log('PORT='+s.address().port);s.close()})"],
+        { encoding: "utf8" },
+      );
+      const relayClosedPort = Number((closedPortProbe.stdout.match(/PORT=(\d+)/) ?? [])[1]);
+      const relayOk = run(
+        "P2-328: live testRelay round-trip — a real relay /healthz answers ok",
+        [
+          "ipc",
+          `(async () => { const r = await window.ocrDesktop.testRelay('ws://127.0.0.1:${relayHealthzPort}'); return JSON.stringify({ state: r.state }); })()`,
+        ],
+        20_000,
+      );
+      if (relayOk.ok) {
+        const flat = relayOk.stdout.replace(/\\/g, "");
+        check("P2-328: the live probe of the ephemeral relay is state ok", /"state":"ok"/.test(flat), relayOk.stdout);
+      }
+      if (Number.isInteger(relayClosedPort)) {
+        const relayRefused = run(
+          "P2-328: live testRelay round-trip — a closed port is refused",
+          [
+            "ipc",
+            `(async () => { const r = await window.ocrDesktop.testRelay('ws://127.0.0.1:${relayClosedPort}'); return JSON.stringify({ state: r.state }); })()`,
+          ],
+          20_000,
+        );
+        if (relayRefused.ok) {
+          const flat = relayRefused.stdout.replace(/\\/g, "");
+          check("P2-328: the live probe of a closed port is state refused", /"state":"refused"/.test(flat), relayRefused.stdout);
+        }
+      } else {
+        check("P2-328: closed port for the refused probe", false, `${closedPortProbe.stdout}\n${closedPortProbe.stderr}`);
+      }
+    } finally {
+      relayServer.kill();
+    }
+  } else {
+    check("P2-328: free port for the live relay probe", false, `${freePortProbe.stdout}\n${freePortProbe.stderr}`);
+  }
+
   // --- P1-070: the new local-first copy is visible with no daemon at all ------
   // Reviewer gap (round 1): the new i18n copy must be exercised here, not only
   // in the local/paired phase — a fresh instance with no reachable daemon is
