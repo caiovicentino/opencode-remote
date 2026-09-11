@@ -100,7 +100,11 @@ export default function ArtifactsView({
         {error && <p className="artifacts-error" style={{ color: "var(--danger)" }}>{humanizeError(error, t)}</p>}
         {artifacts.length === 0 && !error && (
           <div className="artifacts-empty">
-            <p className="muted">{t("artifactsEmpty")}</p>
+            <span className="artifacts-empty-icon" aria-hidden="true">
+              <ArtifactIcon kind="text" />
+            </span>
+            <p className="artifacts-empty-title">{t("artifactsEmptyTitle")}</p>
+            <p className="artifacts-empty-hint">{t("artifactsEmptyHint")}</p>
             {offline && <p className="muted artifacts-offline-hint">{t("artifactsOfflineHint")}</p>}
           </div>
         )}

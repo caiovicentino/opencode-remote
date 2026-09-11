@@ -377,7 +377,10 @@ private. That is the product: **local power, remote control, zero trust**.
   The global Artifacts list groups by **conversation title** (the daemon resolves
   session ids against the opencode session list; unknown ids fall back to the raw
   id) and, on wide viewports, clicking a list item jumps back to Conversas with
-  the preview in the side-by-side pane — no full-screen detour.
+  the preview in the side-by-side pane — no full-screen detour. An empty pane
+  reads as designed (P3-414): a centered document glyph with a title and hint —
+  the same composed empty state as the Browser pane — with a quiet sync line
+  while the machine is offline.
   When the agent writes a new artifact the daemon emits a `session.artifact`
   event, and on the turn's next idle the desktop app opens the preview pane
   by itself — never overriding a manual pick, a pane the user closed, or an

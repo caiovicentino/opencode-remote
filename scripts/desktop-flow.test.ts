@@ -552,15 +552,17 @@ try {
   );
   if (gateArtifacts.ok) check("P3-365: artifact list visible while unpaired", /list:(block|flex)/.test(gateArtifacts.stdout), gateArtifacts.stdout);
   // P3-327: the gate list runs on the quiet stub — no red "not paired" error
-  // for a machine nothing has paired yet, just the muted empty copy.
+  // for a machine nothing has paired yet, just the muted empty copy. P3-414:
+  // that copy is the composed empty state (icon + title + hint), so the probe
+  // requires the title/hint pair instead of the old bare p.muted paragraph.
   const gateArtifactsCalm = run(
     "P3-327: artifact list stays calm behind the gate",
-    ["ipc", "(() => { const l = document.querySelector('.desk-pane .pane-view .list'); return 'err:' + !!l?.querySelector('.artifacts-error') + '|empty:' + !!l?.querySelector('p.muted'); })()"],
+    ["ipc", "(() => { const l = document.querySelector('.desk-pane .pane-view .list'); return 'err:' + !!l?.querySelector('.artifacts-error') + '|empty:' + !!l?.querySelector('.artifacts-empty-title') + '|hint:' + !!l?.querySelector('.artifacts-empty-hint'); })()"],
     15_000,
   );
   check(
     "P3-327: artifact pane renders the calm empty copy",
-    gateArtifactsCalm.ok && /err:false\|empty:true/.test(gateArtifactsCalm.stdout.replace(/"/g, "").trim()),
+    gateArtifactsCalm.ok && /err:false\|empty:true\|hint:true/.test(gateArtifactsCalm.stdout.replace(/"/g, "").trim()),
     gateArtifactsCalm.stdout,
   );
   // Restore the hero composition for the P2-112 beats below (the gate rail's

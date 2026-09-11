@@ -12208,6 +12208,38 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-414: the artifacts pane's empty state is composed, not a bare sentence
+// The flagship pane showed a top-left gray paragraph while the sibling browser
+// pane composes icon + title + hint centered — the inconsistency read as
+// unfinished. The lock keeps the composed markup (browser-empty pattern, with
+// an ArtifactIcon glyph) and the two-key copy split from regressing to a lone
+// <p>. Source-level like P3-379: no DOM harness reaches this state cheaply.
+{
+  const src = readFileSync(new URL("../apps/web/src/components/ArtifactsView.tsx", import.meta.url), "utf8");
+  const emptyAt = src.indexOf('<div className="artifacts-empty">');
+  const emptyBlock = emptyAt >= 0 ? src.slice(emptyAt, src.indexOf("</div>", emptyAt)) : "";
+  check(
+    "P3-414: the artifacts empty state composes an ArtifactIcon glyph + title + hint (browser-empty pattern)",
+    emptyAt >= 0
+      && emptyBlock.includes("<ArtifactIcon")
+      && emptyBlock.includes('t("artifactsEmptyTitle")')
+      && emptyBlock.includes('t("artifactsEmptyHint")'),
+  );
+  check(
+    "P3-414: the bare one-paragraph empty state is gone (artifactsEmpty split into title+hint)",
+    !src.includes('t("artifactsEmpty")'),
+  );
+  check(
+    "P3-414: the composed empty copy resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) =>
+      ["artifactsEmptyTitle", "artifactsEmptyHint"].every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "";
+      }),
+    ),
+  );
+}
+
 // --- P3-378: a typed non-http(s) URL is rejected with named, visible feedback --
 // Typing file:///… used to fall through to the generic "Invalid URL" line (or,
 // in the screenshot fallback, to the daemon's raw 400) — easy to miss over a
@@ -35301,7 +35333,8 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
   // The red line is reserved for unexpected failures; the expected offline
   // state renders inside the calm empty-world branch, whose condition keeps
-  // the e2e error-absence hook (`.artifacts-error` gone, p.muted present).
+  // the e2e error-absence hook (`.artifacts-error` gone, composed empty copy
+  // present — P3-414's .artifacts-empty-title/hint).
   // Round 3 review: a previously successful load keeps its stale results with
   // the sync hint riding along — never a silent stale pane, never red.
   check(
