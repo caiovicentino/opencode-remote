@@ -358,8 +358,11 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
       {/* P3-364: the offline card above is what works NOW; this is what
           pairing unlocks — the standing map the gate toast only flashes.
           P3-365: inside the shell skeleton three of those panes are already
-          one rail-click away, so the map drops their locks. */}
-      <PaneMap reachable={panesReachable} />
+          one rail-click away, so the map drops their locks.
+          P3-413: the desktop shell never shows the four padlocks — offline
+          panes are real here (rail/Go menu), so only the chat stays locked
+          even on the classic centered screen. */}
+      <PaneMap reachable={panesReachable} offlinePanes={desktopShell} />
       <button className="degraded-manual" onClick={onPairManually}>
         {t("degradedPairManually")}
       </button>

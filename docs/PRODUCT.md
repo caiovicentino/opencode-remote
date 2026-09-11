@@ -42,7 +42,13 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
    linha só ("Conversas pede pareamento; o resto já abre ao lado") — o rail
    ao lado já lista os mesmos itens, então repetir o card era navegação
    duplicada na mesma tela. O mapa lista também
-   Ajustes, que o rail abre offline no primeiro boot (P3-389). O botão primário
+   Ajustes, que o rail abre offline no primeiro boot (P3-389). Na tela clássica
+   centrada e na cerimônia manual do shell desktop o mapa também não mente
+   sobre capacidade offline (P3-413): vira "Antes de parear" com cadeado só em
+   Conversas — o mesmo shot do explorer mostrou Mission Control aberto sem
+   pareamento, então quatro cadeados subestimavam o que funciona offline e
+   empurravam pro parear desnecessário; no telefone (sem shell) o mapa completo
+   com "Depois de parear" segue como estava. O botão primário
    "+ Novo" fica visivelmente acinzentado e carrega o mesmo tooltip de dica do
    rail até o pareamento bem-sucedido (P3-380) — o clique mais natural do
    primeiro boot se explica em vez de morrer em silêncio. Janela

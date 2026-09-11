@@ -1589,9 +1589,10 @@ export default function App() {
           // P3-332: adding a machine IS the manual remote ceremony — the
           // shell's local auto-connect mode must never hide the paste/scan
           // form here (it would leave no way to type a remote code).
-          localMode={false}
-          preferPaste={!!desktopBridge()}
-          getCamAccess={desktopBridge()?.getCamAccess}
+           localMode={false}
+           preferPaste={!!desktopBridge()}
+           getCamAccess={desktopBridge()?.getCamAccess}
+          offlinePanes={!!desktopBridge()}
         />
       </div>
     );
@@ -1717,6 +1718,10 @@ export default function App() {
                 }
               }}
               onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
+              // P3-413: the desktop ceremony's map drops the four offline
+              // panes' padlocks — one click earlier the gate rail opened them
+              // unpaired; the card must not claim they need pairing.
+              offlinePanes={!!desktopBridge()}
             />
           )}
         </div>
