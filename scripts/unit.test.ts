@@ -64,6 +64,12 @@ import {
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { relayDialVerdict, RELAY_DIAL_FLOOR_MS } from "../apps/daemon/src/relaydialerror";
 import {
+  RELAY_REDIAL_THROTTLE_MS,
+  relayRedialGate,
+  relayRedialPlan,
+  type RelayRedialInput,
+} from "../apps/daemon/src/relayredial";
+import {
   DEFAULT_RUN_LEASE_MS,
   RUN_LEASE_CEILING_MS,
   RUN_LEASE_KILL_MESSAGE,
@@ -16178,6 +16184,173 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 }
 
 
+// --- P2-327: anticipating the relay redial on wake (relayredial.ts) --------------
+{
+  const redialSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "relayredial.ts"), "utf8");
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const desktopMain = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+
+  // 1. the plan table — every rule, consulted in the documented order
+  const base: RelayRedialInput = {
+    relayDisabled: false,
+    connected: false,
+    dialInFlight: false,
+    retryPending: true,
+    floorSource: "none",
+    msSinceLastRedial: null,
+  };
+  const plan = (over: Partial<RelayRedialInput>) => relayRedialPlan({ ...base, ...over });
+  const rows: [string, Partial<RelayRedialInput>, string, string][] = [
+    // rule 1 — a disabled relay beats everything (connectRelay refuses anyway)
+    ["disabled wins over connected", { relayDisabled: true, connected: true }, "noop", "disabled"],
+    ["disabled wins over a pending retry", { relayDisabled: true }, "noop", "disabled"],
+    // rule 2 — already connected, nothing to anticipate
+    ["connected wins over dialing", { connected: true, dialInFlight: true }, "noop", "connected"],
+    // rule 3 — a dial is in flight; it must never become a second socket
+    ["dialing wins over nothing-pending", { dialInFlight: true, retryPending: false }, "noop", "dialing"],
+    // rule 4 — no retry scheduled: no timer to clear, redialing would duplicate the boot dial
+    ["nothing-pending wins over a relay-close floor", { retryPending: false, floorSource: "relay-close" }, "noop", "nothing-pending"],
+    // rule 5 — the relay's own backoff (1013 capacity / 4029 rate-limited) is always honored
+    ["relay-close floor wins over the throttle", { floorSource: "relay-close", msSinceLastRedial: 1 }, "noop", "relay-asked-backoff"],
+    // rule 6 — the documented 10s throttle
+    ["throttled inside the 10s window", { msSinceLastRedial: RELAY_REDIAL_THROTTLE_MS - 1 }, "noop", "throttled"],
+    // rule 7 — a plain backoff wait is anticipated
+    ["plain backoff wait is anticipated", {}, "redial-now", "retry-anticipated"],
+  ];
+  for (const [name, over, action, reason] of rows) {
+    const v = plan(over);
+    check(`P2-327: ${name}`, v.action === action && v.reason === reason);
+  }
+  // rule 5 is the conservative branch: a local dial-error floor (60s DNS /
+  // refusal / timeout, 300s certificate) IS anticipatable — that is the point
+  check(
+    "P2-327: a local dial-error floor is anticipatable (the wake scenario)",
+    plan({ floorSource: "dial-error" }).action === "redial-now" &&
+      plan({ floorSource: "dial-error", msSinceLastRedial: 500 }).reason === "throttled",
+  );
+  // throttle boundary: exactly at the window the wait is over
+  check(
+    "P2-327: the throttle window boundary is exact (10s)",
+    plan({ msSinceLastRedial: RELAY_REDIAL_THROTTLE_MS }).action === "redial-now" &&
+      plan({ msSinceLastRedial: RELAY_REDIAL_THROTTLE_MS - 1 }).reason === "throttled" &&
+      RELAY_REDIAL_THROTTLE_MS === 10_000,
+  );
+  check(
+    "P2-327: a first ever redial is not throttled (null msSinceLastRedial)",
+    plan({}).action === "redial-now",
+  );
+
+  // 2. the route's HTTP contract, pinned without booting a daemon
+  const gate = (method: string | undefined, authorization: string | undefined) =>
+    relayRedialGate({ method, authorization, apiToken: "tok" });
+  check(
+    "P2-327: without Bearer the handler contract is unauthorized (401)",
+    gate("POST", undefined) === "unauthorized" &&
+      gate("POST", "Bearer wrong") === "unauthorized" &&
+      gate("POST", "tok") === "unauthorized",
+  );
+  check(
+    "P2-327: any method other than POST gets method-not-allowed (405)",
+    gate("GET", "Bearer tok") === "method-not-allowed" &&
+      gate("PUT", "Bearer tok") === "method-not-allowed" &&
+      gate(undefined, "Bearer tok") === "method-not-allowed",
+  );
+  check("P2-327: POST with the Bearer apiToken passes the gate", gate("POST", "Bearer tok") === "ok");
+
+  // 3. the handler sequence: first POST redials, a second POST within 10s is
+  // throttled — the exact state the wired handler feeds back after recording
+  // relayLastRedialAt and the redial failing again (retry re-scheduled)
+  const first = plan({ msSinceLastRedial: null });
+  const second = plan({ msSinceLastRedial: 5_000 });
+  check(
+    "P2-327: handler sequence — redial-now then throttled within 10s",
+    first.action === "redial-now" && second.action === "noop" && second.reason === "throttled",
+  );
+
+  // 4. purity: no I/O of any kind in the module (index.ts boots a daemon on import)
+  check(
+    "P2-327: relayredial.ts is I/O-free (no imports, no clock, no timers)",
+    !/from\s+["']/.test(redialSrc) &&
+      !redialSrc.includes("Date.now(") &&
+      !redialSrc.includes("setTimeout(") &&
+      !redialSrc.includes("fetch("),
+  );
+
+  // 5. the wired handler in index.ts: Bearer-only route, 405, single dial
+  const redialRouteIdx = daemonSrc.indexOf('url.pathname === "/__ocr/relay/redial"');
+  const redialRoute = daemonSrc.slice(
+    redialRouteIdx,
+    daemonSrc.indexOf("/__ocr/pairing-uri", redialRouteIdx),
+  );
+  check(
+    "P2-327: the redial route exists exactly once, in handleApi (after proxy), never inside it",
+    redialRouteIdx > daemonSrc.indexOf("async function handleApi") &&
+      redialRouteIdx > daemonSrc.indexOf("async function proxy(") &&
+      daemonSrc.split('url.pathname === "/__ocr/relay/redial"').length === 2,
+  );
+  check(
+    "P2-327: the route is Bearer-only — the gate answers, a session cookie never does",
+    redialRoute.includes("relayRedialGate({") &&
+      redialRoute.includes("send401(res)") &&
+      !redialRoute.includes("authorized(req)"),
+  );
+  check(
+    "P2-327: redial-now clears the pending timer and dials exactly once",
+    redialRoute.includes("clearTimeout(relayRetryTimer)") &&
+      (redialRoute.match(/connectRelay\(\)/g) ?? []).length === 1,
+  );
+  check(
+    "P2-327: the route answers JSON with action + reason and 405 for other methods",
+    redialRoute.includes("writeHead(405") &&
+      redialRoute.includes("JSON.stringify({ action: plan.action, reason: plan.reason })"),
+  );
+
+  // 6. the reconnect loop keeps the handle + dial-in-flight flag honest
+  const relayFnStart = daemonSrc.indexOf("function connectRelay(");
+  const relayFn = daemonSrc.slice(relayFnStart, daemonSrc.indexOf("const localWss", relayFnStart));
+  check(
+    "P2-327: connectRelay marks the dial in flight and unmarks on open and close",
+    relayFn.includes("relayDialInFlight = true;") &&
+      (relayFn.match(/relayDialInFlight = false;/g) ?? []).length === 2,
+  );
+  check(
+    "P2-327: the retry timer handle is stored and nulled when it fires",
+    relayFn.includes("relayRetryTimer = setTimeout(") && relayFn.includes("relayRetryTimer = null;"),
+  );
+  check(
+    "P2-327: the close handler records which floor the scheduled wait carries",
+    relayFn.includes('verdict.floorMs > 0 ? "relay-close" : relayPendingDialFloorMs > 0 ? "dial-error" : "none"'),
+  );
+  check(
+    "P2-327: the route reads live state (connected gauge, flags, floor source)",
+    redialRoute.includes('metrics.get("ocr_relay_connected") === 1') &&
+      redialRoute.includes("relayDialInFlight") &&
+      redialRoute.includes("relayRetryFloorSource"),
+  );
+
+  // 7. the desktop wake path: one best-effort POST after the probe, verdict-only log
+  const wakeStart = desktopMain.indexOf("function handleWakeEvent(");
+  const wakeBlock = desktopMain.slice(wakeStart, desktopMain.indexOf("function registerWakeReaction(", wakeStart));
+  check(
+    "P2-327: the wake probe-now path nudges the relay redial after the health probe",
+    wakeBlock.indexOf("void refreshPairingState();") < wakeBlock.indexOf("void nudgeRelayRedial();"),
+  );
+  check(
+    "P2-327: reset-and-respawn returns before the redial nudge (path untouched)",
+    wakeBlock.indexOf("reset-and-respawn") < wakeBlock.indexOf("nudgeRelayRedial()") &&
+      /reset-and-respawn"\) \{\s*\n\s*void restartDaemon\(\)[\s\S]*?return;\s*\n\s*\}\s*\n\s*void refreshPairingState\(\);/.test(wakeBlock),
+  );
+  check(
+    "P2-327: the nudge POSTs the daemon's redial endpoint with the Bearer token",
+    wakeBlock.includes("/__ocr/relay/redial") && wakeBlock.includes("authorization: `Bearer ${token}`"),
+  );
+  check(
+    "P2-327: only the verdict's action + reason reach the desktop log",
+    /\[desktop\] relay redial: \$\{body\.action\} \(\$\{body\.reason\}\)/.test(wakeBlock),
+  );
+}
+
+
 // --- P2-157: feed-consistency — update feeds point at this release's artifacts
 {
   const TAG = "v0.3.0";
@@ -23466,8 +23639,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-209: the wake reaction only reuses existing paths (pairing probe + restart)",
     wakeBlock.includes("void refreshPairingState()") &&
       wakeBlock.includes("restartDaemon()") &&
-      !wakeBlock.includes("fetch(") &&
       !wakeBlock.includes("healthOnce"),
+  );
+  // P2-327: the single exception is the one-shot redial POST — loopback only,
+  // no retry, no polling; still no periodic probe of any kind.
+  check(
+    "P2-327: the wake block's only fetch is the one-shot relay redial nudge",
+    (wakeBlock.match(/fetch\(/g) ?? []).length === 1 &&
+      wakeBlock.includes("/__ocr/relay/redial") &&
+      !wakeBlock.includes("setInterval"),
   );
   const ignoreAt = mainSrc.indexOf('plan.action === "ignore"');
   const ignoreEnd = ignoreAt >= 0 ? mainSrc.indexOf("return;", ignoreAt) + "return;".length : -1;

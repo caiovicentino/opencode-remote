@@ -93,6 +93,12 @@ import { HelloSeen, helloFreshness, helloVerdict } from "./helloguard.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { relayDialVerdict, type RelayDialKind } from "./relaydialerror.js";
+// P2-327: pure planner + HTTP gate for the wake-triggered redial anticipation
+import {
+  relayRedialGate,
+  relayRedialPlan,
+  type RelayFloorSource,
+} from "./relayredial.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { normalizeProxyEnv, relayProxyVerdict, type RelayProxyVerdict } from "./relayproxy.js";
 import { createRelayTunnelConnect } from "./relaytunnel.js";
@@ -3665,6 +3671,20 @@ let relayLastDial: { kind: RelayDialKind; hint: string } | null = null;
 // close handler consumes this with the same max(jittered, floor) rule
 // effectiveRetryDelayMs applies to close floors — no new timer.
 let relayPendingDialFloorMs = 0;
+// P2-327: handle of the scheduled reconnect timer. Exposed so the wake path
+// (POST /__ocr/relay/redial below) can anticipate the wait — clearTimeout +
+// one immediate dial — instead of leaving a waking Mac's phone waiting out a
+// 60s dial-error floor or the jittered backoff.
+let relayRetryTimer: ReturnType<typeof setTimeout> | null = null;
+// P2-327: a WebSocket was created and has not reached open or close yet — the
+// guard that keeps the redial route from minting a second socket.
+let relayDialInFlight = false;
+// P2-327: which floor the CURRENTLY scheduled wait carries. A floor that came
+// from a relay close code (capacity / rate-limited) is always honored; only a
+// plain backoff wait or a local dial-error floor may be anticipated.
+let relayRetryFloorSource: RelayFloorSource = "none";
+// P2-327: instant of the last anticipation (redial-now), for the 10s throttle.
+let relayLastRedialAt: number | null = null;
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
 // P2-161: the port the loopback API server actually bound (set in main()).
@@ -3704,6 +3724,9 @@ function connectRelay() {
   // once at boot instead of repeating on every retry; nothing here schedules
   // a reconnect, so the backoff loop never starts.
   if (relayDisabled) return;
+  // P2-327: the dial is in flight from socket creation until open or close —
+  // the redial route answers "dialing" instead of minting a second socket.
+  relayDialInFlight = true;
   // P2-303: in tunnel mode the socket comes from an HTTP CONNECT tunnel
   // through the machine's proxy (errors flow through the same ws `error`
   // event, so relaydialerror.ts keeps triaging them); in direct mode the
@@ -3717,6 +3740,8 @@ function connectRelay() {
       relayRetry.reset();
       // P2-260: a successful dial invalidates any stale dial-failure floor.
       relayPendingDialFloorMs = 0;
+      // P2-327: the dial landed — the socket is live, not dialing anymore.
+      relayDialInFlight = false;
       log("info", "connected to relay", { relay: redactRelayUrl(RELAY_URL), room: daemon.room });
     metrics.gauge("ocr_relay_connected", 1);
     metrics.inc("ocr_relay_connects_total");
@@ -3741,7 +3766,14 @@ function connectRelay() {
       effectiveRetryDelayMs(relayRetry.schedule(), verdict),
       relayPendingDialFloorMs,
     );
+    // P2-327: record which floor the freshly scheduled wait carries, BEFORE
+    // the pending dial floor is consumed. A relay-close floor (capacity /
+    // rate-limited) is always honored — only a plain backoff wait or a local
+    // dial-error floor may be anticipated by the redial route.
+    relayRetryFloorSource =
+      verdict.floorMs > 0 ? "relay-close" : relayPendingDialFloorMs > 0 ? "dial-error" : "none";
     relayPendingDialFloorMs = 0;
+    relayDialInFlight = false;
     relayLastClose = { code: typeof code === "number" ? code : null, kind: verdict.kind };
     metrics.inc("ocr_relay_retries_total");
     log("warn", "relay connection lost; retrying", {
@@ -3757,7 +3789,14 @@ function connectRelay() {
       if (s.socket === ws) sessions.delete(from);
     }
     metrics.gauge("ocr_sessions_active", sessions.size);
-    setTimeout(connectRelay, retryInMs);
+    // P2-327: the handle is kept so the redial route can anticipate the wait;
+    // a defensive clear first — two overlapping sockets must never schedule
+    // two timers — and the handle is nulled when the timer fires.
+    if (relayRetryTimer) clearTimeout(relayRetryTimer);
+    relayRetryTimer = setTimeout(() => {
+      relayRetryTimer = null;
+      connectRelay();
+    }, retryInMs);
   });
 
   ws.on("error", (err) => {
@@ -4076,6 +4115,49 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       "set-cookie": `ocr_session=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
     });
     res.end(JSON.stringify({ ok: true, expiresAt }));
+    return true;
+  }
+  // P2-327: anticipate the relay reconnect wait — a Mac waking without DNS
+  // would otherwise leave the phone waiting out the full dial-error floor
+  // (60s for unresolved name / refusal / timeout) or the jittered backoff.
+  // Bearer apiToken only (same contract as POST /api/session: a session
+  // cookie never answers), and the route lives HERE, never inside proxy(), so
+  // a paired phone cannot hammer the relay through the E2E tunnel. The plan
+  // (relayredial.ts) honors a relay-close floor — the relay's own backoff —
+  // and throttles anticipations to one per RELAY_REDIAL_THROTTLE_MS.
+  if (url.pathname === "/__ocr/relay/redial") {
+    const gate = relayRedialGate({
+      method: req.method,
+      authorization: req.headers.authorization,
+      apiToken: apiToken(),
+    });
+    if (gate === "unauthorized") {
+      send401(res);
+      return true;
+    }
+    if (gate === "method-not-allowed") {
+      res.writeHead(405, { allow: "POST", "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify({ action: "noop", reason: "method-not-allowed" }));
+      return true;
+    }
+    const plan = relayRedialPlan({
+      relayDisabled,
+      connected: metrics.get("ocr_relay_connected") === 1,
+      dialInFlight: relayDialInFlight,
+      retryPending: relayRetryTimer !== null,
+      floorSource: relayRetryFloorSource,
+      msSinceLastRedial: relayLastRedialAt === null ? null : Date.now() - relayLastRedialAt,
+    });
+    if (plan.action === "redial-now") {
+      // exactly one anticipation per approved call: drop the pending timer,
+      // record the throttle instant, dial once
+      if (relayRetryTimer) clearTimeout(relayRetryTimer);
+      relayRetryTimer = null;
+      relayLastRedialAt = Date.now();
+      connectRelay();
+    }
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({ action: plan.action, reason: plan.reason }));
     return true;
   }
   // P2-007: loopback-only, Bearer-gated reads of boot pairing state for the

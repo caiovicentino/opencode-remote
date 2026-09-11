@@ -2972,6 +2972,35 @@ function handleWakeEvent(eventType: string): void {
     return;
   }
   void refreshPairingState();
+  // P2-327: the sidecar may be sitting out a 60s relay dial-error floor or
+  // the jittered reconnect backoff while the machine is already awake. One
+  // best-effort POST asks it to redial the relay now (the daemon's own state
+  // guard and 10s throttle protect the relay); the verdict's action + reason
+  // reach the log. reset-and-respawn above is untouched — a fresh respawn
+  // redials from scratch on its own.
+  void nudgeRelayRedial();
+}
+
+// P2-327: one best-effort POST to the daemon's loopback redial endpoint — no
+// retry, no queue (the wake probe already covers liveness). Bearer apiToken
+// from the 0600 state file, same contract as POST /api/session; only the
+// verdict's action + reason reach the log, never the token.
+async function nudgeRelayRedial(): Promise<void> {
+  try {
+    const token = readApiToken();
+    if (!token) return;
+    const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}/__ocr/relay/redial`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    const body = (await res.json().catch(() => null)) as { action?: unknown; reason?: unknown } | null;
+    if (res.status === 200 && body && typeof body.action === "string" && typeof body.reason === "string") {
+      log(`[desktop] relay redial: ${body.action} (${body.reason})`);
+    }
+  } catch {
+    // best-effort: an unreachable daemon is the probe path's problem
+  }
 }
 
 function registerWakeReaction(): void {
