@@ -105,6 +105,8 @@ export interface ShellMenuLabels {
   copyDiagnostics: string;
   wipeData: string;
   newChat: string;
+  /** P3-406: the Go item that fires the quick-entry action (global hotkey). */
+  quickEntry: string;
   commandPalette: string;
   paneConversations: string;
   /** Product name, untranslated. */
@@ -183,6 +185,7 @@ const EN: ShellLabels = {
     copyDiagnostics: "Copy diagnostic",
     wipeData: "Erase app data…",
     newChat: "New conversation",
+    quickEntry: "Quick entry",
     commandPalette: "Command palette",
     paneConversations: "Conversations",
     paneArtifacts: "Artifacts",
@@ -253,6 +256,7 @@ const PT: ShellLabels = {
     copyDiagnostics: "Copiar diagnóstico",
     wipeData: "Apagar dados do app…",
     newChat: "Nova conversa",
+    quickEntry: "Entrada rápida",
     commandPalette: "Paleta de comandos",
     paneConversations: "Conversas",
     paneArtifacts: "Artifacts",

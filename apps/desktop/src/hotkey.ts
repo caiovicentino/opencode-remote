@@ -30,6 +30,10 @@ export const HOTKEY_DISABLE_ENV = "OCR_DESKTOP_DISABLE_HOTKEY";
  * required — validated fail-closed by acceleratorProblem). */
 export const HOTKEY_USER_ENV = "OCR_DESKTOP_HOTKEY";
 
+/** P3-406: documented way for the owner to choose the QUICK-ENTRY accelerator
+ * (same validation, same fail-closed shape as HOTKEY_USER_ENV). */
+export const HOTKEY_QUICK_USER_ENV = "OCR_DESKTOP_QUICK_HOTKEY";
+
 /** Documented ceiling for a custom accelerator string — generous for any
  * real combination, small enough to keep logs and menu labels honest. */
 export const HOTKEY_MAX_LEN = 64;
@@ -40,9 +44,19 @@ export const HOTKEY_MAX_LEN = 64;
 export const DEFAULT_HOTKEY_MAC = "Command+Shift+O";
 export const DEFAULT_HOTKEY_WINDOWS = "Ctrl+Shift+O";
 
+/** P3-406: documented quick-entry defaults — "N" for a new conversation, the
+ * Claude-Desktop-style one-key route from anywhere to typing into a chat. */
+export const DEFAULT_QUICK_HOTKEY_MAC = "Command+Shift+N";
+export const DEFAULT_QUICK_HOTKEY_WINDOWS = "Ctrl+Shift+N";
+
 /** The documented per-platform default (Windows/Linux share one shape). */
 export function defaultHotkeyFor(platform: string): string {
   return platform === "darwin" ? DEFAULT_HOTKEY_MAC : DEFAULT_HOTKEY_WINDOWS;
+}
+
+/** The documented per-platform quick-entry default (same platform split). */
+export function defaultQuickHotkeyFor(platform: string): string {
+  return platform === "darwin" ? DEFAULT_QUICK_HOTKEY_MAC : DEFAULT_QUICK_HOTKEY_WINDOWS;
 }
 
 /** Modifier tokens Electron accepts, compared case-insensitively. */
@@ -125,6 +139,12 @@ export interface HotkeyPlan {
   accelerator: string | null;
   /** Short static pt-BR phrase for the log and the informational item. */
   reason: string;
+  /** P3-406: the quick-entry accelerator to register system-wide (null when
+   * the plan refuses it) — the one key that reveals the window AND lands the
+   * user typing into a conversation. */
+  quickAccelerator: string | null;
+  /** Short static pt-BR phrase explaining the quick-entry decision. */
+  quickReason: string;
 }
 
 /** Everything the decision needs, resolved by the caller (main.ts) once after
@@ -137,12 +157,47 @@ export interface HotkeyPlanInput {
   env: Record<string, string | undefined>;
   /** The owner's accelerator choice (HOTKEY_USER_ENV), absent when unset. */
   userAccelerator: unknown;
+  /** The owner's quick-entry choice (HOTKEY_QUICK_USER_ENV), absent when unset. */
+  quickUserAccelerator: unknown;
   /** process.platform. */
   platform: string;
 }
 
+/** One accelerator slot resolved through the shared rule chain (everything
+ * after the two session-wide rules): an owner choice that fails validation
+ * registers nothing — never a silent fallback to the default (fail-closed,
+ * the reason travels) — a valid owner choice wins, otherwise the documented
+ * platform default registers. */
+function resolveSlot(kind: "reopen" | "quick", userAccelerator: unknown, platform: string): { register: boolean; accelerator: string | null; reason: string } {
+  const chosen =
+    typeof userAccelerator === "string" && userAccelerator.trim() !== ""
+      ? userAccelerator.trim()
+      : null;
+  if (chosen !== null) {
+    if (acceleratorProblem(chosen) !== null) {
+      return {
+        register: false,
+        accelerator: null,
+        reason: kind === "quick" ? "atalho de entrada rápida configurado pelo dono é inválido — nenhum atalho entra no lugar" : "atalho configurado pelo dono é inválido — nenhum atalho global entra no lugar",
+      };
+    }
+    return {
+      register: true,
+      accelerator: chosen,
+      reason: kind === "quick" ? "atalho de entrada rápida configurado pelo dono registrado" : "atalho configurado pelo dono registrado",
+    };
+  }
+  return {
+    register: true,
+    accelerator: kind === "quick" ? defaultQuickHotkeyFor(platform) : defaultHotkeyFor(platform),
+    reason: kind === "quick" ? "atalho de entrada rápida padrão da plataforma registrado" : "atalho padrão da plataforma registrado",
+  };
+}
+
 /**
- * Decide the shell's global-hotkey behavior. Rules apply in this exact order:
+ * Decide the shell's global-hotkey behavior for BOTH accelerators — the
+ * reopen shortcut (P2-229) and the quick-entry shortcut (P3-406). Rules apply
+ * in this exact order:
  *
  *  1. a test-harness session NEVER registers — the harness and the flow
  *     battery run on the operator's machine and a registered shortcut would
@@ -152,43 +207,28 @@ export interface HotkeyPlanInput {
  *     silent fallback to the default (fail-closed, the reason travels);
  *  4. a valid owner accelerator wins over the default;
  *  5. anything else registers the documented platform default.
+ *
+ * The quick-entry slot follows the SAME chain with its own env override and
+ * default, plus one extra guard: a quick accelerator identical to the reopen
+ * one is refused — one key must never be registered twice.
  */
 export function hotkeyPlan(input: HotkeyPlanInput): HotkeyPlan {
   if (input.harnessSession) {
-    return {
-      register: false,
-      accelerator: null,
-      reason: "sessão de teste do harness — nenhum atalho global é registrado",
-    };
+    const reason = "sessão de teste do harness — nenhum atalho global é registrado";
+    return { register: false, accelerator: null, reason, quickAccelerator: null, quickReason: reason };
   }
   if (input.env[HOTKEY_DISABLE_ENV] === "1") {
+    const reason = "atalho global desligado pela variável de ambiente";
+    return { register: false, accelerator: null, reason, quickAccelerator: null, quickReason: reason };
+  }
+  const reopen = resolveSlot("reopen", input.userAccelerator, input.platform);
+  const quick = resolveSlot("quick", input.quickUserAccelerator, input.platform);
+  if (quick.accelerator !== null && quick.accelerator === reopen.accelerator) {
     return {
-      register: false,
-      accelerator: null,
-      reason: "atalho global desligado pela variável de ambiente",
+      ...reopen,
+      quickAccelerator: null,
+      quickReason: "atalho de entrada rápida igual ao de reabrir a janela — não registrado",
     };
   }
-  const chosen =
-    typeof input.userAccelerator === "string" && input.userAccelerator.trim() !== ""
-      ? input.userAccelerator.trim()
-      : null;
-  if (chosen !== null) {
-    if (acceleratorProblem(chosen) !== null) {
-      return {
-        register: false,
-        accelerator: null,
-        reason: "atalho configurado pelo dono é inválido — nenhum atalho global entra no lugar",
-      };
-    }
-    return {
-      register: true,
-      accelerator: chosen,
-      reason: "atalho configurado pelo dono registrado",
-    };
-  }
-  return {
-    register: true,
-    accelerator: defaultHotkeyFor(input.platform),
-    reason: "atalho padrão da plataforma registrado",
-  };
+  return { ...reopen, quickAccelerator: quick.accelerator, quickReason: quick.reason };
 }

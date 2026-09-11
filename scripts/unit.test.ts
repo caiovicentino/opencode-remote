@@ -865,10 +865,18 @@ import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "../apps/desktop/src/c
 import {
   acceleratorProblem,
   defaultHotkeyFor,
+  defaultQuickHotkeyFor,
   hotkeyPlan,
   HOTKEY_DISABLE_ENV,
   HOTKEY_MAX_LEN,
+  HOTKEY_QUICK_USER_ENV,
 } from "../apps/desktop/src/hotkey";
+
+import {
+  QUICK_ENTRY_MIN_MS,
+  quickEntryVerdict,
+  quickSurfaceFor,
+} from "../apps/web/src/lib/quickentry";
 
 import { badgePlan } from "../apps/desktop/src/badge";
 
@@ -25287,12 +25295,21 @@ check(
   // -- real-source assertions over the REAL main.ts ---------------------------
 
   const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
-  // registration goes through the plan, once, after the app is ready
+  // registration goes through the plan, once, after the app is ready. P3-406
+  // r2: the slots are independent — each registers on its OWN verdict, never
+  // gated behind the other slot's early return.
   check(
     "P2-229: the real main.ts resolves hotkeyPlan and registers through the plan verdict",
     mainSrc.includes("hotkeyPlan({") &&
       mainSrc.includes("globalShortcut.register(hotkey.accelerator, showMainWindow)") &&
-      /if \(!hotkey\?\.register \|\| !hotkey\.accelerator\) return;/.test(mainSrc),
+      /if \(hotkey\?\.register && hotkey\.accelerator\) \{/.test(mainSrc),
+  );
+  check(
+    "P3-406 r2: the quick accelerator registers independently of the reopen verdict",
+    mainSrc.includes("if (hotkey?.quickAccelerator) {") &&
+      mainSrc.includes("globalShortcut.register(hotkey.quickAccelerator") &&
+      mainSrc.indexOf("if (hotkey?.register && hotkey.accelerator) {") < mainSrc.indexOf("if (hotkey?.quickAccelerator) {") &&
+      !mainSrc.includes("if (!hotkey?.register || !hotkey.accelerator) return;"),
   );
   // the harness-session rule is the first input consulted: HERMETIC_E2E leads
   // the plan call, and the pure plan checks it before env/accelerator shapes
@@ -25302,11 +25319,16 @@ check(
   );
   const hotkeySrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "hotkey.ts"), "utf8");
   const planBody = hotkeySrc.slice(hotkeySrc.indexOf("export function hotkeyPlan"));
+  // P3-406: the plan now delegates the per-slot chain to resolveSlot — the
+  // session-wide rules stay inline and first, the accelerator-shape validation
+  // lives inside the slot resolver the plan calls after them.
+  const resolveBody = hotkeySrc.slice(hotkeySrc.indexOf("function resolveSlot"));
   check(
     "P2-229: in the pure plan the harness rule is the first consulted, before env and accelerator shape",
     planBody.includes("input.harnessSession") &&
       planBody.indexOf("input.harnessSession") < planBody.indexOf("HOTKEY_DISABLE_ENV") &&
-      planBody.indexOf("HOTKEY_DISABLE_ENV") < planBody.indexOf("acceleratorProblem("),
+      planBody.indexOf("HOTKEY_DISABLE_ENV") < planBody.indexOf("resolveSlot(") &&
+      resolveBody.includes("acceleratorProblem("),
   );
   // everything is unregistered in will-quit
   const willQuitAt = mainSrc.indexOf('app.on("will-quit"');
@@ -25332,6 +25354,238 @@ check(
   check(
     "P2-229: hotkey.ts is pure — zero imports (no electron, no node:fs, no fetch, no I/O)",
     !/^import /m.test(hotkeyCode) && !hotkeyCode.includes("node:") && !/\bfetch\b/.test(hotkeyCode),
+  );
+}
+
+// --- P3-406: quick-entry hotkey (plan slot + pure verdict) ------------------------
+
+{
+  const plan = (over: Partial<Parameters<typeof hotkeyPlan>[0]> = {}) =>
+    hotkeyPlan({
+      harnessSession: false,
+      env: {},
+      userAccelerator: undefined,
+      quickUserAccelerator: undefined,
+      platform: "darwin",
+      ...over,
+    });
+
+  // -- the quick slot through the plan: the shared rule chain -----------------
+
+  // rule 1 — the harness session refuses BOTH accelerators, first of all
+  check(
+    "P3-406: harness session refuses the quick accelerator with a reason, like the reopen one",
+    !plan({ harnessSession: true, quickUserAccelerator: "Alt+Shift+Q" }).quickAccelerator &&
+      plan({ harnessSession: true }).quickReason.length > 0 &&
+      plan({ harnessSession: true }).quickAccelerator === null,
+  );
+
+  // rule 2 — the documented kill switch kills BOTH slots
+  const killed = plan({ env: { [HOTKEY_DISABLE_ENV]: "1" }, quickUserAccelerator: "Alt+Shift+Q" });
+  check(
+    "P3-406: the kill switch registers neither accelerator",
+    !killed.register && killed.accelerator === null && killed.quickAccelerator === null,
+  );
+
+  // rule 3 — an invalid owner quick override refuses fail-closed, never a
+  // silent default, and never takes the reopen slot down with it
+  const invalid = plan({ quickUserAccelerator: "Ctrl++" });
+  check(
+    "P3-406: invalid quick override → nothing registers in its place, reopen untouched",
+    invalid.quickAccelerator === null && invalid.quickReason.length > 0 && invalid.register && !!invalid.accelerator,
+  );
+
+  // rule 3 mirror (r2 review, the BLOCKING coupling): an invalid REOPEN
+  // override must leave the quick slot registered — and main.ts registers
+  // each slot on its own verdict, so the mirror holds at runtime too.
+  const invalidReopen = plan({ userAccelerator: "Ctrl++" });
+  check(
+    "P3-406 r2: invalid reopen override → the approved quick accelerator survives",
+    !invalidReopen.register &&
+      invalidReopen.accelerator === null &&
+      invalidReopen.quickAccelerator === defaultQuickHotkeyFor("darwin") &&
+      invalidReopen.quickReason.length > 0,
+  );
+
+  // rule 4 — a valid owner quick override wins over the platform default
+  const owner = plan({ quickUserAccelerator: "Alt+Shift+Q" });
+  check(
+    "P3-406: a valid quick override wins over the default",
+    owner.quickAccelerator === "Alt+Shift+Q" && owner.quickAccelerator !== defaultQuickHotkeyFor("darwin"),
+  );
+
+  // rule 5 — per-platform defaults, distinct from each other AND from reopen
+  check(
+    "P3-406: quick defaults follow the platform and never collide with the reopen defaults",
+    defaultQuickHotkeyFor("darwin") !== defaultQuickHotkeyFor("win32") &&
+      plan({ platform: "win32" }).quickAccelerator === defaultQuickHotkeyFor("win32") &&
+      plan({ platform: "darwin" }).quickAccelerator === defaultQuickHotkeyFor("darwin") &&
+      defaultQuickHotkeyFor("darwin") !== defaultHotkeyFor("darwin") &&
+      defaultQuickHotkeyFor("win32") !== defaultHotkeyFor("win32"),
+  );
+
+  // rule 6 — collision guard: quick === reopen is refused for the quick slot
+  const collision = plan({ quickUserAccelerator: "Alt+Shift+R", userAccelerator: "Alt+Shift+R" });
+  check(
+    "P3-406: a quick override identical to the reopen accelerator is refused — one key never registers twice",
+    collision.register && !!collision.accelerator && collision.quickAccelerator === null && collision.quickReason.length > 0,
+  );
+
+  // every quick phrase: static, non-empty, path-free, scheme-free
+  const quickReasons = [
+    plan({ harnessSession: true }).quickReason,
+    plan({ env: { [HOTKEY_DISABLE_ENV]: "1" } }).quickReason,
+    plan({ quickUserAccelerator: "Ctrl++" }).quickReason,
+    plan({ quickUserAccelerator: "Alt+Shift+Q" }).quickReason,
+    plan({}).quickReason,
+    plan({ quickUserAccelerator: "Alt+Shift+R", userAccelerator: "Alt+Shift+R" }).quickReason,
+  ];
+  check(
+    "P3-406: every quick-entry phrase is non-empty, path-free and scheme-free",
+    quickReasons.every(
+      (r) =>
+        r.length > 0 &&
+        !r.includes("/") &&
+        !r.includes("\\") &&
+        !r.includes("://") &&
+        !r.includes("http:") &&
+        !r.includes("file:") &&
+        !r.includes(":~"),
+    ),
+  );
+
+  // -- the Go menu displays the quick accelerator without registering it ------
+
+  const goItemsOf = (p: Parameters<typeof menuSpec>[3]) => {
+    const spec = menuSpec("darwin", null, false, p);
+    return (spec.find((i) => i.label === "Ir")?.submenu ?? []).filter((i) => i.id === "go-quick-entry");
+  };
+  const goQuick = goItemsOf(plan({}))[0];
+  check(
+    "P3-406: the Go menu shows go-quick-entry with the plan accelerator, display-only",
+    goQuick?.accelerator === defaultQuickHotkeyFor("darwin") &&
+      goQuick?.registerAccelerator === false &&
+      goQuick?.action === "quickEntry" &&
+      goQuick?.label === shellLabels("pt").menu.quickEntry,
+  );
+  check(
+    "P3-406: a refused plan shows go-quick-entry without a lying accelerator",
+    goItemsOf(plan({ harnessSession: true }))[0]?.accelerator === undefined &&
+      goItemsOf(undefined)[0]?.action === "quickEntry",
+  );
+  check(
+    "P3-406: both languages carry the quickEntry label (shelllang P3-393 contract)",
+    !!shellLabels("en").menu.quickEntry && !!shellLabels("pt").menu.quickEntry,
+  );
+
+  // -- quickEntryVerdict: the full fail-closed table ---------------------------
+
+  const V = (surface: unknown, now: number, last: unknown, min?: number) =>
+    quickEntryVerdict(surface, now, last, min);
+
+  // each surface of the closed set
+  check(
+    "P3-406: verdict per surface — empty chat focuses the composer, chat creates, gate focuses the queue",
+    V("empty-chat", 10_000, 0) === "focus-composer" &&
+      V("chat", 10_000, 0) === "create" &&
+      V("gate", 10_000, 0) === "focus-queue",
+  );
+  check(
+    "P3-406: verdict per surface — pairing and wizard are show-only, never a focus steal",
+    V("pairing", 10_000, 0) === "show-only" && V("wizard", 10_000, 0) === "show-only",
+  );
+
+  // double-fire: within the interval collapses, exactly at the boundary passes
+  check(
+    "P3-406: a fire within the minimum interval is ignored (double-fire collapse)",
+    V("chat", 10_000, 10_000 - QUICK_ENTRY_MIN_MS + 1) === "ignore" &&
+      V("chat", QUICK_ENTRY_MIN_MS - 1, 0) === "ignore" &&
+      V("gate", 5_000, 4_999) === "ignore",
+  );
+  check(
+    "P3-406: a fire EXACTLY at the boundary passes (half-open interval)",
+    V("chat", 10_000, 10_000 - QUICK_ENTRY_MIN_MS) === "create" &&
+      V("empty-chat", QUICK_ENTRY_MIN_MS, 0) === "focus-composer",
+  );
+
+  // invalid input: fail-closed to show-only, every shape
+  check(
+    "P3-406: invalid input fails closed to show-only",
+    V("no-such-surface", 10_000, 0) === "show-only" &&
+      V(undefined, 10_000, 0) === "show-only" &&
+      V("chat", "not-a-number", 0) === "show-only" &&
+      V("chat", -5, 0) === "show-only" &&
+      V("chat", Number.NaN, 0) === "show-only" &&
+      V("chat", 10_000, "stale") === "show-only" &&
+      V("chat", 10_000, -1) === "show-only" &&
+      V("chat", 10_000, Number.POSITIVE_INFINITY) === "show-only" &&
+      V("chat", 10_000, 0, -1) === "show-only" &&
+      V("chat", 10_000, 0, Number.NaN) === "show-only",
+  );
+
+  // -- quickSurfaceFor: the App-state mapping table ----------------------------
+
+  const S = (over: Partial<Parameters<typeof quickSurfaceFor>[0]>) =>
+    quickSurfaceFor({
+      phase: "paired",
+      welcome: false,
+      addingMachine: false,
+      pairManual: false,
+      gateShellUp: false,
+      degradedCard: false,
+      sessionOpen: false,
+      sessionEmpty: false,
+      ...over,
+    });
+  check(
+    "P3-406: surface mapping — the unpaired precedence is wizard > pairing ceremony > gate",
+    S({ phase: "unpaired", welcome: true, gateShellUp: true }) === "wizard" &&
+      S({ phase: "unpaired", addingMachine: true, gateShellUp: true }) === "pairing" &&
+      S({ phase: "unpaired", pairManual: true }) === "pairing" &&
+      S({ phase: "unpaired", gateShellUp: true }) === "gate" &&
+      S({ phase: "unpaired" }) === "pairing",
+  );
+  check(
+    "P3-406 r2: the full-card degraded journey (narrow viewport / stored pairing, daemon down) is the gate surface too",
+    S({ phase: "unpaired", degradedCard: true }) === "gate" &&
+      S({ phase: "unpaired", degradedCard: true, gateShellUp: true }) === "gate" &&
+      S({ phase: "unpaired", degradedCard: true, pairManual: true }) === "pairing" &&
+      S({ phase: "unpaired", degradedCard: false, gateShellUp: false }) === "pairing",
+  );
+  check(
+    "P3-406: surface mapping — paired emptiness decides, and no open conversation is the create surface",
+    S({ sessionOpen: true, sessionEmpty: true }) === "empty-chat" &&
+      S({ sessionOpen: true, sessionEmpty: false }) === "chat" &&
+      S({ sessionOpen: false }) === "chat",
+  );
+
+  // -- real-source assertions over the REAL main.ts ---------------------------
+
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const webSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  check(
+    "P3-406: main.ts registers the quick accelerator over showMainWindow + the existing menu-action channel",
+    mainSrc.includes('globalShortcut.register(hotkey.quickAccelerator') &&
+      /quickAccelerator[^)]*\)\s*=>\s*\{\s*\n\s*showMainWindow\(\);/.test(mainSrc) &&
+      mainSrc.includes('sendMenuAction("quickEntry")') &&
+      webSrc.includes('id === "quickEntry"'),
+  );
+  check(
+    "P3-406: App owns the verdict and never wires it outside the menu action",
+    webSrc.includes("quickEntryVerdict(") && webSrc.includes("quickSurfaceFor("),
+  );
+  check(
+    "P3-406 r2: the boot log carries the quick slot's own decision line",
+    /log\(`\[desktop\] quick-entry hotkey: \$\{hotkey\.quickAccelerator \?\? "off"\} \(\$\{hotkey\.quickReason\}\)`\)/.test(mainSrc),
+  );
+  check(
+    "P3-406: the pure quickentry module imports nothing (no React, no DOM, no I/O)",
+    (() => {
+      const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "lib", "quickentry.ts"), "utf8")
+        .replace(/\/\/.*$/gm, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+      return !/^import /m.test(src) && !src.includes("node:") && !/\bfetch\b/.test(src) && !src.includes("document") && !src.includes("window");
+    })(),
   );
 }
 

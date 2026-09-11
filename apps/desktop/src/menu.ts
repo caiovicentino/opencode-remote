@@ -39,6 +39,10 @@ export interface MenuItemSpec {
   /** Renderer action id broadcast over ocr:menu-action (P1-046). Present on
    * the Go items; shell-side items (Help submenu) are wired in main.ts by id. */
   action?: string;
+  /** P3-406: false renders the accelerator WITHOUT registering it locally —
+   * the quick-entry combination is already registered system-wide, and a
+   * second local registration would double-fire the same action. */
+  registerAccelerator?: boolean;
   /** Informational-only items (the update status line) render disabled. */
   enabled?: boolean;
   type?: "separator";
@@ -142,6 +146,12 @@ export function menuSpec(
       label: labels.menu.go,
       submenu: [
         { id: "go-new-chat", label: labels.menu.newChat, accelerator: "CmdOrCtrl+T", action: "newChat" },
+        // P3-406: the quick entry shows the plan's system-wide accelerator but
+        // never registers it in the menu — when the plan refused (harness
+        // session, kill switch, invalid override) no lying combination shows.
+        hotkey?.quickAccelerator
+          ? { id: "go-quick-entry", label: labels.menu.quickEntry, accelerator: hotkey.quickAccelerator, registerAccelerator: false, action: "quickEntry" }
+          : { id: "go-quick-entry", label: labels.menu.quickEntry, action: "quickEntry" },
         { id: "go-palette", label: labels.menu.commandPalette, accelerator: "CmdOrCtrl+K", action: "palette" },
         { type: "separator" },
         { id: "go-pane-chat", label: labels.menu.paneConversations, accelerator: "CmdOrCtrl+1", action: "pane:chat" },

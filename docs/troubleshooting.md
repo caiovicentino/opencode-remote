@@ -498,6 +498,17 @@ can always see what is registered and why.
   your machine must not steal system-wide keys, so the harness-session rule
   comes first in the decision and disables the feature entirely.
 
+## The quick-entry shortcut (P3-406)
+
+A second system-wide combination — `Command+Shift+N` on macOS,
+`Ctrl+Shift+N` on Windows/Linux — reveals the window with the caret already
+in the composer (a new conversation, the open empty one, or the first-boot
+offline queue), following the same rules as the reopen shortcut: override
+with `OCR_DESKTOP_QUICK_HOTKEY`, the same `OCR_DESKTOP_DISABLE_HOTKEY` kill
+switch, one desktop.log line when the combination is taken
+(`quick-entry hotkey not registered`), and the Go menu's **Quick entry** item
+always shows the truth.
+
 ## Right-click menu (P2-235)
 
 Right-clicking the window opens a native context menu with the basics a lay
