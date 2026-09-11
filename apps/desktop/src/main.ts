@@ -27,7 +27,7 @@ import {
 } from "./daemon";
 import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredRelayUrl, writeStoredWebAppUrl } from "./relaystore";
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
-import { RELAY_PROBE_BODY_MAX, RELAY_PROBE_TIMEOUT_MS, relayHealthUrl, relayProbeVerdict, type RelayProbeVerdict as RelayTestVerdict } from "./relayprobe";
+import { RELAY_PROBE_BODY_MAX, RELAY_PROBE_TIMEOUT_MS, relayHealthUrl, relayProbeErrorName, relayProbeVerdict, type RelayProbeVerdict as RelayTestVerdict } from "./relayprobe";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
 import { hasAppMarker, probeVerdict, rawDateHeader, type ReachProbeOutcome, type ReachVerdict } from "./webreach";
@@ -2731,16 +2731,17 @@ async function probeRelay(raw: unknown): Promise<RelayTestVerdict> {
       errorName: "",
     });
   } catch (err) {
-    const e = err as { name?: string; message?: string; cause?: { code?: string } };
     // net.fetch failures carry the Chromium code in the message
-    // ("net::ERR_CONNECTION_REFUSED …") or in cause.code — the classifier
-    // regexes match either, and the phrase never echoes it.
+    // ("net::ERR_CONNECTION_REFUSED …") or in cause.code; a timed-out dial is
+    // a DOMException whose prose message would match none of the classifier's
+    // regexes — relayProbeErrorName normalizes it to the name. The verdict
+    // phrase never echoes any of it.
     return relayProbeVerdict({
       raw,
       status: null,
       redirected: false,
       body: "",
-      errorName: e?.cause?.code ?? e?.message ?? e?.name ?? "",
+      errorName: relayProbeErrorName(err),
     });
   }
 }

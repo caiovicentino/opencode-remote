@@ -51,14 +51,20 @@ export interface RelayProbeInput {
   redirected: boolean;
   /** first ≤RELAY_PROBE_BODY_MAX bytes of the answer body, "" when none read */
   body: string;
-  /** short error name/code (err.cause.code ?? err.message, "" when none) */
+  /** short error token the caller normalized through relayProbeErrorName —
+   * the DOMException NAME ("TimeoutError"/"AbortError") for a timed-out or
+   * aborted dial, otherwise cause.code ?? message ?? name ("" when none) */
   errorName: string;
 }
 
 const DNS_RE = /enotfound|eai_again|eai_nodata|getaddrinfo|err_name_not_resolved/i;
 const REFUSED_RE = /econnrefused|err_connection_refused/i;
 const TLS_RE = /cert_|err_tls|err_ssl|unable_to_verify_leaf_signature|self_signed_cert_in_chain|depth_zero_self_signed_cert|eproto/i;
-const TIMEOUT_RE = /aborterror|timeouterror|abort_err|etimedout|err_timed_out|err_connection_timed_out/i;
+const TIMEOUT_RE = /aborterror|timeouterror|abort_err|etimedout|err_timed_out|err_connection_timed_out|err_aborted/i;
+// Electron 44's net.fetch never surfaces a redirect answer: with
+// redirect:"manual" it cancels the request ("Redirect was cancelled") — which
+// is exactly the signal that SOMETHING else answered at that address.
+const REDIRECT_RE = /redirect/i;
 
 const VERDICTS: Record<RelayProbeState, { message: string; messageEn: string }> = {
   ok: {
@@ -101,6 +107,27 @@ const VERDICTS: Record<RelayProbeState, { message: string; messageEn: string }> 
 
 function verdict(state: RelayProbeState): RelayProbeVerdict {
   return { state, ...VERDICTS[state] };
+}
+
+/**
+ * Normalize one probe failure into the short token relayProbeVerdict
+ * classifies. Pure shape-mapping (no electron, no I/O) so unit tests can pin
+ * the REAL errors the IPC delivers — measured on Electron 44:
+ *   - a timed-out dial rejects as a DOMException whose prose message ("The
+ *     operation was aborted due to timeout") matches none of the classifier's
+ *     regexes; only the NAME ("TimeoutError"/"AbortError") is the reliable
+ *     token, so it wins over the message;
+ *   - every other failure (refused, DNS, TLS…) rides message
+ *     ("net::ERR_CONNECTION_REFUSED") or cause.code — kept verbatim.
+ * Never throws; an unknown shape degrades to "" (→ unreachable).
+ */
+export function relayProbeErrorName(err: unknown): string {
+  const e = err as { name?: unknown; message?: unknown; cause?: { code?: unknown } } | null;
+  if (!e || typeof e !== "object") return "";
+  if (e.name === "TimeoutError" || e.name === "AbortError") return e.name;
+  if (typeof e.cause?.code === "string" && e.cause.code) return e.cause.code;
+  if (typeof e.message === "string" && e.message) return e.message;
+  return typeof e.name === "string" ? e.name : "";
 }
 
 /**
@@ -147,6 +174,9 @@ export function relayProbeVerdict(p: RelayProbeInput): RelayProbeVerdict {
     if (DNS_RE.test(errorName)) return verdict("dns");
     if (REFUSED_RE.test(errorName)) return verdict("refused");
     if (TLS_RE.test(errorName)) return verdict("tls");
+    // Electron cancels a manual redirect before any status exists — the
+    // address answers, just not as this relay.
+    if (REDIRECT_RE.test(errorName)) return verdict("not-a-relay");
     return verdict("unreachable");
   }
   let parsed: unknown = null;

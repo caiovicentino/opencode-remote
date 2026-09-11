@@ -282,9 +282,12 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   const [relayDraft, setRelayDraft] = useState("");
   // P2-328: the "Test connection" probe — a boolean testing state and a
   // result that is ALWAYS terminal (a final verdict phrase, never a spinner
-  // line); the Save action is never blocked by a running test.
+  // line); the Save action is never blocked by a running test. The verdict is
+  // tagged with the draft it probed and renders only while that exact address
+  // is still in the field — a probe resolving after an edit never speaks
+  // about the address now showing (stale-verdict race, review round 3).
   const [relayTesting, setRelayTesting] = useState(false);
-  const [relayTestResult, setRelayTestResult] = useState<RelayProbeResult | null>(null);
+  const [relayTestResult, setRelayTestResult] = useState<{ url: string; verdict: RelayProbeResult } | null>(null);
   // P2-189: app address the phone opens (desktop shell only) — same
   // draft/resolution discipline as the relay setting above.
   const [webApp, setWebApp] = useState<WebAppSetting | null>(null);
@@ -417,17 +420,24 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   }
 
   /** P2-328: probe the DRAFTED relay address (never saved, never restarts the
-   * daemon) and render the verdict — every outcome is a terminal state. */
+   * daemon) and render the verdict — every outcome is a terminal state. The
+   * verdict is stored tagged with the probed draft; the render drops it the
+   * moment the field holds a different address, so a slow probe can never
+   * paint its address's verdict under another one. */
   async function testRelayNow() {
     if (!testRelay || relayTesting) return;
+    const probed = relayDraft;
     setRelayTesting(true);
     setRelayTestResult(null);
     try {
-      setRelayTestResult(await testRelay(relayDraft));
+      setRelayTestResult({ url: probed, verdict: await testRelay(probed) });
     } catch {
       // Terminal fallback copy rides the dict (P2-275) — the module's own
       // phrases cover every verdict the IPC actually returns.
-      setRelayTestResult({ state: "unreachable", message: t("relayTestFailed"), messageEn: t("relayTestFailed") });
+      setRelayTestResult({
+        url: probed,
+        verdict: { state: "unreachable", message: t("relayTestFailed"), messageEn: t("relayTestFailed") },
+      });
     } finally {
       setRelayTesting(false);
     }
@@ -732,15 +742,18 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 </>
               )}
             </div>
-            {relayTestResult && (
+            {relayTestResult && relayTestResult.url === relayDraft && (
               <p
                 className="muted relay-test-result"
                 style={{
                   margin: "6px 0 0",
-                  color: relayTestResult.state === "ok" || relayTestResult.state === "draining" ? undefined : "var(--danger)",
+                  color:
+                    relayTestResult.verdict.state === "ok" || relayTestResult.verdict.state === "draining"
+                      ? undefined
+                      : "var(--danger)",
                 }}
               >
-                {lang === "en" ? relayTestResult.messageEn : relayTestResult.message}
+                {lang === "en" ? relayTestResult.verdict.messageEn : relayTestResult.verdict.message}
               </p>
             )}
             {relay.problems.length > 0 && (
