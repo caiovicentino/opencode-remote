@@ -240,6 +240,12 @@ export const dict = {
     relayOriginStored: "Saved on this machine.",
     relayOriginDefault: "Local default — only works on this machine.",
     relayOriginInvalid: "The saved address is invalid — fix it or go back to the local relay.",
+    // relay "test connection" probe (desktop settings, P2-328): the button
+    // rides the bridge; the verdict phrase itself travels with the probe
+    // result (pt + en, static, apps/desktop/src/relayprobe.ts).
+    relayTest: "Test connection",
+    relayTesting: "Testing…",
+    relayTestFailed: "Could not test the connection — try again.",
     // pairing step one + app address setting (desktop, P2-189)
     pairStepOne: "Step 1 — open the app on your phone",
     pairStepTwo: "Step 2 — pair this machine",
@@ -1096,6 +1102,12 @@ export const dict = {
     relayOriginStored: "Salvo nesta máquina.",
     relayOriginDefault: "Padrão local — só funciona nesta máquina.",
     relayOriginInvalid: "O endereço salvo é inválido — corrija-o ou volte ao relay local.",
+    // sonda "testar conexão" do relay (ajustes do desktop, P2-328): o botão
+    // usa a ponte; a frase do veredito viaja com o resultado (pt + en,
+    // estática, apps/desktop/src/relayprobe.ts).
+    relayTest: "Testar conexão",
+    relayTesting: "Testando…",
+    relayTestFailed: "Não foi possível testar a conexão — tente de novo.",
     // passo 1 do pareamento + endereço do app (desktop, P2-189)
     pairStepOne: "Passo 1 — abra o app no celular",
     pairStepTwo: "Passo 2 — pareie esta máquina",

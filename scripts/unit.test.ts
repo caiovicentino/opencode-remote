@@ -171,6 +171,13 @@ import {
 } from "../apps/desktop/src/webappurl";
 import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/desktop/src/pairlink";
 import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
+import {
+  RELAY_PROBE_BODY_MAX,
+  RELAY_PROBE_TIMEOUT_MS,
+  relayHealthUrl,
+  relayProbeVerdict,
+  type RelayProbeInput,
+} from "../apps/desktop/src/relayprobe";
 import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
 import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
 import { TRAY_TIP_MAX_CHARS, trayStatus } from "../apps/desktop/src/traystatus";
@@ -21584,6 +21591,185 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       (k) =>
         typeof (dict.en as Record<string, string>)[k] === "string" &&
         typeof (dict.pt as Record<string, string>)[k] === "string",
+    ),
+  );
+}
+
+// --- P2-328: relay card "Test connection" probe (relayprobe.ts) -----------------
+
+{
+  // relayHealthUrl matrix — derivation with and without an explicit port
+  check(
+    "P2-328: relayHealthUrl wss explicit port → https on the same host and port",
+    relayHealthUrl("wss://relay.example.com:8788") === "https://relay.example.com:8788/healthz",
+  );
+  check(
+    "P2-328: relayHealthUrl ws loopback explicit port → http on the same host and port",
+    relayHealthUrl("ws://127.0.0.1:8787") === "http://127.0.0.1:8787/healthz",
+  );
+  check(
+    "P2-328: relayHealthUrl wss without an explicit port → https default",
+    relayHealthUrl("wss://relay.example.com") === "https://relay.example.com/healthz",
+  );
+  check(
+    "P2-328: relayHealthUrl ws without an explicit port → http default",
+    relayHealthUrl("ws://127.0.0.1") === "http://127.0.0.1/healthz",
+  );
+  check(
+    "P2-328: relayHealthUrl strips path, query, hash and credentials",
+    relayHealthUrl("wss://u:p@relay.example.com/some/path?q=1#frag") === "https://relay.example.com/healthz",
+  );
+  check(
+    "P2-328: relayHealthUrl refuses non-ws schemes, garbage and non-strings",
+    relayHealthUrl("https://relay.example.com") === null &&
+      relayHealthUrl("not a url") === null &&
+      relayHealthUrl(42) === null &&
+      relayHealthUrl(null) === null,
+  );
+
+  // relayProbeVerdict table — one check per state
+  const input = (over: Partial<RelayProbeInput>): RelayProbeInput => ({
+    raw: "wss://relay.example.com:8788",
+    status: null,
+    redirected: false,
+    body: "",
+    errorName: "",
+    ...over,
+  });
+  const okBody = JSON.stringify({ ok: true, version: "1.2.3", uptimeS: 1, rooms: 0, roomsRejected: 0 });
+  const drainingBody = JSON.stringify({ ok: false, version: "1.2.3", draining: true });
+
+  check(
+    "P2-328: 200 + healthz JSON (ok true, version string) → ok",
+    relayProbeVerdict(input({ status: 200, body: okBody })).state === "ok",
+  );
+  check(
+    "P2-328: 503 + healthz JSON (ok false) → draining",
+    relayProbeVerdict(input({ status: 503, body: drainingBody })).state === "draining",
+  );
+  const notRelay = [
+    input({ status: 200, body: "<html>nginx</html>" }),
+    input({ status: 200, body: JSON.stringify({ ok: true }) }),
+    input({ status: 200, body: JSON.stringify({ ok: true, version: 42 }) }),
+    input({ status: 200, body: "" }),
+    input({ status: 302, body: "" }),
+    input({ status: 200, body: okBody, redirected: true }),
+    input({ status: 404, body: JSON.stringify({ ok: true, version: "1.2.3" }) }),
+  ];
+  check(
+    "P2-328: stranger status, redirect, non-JSON or version-less body → not-a-relay",
+    notRelay.every((v) => relayProbeVerdict(v).state === "not-a-relay"),
+  );
+  check(
+    "P2-328: ENOTFOUND → dns",
+    relayProbeVerdict(input({ errorName: "ENOTFOUND" })).state === "dns" &&
+      relayProbeVerdict(input({ errorName: "net::ERR_NAME_NOT_RESOLVED" })).state === "dns",
+  );
+  check(
+    "P2-328: ECONNREFUSED → refused",
+    relayProbeVerdict(input({ errorName: "ECONNREFUSED" })).state === "refused" &&
+      relayProbeVerdict(input({ errorName: "Error: net::ERR_CONNECTION_REFUSED at https://x/healthz" })).state ===
+        "refused",
+  );
+  check(
+    "P2-328: certificate error → tls",
+    relayProbeVerdict(input({ errorName: "ERR_CERT_DATE_INVALID" })).state === "tls" &&
+      relayProbeVerdict(input({ errorName: "CERT_HAS_EXPIRED" })).state === "tls",
+  );
+  check(
+    "P2-328: abort and timed-out dial → timeout",
+    relayProbeVerdict(input({ errorName: "TimeoutError" })).state === "timeout" &&
+      relayProbeVerdict(input({ errorName: "AbortError" })).state === "timeout" &&
+      relayProbeVerdict(input({ errorName: "net::ERR_CONNECTION_TIMED_OUT" })).state === "timeout",
+  );
+  check(
+    "P2-328: an unknown net::ERR code → unreachable",
+    relayProbeVerdict(input({ errorName: "net::ERR_SOMETHING_ELSE" })).state === "unreachable" &&
+      relayProbeVerdict(input({ errorName: "" })).state === "unreachable",
+  );
+  check(
+    "P2-328: ws on a non-loopback host is invalid and never dials",
+    relayProbeVerdict(input({ raw: "ws://relay.example.com:8788" })).state === "invalid",
+  );
+  check(
+    "P2-328: a non-string or empty address is invalid",
+    relayProbeVerdict(input({ raw: 42 })).state === "invalid" &&
+      relayProbeVerdict(input({ raw: "" })).state === "invalid",
+  );
+
+  // every state: static pt + en phrases, path/scheme-free, no echoed error
+  const allVerdicts = [
+    relayProbeVerdict(input({ status: 200, body: okBody })), // ok
+    relayProbeVerdict(input({ status: 503, body: drainingBody })), // draining
+    relayProbeVerdict(input({ status: 200, body: "<html>nginx</html>" })), // not-a-relay
+    relayProbeVerdict(input({ errorName: "ENOTFOUND" })), // dns
+    relayProbeVerdict(input({ errorName: "ECONNREFUSED" })), // refused
+    relayProbeVerdict(input({ errorName: "ERR_CERT_DATE_INVALID" })), // tls
+    relayProbeVerdict(input({ errorName: "TimeoutError" })), // timeout
+    relayProbeVerdict(input({ errorName: "net::ERR_SOMETHING_ELSE" })), // unreachable
+    relayProbeVerdict(input({ raw: "" })), // invalid
+  ];
+  const everyState = ["ok", "draining", "not-a-relay", "dns", "refused", "tls", "timeout", "unreachable", "invalid"];
+  check(
+    "P2-328: the classifier answers exactly the nine documented states",
+    allVerdicts.map((v) => v.state).join(",") === everyState.join(","),
+  );
+  check(
+    "P2-328: every verdict carries static pt and en phrases with no URL, scheme, path or raw error",
+    allVerdicts.every(
+      (v) =>
+        v.message.length > 0 &&
+        v.messageEn.length > 0 &&
+        !v.message.includes("/") &&
+        !v.messageEn.includes("/") &&
+        !v.message.includes("http") &&
+        !v.messageEn.includes("http") &&
+        !v.message.includes("127.0.0.1") &&
+        !v.messageEn.includes("127.0.0.1"),
+    ),
+  );
+
+  // real-source assertions over the REAL main.ts / preload / view wiring
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const preloadSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "preload.ts"), "utf8");
+  check(
+    "P2-328: the IPC probe dials net.fetch with a manual redirect and the documented timeout",
+    mainSrc.includes("net.fetch(healthUrl") &&
+      mainSrc.includes('redirect: "manual"') &&
+      mainSrc.includes("AbortSignal.timeout(RELAY_PROBE_TIMEOUT_MS)") &&
+      RELAY_PROBE_TIMEOUT_MS === 5_000,
+  );
+  check(
+    "P2-328: the probe body is read up to the documented 4KB ceiling",
+    mainSrc.includes("readRelayBodyPrefix(res, RELAY_PROBE_BODY_MAX)") && RELAY_PROBE_BODY_MAX === 4_096,
+  );
+  check(
+    "P2-328: at most one probe in flight — a second caller awaits the same verdict",
+    mainSrc.includes("if (relayProbeInFlight) return relayProbeInFlight;") &&
+      mainSrc.includes("relayProbeInFlight = probeRelay(payload).finally("),
+  );
+  check(
+    "P2-328: preload exposes testRelay on the app:relayTest channel",
+    preloadSrc.includes('testRelay: (url: string): Promise<RelayProbeVerdict> => ipcRenderer.invoke("app:relayTest", url)'),
+  );
+  const settingsSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-328: the relay card renders the test button and the terminal result line",
+    settingsSrc.includes('t("relayTest")') &&
+      settingsSrc.includes('t("relayTesting")') &&
+      settingsSrc.includes("relayTestResult") &&
+      settingsSrc.includes("relayTesting ? t"),
+  );
+  check(
+    "P2-328: the test button and result keys exist in BOTH locales",
+    ["relayTest", "relayTesting", "relayTestFailed"].every(
+      (k) =>
+        typeof (dict.en as Record<string, string>)[k] === "string" &&
+        typeof (dict.pt as Record<string, string>)[k] === "string" &&
+        (i18nSource.match(new RegExp(`${k}:`, "g")) ?? []).length === 2,
     ),
   );
 }

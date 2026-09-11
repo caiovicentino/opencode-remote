@@ -945,6 +945,13 @@ printed, and `/__ocr/pairing-uri` serves `null`), because a QR the phone can
 never use is worse than none. The desktop app's local mode does not depend on
 the relay and keeps working while the relay URL is invalid.
 
+On the desktop shell, the Settings relay card also has a **Test connection**
+button: it probes the public `/healthz` endpoint derived from the address as
+typed (same host and port, `wss://` → `https://`), before anything is saved or
+the daemon restarts, and reports whether the relay answered healthy, is
+draining, or why it did not answer (unknown name, refused, untrusted
+certificate, timeout, or something other than this relay answering).
+
 ## Pointing the PWA at the hosted relay
 
 The PWA is relay-only and gets the relay URL from the pairing code — there is

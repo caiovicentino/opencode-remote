@@ -1,4 +1,4 @@
-import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, screen, session, systemPreferences, Tray, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, powerMonitor, powerSaveBlocker, screen, session, systemPreferences, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -27,6 +27,7 @@ import {
 } from "./daemon";
 import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredRelayUrl, writeStoredWebAppUrl } from "./relaystore";
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
+import { RELAY_PROBE_BODY_MAX, RELAY_PROBE_TIMEOUT_MS, relayHealthUrl, relayProbeVerdict, type RelayProbeVerdict as RelayTestVerdict } from "./relayprobe";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
 import { hasAppMarker, probeVerdict, rawDateHeader, type ReachProbeOutcome, type ReachVerdict } from "./webreach";
@@ -1783,6 +1784,19 @@ async function onReady(): Promise<void> {
     void restartDaemon();
     return { ok: true, ...res };
   });
+  // P2-328: the Settings relay card's "Test connection" — one /healthz probe
+  // of the address as typed (the DRAFT, not the stored one), so the operator
+  // learns about a typo BEFORE saving it and restarting the daemon. Nothing
+  // persists, nothing restarts; at most one probe is in flight and a second
+  // caller awaits the same verdict. No test-only hatch: a hermetic session
+  // probes exactly what it is told, like production.
+  ipcMain.handle("app:relayTest", (_e, payload: unknown) => {
+    if (relayProbeInFlight) return relayProbeInFlight;
+    relayProbeInFlight = probeRelay(payload).finally(() => {
+      relayProbeInFlight = null;
+    });
+    return relayProbeInFlight;
+  });
   // P2-189: the app address the phone opens (step one of the pairing journey)
   // — read + validated write beside the relay setting above, same trust
   // model: validation ALWAYS happens here in the main process and a hostile
@@ -2660,6 +2674,81 @@ function currentWebAppResolution() {
   const relay = resolveRelayUrl(process.env, readStoredRelayUrl(file));
   return resolveWebAppUrl(relay, readStoredWebAppUrl(file));
 }
+
+// P2-328: read at most `max` bytes of the probe answer and cancel the rest —
+// the /healthz JSON is tiny, but a hostile or broken peer must not stream
+// unbounded bytes into the shell while it answers. Never throws: a
+// mid-body failure yields whatever prefix was already read ("" when none).
+async function readRelayBodyPrefix(res: Response, max: number): Promise<string> {
+  try {
+    const reader = res.body?.getReader();
+    if (!reader) return "";
+    const decoder = new TextDecoder();
+    let out = "";
+    let read = 0;
+    while (read < max) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      read += value.byteLength;
+      out += decoder.decode(value, { stream: true });
+    }
+    void reader.cancel().catch(() => {});
+    return out.slice(0, max);
+  } catch {
+    return "";
+  }
+}
+
+// P2-328: one /healthz probe of the relay address the operator just typed —
+// the stand-in for the dial the daemon is about to attempt. Always goes
+// through net.fetch (the Electron 44 one) so the session proxy already
+// applied by applySessionProxy is honored, never follows a redirect, times
+// out at RELAY_PROBE_TIMEOUT_MS and reads at most RELAY_PROBE_BODY_MAX body
+// bytes. Every path returns a verdict; this must never throw.
+async function probeRelay(raw: unknown): Promise<RelayTestVerdict> {
+  // The pure classifier refuses an invalid address — mirror the rule here so
+  // a hostile renderer's payload never dials either.
+  if (relayUrlProblems(raw).length > 0) {
+    return relayProbeVerdict({ raw, status: null, redirected: false, body: "", errorName: "" });
+  }
+  const healthUrl = relayHealthUrl(raw);
+  if (!healthUrl) {
+    return relayProbeVerdict({ raw, status: null, redirected: false, body: "", errorName: "probe-unparseable-address" });
+  }
+  try {
+    const res = await net.fetch(healthUrl, {
+      signal: AbortSignal.timeout(RELAY_PROBE_TIMEOUT_MS),
+      redirect: "manual",
+    });
+    // The body only matters for the two statuses that can be "ok"/"draining";
+    // every other answer is classified by its status alone.
+    const body = res.status === 200 || res.status === 503 ? await readRelayBodyPrefix(res, RELAY_PROBE_BODY_MAX) : "";
+    return relayProbeVerdict({
+      raw,
+      status: res.status,
+      redirected: res.redirected,
+      body,
+      errorName: "",
+    });
+  } catch (err) {
+    const e = err as { name?: string; message?: string; cause?: { code?: string } };
+    // net.fetch failures carry the Chromium code in the message
+    // ("net::ERR_CONNECTION_REFUSED …") or in cause.code — the classifier
+    // regexes match either, and the phrase never echoes it.
+    return relayProbeVerdict({
+      raw,
+      status: null,
+      redirected: false,
+      body: "",
+      errorName: e?.cause?.code ?? e?.message ?? e?.name ?? "",
+    });
+  }
+}
+
+// P2-328: at most ONE relay probe in flight — a second caller (a double
+// click, a hostile renderer) awaits the SAME verdict instead of minting a
+// second concurrent request.
+let relayProbeInFlight: Promise<RelayTestVerdict> | null = null;
 
 // P2-197: probe the app address's reachability once per pairing tick. The
 // probe always hits the ORIGIN of the resolved webApp address — NEVER the
