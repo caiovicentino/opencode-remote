@@ -5,6 +5,13 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
+- [ ] (RT-424) [P0] Redteam finding 2026-09-11 — spec: **
+
+**Title:** Remote daemon crash via malformed `seq` in relay frame — `seqAad` throws outside any try/catch, and the async handler's rejection is discarded (`void handleMessage`)
+
+**Severity:** MEDIUM (unauthenticated remote DoS of the daemon from any room member — including the relay itself, which the threat model explicitly treats as untrusted; E2E confidentiality is unaffected)
+
+**Proof/attack sketch:** `seqAad` (`packages/protocol/src/crypto.ts:119-125`) calls `BigInt(seq)` and `setBigUint64`, both of which throw `RangeError`/`TypeError` for fractional, `NaN`, `Infinity`, non-numeric, or
 - [ ] (P3-423) [P3] [fable][P3] Pairing gate is tall enough that the brand header scrolls half-clipped — spec: Intro + host section + paste form + 5-row PaneMap overflow 1440×900, and the wordmark ends up clipped at the viewport top exactly on the screen that establishes the brand. Make the .pair-screen header sticky (or shrink the gate map) so the wordmark never scrolls away mid-ceremony. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-pairing-20260911.png, where: apps/web/src/components/PairingView.tsx:168)
 - [ ] (P3-422) [P3] [fable][P3] First-boot hero repeats the five rail items as a full pane map beside it — spec: Inside the shell skeleton the rail already lists Conversas/Artifacts/Navegador/Mission Control/Configurações, then the main column renders the identical list again via PaneMap — double navigation on one screen. When panesReachable, condense the map to a one-line "Conversas pede pareamento; o resto já abre ao lado" note. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-chat-20260911.png, where: apps/web/src/components/DegradedView.tsx:362)
 - [ ] (P3-421) [P3] [fable][P3] Welcome wizard progress is a tiny text-only "PASSO 1 DE 3" caption — spec: The first screen a user ever sees relies on a small gray caps string for progress; three quiet dots or a 1/3 bar under the wordmark would carry the typography-first brand moment without adding noise. Pure token-scale polish. (priority: P3, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-first-boot-20260911.png, where: apps/web/src/components/WelcomeView.tsx:177)
