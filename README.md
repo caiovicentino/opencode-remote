@@ -126,6 +126,17 @@ private. That is the product: **local power, remote control, zero trust**.
   sentence, and — on macOS and Windows — an **Open system settings** action
   that opens the microphone privacy panel through the shell's external-link
   gate. The phone keeps the mobile-browser advice untouched
+- **Screen-peek "View the machine's screen"** — the composer's monitor button
+  opens the "Machine screen" card: one frame of the machine's display per
+  explicit request (never streaming), with the capture timestamp, a Refresh
+  action and **Ask about the screen**, which sends the frame through the
+  normal attachment pipeline with your question as the message text. The
+  capture always happens in the desktop shell — the TCC-responsible context,
+  never the daemon — and the shell flashes a calm indicator whenever it
+  captures; on multi-display machines the indicator lists the screens and
+  windows to recapture from. When the OS refuses screen capture the card
+  shows the actionable verdict sentence, and a request that goes unanswered
+  (desktop app closed) times out with a labeled escape instead of spinning
 - **Spoken replies** — the agent's answer can be read aloud by an optional
   host tool (edge-tts): since P2-298 the refusal is a short actionable pt-BR
   sentence from the same verdict the status route serves (no more raw English

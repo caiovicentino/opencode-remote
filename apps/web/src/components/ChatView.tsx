@@ -72,7 +72,8 @@ import {
 } from "../lib/thinking";
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { sendAskCountToShell } from "../lib/asks";
-import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
+import { frameToFile, screenFailKey, screenWaitVerdict } from "../lib/screenpeek";
+import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconMonitor, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 
 /** P2-312: microphone verdict from the desktop shell (mirrors
  * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
@@ -437,6 +438,28 @@ export default function ChatView({
   const [copiedBubble, setCopiedBubble] = useState<number | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // P3-404: screen-peek card ("Ver a tela"). One frame per explicit request,
+  // never streaming: the card opens with the daemon's stored frame (404 → a
+  // fresh capture is requested), the phone waits a bounded time for the
+  // shell's screen.frame event and then shows the labeled manual escape.
+  const [screenPeek, setScreenPeek] = useState<{
+    status: "loading" | "waiting" | "ready" | "error";
+    b64?: string;
+    mime?: string;
+    at?: number;
+    failKey?: string;
+  } | null>(null);
+  const screenPeekRef = useRef(screenPeek);
+  screenPeekRef.current = screenPeek;
+  const [screenAskOpen, setScreenAskOpen] = useState(false);
+  const [screenAskInput, setScreenAskInput] = useState("");
+  const screenWaitAt = useRef(0);
+  const lastScreenEvt = useRef<string | null>(null);
+  // the ask sends the frame through the EXISTING attachment pipeline — the
+  // send() closure must see the freshly attached image, so the actual send
+  // happens in an effect after the attachment chip landed
+  const [pendingAsk, setPendingAsk] = useState<string | null>(null);
+
   // transient errors: red text should not stick around forever
   useEffect(() => {
     if (!error) return;
@@ -491,6 +514,52 @@ export default function ChatView({
     const timer = setTimeout(() => setCamError(""), 10_000);
     return () => clearTimeout(timer);
   }, [camError]);
+
+  // bounded wait: past the timeout the labeled escape replaces the spinner
+  // (P3-329 lesson — the way out lives on the stuck surface itself)
+  useEffect(() => {
+    if (screenPeek?.status !== "waiting") return;
+    const timer = setInterval(() => {
+      if (screenWaitVerdict(screenWaitAt.current, Date.now()) === "timeout") {
+        setScreenPeek({ status: "error", failKey: "screenPeekTimeout" });
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [screenPeek?.status]);
+
+  // fresh frame / failure events drive the card: a screen.frame refetches
+  // the stored frame, a screen.capture-failed maps the reason to copy
+  useEffect(() => {
+    const seen = lastScreenEvt.current;
+    const start = seen ? events.findIndex((e) => e.id === seen) + 1 : Math.max(0, events.length - 5);
+    lastScreenEvt.current = events[events.length - 1]?.id ?? null;
+    for (const evt of events.slice(start)) {
+      if (evt.type === "screen.frame") {
+        if (screenPeekRef.current) void refreshScreenFrame();
+      } else if (evt.type === "screen.capture-failed") {
+        if (screenPeekRef.current?.status === "waiting") {
+          const reason = (evt.properties as { reason?: unknown } | undefined)?.reason;
+          setScreenPeek({ status: "error", failKey: screenFailKey(reason) });
+        }
+      }
+    }
+  }, [events]);
+
+  // fire the ask once the attachment chip is in the composer strip; on an
+  // upload failure the chip never lands and the typed question stays in the
+  // card input for a retry (attachImage's error banner explains why)
+  useEffect(() => {
+    if (!pendingAsk || uploading) return;
+    const q = pendingAsk;
+    setPendingAsk(null);
+    if (images.length > 0) {
+      setScreenPeek(null);
+      setScreenAskOpen(false);
+      setScreenAskInput("");
+      void send(q);
+    }
+  }, [pendingAsk, uploading, images]);
+
   const { models, model, pickModel } = useModelSelector(request);
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   // P3-086: inline agent/model dropdown in the composer (Claude Desktop parity)
@@ -2140,6 +2209,69 @@ export default function ChatView({
     }
   }
 
+  // P3-404: open the card with the daemon's stored frame; none stored →
+  // immediately ask for a fresh single-frame capture
+  async function openScreenPeek() {
+    setScreenAskOpen(false);
+    setScreenAskInput("");
+    setScreenPeek({ status: "loading" });
+    try {
+      const res = await request("GET", "/__ocr/screen/frame");
+      if (res.status === 200) {
+        const b = res.body as { b64?: string; mime?: string; at?: number };
+        if (typeof b.b64 === "string" && b.b64) {
+          setScreenPeek({ status: "ready", b64: b.b64, mime: b.mime ?? "image/jpeg", at: b.at ?? Date.now() });
+          return;
+        }
+      }
+      await requestScreenCapture();
+    } catch {
+      setScreenPeek({ status: "error", failKey: "screenPeekFailUnknown" });
+    }
+  }
+
+  async function requestScreenCapture() {
+    setScreenAskOpen(false);
+    setScreenPeek({ status: "waiting" });
+    screenWaitAt.current = Date.now();
+    try {
+      const res = await request("POST", "/__ocr/screen/request", {});
+      if (res.status !== 200) setScreenPeek({ status: "error", failKey: "screenPeekFailUnknown" });
+    } catch {
+      setScreenPeek({ status: "error", failKey: "screenPeekFailUnknown" });
+    }
+  }
+
+  async function refreshScreenFrame() {
+    try {
+      const res = await request("GET", "/__ocr/screen/frame");
+      if (res.status !== 200) return; // keep waiting; the timeout is the escape
+      const b = res.body as { b64?: string; mime?: string; at?: number };
+      if (typeof b.b64 === "string" && b.b64) {
+        setScreenPeek({ status: "ready", b64: b.b64, mime: b.mime ?? "image/jpeg", at: b.at ?? Date.now() });
+      }
+    } catch {
+      // connection trouble — the wait timeout surfaces the escape
+    }
+  }
+
+  // the frame rides the EXISTING attachment pipeline (attachImage →
+  // ocr-upload://) with the question as the text part — never a side channel
+  async function askAboutScreen() {
+    const cur = screenPeekRef.current;
+    if (!cur?.b64) return;
+    const q = screenAskInput.trim();
+    const file = await frameToFile(cur.b64, cur.mime ?? "image/jpeg", cur.at ?? Date.now());
+    if (!file) {
+      setScreenPeek({ status: "error", failKey: "screenPeekFailUnknown" });
+      return;
+    }
+    // the draft stays in the card until the send actually fires; a
+    // whitespace-only question attaches the frame without a text part
+    if (q) setPendingAsk(q);
+    void attachImage(file);
+  }
+
   async function attachImage(file: File) {
     setUploading(true);
     setError("");
@@ -3255,6 +3387,89 @@ export default function ChatView({
           </>
         )}
         <div className="composer">
+          {screenPeek && (
+            <div className="screen-peek" data-status={screenPeek.status}>
+              <div className="screen-peek-head">
+                <span className="screen-peek-title">{t("screenPeekTitle")}</span>
+                <button
+                  className="screen-peek-x"
+                  onClick={() => setScreenPeek(null)}
+                  aria-label={t("close")}
+                  title={t("close")}
+                >
+                  <IconX size={14} />
+                </button>
+              </div>
+              {screenPeek.status === "ready" && screenPeek.b64 ? (
+                <>
+                  <img
+                    className="screen-peek-frame"
+                    src={`data:${screenPeek.mime};base64,${screenPeek.b64}`}
+                    alt={t("screenPeekTitle")}
+                  />
+                  <div className="screen-peek-meta">
+                    {t("screenPeekAt", {
+                      time: new Date(screenPeek.at ?? Date.now()).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }),
+                    })}
+                  </div>
+                  <div className="screen-peek-actions">
+                    <button
+                      className="screen-peek-btn"
+                      onClick={() => void requestScreenCapture()}
+                      aria-label={t("screenPeekRefresh")}
+                      title={t("screenPeekRefresh")}
+                    >
+                      <IconRefresh size={13} /> {t("screenPeekRefresh")}
+                    </button>
+                    <button
+                      className="screen-peek-btn screen-peek-ask-btn"
+                      onClick={() => setScreenAskOpen((v) => !v)}
+                      aria-expanded={screenAskOpen}
+                    >
+                      {t("screenPeekAsk")}
+                    </button>
+                  </div>
+                  {screenAskOpen && (
+                    <form
+                      className="screen-peek-ask"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void askAboutScreen();
+                      }}
+                    >
+                      <input
+                        value={screenAskInput}
+                        onChange={(e) => setScreenAskInput(e.target.value)}
+                        placeholder={t("screenPeekQuestionPlaceholder")}
+                        required
+                      />
+                      <button className="primary" type="submit">
+                        {t("send")}
+                      </button>
+                    </form>
+                  )}
+                </>
+              ) : screenPeek.status === "waiting" ? (
+                <p className="screen-peek-line">{t("screenPeekWaiting")}</p>
+              ) : screenPeek.status === "loading" ? (
+                <p className="screen-peek-line">…</p>
+              ) : (
+                <>
+                  <p className="screen-peek-line screen-peek-err">
+                    {t(screenPeek.failKey ?? "screenPeekFailUnknown")}
+                  </p>
+                  <div className="screen-peek-actions">
+                    <button className="screen-peek-btn" onClick={() => void requestScreenCapture()}>
+                      <IconRefresh size={13} /> {t("screenPeekRefresh")}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {images.length > 0 && (
             <div className="composer-atts">
               {images.map((img) => (
@@ -3368,6 +3583,17 @@ export default function ChatView({
                 </button>
               )
             )}
+            {/* P3-404: screen-peek — one frame per explicit request, never
+                streaming; the toggle closes the card when it is open. */}
+            <button
+              className={`composer-btn composer-screen${screenPeek ? " composer-screen-on" : ""}`}
+              onClick={() => (screenPeek ? setScreenPeek(null) : void openScreenPeek())}
+              disabled={recState === "busy"}
+              aria-label={t("screenPeekOpen")}
+              title={t("screenPeekOpen")}
+            >
+              <IconMonitor />
+            </button>
             <div className="composer-spacer" />
             <div className="composer-model" ref={modelMenuRef}>
               <button

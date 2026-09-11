@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { MicAccessVerdict } from "./micaccess";
 import type { CameraAccessVerdict } from "./camaccess";
+import type { ScreenAccessVerdict } from "./screenaccess";
 
 /** Result shape of the /api/browse proxy in apps/desktop/src/main.ts. */
 export interface DaemonBrowseResponse {
@@ -203,6 +204,24 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // read at request time (never cached at boot) through the same bridge.
   // Shape mirrors apps/desktop/src/camaccess.ts.
   getCamAccess: (): Promise<CameraAccessVerdict> => ipcRenderer.invoke("app:camAccess"),
+  // P3-404: screen-peek — verdict of the OS screen-capture permission, one
+  // label-only entry per screen/window and a single-frame capture, all read
+  // at request time (never cached at boot). Shape mirrors
+  // apps/desktop/src/screenaccess.ts; captureScreen answers
+  // { ok:false, verdict } when the OS refuses and a fixed synthetic frame in
+  // hermetic sessions (never the operator's real screen).
+  getScreenAccess: (): Promise<ScreenAccessVerdict> => ipcRenderer.invoke("app:screenAccess"),
+  listScreens: (): Promise<{ id: string; name: string; type: "screen" | "window" }[]> =>
+    ipcRenderer.invoke("app:listScreens"),
+  captureScreen: (req: { sourceId?: string }): Promise<{
+    ok: boolean;
+    bytes?: Uint8Array;
+    width?: number;
+    height?: number;
+    name?: string;
+    verdict?: ScreenAccessVerdict;
+    reason?: "no-sources" | "empty-frame";
+  }> => ipcRenderer.invoke("app:captureScreen", req),
   // P3-053: dock unread badge — the web UI derives the count (lib/unread.ts)
   // and pushes it on every change; main maps it to app.setBadgeCount. The
   // getter exists so tests can verify the IPC round-trip via the harness.

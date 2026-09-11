@@ -879,6 +879,45 @@ try {
   // in the P2-112 block above, while that view is on screen (before the
   // manual-pairing hatch click).
 
+  // --- P3-404: screen-peek IPC — verdict shape + hermetic capture -------------
+  // The verdict shape is asserted (one of the four closed kinds, static
+  // phrase, panel target only where the OS has one) because the raw OS state
+  // is host-dependent. The CAPTURE, though, is deterministic in a hermetic
+  // session: the P2-326 rule order answers the fixed synthetic frame, never
+  // the operator's real screen — and the source list is the fixed fake pair.
+  const screenVerdict = run("P3-404: IPC app:screenAccess", ["ipc", "window.ocrDesktop.getScreenAccess()"], 15_000);
+  if (screenVerdict.ok) {
+    let parsed: { verdict?: string; phrase?: string; settingsTarget?: string | null } | null = null;
+    try {
+      parsed = JSON.parse(screenVerdict.stdout) as typeof parsed;
+    } catch {
+      parsed = null;
+    }
+    check(
+      "P3-404: screenAccess verdict is closed-shaped",
+      !!parsed && ["ready", "will-ask", "blocked-by-system", "unknown"].includes(parsed.verdict ?? "") && (parsed.phrase ?? "").length > 0 && (parsed.settingsTarget === null || typeof parsed.settingsTarget === "string"),
+      screenVerdict.stdout,
+    );
+  }
+  const screenCapture = run(
+    "P3-404: IPC app:captureScreen (hermetic synthetic frame)",
+    ["ipc", "(async () => { const r = await window.ocrDesktop.captureScreen({}); return JSON.stringify({ ok: r.ok, bytes: r.bytes ? r.bytes.length : 0, name: r.name ?? '' }); })()"],
+    15_000,
+  );
+  if (screenCapture.ok) {
+    // the harness prints the returned string JSON-quoted — unescape once
+    const flat = screenCapture.stdout.replace(/\\/g, "");
+    check(
+      "P3-404: hermetic capture answers the synthetic frame, never the real screen",
+      /"ok":true/.test(flat) && /"bytes":\d+/.test(flat) && !/"bytes":0/.test(flat),
+      screenCapture.stdout,
+    );
+  }
+  const screenSources = run("P3-404: IPC app:listScreens (hermetic fake pair)", ["ipc", "(async () => { const s = await window.ocrDesktop.listScreens(); return s.map((x) => x.id).join('|'); })()"], 15_000);
+  if (screenSources.ok) {
+    check("P3-404: hermetic source list is the deterministic fake pair", /screen:1/.test(screenSources.stdout) && /screen:2/.test(screenSources.stdout), screenSources.stdout);
+  }
+
   // --- P1-070: the new local-first copy is visible with no daemon at all ------
   // Reviewer gap (round 1): the new i18n copy must be exercised here, not only
   // in the local/paired phase — a fresh instance with no reachable daemon is

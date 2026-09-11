@@ -1625,6 +1625,158 @@ check("torchConstraint wraps the toggle in advanced", torchConstraint(true).adva
 
 
 
+// --- screen access verdict (P3-404) --------------------------------------------
+
+import { screenAccessVerdict, SCREEN_PANEL_MACOS, SCREEN_PANEL_WINDOWS } from "../apps/desktop/src/screenaccess";
+
+const screenExpected: Array<[string, string]> = [
+  ["granted", "ready"],
+  ["not-determined", "will-ask"],
+  ["denied", "blocked-by-system"],
+  ["restricted", "blocked-by-system"],
+  ["unknown", "unknown"],
+];
+
+const screenPlatformTargets: Array<[string, string | null]> = [
+  ["darwin", SCREEN_PANEL_MACOS],
+  ["win32", SCREEN_PANEL_WINDOWS],
+  ["linux", null],
+];
+
+for (const [platform, expectedTarget] of screenPlatformTargets) {
+  for (const [status, expectedVerdict] of screenExpected) {
+    const verdict = screenAccessVerdict(platform, status);
+    check(`screenAccessVerdict ${platform}/${status} → ${expectedVerdict}`, verdict.verdict === expectedVerdict);
+    check(`screenAccessVerdict ${platform}/${status} phrase non-empty`, typeof verdict.phrase === "string" && verdict.phrase.length > 0);
+    check(`screenAccessVerdict ${platform}/${status} target`, verdict.settingsTarget === expectedTarget);
+  }
+  // absent + non-textual input fails closed on every platform
+  for (const absent of [undefined, null, "", 42, {}, ["denied"]]) {
+    const verdict = screenAccessVerdict(platform, absent as unknown);
+    const label = typeof absent === "undefined" ? "absent" : JSON.stringify(absent) || String(absent);
+    check(`screenAccessVerdict ${platform} fails closed on ${label}`, verdict.verdict === "unknown");
+    check(`screenAccessVerdict ${platform} fail-closed phrase non-empty`, verdict.phrase.length > 0);
+    check(`screenAccessVerdict ${platform} fail-closed target unchanged`, verdict.settingsTarget === expectedTarget);
+  }
+}
+
+// the same input twice must answer the exact same verdict
+const screenTwice = [screenAccessVerdict("darwin", "denied"), screenAccessVerdict("darwin", "denied")];
+check(
+  "screenAccessVerdict is deterministic for the same input",
+  JSON.stringify(screenTwice[0]) === JSON.stringify(screenTwice[1]) && screenTwice[0].phrase === screenTwice[1].phrase,
+);
+
+// static pt-BR sentences: no path, no user name, no address
+const screenPhrases = ["granted", "not-determined", "denied", "restricted", "unknown", "", null, 42].map((s) =>
+  screenAccessVerdict("darwin", s as unknown).phrase,
+);
+check(
+  "screenAccessVerdict phrases carry no path, user or address",
+  screenPhrases.every((p) => p.length > 0 && !p.includes("/") && !p.includes("\\") && !p.includes("@") && !p.includes("http")),
+);
+
+// screenaccess.ts stays pure: no electron, no node:fs, no I/O — the unit test
+// always exercises the real mapping (same hygiene as camaccess.ts).
+const screenAccessSource = readFileSync(new URL("../apps/desktop/src/screenaccess.ts", import.meta.url), "utf8");
+check("screenaccess.ts is pure (no electron import)", !screenAccessSource.includes('from "electron"'));
+check("screenaccess.ts is pure (no node:fs import)", !screenAccessSource.includes("node:fs"));
+check("screenaccess.ts is pure (no node builtins, no fetch, no I/O)", !screenAccessSource.includes("node:") && !screenAccessSource.includes("require(") && !screenAccessSource.includes("fetch("));
+
+// wiring: the main process answers app:screenAccess through the pure verdict,
+// reading the OS state at request time; the preload bridge exposes the reads.
+check("main.ts imports the screen access module", mainTsSource.includes('from "./screenaccess"'));
+check("main.ts registers app:screenAccess exactly once", (mainTsSource.match(/app:screenAccess/g) ?? []).length === 1);
+check("main.ts reads the screen status at request time", mainTsSource.includes('getMediaAccessStatus("screen")'));
+check("main.ts answers app:screenAccess with the shared verdict", mainTsSource.includes("screenAccessVerdict(process.platform,"));
+check("main.ts registers app:captureScreen exactly once", (mainTsSource.match(/app:captureScreen/g) ?? []).length === 1);
+check("main.ts registers app:listScreens exactly once", (mainTsSource.match(/app:listScreens/g) ?? []).length === 1);
+// P2-326 rule-order contract: the hermetic-session check runs FIRST in the
+// capture handler — a gate run never lifts a frame of the operator's screen.
+{
+  const capIdx = mainTsSource.indexOf("app:captureScreen");
+  const hermeticIdx = mainTsSource.indexOf("if (HERMETIC_E2E) return { ...HERMETIC_SCREEN_FRAME };");
+  const firstCaptureCall = mainTsSource.indexOf("desktopCapturer.getSources", capIdx);
+  check("main.ts capture consults the hermetic session rule first", capIdx >= 0 && hermeticIdx > capIdx && firstCaptureCall > hermeticIdx);
+}
+check("preload exposes getScreenAccess through the existing bridge", preloadSource.includes("getScreenAccess") && preloadSource.includes("app:screenAccess"));
+check("preload exposes listScreens and captureScreen", preloadSource.includes("listScreens") && preloadSource.includes("captureScreen"));
+
+// the panel opening rides the existing external-link gate: both OS panel
+// targets must pass externalOpenDecision unchanged.
+check("externalOpenDecision admits the macOS screen panel target", externalOpenDecision(SCREEN_PANEL_MACOS).allow);
+check("externalOpenDecision admits the Windows screen panel target", externalOpenDecision(SCREEN_PANEL_WINDOWS).allow);
+
+// --- screen-peek flow decisions (P3-404) ---------------------------------------
+
+import {
+  captureRequestVerdict,
+  screenWaitVerdict,
+  screenFailKey,
+  SCREEN_REQUEST_TTL_MS,
+  SCREEN_WAIT_TIMEOUT_MS,
+} from "../apps/web/src/lib/screenpeek";
+
+// only the desktop shell captures, and only a fresh well-formed request
+check("captureRequestVerdict: the phone never captures", captureRequestVerdict({ requestId: "r1", at: Date.now() }, false, Date.now()) === "foreign");
+check("captureRequestVerdict: a fresh request captures in the shell", captureRequestVerdict({ requestId: "r1", at: Date.now() }, true, Date.now()) === "capture");
+check("captureRequestVerdict: stale request fails closed", captureRequestVerdict({ requestId: "r1", at: Date.now() - SCREEN_REQUEST_TTL_MS - 1 }, true, Date.now()) === "stale");
+check("captureRequestVerdict: future-dated request fails closed", captureRequestVerdict({ requestId: "r1", at: Date.now() - 10_000 }, true, Date.now() + SCREEN_REQUEST_TTL_MS) === "stale");
+for (const malformed of [undefined, {}, { requestId: "r1" }, { at: Date.now() }, { requestId: "", at: Date.now() }, { requestId: 42, at: Date.now() }, { requestId: "r1", at: "now" }]) {
+  check(`captureRequestVerdict: malformed ${JSON.stringify(malformed) || "{}"} fails closed`, captureRequestVerdict(malformed as unknown, true, Date.now()) === "stale");
+}
+
+// bounded wait: past the timeout the labeled escape shows
+check("screenWaitVerdict: inside the window is waiting", screenWaitVerdict(Date.now() - 1000, Date.now()) === "waiting");
+check("screenWaitVerdict: past the window is timeout", screenWaitVerdict(Date.now() - SCREEN_WAIT_TIMEOUT_MS - 1, Date.now()) === "timeout");
+check("screenWaitVerdict: deterministic", screenWaitVerdict(1000, 1000 + SCREEN_WAIT_TIMEOUT_MS + 1) === screenWaitVerdict(1000, 1000 + SCREEN_WAIT_TIMEOUT_MS + 1));
+
+// failure reasons map to static i18n keys, unknown shapes fail to "unknown"
+check("screenFailKey: blocked maps", screenFailKey("blocked-by-system") === "screenPeekFailBlocked");
+check("screenFailKey: will-ask maps", screenFailKey("will-ask") === "screenPeekFailWillAsk");
+for (const unknown of [undefined, "", "weird", 42, null]) {
+  check(`screenFailKey: ${JSON.stringify(unknown) || "undefined"} fails to the unknown key`, screenFailKey(unknown) === "screenPeekFailUnknown");
+}
+
+// the shell responder only captures through the bridge and uploads through the
+// existing chunked pipeline; the web card asks via attachImage + ocr-upload.
+const chatViewPeekSource = readFileSync(new URL("../apps/web/src/components/ChatView.tsx", import.meta.url), "utf8");
+check("ChatView mounts the screen-peek card on the composer", chatViewPeekSource.includes("screen-peek") && chatViewPeekSource.includes("openScreenPeek"));
+check("ChatView asks through the attachment pipeline", chatViewPeekSource.includes("setPendingAsk") && chatViewPeekSource.includes("attachImage(file)"));
+check("ChatView waits a bounded time with the labeled escape", chatViewPeekSource.includes("screenPeekTimeout"));
+check("ChatView keeps the typed question until the send fires", chatViewPeekSource.includes("if (q) setPendingAsk(q)"));
+check("App answers screen.capture-requested in the shell only", appSrcScreenPeek());
+function appSrcScreenPeek(): boolean {
+  const src = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  return src.includes("screen.capture-requested") && src.includes("respondToCaptureRequest") && src.includes("screenFlash");
+}
+const responderSource = readFileSync(new URL("../apps/web/src/lib/screenresponder.ts", import.meta.url), "utf8");
+check("responder reports failures to the daemon route", responderSource.includes("/__ocr/screen/failed"));
+check("responder fulfills through the frames route", responderSource.includes("/__ocr/screen/frames"));
+check("responder uploads through the shared chunked helper", responderSource.includes("uploadBytesChunked"));
+// review round 3: the picker must capture the PICKED source, and the shell
+// indicator must live on the main render path with a capture-keyed timer
+check("responder captures the picked screen/window source", responderSource.includes("bridge.captureScreen({ sourceId })"));
+const appPeekSource = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+check("App picker recapture fulfills a REAL pending request with the picked source", appPeekSource.includes('"/__ocr/screen/request"') && appPeekSource.includes("captureAndFulfill(request, bridge, requestId, sourceId)"));
+check("App renders the screen indicator on the main return path too", (appPeekSource.match(/screenFlash && \(/g) ?? []).length >= 2);
+const screenFlashSource = readFileSync(new URL("../apps/web/src/components/ScreenFlash.tsx", import.meta.url), "utf8");
+check("ScreenFlash hide timer keys on the capture, never on App renders", screenFlashSource.includes("[flash.at]") && screenFlashSource.includes("closeRef"));
+
+// the daemon routes exist, stay inside the E2E tunnel and are request-scoped
+const daemonIndexSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+for (const route of ["/__ocr/screen/request", "/__ocr/screen/frames", "/__ocr/screen/frame", "/__ocr/screen/failed"]) {
+  check(`daemon wires ${route}`, daemonIndexSrc.includes(`"${route}"`));
+}
+check("daemon broadcasts the shell event set", daemonIndexSrc.includes("screen.capture-requested") && daemonIndexSrc.includes("screen.frame") && daemonIndexSrc.includes("screen.capture-failed"));
+check("daemon keeps the screen frame in memory only", daemonIndexSrc.includes("let screenFrame"));
+check("daemon fulfills frames only for PENDING request ids", daemonIndexSrc.includes("screenRequests.has(requestId)"));
+
+// the copy exists in both languages of the dictionary
+check("screen-peek copy exists in both languages", (i18nSource.match(/screenPeekOpen:/g) ?? []).length === 2 && (i18nSource.match(/screenPeekTimeout:/g) ?? []).length === 2);
+
+
+
 // --- guest webContents guard (P2-184) ----------------------------------------
 
 const httpAttach = guestAttachDecision("http://localhost:3000/", {}, undefined);
