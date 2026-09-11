@@ -18592,8 +18592,25 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // i18n: en + pt for every new user-visible string
-  for (const k of ["missionActive", "missionActiveNone", "missionSource", "missionSourcePrompt", "missionSourceRepo", "missionSetAt", "missionModels", "missionClear", "missionClearConfirm", "missionCleared", "missionClearFailed"]) {
+  for (const k of ["missionLabel", "missionActive", "missionActiveNone", "missionSource", "missionSourcePrompt", "missionSourceRepo", "missionSetAt", "missionModels", "missionClear", "missionClearConfirm", "missionCleared", "missionClearFailed"]) {
     check(`i18n: ${k} in en and pt`, typeof (dict.en as Record<string, string>)[k] === "string" && typeof (dict.pt as Record<string, string>)[k] === "string");
+  }
+  // P3-418: the empty mission card must not contradict itself — the heading
+  // follows the mission state ("Active mission" only when set) and the
+  // empty-state body is conversational copy, not the mono meta treatment.
+  {
+    const mcvSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "MissionControlView.tsx"), "utf8");
+    const webCss = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+    const noteAt = webCss.indexOf(".mission-active-note {");
+    const noteRule = noteAt >= 0 ? webCss.slice(noteAt, webCss.indexOf("}", noteAt)) : "";
+    check(
+      "P3-418: mission card label picked by state and empty body renders as a conversational note (no mono meta class)",
+      mcvSrc.includes('{mission ? t("missionActive") : t("missionLabel")}') &&
+        mcvSrc.includes('className="mission-active-note"') &&
+        !mcvSrc.includes('mission-active-src">{mission === null') &&
+        noteAt >= 0 &&
+        !noteRule.includes("--font-mono"),
+    );
   }
   check("mission card: models line renders role=model pairs, empty when absent", formatMissionModels({ builder: "glm52/glm-5.2", scribe: "opencode/big-pickle" }) === "builder=glm52/glm-5.2, scribe=opencode/big-pickle" && formatMissionModels(undefined) === "" && formatMissionModels({}) === "");
 

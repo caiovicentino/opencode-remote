@@ -1833,6 +1833,10 @@ forensic timeline per task — every builder decision, reviewer verdict, gate
 failure (with output tail) and deploy navigable, the post-deploy screenshots,
 a live dashboard shot via the browse surface, and a **Take over** button that
 attaches Terminal to the agent's own opencode session for human handoff.
+The self-serve mission card at the top reads coherently in every state (P3-418):
+with no mission defined the heading is the neutral "Mission" (not "Active
+mission") above conversational body copy in the interface font — the mono
+code-block treatment stays reserved for real meta lines like the repo URL.
 
 **Unread badge (P3-053/P2-150)**: when a message lands in the open conversation
 while the window is in the background — or while you are scrolled away from

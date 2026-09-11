@@ -585,6 +585,10 @@ export const dict = {
     // desk pane's default size.
     missionDash: "Dashboard",
     missionForensic: "Timeline",
+    // P3-418: the card label follows the state — "Active mission" only when
+    // there is one; the empty/loading card gets the neutral subject label so
+    // the heading never contradicts the "no mission" body beneath it.
+    missionLabel: "Mission",
     missionActive: "Active mission",
     missionActiveNone: "No mission set. Define one in the chat: describe what you want and, optionally, paste a GitHub repo link.",
     missionSource: "source",
@@ -1419,6 +1423,7 @@ export const dict = {
     // vizinho e empurrava o header do pane além da largura no tamanho padrão.
     missionDash: "Dashboard",
     missionForensic: "Linha do tempo",
+    missionLabel: "Missão",
     missionActive: "Missão ativa",
     missionActiveNone: "Nenhuma missão definida. Defina no chat: descreva o que você quer e, se quiser, cole o link de um repo do GitHub.",
     missionSource: "origem",
