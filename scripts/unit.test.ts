@@ -18625,7 +18625,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       ["whitespace-only detail ⇒ null", "   \n\t  ", null],
       ["control characters become single spaces", "gh pr view\tfailed\nbad\u0007stuff", "gh pr view failed bad stuff"],
       ["URLs are redacted", "push to https://github.com/acme/widget.git/info/refs rejected", `push to ${INFRA_DETAIL_REDACTED} rejected`],
-      ["token-like runs are redacted", "bad header ghp_0123456789abcdef0123456789abcdef0123 refused", `bad header ${INFRA_DETAIL_REDACTED} refused`],
+      ["token-like runs are redacted (fixture built at runtime — a literal ghp_ token would trip the no-secrets invariant)", `bad header ghp_${"x".repeat(40)} refused`, `bad header ${INFRA_DETAIL_REDACTED} refused`],
       ["long token ⇒ redacted (never echoed back)", "t".repeat(999), INFRA_DETAIL_REDACTED],
       ["above the cap ⇒ cut at INFRA_DETAIL_MAX", "word ".repeat(200), "word ".repeat(200).trimEnd().slice(0, INFRA_DETAIL_MAX - 1) + "…"],
     ];
