@@ -842,7 +842,10 @@ export const dict = {
     // Artifacts pane / viewer (was hardcoded English on the phone)
     artifactsTitle: "Artifacts",
     artifactsRefresh: "Refresh",
-    artifactsEmpty: "No artifacts yet. Ask the agent to produce a document (html, md, csv, pdf) and it will show up here.",
+    // P3-414: the empty state is composed like the sibling browser pane's —
+    // title + hint under .artifacts-empty instead of one bare gray paragraph.
+    artifactsEmptyTitle: "No artifacts yet.",
+    artifactsEmptyHint: "Ask the agent to produce a document (html, md, csv, pdf) and it will show up here.",
     // P3-375: the never-paired pane state — the empty copy plus this quiet
     // sync hint instead of a red "not paired" error.
     artifactsOfflineHint: "They sync on their own once the machine connects — nothing is lost.",
@@ -1674,7 +1677,9 @@ export const dict = {
     errUpstreamGone: "A máquina respondeu 410 (recurso expirado) — tente de novo.",
     artifactsTitle: "Artifacts", // product term kept in pt (see openArtifact)
     artifactsRefresh: "Atualizar",
-    artifactsEmpty: "Nenhum artefato ainda. Peça ao agente um documento (html, md, csv, pdf) e ele aparece aqui.",
+    // P3-414: estado vazio composto igual ao do painel Browser — título + dica.
+    artifactsEmptyTitle: "Nenhum artefato ainda.",
+    artifactsEmptyHint: "Peça ao agente um documento (html, md, csv, pdf) e ele aparece aqui.",
     // P3-375: estado nunca-pareado — a cópia vazia mais este aviso calmo de
     // sincronização, no lugar do erro vermelho "sem pareamento".
     artifactsOfflineHint: "Eles sincronizam sozinhos quando a máquina conectar — nada se perde.",
