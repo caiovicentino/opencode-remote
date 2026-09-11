@@ -21,6 +21,12 @@ import { IconChat, IconGlobe, IconLayers, IconLock, IconRadar, IconSettings } fr
  * under-reported what a first-boot user can actually do. Same rule as the
  * other rail panes: unlocked when reachable, locked in the ceremony.
  *
+ * P3-422: on the first-boot shell skeleton the rail already lists these five
+ * items verbatim, so the reachable variant condenses to a single quiet note
+ * ("Conversas pede pareamento; o resto já abre ao lado") — the full card
+ * beside the rail read as double navigation on one screen. The manual
+ * ceremony (PairingView) keeps the full locked map.
+ *
  * Own class names on purpose: the desktop-flow battery pins the ceremony's
  * `.pair-section` count and `.pair-section-title` order (P2-106/P3-334) —
  * reusing them here would read as a third pairing section (P3-334 lesson). */
@@ -35,21 +41,27 @@ export default function PaneMap({ reachable = false }: { reachable?: boolean }) 
   ];
   return (
     <section className="pane-map" aria-label={t(reachable ? "paneMapTitleBefore" : "paneMapTitle")}>
-      <h2 className="pane-map-title">{t(reachable ? "paneMapTitleBefore" : "paneMapTitle")}</h2>
-      <ul className="pane-map-list">
-        {panes.map((p) => (
-          <li key={p.label} className="pane-map-row">
-            <span className="pane-map-icon" aria-hidden="true">
-              {p.icon}
-            </span>
-            <span className="pane-map-copy">
-              <b>{p.label}</b>
-              <span className="muted">{p.desc}</span>
-            </span>
-            {p.locked && <IconLock size={12} className="pane-map-lock" aria-hidden="true" />}
-          </li>
-        ))}
-      </ul>
+      {reachable ? (
+        <p className="pane-map-note">{t("paneMapRailNote")}</p>
+      ) : (
+        <>
+          <h2 className="pane-map-title">{t("paneMapTitle")}</h2>
+          <ul className="pane-map-list">
+            {panes.map((p) => (
+              <li key={p.label} className="pane-map-row">
+                <span className="pane-map-icon" aria-hidden="true">
+                  {p.icon}
+                </span>
+                <span className="pane-map-copy">
+                  <b>{p.label}</b>
+                  <span className="muted">{p.desc}</span>
+                </span>
+                {p.locked && <IconLock size={12} className="pane-map-lock" aria-hidden="true" />}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </section>
   );
 }

@@ -38,7 +38,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   uma tela cheia; o card calmo "Conectando pela primeira vez…" segue como herói
   da coluna principal, e o mapa de panes do herói troca pra variante "Antes de
    parear" (cadeado só em Conversas) pra não contradizer o rail ao lado
-   (P1-071: todo fluxo alcançável no primeiro boot); o mapa lista também
+   (P1-071: todo fluxo alcançável no primeiro boot); P3-422: o mapa vira uma
+   linha só ("Conversas pede pareamento; o resto já abre ao lado") — o rail
+   ao lado já lista os mesmos itens, então repetir o card era navegação
+   duplicada na mesma tela. O mapa lista também
    Ajustes, que o rail abre offline no primeiro boot (P3-389). O botão primário
    "+ Novo" fica visivelmente acinzentado e carrega o mesmo tooltip de dica do
    rail até o pareamento bem-sucedido (P3-380) — o clique mais natural do

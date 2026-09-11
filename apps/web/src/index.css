@@ -2800,6 +2800,14 @@ button.desk-new:disabled {
   text-transform: uppercase;
   color: var(--muted);
 }
+/* P3-422: the reachable variant's one-line note — the rail beside the hero
+   already lists the panes, so the card says it once in quiet prose. */
+.pane-map-note {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  color: var(--muted);
+}
 .pane-map-list {
   list-style: none;
   margin: 0;

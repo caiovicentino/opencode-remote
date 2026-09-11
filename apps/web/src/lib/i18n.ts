@@ -510,8 +510,11 @@ export const dict = {
     // P3-365: on the first-boot shell skeleton the rail already opens three of
     // the four panes, so the hero's map swaps to the "before pairing" title
     // and drops those rows' lock glyphs (only Conversations stays locked).
+    // P3-422: the reachable variant drops the map entirely — the rail beside
+    // the hero already lists those items verbatim — and says it in one line.
     paneMapTitle: "After pairing",
     paneMapTitleBefore: "Before pairing",
+    paneMapRailNote: "Conversations needs pairing; the rest already opens beside it",
     paneMapChat: "Chat with the agent on your machine",
     paneMapArtifacts: "Documents and files the agent produces, ready to open",
     paneMapBrowser: "See and steer the machine's browser",
@@ -1346,8 +1349,11 @@ export const dict = {
     // P3-365: no esqueleto do primeiro boot a barra lateral já abre três dos
     // quatro panes, então o mapa do herói troca pro título "antes de parear"
     // e solta os cadeados dessas linhas (só Conversas segue trancada).
+    // P3-422: a variante reachable larga o mapa inteiro — o rail ao lado já
+    // lista os mesmos itens — e resume numa linha só.
     paneMapTitle: "Depois de parear",
     paneMapTitleBefore: "Antes de parear",
+    paneMapRailNote: "Conversas pede pareamento; o resto já abre ao lado",
     paneMapChat: "Converse com o agente da sua máquina",
     paneMapArtifacts: "Documentos e arquivos que o agente produz, prontos para abrir",
     paneMapBrowser: "Veja e controle o navegador da máquina",

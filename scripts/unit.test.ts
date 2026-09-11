@@ -12323,6 +12323,46 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-422: the skeleton hero's map condenses to one line -------------------
+// The rail beside the hero already lists the five panes verbatim; repeating
+// the full card in the main column read as double navigation on one screen.
+// The reachable variant becomes a single quiet note; the manual ceremony
+// keeps the full locked map.
+{
+  const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // The note branch exists, keyed to the reachable flag, and the full map
+  // (title + list) is gated behind the unreachable branch.
+  check(
+    "P3-422: reachable PaneMap renders the one-line rail note instead of the map",
+    mapSrc.includes("reachable ? (") &&
+      mapSrc.includes('t("paneMapRailNote")') &&
+      mapSrc.includes('className="pane-map-note"') &&
+      mapSrc.indexOf("paneMapRailNote") < mapSrc.indexOf("pane-map-list"),
+  );
+  // The ceremony's full map stays intact (title + five rows + lock glyph).
+  check(
+    "P3-422: the ceremony keeps the full map with its title",
+    mapSrc.includes('className="pane-map-title"') &&
+      mapSrc.includes('className="pane-map-list"') &&
+      (mapSrc.match(/<IconLock/g) ?? []).length === 1,
+  );
+  // The note style rides the shared tokens (no new colors/radii).
+  check(
+    "P3-422: .pane-map-note styles come from the shared tokens",
+    css.includes(".pane-map-note {") &&
+      /\.pane-map-note\s*\{[^}]*var\(--muted\)/.test(css),
+  );
+  // The note copy resolves in both locales, no emoji (design bar).
+  check(
+    "P3-422: paneMapRailNote resolves in both locales, no emoji",
+    (["en", "pt"] as const).every((lang) => {
+      const s = translate(lang, "paneMapRailNote");
+      return s !== "paneMapRailNote" && s.trim() !== "" && !/\p{Extended_Pictographic}/u.test(s);
+    }),
+  );
+}
+
 // --- P3-334: the desktop pairing screen leads with the host section ----------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");

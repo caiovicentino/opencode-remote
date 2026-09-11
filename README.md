@@ -499,7 +499,9 @@ private. That is the product: **local power, remote control, zero trust**.
   instead of a transient toast flashing the only explanation away. On the first-boot shell
   skeleton (P3-365) the card retitles to "Before pairing" and keeps the lock glyph only on
   Conversations — the rail beside it already opens the other panes, including Settings
-  offline (P3-389). The shell's primary "+ New" CTA reads as disabled there — grayed
+  offline (P3-389) — and since P3-422 it condenses to a single quiet line ("Conversations
+  needs pairing; the rest already opens beside it") so the rail is never listed twice on
+  one screen; the manual ceremony keeps the full map. The shell's primary "+ New" CTA reads as disabled there — grayed
   chrome plus the same hint tooltip the rail's Conversations slot carries — instead of
   silently swallowing the first click (P3-380)
 - **Offline panes stay calm at the gate (P3-327)** — behind the first-boot gate shell the
