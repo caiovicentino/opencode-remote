@@ -1445,11 +1445,31 @@ button.desk-new:disabled {
 .welcome-meta {
   margin-top: var(--space-2);
 }
-.welcome-step-of {
-  font-size: var(--font-size-xs);
-  color: var(--muted);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+/* P3-421: progress under the wordmark is three quiet dots, not a caps
+   caption — active step is the accent (a small pill so it reads without
+   growing the row), past steps the strong line, future the resting line,
+   every fill from the token ladder. The 150ms ease-out settle dies under
+   the global prefers-reduced-motion block. */
+.welcome-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.welcome-step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--border);
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    width var(--motion-fast) var(--ease-out);
+}
+.welcome-step-dot.done {
+  background: var(--border-strong);
+}
+.welcome-step-dot.on {
+  width: var(--space-3);
+  background: var(--accent);
 }
 .welcome-skip,
 .welcome-later {
@@ -4294,9 +4314,9 @@ button.desk-new:disabled {
     border-bottom: 1px solid var(--border);
     max-height: 40%;
   }
-  /* P2-108: the shell title is the demoted mobile chrome — a muted overline in
-     the house pattern (.welcome-step-of), not a full-size title squeezed
-     between the drawer and action buttons. Two classes on purpose: the base
+  /* P2-108: the shell title is the demoted mobile chrome — a muted overline
+     in the house caps pattern, not a full-size title squeezed between the
+     drawer and action buttons. Two classes on purpose: the base
      .shell-title rule sits later in this file, so equal specificity would
      let the 0.95rem title win. */
   .shell-bar .shell-title {
