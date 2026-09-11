@@ -10987,6 +10987,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     // P3-394: the escalation detail split per surface — both must resolve in
     // both locales or a raw-key fallback ships to a real user.
     "degradedEscalateDetailDesktop", "degradedEscalateDetailPhone",
+    // P3-417: the retry line's minutes segment (new dictionary key — lesson
+    // P3-394: every new key joins this pinned resolution set).
+    "retryElapsedMin",
   ];
   check(
     "degraded: journey copy resolves per locale (no raw-key fallback)",
@@ -11024,6 +11027,20 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         desktop.trim() !== "" && desktop !== "degradedEscalateDetailDesktop" &&
         phone.trim() !== "" && phone !== "degradedEscalateDetailPhone" &&
         action.trim() !== "" && action !== "degradedEscalateDiagnostics";
+    }),
+  );
+  // --- P3-417: the retry line shares the escalation's minutes clock -----------
+  // Past 90s the live segment stops counting raw seconds ("há 214s") and reads
+  // in minutes through the same escalationMinutes() the title uses, so one
+  // card never shows two disagreeing watches. The switch itself is pinned by
+  // scripts/degraded-retry.test.ts; here the new key interpolates per locale.
+  check(
+    "P3-417: the retry minutes key interpolates per locale (no raw template, matches the escalation minutes)",
+    (["en", "pt"] as const).every((lang) => {
+      const live = translate(lang, "retryElapsedMin", { m: escalationMinutes(214) });
+      const title = translate(lang, "degradedEscalateTitle", { m: escalationMinutes(214) });
+      return live.includes("3") && !live.includes("{m}") && live !== "retryElapsedMin" &&
+        title.includes("3") && !title.includes("{m}");
     }),
   );
   // --- P3-394: the escalation detail follows the surface -----------------------

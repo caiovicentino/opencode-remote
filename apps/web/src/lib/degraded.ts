@@ -45,7 +45,9 @@ export function degradedKind(state: DegradedState | null, everSeen: boolean): De
  * review nit) and an absent/zero attempt hides the counter segment (a first
  * contact has no attempt to count yet). The seconds reset whenever the shell
  * bumps its counter, so the number doubles as a quiet countdown to the next
- * probe. */
+ * probe. P3-417: past RETRY_MINUTES_AFTER_SEC the segment switches to the
+ * same minutes clock the escalation title uses — a raw "há 214s" beside the
+ * title's "há 3 min" reads as two disagreeing watches on one card. */
 export function retryLineParts(
   elapsedSec: number,
   attempts: number | undefined,
@@ -53,10 +55,18 @@ export function retryLineParts(
 ): string {
   const parts: string[] = [];
   const s = Math.max(0, Math.floor(elapsedSec));
-  if (s >= 1) parts.push(t("retryElapsed", { s }));
+  if (s >= 1) {
+    if (s > RETRY_MINUTES_AFTER_SEC) parts.push(t("retryElapsedMin", { m: escalationMinutes(s) }));
+    else parts.push(t("retryElapsed", { s }));
+  }
   if (typeof attempts === "number" && attempts > 0) parts.push(t("retryAttempt", { n: attempts }));
   return parts.join(" · ");
 }
+
+/** P3-417: how long the live retry segment may count raw seconds before it
+ * switches to minutes. Below this the seconds still read as a countdown to
+ * the next probe; beyond it only the escalation's "há N min" clock remains. */
+export const RETRY_MINUTES_AFTER_SEC = 90;
 
 /** P3-363: the auto-retry loop is patient by design (the watchdog never gives
  * up), but a permanent silent retry is indistinguishable from a hang. After
