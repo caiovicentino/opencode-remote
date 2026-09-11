@@ -3175,16 +3175,22 @@ button.desk-new:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* P3-420: the enabled save button is the offline journey's core action —
+   mirror the composer's active-field grammar (P3-386): painted on the card
+   with the firmer resting border, instead of a washed-out transparent ghost
+   that read as disabled next to the solid reconnect button. */
 .degraded-queue-save {
   flex: none;
   padding: 6px 12px;
   font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   color: var(--fg);
-  border-color: var(--border);
-  background: transparent;
+  border-color: var(--border-strong);
+  background: var(--surface);
 }
 .degraded-queue-save:hover:not(:disabled) {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border-color: var(--fg);
 }
 .degraded-queue-save:disabled {
   opacity: 0.45;
