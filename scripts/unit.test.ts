@@ -12192,6 +12192,20 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P3-379: BrowserView ships no default URL (no silent host-service reach)",
     !src.includes("8792") && !src.includes("DEFAULT_URL") && src.includes("browserEmptyHint"),
   );
+  // --- P3-416: the empty pane's bar action is Go, never a no-op reload --------
+  // The old bar always showed ↻ — a dead button until the first page existed.
+  // The affordance now swaps: → Go (rides the browserGo dict key) while no
+  // page is loaded, reload only after one does.
+  const barAt = src.indexOf('<div className="browser-bar">');
+  const bar = barAt >= 0 ? src.slice(barAt, src.indexOf("</div>", barAt)) : "";
+  check(
+    "P3-416: the browser bar's action swaps on `started` — Go before any page, reload after",
+    barAt >= 0 && bar.includes("started ?") && bar.includes("t(\"browserGo\")") && bar.includes("t(\"browserReload\")"),
+  );
+  check(
+    "P3-416: the Go affordance navigates (go(input)) and stays inert on an empty address",
+    bar.includes("onClick={() => go(input)}") && bar.includes("disabled={input.trim().length === 0}"),
+  );
 }
 
 // --- P3-378: a typed non-http(s) URL is rejected with named, visible feedback --
