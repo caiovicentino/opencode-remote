@@ -38,12 +38,16 @@ interface Props {
 function InlinePair({
   qrDataUrl,
   phonePaired,
+  agentDown,
   onPairRemote,
   onCancelPairRemote,
   onPairManually,
 }: {
   qrDataUrl?: string | null;
   phonePaired?: boolean;
+  /** P3-412: the settled non-healthy verdict of the same kind/busy signal the
+   * step-2 connection card renders — true means the QR can never land. */
+  agentDown: boolean;
   onPairRemote: () => void;
   onCancelPairRemote?: () => void;
   onPairManually?: () => void;
@@ -74,15 +78,21 @@ function InlinePair({
   const [attempt, setAttempt] = useState(0);
   const startedAt = useRef(Date.now());
   useEffect(() => {
-    if (qrDataUrl) return;
+    if (qrDataUrl || agentDown) return;
+    // P3-412: the window counts from when the wait became meaningful (mount,
+    // agent recovery, retry) — a down-agent stretch never eats into it.
+    startedAt.current = Date.now();
+    setElapsedMs(0);
     const id = window.setInterval(() => {
       const elapsed = Date.now() - startedAt.current;
       setElapsedMs(elapsed);
       if (elapsed >= QR_WAIT_TIMEOUT_MS) window.clearInterval(id);
     }, 500);
     return () => window.clearInterval(id);
-  }, [qrDataUrl, attempt]);
-  const verdict = qrWaitVerdict({ qrDataUrl, elapsedMs });
+  }, [qrDataUrl, agentDown, attempt]);
+  // P3-412: a known-down agent skips the wait window entirely — the skeleton
+  // only makes sense while the QR can still land.
+  const verdict = qrWaitVerdict({ qrDataUrl, elapsedMs, agentDown });
   // Retry re-fires the shell's remote-pairing request (app:setRemotePairing
   // re-runs its poll) and restarts the wait window. The calm exit stays the
   // step's "do this later" — this block only adds the way back in.
@@ -105,13 +115,18 @@ function InlinePair({
   }
   // P3-337: the step-3 card heading above is the single pairing title — this
   // section carries only the live QR/status, no all-caps kicker repeating it.
+  // P3-421 lesson: the state hook (`data-qr-state`) stays copy-independent so
+  // e2e harnesses can select the branch without pinning the words.
   return (
-    <section className="pair-section" data-pair-wait={!qrDataUrl}>
+    <section className="pair-section" data-pair-wait={!qrDataUrl} data-qr-state={verdict}>
       {qrDataUrl ? (
         <img className="welcome-qr" src={qrDataUrl} alt={t("pairOverlayAlt")} />
       ) : verdict === "error" ? (
-        <div className="welcome-qr-error" role="alert">
-          <p className="welcome-qr-error-title">{t("welcomeQrError")}</p>
+        <div className="welcome-qr-error" role="alert" data-qr-cause={agentDown ? "agent" : "wait"}>
+          {/* P3-412: the title ties to the step-2 connection card — when the
+              agent is known to be out, the card says so instead of blaming
+              the QR; the timeout cause keeps the generic did-not-load line. */}
+          <p className="welcome-qr-error-title">{t(agentDown ? "welcomeQrAgentDown" : "welcomeQrError")}</p>
           {/* P3-329: name the dependency — the QR is minted from the local
               agent's pairing credential; with the agent down nothing loads. */}
           <p className="muted welcome-qr-hint">{t("welcomeQrErrorHint")}</p>
@@ -151,6 +166,10 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
 
   const agentOk = !busy && kind === "none" && !upstream;
   const agentState = busy ? "connecting" : kind === "none" ? "ok" : kind;
+  // P3-412: the same settled non-healthy verdict the step-2 card renders
+  // (down / first-contact / reconnecting, auto-connect not in flight) — while
+  // `busy` the QR can still land, so only the settled states fail fast.
+  const agentDown = !busy && kind !== "none";
   const agentTitle = busy
     ? t("localConnecting")
     : kind === "reconnecting"
@@ -258,6 +277,7 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
               <InlinePair
                 qrDataUrl={qrDataUrl}
                 phonePaired={phonePaired}
+                agentDown={agentDown}
                 onPairRemote={onPairRemote}
                 onCancelPairRemote={onCancelPairRemote}
                 onPairManually={onPairManually}

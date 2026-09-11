@@ -34617,7 +34617,8 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
 
   // the error branch explains why and offers the labeled manual escape next
   // to the retry — conditional on the App-provided wiring, never a dead button
-  const errAt = welcome.indexOf('t("welcomeQrError")');
+  // (P3-412: the title now branches on the agent-down cause, same spot)
+  const errAt = welcome.indexOf('t(agentDown ? "welcomeQrAgentDown" : "welcomeQrError")');
   const errHintAt = welcome.indexOf('t("welcomeQrErrorHint")');
   const retryAt = welcome.indexOf('className="welcome-qr-retry"');
   const manualAt = welcome.indexOf('className="welcome-qr-manual"');
@@ -34651,6 +34652,59 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   check(
     "P3-329: hint + actions styled, manual button shares the retry rule",
     css.includes(".welcome-qr-hint") && css.includes(".welcome-qr-actions") && css.includes(".welcome-qr-manual {"),
+  );
+}
+
+// --- P3-412: a known-down agent fails the QR step fast, tied to step 2 -------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const welcome = read(join("components", "WelcomeView.tsx"));
+  const app = read("App.tsx");
+
+  // the fail-fast title resolves in BOTH locales — no raw-key fallback
+  check(
+    "P3-412: the agent-down QR title resolves per locale",
+    (["en", "pt"] as const).every((lang) => {
+      const s = translate(lang, "welcomeQrAgentDown");
+      return s !== "welcomeQrAgentDown" && s.trim() !== "";
+    }),
+  );
+
+  // agentDown derives from the SAME kind/busy props the step-2 card renders —
+  // one signal, two cards, so the tie-in can never contradict the connection
+  // state (P3-418 lesson: branch on the state the markup already exposes)
+  const kindAt = welcome.indexOf("const agentState = ");
+  const downAt = welcome.indexOf("const agentDown = !busy && kind !== \"none\";");
+  check(
+    "P3-412: agentDown derives from the same kind/busy signal as the step-2 card",
+    kindAt !== -1 && downAt > kindAt,
+  );
+
+  // the verdict gets the signal, and the component stops the timer while down
+  check(
+    "P3-412: the wait verdict consumes agentDown (fail fast, no 20s skeleton)",
+    welcome.includes("qrWaitVerdict({ qrDataUrl, elapsedMs, agentDown })") &&
+      welcome.includes("if (qrDataUrl || agentDown) return;"),
+  );
+
+  // InlinePair receives the derived flag — not a second, divergent computation
+  check("P3-412: InlinePair is wired with the derived agentDown", welcome.includes("agentDown={agentDown}"));
+
+  // the error title branches on the cause: agent-down names the agent, the
+  // plain timeout keeps the did-not-load line
+  const titleAt = welcome.indexOf('t(agentDown ? "welcomeQrAgentDown" : "welcomeQrError")');
+  check("P3-412: the error title branches on the agent-down cause", titleAt !== -1);
+
+  // copy-independent state hooks survive any future copy rewrite (P3-421)
+  check(
+    "P3-412: the QR branch carries data-qr-state and data-qr-cause hooks",
+    welcome.includes("data-qr-state={verdict}") && welcome.includes('data-qr-cause={agentDown ? "agent" : "wait"}'),
+  );
+
+  // App feeds the wizard the live connection state that powers the derivation
+  check(
+    "P3-412: App passes kind and busy into WelcomeView",
+    app.includes("kind={kind}") && app.includes("busy={phase === \"connecting\"}"),
   );
 }
 

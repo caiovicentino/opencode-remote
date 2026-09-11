@@ -1768,7 +1768,11 @@ never an unexplained spinner; the error block pairs the retry with a labeled
 paste-code ceremony (the path that used to hide behind the unlabeled link on
 the previous screen), and explicit manual intent forces the local
 auto-connect mode off there so the paste form can never be swallowed
-(P3-332 rule).
+(P3-332 rule). When the agent step's connection card already knows the local
+agent is out, the QR step fails fast instead of holding the skeleton for the
+full window (P3-412): the error block names the agent as the cause — the same
+signal that card renders — while the auto-connect is still in flight the QR
+can land any moment, so only the settled non-healthy states skip the wait.
 The step
 indicator reads as part of the brand block — centered under the wordmark — and
 progress is three quiet dots rather than a caps caption: the active step is an
