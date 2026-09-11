@@ -3012,19 +3012,34 @@ button.desk-new:disabled {
   overflow-wrap: anywhere;
 }
 /* P3-331: quiet return from the manual pairing escape hatch to the calm
-   degraded card — same underlined-link language as .degraded-manual. */
+   degraded card.
+   P3-411: the exit lives inside the sticky brand header now — top-left and
+   always on screen, even mid-scroll. The old end-of-flow link rendered under
+   the pane map (below the fold at 1440x900) and left the full-screen
+   ceremony without a visible way out. Same quiet voice: muted glyph + label,
+   no chrome, token hover lift. Absolute inside the positioned header, so it
+   never touches the centered brand block. */
 .pair-back {
-  align-self: center;
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 4px;
   background: transparent;
   border: none;
   color: var(--muted);
   font-size: var(--font-size-sm);
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  border-radius: var(--radius-md);
 }
 .pair-back:hover {
   color: var(--text);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.pair-back-chevron {
+  flex: none;
 }
 
 /* ── P2-112: first-boot degraded journey ─────────────────────────────────────
