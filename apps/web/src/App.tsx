@@ -14,6 +14,7 @@ import {
   type Status,
 } from "./lib/client";
 import { REAUTH_ERROR, REJECTED_ERROR } from "./lib/reauth";
+import { busyCount, reduceBusy, sendBusyCountToShell, type BusyState } from "./lib/busy";
 import { NotConnected } from "./lib/errors";
 import { classifyPairError, pairErrorCopy } from "./lib/pairerror";
 import { activeDrawerRow, hasUnreadDot, RECENTS_LIMIT, recentRows, type DrawerDest, type RecentRow } from "./lib/drawer";
@@ -502,12 +503,25 @@ export default function App() {
 
   // WhatsApp-style unread: count turn-completions, errors and permission asks
   // for sessions that are not currently open on screen
+  // P3-409: the busy-session set for the shell's keep-awake verdict lives in
+  // a ref (never a state — no re-render, no visual change): every event of
+  // every session feeds it, and only the COUNT crosses the bridge.
+  const busyRef = useRef<BusyState>({});
+
   function bumpUnread(evt: EventEnvelope) {
     const p = (evt.properties ?? {}) as {
       sessionID?: string;
       info?: { sessionID?: string };
     };
     const sid = p.sessionID ?? p.info?.sessionID;
+    // P3-409: busy derivation runs for ALL sessions (active included) before
+    // the unread early-return below. The count is pushed only when it
+    // actually changes; stale entries are dropped by busyCount itself.
+    const now = Date.now();
+    const before = busyCount(busyRef.current, now);
+    busyRef.current = reduceBusy(busyRef.current, evt, now);
+    const after = busyCount(busyRef.current, now);
+    if (after !== before) sendBusyCountToShell(after);
     if (!sid || sid === activeSessionRef.current) return;
     const worthy =
       evt.type === "session.idle" ||

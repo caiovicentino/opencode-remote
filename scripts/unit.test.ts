@@ -211,6 +211,9 @@ import {
   HANG_WARN_THRESHOLD_MS,
 } from "../apps/desktop/src/hangwatch";
 import { quitAskFile, readQuitDontAsk, writeQuitDontAsk } from "../apps/desktop/src/quitstore";
+import { awakePlan, sanitizeBusyCount, AWAKE_HOLD_CEILING_MS } from "../apps/desktop/src/awakeplan";
+import { keepAwakeFile, readKeepAwake, writeKeepAwake } from "../apps/desktop/src/awakestore";
+import { busyCount, BUSY_EXPIRY_MS, reduceBusy, type BusyState } from "../apps/web/src/lib/busy";
 import {
   accelerationPlan,
   GPU_CRASH_CEILING,
@@ -35424,6 +35427,206 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
     "P3-400: the origin skips malformed session rows instead of failing the whole search",
     daemonIndexSrc.includes('.filter((r) => r !== null && typeof r === "object")'),
   );
+}
+
+// --- P3-409: keep awake while the agent works (awakeplan.ts + awakestore.ts + lib/busy.ts) ---
+{
+  const awakeBase = { busyCount: 1, testSession: false, ownerEnabled: true, busySince: 1_000, now: 2_000 };
+
+  check(
+    "P3-409: the test-session rule comes FIRST and releases even with garbage input",
+    (() => {
+      const v = awakePlan({
+        busyCount: "garbage",
+        testSession: true,
+        ownerEnabled: null,
+        busySince: "x",
+        now: NaN,
+      });
+      const clean = awakePlan({ ...awakeBase, testSession: true });
+      return (
+        v.action === "release" &&
+        v.reason.includes("sessão de teste") &&
+        clean.action === "release" &&
+        clean.reason.includes("sessão de teste")
+      );
+    })(),
+  );
+
+  check(
+    "P3-409: invalid input releases — never holds on doubt",
+    (() => {
+      const bads: unknown[] = ["3", 1.5, -1, 1000, NaN, null, undefined, Number.MAX_SAFE_INTEGER + 1];
+      for (const bad of bads) {
+        if (awakePlan({ ...awakeBase, busyCount: bad }).reason !== "entrada inválida — liberando por segurança")
+          return false;
+      }
+      const nonBooleans: unknown[] = ["yes", 1, 0, null, undefined];
+      for (const bad of nonBooleans) {
+        if (awakePlan({ ...awakeBase, ownerEnabled: bad }).action !== "release") return false;
+        if (awakePlan({ ...awakeBase, testSession: bad }).action !== "release") return false;
+      }
+      if (awakePlan({ ...awakeBase, now: "later" }).action !== "release") return false;
+      if (awakePlan({ ...awakeBase, now: NaN }).action !== "release") return false;
+      // a busySince in the future is suspicious — release, never hold
+      if (awakePlan({ ...awakeBase, busySince: 3_000 }).action !== "release") return false;
+      return true;
+    })(),
+  );
+
+  check(
+    "P3-409: the owner's choice off and a zero count always release",
+    awakePlan({ ...awakeBase, ownerEnabled: false }).reason ===
+      "escolha do dono desligada — suspensão liberada" &&
+      awakePlan({ ...awakeBase, busyCount: 0 }).reason ===
+        "nenhum agente trabalhando — nada a segurar",
+  );
+
+  check(
+    "P3-409: hold below the 4h ceiling, release at the boundary and with an unrecorded start",
+    (() => {
+      const at = (elapsed: number) =>
+        awakePlan({ ...awakeBase, busySince: 0, now: elapsed }).action;
+      return (
+        at(AWAKE_HOLD_CEILING_MS - 1) === "hold" &&
+        at(AWAKE_HOLD_CEILING_MS) === "release" &&
+        at(AWAKE_HOLD_CEILING_MS * 2) === "release" &&
+        awakePlan({ ...awakeBase, busySince: null, now: 5_000 }).action === "release"
+      );
+    })(),
+  );
+
+  check(
+    "P3-409: sanitizeBusyCount mirrors the 0..999 integer gate",
+    sanitizeBusyCount(0) === 0 &&
+      sanitizeBusyCount(999) === 999 &&
+      [1000, -1, 1.5, NaN, "3", null, undefined].every((bad) => sanitizeBusyCount(bad) === null),
+  );
+
+  // --- store table (awakestore.ts): default on, tolerant read, atomic private write ---
+  {
+    const dir = mkdtempSync(join(tmpdir(), "awakestore-"));
+    const file = keepAwakeFile(dir);
+    check("P3-409: missing keep-awake.json reads as the documented default (on)", readKeepAwake(file) === true);
+    check(
+      "P3-409: the choice round-trips atomically with 0600 permissions",
+      writeKeepAwake(file, false) === true &&
+        readKeepAwake(file) === false &&
+        writeKeepAwake(file, true) === true &&
+        readKeepAwake(file) === true &&
+        (statSync(file).mode & 0o777) === 0o600 &&
+        !existsSync(`${file}.tmp`),
+    );
+    writeFileSync(file, "{corrupted", "utf8");
+    check("P3-409: corrupted keep-awake.json degrades to the default (on)", readKeepAwake(file) === true);
+    writeFileSync(file, '{"keepAwake":"no"}', "utf8");
+    check("P3-409: a non-boolean field counts as the default (on)", readKeepAwake(file) === true);
+  }
+
+  // --- busy.ts: membership is decided by the three documented event types ----
+  {
+    const t0 = 1_000_000;
+    const evt = (type: string, properties: unknown): { type: string; properties: unknown } => ({ type, properties });
+
+    check(
+      "P3-409: busy — status busy marks, status idle / session.idle / session.error clear",
+      (() => {
+        let s: BusyState = {};
+        s = reduceBusy(s, evt("session.status", { sessionID: "a", status: { type: "busy" } }), t0);
+        if (busyCount(s, t0) !== 1) return false;
+        // an unknown status type never changes membership
+        const afterUnknown = reduceBusy(s, evt("session.status", { sessionID: "a", status: { type: "retry" } }), t0 + 1);
+        if (busyCount(afterUnknown, t0 + 1) !== 1) return false;
+        const idle = reduceBusy(s, evt("session.status", { sessionID: "a", status: { type: "idle" } }), t0 + 2);
+        if (busyCount(idle, t0 + 2) !== 0 || "a" in idle) return false;
+        let s2 = reduceBusy(s, evt("session.idle", { sessionID: "a" }), t0 + 3);
+        if (busyCount(s2, t0 + 3) !== 0) return false;
+        s2 = reduceBusy(s, evt("session.error", { sessionID: "a" }), t0 + 4);
+        return busyCount(s2, t0 + 4) === 0;
+      })(),
+    );
+
+    check(
+      "P3-409: busy — any event from a busy session refreshes liveness, and stale entries stop counting",
+      (() => {
+        let s: BusyState = reduceBusy({}, evt("session.status", { sessionID: "w", status: { type: "busy" } }), t0);
+        s = reduceBusy(s, evt("message.part.updated", { sessionID: "w" }), t0 + BUSY_EXPIRY_MS - 60_000);
+        // the refresh moved the expiry window along
+        if (busyCount(s, t0 + BUSY_EXPIRY_MS) !== 1) return false;
+        if (busyCount(s, t0 + 2 * BUSY_EXPIRY_MS - 60_001) !== 1) return false;
+        // no event for the rest of the new window: the stale entry stops counting
+        if (busyCount(s, t0 + 2 * BUSY_EXPIRY_MS - 60_000) !== 0) return false;
+        // a fresh busy mark on another session prunes the stale entry
+        const pruned = reduceBusy(
+          s,
+          evt("session.status", { sessionID: "v", status: { type: "busy" } }),
+          t0 + 2 * BUSY_EXPIRY_MS,
+        );
+        return !("w" in pruned) && pruned.v === t0 + 2 * BUSY_EXPIRY_MS;
+      })(),
+    );
+
+    check(
+      "P3-409: busy — nested info.sessionID honored; events without a session change nothing",
+      (() => {
+        const s = reduceBusy({}, evt("session.status", { info: { sessionID: "b" }, status: { type: "busy" } }), t0);
+        if (busyCount(s, t0) !== 1) return false;
+        const untouched = reduceBusy(s, evt("message.part.updated", {}), t0 + 1);
+        return untouched === s;
+      })(),
+    );
+  }
+
+  // --- source pins: order contract and single-blocker wiring in main.ts ------
+  {
+    const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+    const applyAt = mainSrc.indexOf("function applyAwakePlan");
+    const releaseFnAt = mainSrc.indexOf("function releaseAwakeBlock");
+    const awakeBlock = applyAt >= 0 && releaseFnAt > applyAt ? mainSrc.slice(applyAt, releaseFnAt) : "";
+    const hermeticAt = awakeBlock.indexOf("HERMETIC_E2E");
+    const startAt = awakeBlock.indexOf("powerSaveBlocker.start(");
+    check(
+      "P3-409: the test session is consulted BEFORE any powerSaveBlocker.start (order contract)",
+      hermeticAt >= 0 && startAt > hermeticAt,
+    );
+    check(
+      "P3-409: exactly one powerSaveBlocker.start, in prevent-app-suspension mode, guarded against a second block",
+      (mainSrc.match(/powerSaveBlocker\.start\(/g) || []).length === 1 &&
+        awakeBlock.includes('powerSaveBlocker.start("prevent-app-suspension")') &&
+        awakeBlock.includes("if (awakeBlockId !== null) return;"),
+    );
+    const willQuitAt = mainSrc.indexOf('app.on("will-quit"');
+    check(
+      "P3-409: the blocker is released on quit (will-quit) and one log line per transition is kept",
+      willQuitAt >= 0 &&
+        mainSrc.slice(willQuitAt, willQuitAt + 900).includes("releaseAwakeBlock()") &&
+        awakeBlock.includes("if (changed) log("),
+    );
+    check(
+      "P3-409: the ocr:busy handler validates 0..999 and stamps the idle→busy transition",
+      mainSrc.includes('ipcMain.on("ocr:busy"') &&
+        mainSrc.includes("const valid = sanitizeBusyCount(n);") &&
+        mainSrc.includes("if (lastBusyCount === 0 && valid > 0) busySince = Date.now();") &&
+        mainSrc.includes("if (valid === 0) busySince = null;"),
+    );
+    const preloadSrc = readFileSync(
+      join(import.meta.dirname, "..", "apps", "desktop", "src", "preload.ts"),
+      "utf8",
+    );
+    check(
+      "P3-409: preload exposes sendBusy on its own channel; unread and asks untouched",
+      preloadSrc.includes('send("ocr:busy", n)') &&
+        preloadSrc.includes('send("ocr:unread", n)') &&
+        preloadSrc.includes('send("ocr:asks", n)'),
+    );
+    const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+    check(
+      "P3-409: App.tsx derives the busy set in bumpUnread and pushes only the count",
+      appSrc.includes("busyRef.current = reduceBusy(busyRef.current, evt, now);") &&
+        appSrc.includes("if (after !== before) sendBusyCountToShell(after);") &&
+        appSrc.indexOf("busyRef.current = reduceBusy") < appSrc.indexOf("if (!sid || sid === activeSessionRef.current) return;"),
+    );
+  }
 }
 
 if (failures > 0) {

@@ -1571,6 +1571,23 @@ Plataformas sem o sinal do sistema seguem como antes, nenhuma sonda periódica
 nova é criada e o pareamento nunca é alterado por um wake: sem re-pareamento,
 sem escrita em allowlist ou no arquivo de estado.
 
+**Manter acordado enquanto o agente trabalha**: a outra metade da história do
+sleep — uma tarefa longa pedida pelo telefone não morre mais porque a máquina
+entrou em repouso por inatividade no meio do turno. A interface web deriva
+quantas sessões de agente estão ocupadas e envia só essa contagem para o
+shell; enquanto houver pelo menos uma sessão ocupada e a caixa de marcar
+**Manter acordado enquanto o agente trabalha** estiver ligada na bandeja (o
+padrão), o shell segura um `powerSaveBlocker` no modo
+`prevent-app-suspension`, e o Mac/PC sem supervisão para de cochilar enquanto
+o agente trabalha. A escolha é gravada de forma atômica no `userData`
+(`keep-awake.json`), cada transição de segurar/liberar escreve exatamente uma
+linha de log, no máximo um bloqueio vive por vez, e um teto documentado
+libera a retenção depois de 4 horas contínuas do mesmo período ocupado (o
+ciclo rearma na próxima transição de ocioso para ocupado). Push malformado
+nunca segura a máquina: entrada inválida libera. Limite de plataforma: no
+macOS, **fechar a tampa continua suspendendo a máquina** — o bloqueio só
+suprime o repouso por inatividade, ele não vence a tampa fechada.
+
 **Zero pairing na máquina host**: o shell do desktop trata o daemon da mesma
 máquina como um único domínio de confiança (loopback, mesmo usuário,
 `daemon.json` 0600). Se esse daemon prova saúde no boot — desafio 401

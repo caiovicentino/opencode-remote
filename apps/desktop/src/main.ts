@@ -1,4 +1,4 @@
-import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, systemPreferences, Tray, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, screen, session, systemPreferences, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -101,6 +101,8 @@ import { versionMismatch } from "./versions";
 import { applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, NOTIFY_TITLE, type DaemonHealth } from "./notify";
 import { REPLY_NOTIFY_TITLE, replyNotifyDecision } from "./replynotify";
 import { ASK_NOTIFY_TITLE, askNotifyDecision, sanitizeAskCount } from "./asknotify";
+import { awakePlan, sanitizeBusyCount } from "./awakeplan";
+import { keepAwakeFile, readKeepAwake, writeKeepAwake } from "./awakestore";
 import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
@@ -1506,6 +1508,10 @@ async function onReady(): Promise<void> {
   // ocr:shell-lang pushes then apply the in-app choice on top of this.
   shellLangState = shellLang(null, app.getLocale(), SUPPORTED_SHELL_LANGS);
   log(`[desktop] shell language: ${shellLangState.lang} (${shellLangState.origin})`);
+  // P3-409: the tray's keep-awake choice — ON by default, persisted like the
+  // quit-ask decision. Read ONCE here; the checkbox click updates it live.
+  keepAwakeChoice = readKeepAwake(keepAwakeFile(app.getPath("userData")));
+  log(`[desktop] keep awake: ${keepAwakeChoice ? "on" : "off"} (stored choice)`);
   buildMenu();
   buildTray();
   // P2-270: the boot-health recovery question — fire-and-forget; the
@@ -1893,6 +1899,21 @@ async function onReady(): Promise<void> {
     if (valid !== null) lastAskCount = valid;
     applyAskNotification(prevAsks, n);
   });
+  // P3-409: the renderer publishes the busy-session count (lib/busy.ts) on
+  // its own one-way channel — same design as the ocr:unread/ocr:asks pushes
+  // above. Main validates an integer between 0 and 999 and a malformed push
+  // never poisons the busy bookkeeping. busySince marks the CURRENT idle→busy
+  // transition only: it is stamped when the count leaves zero and cleared
+  // when it returns there, so awakeplan's 4h ceiling releases until the next
+  // transition exactly as documented.
+  ipcMain.on("ocr:busy", (_e, n: unknown) => {
+    const valid = sanitizeBusyCount(n);
+    if (valid === null) return;
+    if (lastBusyCount === 0 && valid > 0) busySince = Date.now();
+    if (valid === 0) busySince = null;
+    lastBusyCount = valid;
+    applyAwakePlan();
+  });
   // P2-276: the renderer publishes the language the app already chose — a
   // one-way push, same pattern as the ocr:unread channel above. An invalid
   // payload resolves exactly like an absent preference (the system language
@@ -2206,6 +2227,7 @@ async function onReady(): Promise<void> {
     // dangling system-wide key would keep firing into a dead app.
     // unregisterAll() is idempotent and safe when nothing was registered.
     globalShortcut.unregisterAll();
+    releaseAwakeBlock(); // P3-409, idempotent
     // Encerra o daemon que subimos antes de sair (idempotente).
     if (daemonStopped) return;
     event.preventDefault();
@@ -2475,6 +2497,63 @@ function applyAskNotification(prevAsks: unknown, nextRaw: unknown): void {
     log(`[desktop] ask notification shown`);
   } catch (err) {
     logError("[desktop] ask notification failed:", err);
+  }
+}
+
+// --- keep awake while the agent works (P3-409) ---------------------------------
+// A long run requested from the phone dies when the machine drifts into idle
+// sleep mid-turn. The renderer derives the busy-session count (apps/web/src/
+// lib/busy.ts) and pushes it on ocr:busy; the pure verdict (awakeplan.ts)
+// decides whether the shell holds a powerSaveBlocker in the
+// "prevent-app-suspension" mode or lets the OS sleep. At most ONE blocker is
+// ever alive, it is released on quit, and each hold/release transition logs
+// exactly one line. Platform note, documented: on macOS a CLOSED LID still
+// suspends regardless of powerSaveBlocker — this only suppresses idle sleep.
+let lastBusyCount = 0;
+let busySince: number | null = null;
+let awakeBlockId: number | null = null;
+let lastAwakeAction: "hold" | "release" | null = null;
+let keepAwakeChoice = true;
+
+function applyAwakePlan(): void {
+  const verdict = awakePlan({
+    busyCount: lastBusyCount,
+    testSession: HERMETIC_E2E,
+    ownerEnabled: keepAwakeChoice,
+    busySince,
+    now: Date.now(),
+  });
+  const changed = verdict.action !== lastAwakeAction;
+  lastAwakeAction = verdict.action;
+  // Exactly one log line per transition: action + static pt-BR motive.
+  if (changed) log(`[desktop] awake: ${verdict.action} (${verdict.reason})`);
+  // P1-081 order contract: the hermetic test-session rule is consulted BEFORE
+  // any powerSaveBlocker.start (awakeplan.ts already fails the verdict, this
+  // re-check is pinned by a source-reading assertion) — a harness session
+  // never holds the operator's machine awake.
+  if (HERMETIC_E2E || verdict.action !== "hold") {
+    releaseAwakeBlock();
+    return;
+  }
+  // Never two blocks: the single live id is reused, and a failed start is
+  // retried on the next push instead of being treated as held.
+  if (awakeBlockId !== null) return;
+  try {
+    awakeBlockId = powerSaveBlocker.start("prevent-app-suspension");
+  } catch (err) {
+    awakeBlockId = null;
+    logError("[desktop] awake: blocker start failed:", err);
+  }
+}
+
+function releaseAwakeBlock(): void {
+  if (awakeBlockId === null) return;
+  const id = awakeBlockId;
+  awakeBlockId = null;
+  try {
+    powerSaveBlocker.stop(id);
+  } catch (err) {
+    logError("[desktop] awake: blocker stop failed:", err);
   }
 }
 
@@ -3770,6 +3849,21 @@ function trayMenuItems(): Electron.MenuItemConstructorOptions[] {
       click: (item) => setLoginItemEnabled(item.checked),
     });
   }
+  // P3-409: hold the machine awake while agent sessions are busy (idle sleep
+  // only — a closed MacBook lid still suspends). The choice persists in
+  // userData (keep-awake.json, same atomic 0600 shape as quitstore) and every
+  // toggle re-runs the awake verdict immediately.
+  items.push({
+    label: currentShellLabels().awake.keepAwake,
+    type: "checkbox",
+    checked: keepAwakeChoice,
+    click: (item) => {
+      keepAwakeChoice = item.checked;
+      const written = writeKeepAwake(keepAwakeFile(app.getPath("userData")), keepAwakeChoice);
+      log(`[desktop] keep awake choice: ${keepAwakeChoice ? "on" : "off"} (written=${written})`);
+      applyAwakePlan();
+    },
+  });
   // P3-016: the persistent desktop.log (P3-012) is useless to a lay user if
   // nothing in the app points at it — this item creates the folder on demand
   // and reveals it in the OS file manager (the same handler the Help menu's

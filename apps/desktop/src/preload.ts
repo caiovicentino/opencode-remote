@@ -231,6 +231,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // can decide the "agent asks approval" toast. One-way push on its OWN
   // channel; the unread channel above and the badge behavior are untouched.
   sendAsks: (n: number): void => ipcRenderer.send("ocr:asks", n),
+  // P3-409: busy-session count — the web UI derives it (lib/busy.ts) and
+  // pushes it on every change; main feeds the keep-awake verdict
+  // (awakeplan.ts) with it. One-way push on its OWN channel; the unread and
+  // asks channels above are untouched.
+  sendBusy: (n: number): void => ipcRenderer.send("ocr:busy", n),
   // P2-276: the shell (menu bar + tray) follows the language chosen in the
   // app — one-way push, same pattern as sendUnread above. Main resolves it
   // through shelllang.ts (an invalid payload counts as no preference) and
