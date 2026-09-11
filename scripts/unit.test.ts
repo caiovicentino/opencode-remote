@@ -33,6 +33,8 @@ import { classifyConflictPath, isCommentOnlyHunk, parseConflictedFile, repairPla
 
 import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
 
+import { networkReturnAction, NETWORK_RETURN_STALE_MS, type NetworkReturnAction } from "../apps/web/src/lib/netreturn";
+
 import { buildAskDialog, canConfirmAskValue } from "../apps/web/src/lib/askdialog";
 
 import {
@@ -2026,6 +2028,55 @@ check("client.ts calls rehandshake() from exactly one place", (clientSource.matc
 const lastRehandshakeAt = clientSource.indexOf("lastRehandshakeAt = Date.now()");
 const rehandshakeCall = clientSource.indexOf("this.rehandshake()");
 check("the only rehandshake() call comes from the hint-verify timer callback", lastRehandshakeAt > -1 && rehandshakeCall > lastRehandshakeAt);
+
+// --- P3-425: network-return action for the window `online` event ---------------
+
+check("netreturn NETWORK_RETURN_STALE_MS is 30s", NETWORK_RETURN_STALE_MS === 30_000);
+
+const netReturnBase = {
+  status: "connecting",
+  reconnectPending: false,
+  intentionalClose: false,
+  msSinceLastSeen: 5_000,
+};
+
+// The five rules in the pinned order: an intentional close outranks both a
+// stale paired session AND a pending backoff; a fresh paired session probes
+// before anything is anticipated; an in-flight dial (no timer) is left alone.
+const netReturnCases: [string, typeof netReturnBase, NetworkReturnAction][] = [
+  ["rule 1 — intentional close ignores even a stale paired session", { ...netReturnBase, status: "paired", intentionalClose: true, msSinceLastSeen: 60_000 }, "ignore"],
+  ["rule 1 — intentional close ignores a pending backoff", { ...netReturnBase, reconnectPending: true, intentionalClose: true }, "ignore"],
+  ["rule 2 — paired with lastSeen above 30s forces a reconnect", { ...netReturnBase, status: "paired", msSinceLastSeen: 30_001 }, "force-reconnect"],
+  ["rule 3 — paired recent probes (ping with awaitingPong)", { ...netReturnBase, status: "paired", msSinceLastSeen: 0 }, "probe"],
+  ["rule 3 boundary — paired at exactly 30s is still fresh", { ...netReturnBase, status: "paired", msSinceLastSeen: 30_000 }, "probe"],
+  ["rule 4 — not paired with a pending timer anticipates it", { ...netReturnBase, reconnectPending: true }, "retry-now"],
+  ["rule 5 — not paired without a timer (dial in flight) ignores", { ...netReturnBase }, "ignore"],
+];
+
+for (const [netName, netInput, netExpected] of netReturnCases) {
+  check(`networkReturnAction ${netName}`, networkReturnAction(netInput) === netExpected);
+}
+
+// Source pins on the real client.ts: exactly one `online` listener (registered
+// once, never per attach()), no `offline` listener (a network loss forces
+// nothing) and the teardown reachable from every intentional-close path.
+check(
+  "P3-425: client.ts registers exactly one window online listener and no offline listener",
+  (clientSource.match(/addEventListener\("online"/g) ?? []).length === 1 &&
+    !clientSource.includes('addEventListener("offline"'),
+);
+
+check(
+  "P3-425: the online listener is torn down on the intentional-close paths (close/expire/reject/abandon)",
+  (clientSource.match(/this\.detachNetworkReturn\(\)/g) ?? []).length >= 4,
+);
+
+check(
+  "P3-425: anticipating the dial zeroes reconnectAttempt so the next wait restarts short",
+  clientSource.includes("networkReturnAction") &&
+    /action === "retry-now"/.test(clientSource) &&
+    /this\.reconnectAttempt = 0;\s*\n\s*this\.retryNow\(\);/.test(clientSource),
+);
 
 // P3-374: ops caught mid-rehandshake keep a bounded grace timer instead of
 // sitting timer-less until the next confirm replays them — a handshake churning

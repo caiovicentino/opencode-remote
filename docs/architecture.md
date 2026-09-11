@@ -168,7 +168,14 @@ a clean reboot leaves the PWA reachable at
 4. Response sealed back with AAD(daemon room, seq); bodies >900KB travel as
    `res-chunk` frames the client reassembles byte-exact
 5. Client state machine (`connecting → paired`) drives the heartbeat: 20s
-   app-level ping/pong, forced reconnect on resume-from-background. Liveness
+   app-level ping/pong, forced reconnect on resume-from-background. When the
+   device regains the network (window `online` event, P3-425) the client acts
+   at once through one pure verdict (`apps/web/src/lib/netreturn.ts`): an
+   intentional close ignores the event, a paired session silent over 30 s is
+   force-reconnected, a fresh paired session is probed with a ping, and a
+   pending backoff is anticipated immediately (attempt counter reset, so the
+   next wait restarts short) — while `offline` forces nothing, so attempts
+   are never burned without a network. Liveness
    moves only on sealed frames: the daemon answers a ping with a **sealed
    pong**, and a clear `reconnect` from the relay room is an unauthenticated
    hint the client verifies (one ping, 1500 ms grace) before rehandshaking —
