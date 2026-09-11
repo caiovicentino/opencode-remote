@@ -1725,6 +1725,7 @@ export default function App() {
       // in-chat .conn-banner say the same sentence — never show both.
       shellBannerVisible={kind === "reconnecting" || kind === "down"}
       getMicAccess={desktopBridge()?.getMicAccess}
+      getCamAccess={desktopBridge()?.getCamAccess}
       // EVAL4-F4: real dials + drop instant + "try now" for the in-chat banner
       // (ChatView declares the three as optional; instance B renders them)
       connAttempts={connAttempts}

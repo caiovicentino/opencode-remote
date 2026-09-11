@@ -16,6 +16,8 @@ import { modelHintKey, useModelStatus } from "../lib/modelstatus";
 import { useModelSelector } from "../lib/models";
 import ModelMenuItems from "./ModelMenuItems";
 import ModelMissingActions from "./ModelMissingActions";
+import CameraSheet, { type StagedCameraShot } from "./CameraSheet";
+import { type CameraAccessVerdict } from "./QrScanner";
 import { saveFile } from "../lib/files";
 import { copyText } from "../lib/clipboard";
 import { copyPlan, type CopyPart } from "../lib/copymsg";
@@ -71,27 +73,7 @@ import {
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { sendAskCountToShell } from "../lib/asks";
 import { frameToFile, screenFailKey, screenWaitVerdict } from "../lib/screenpeek";
-import { ArtifactIcon } from "./icons";
-import {
-  IconArrowLeft,
-  IconArrowUp,
-  IconChat,
-  IconCheck,
-  IconCopy,
-  IconChevronDown,
-  IconChevronUp,
-  IconClock,
-  IconDownload,
-  IconLaptop,
-  IconMic,
-  IconMonitor,
-  IconPlus,
-  IconRefresh,
-  IconSearch,
-  IconSpeaker,
-  IconWrench,
-  IconX,
-} from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconMonitor, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 
 /** P2-312: microphone verdict from the desktop shell (mirrors
  * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
@@ -145,6 +127,9 @@ interface Props {
   /** P2-312: microphone-permission verdict from the desktop shell (absent on
    * the phone) — replaces the Safari-only NotAllowedError advice. */
   getMicAccess?: () => Promise<MicAccessVerdict | null>;
+  /** P3-402: camera-permission verdict from the desktop shell (absent on the
+   * phone) — the camera-ask sheet shares the bridge the QrScanner uses. */
+  getCamAccess?: () => Promise<CameraAccessVerdict | null>;
   /** P3-396: the same shell verdict the App computes (desktopBridge() !==
    * null). On the desktop shell the model hint resolves to dedicated copy +
    * a real credential journey; the phone keeps the daemon sentence, no
@@ -421,6 +406,7 @@ export default function ChatView({
   shellBridge,
   shellBannerVisible = false,
   getMicAccess,
+  getCamAccess,
   desktopShell,
   connAttempts: connAttemptsProp,
   connSince = 0,
@@ -515,6 +501,19 @@ export default function ChatView({
   const spokenVoiceRef = useRef<string | null>(null);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [uploading, setUploading] = useState(false);
+  // P3-402: camera-ask sheet ("Olho") — lives above the composer; sending
+  // from it keeps it open so a follow-up question never reopens the camera.
+  const [camOpen, setCamOpen] = useState(false);
+  // P3-402 r3: the sheet's error card shows ONLY camera-path failures (never
+  // the composer's mic/paste errors) and camErrorHint gates the "switch
+  // models" advice to attachment-bearing failures.
+  const [camError, setCamError] = useState("");
+  const [camErrorHint, setCamErrorHint] = useState(false);
+  useEffect(() => {
+    if (!camError) return;
+    const timer = setTimeout(() => setCamError(""), 10_000);
+    return () => clearTimeout(timer);
+  }, [camError]);
 
   // bounded wait: past the timeout the labeled escape replaces the spinner
   // (P3-329 lesson — the way out lives on the stuck surface itself)
@@ -560,6 +559,7 @@ export default function ChatView({
       void send(q);
     }
   }, [pendingAsk, uploading, images]);
+
   const { models, model, pickModel } = useModelSelector(request);
   const [agent, setAgent] = useState(localStorage.getItem("ocr_agent") ?? "");
   // P3-086: inline agent/model dropdown in the composer (Claude Desktop parity)
@@ -1863,9 +1863,28 @@ export default function ChatView({
     });
   }
 
-  async function send(override?: string) {
+  async function send(
+    override?: string,
+    extraAttachments?: PendingImage[],
+  ): Promise<{ status: "ok" | "blocked" | "error"; message?: string }> {
+    // P3-402: extraAttachments are the camera sheet's locally staged shots —
+    // already uploaded by the time send() runs (send-time transmission).
+    // The camera path reads the outcome: "blocked" means the streaming guard
+    // tripped and NOTHING was sent — the caller must keep its staged shots.
+    const staged = extraAttachments ?? [];
+    // Round-4 review: the composer's own content rides along ONLY when it IS
+    // the content being sent (no override). A typed camera question must
+    // never wipe a coexisting draft — neither its text nor its chips.
+    const usingComposer = override === undefined;
     const text = (override ?? input).trim();
-    if ((!text && images.length === 0) || sending || liveText || liveThinking) return;
+    if (
+      (!text && staged.length === 0 && (!usingComposer || images.length === 0)) ||
+      sending ||
+      liveText ||
+      liveThinking
+    ) {
+      return { status: "blocked" };
+    }
     // the reader's own message always lands on the newest tail
     atBottomRef.current = true;
     setAtBottom(true);
@@ -1877,17 +1896,19 @@ export default function ChatView({
     setRetryText("");
     // P1-088: clears ONLY the sending session's draft (it is the current one
     // at click time) — a half-typed draft in another session is never wiped.
-    updateInput("");
+    // Round-4 review: and only when the draft itself is being sent — a camera
+    // question (override) leaves the composer untouched.
+    if (usingComposer) updateInput("");
+    const attached = usingComposer ? [...images, ...staged] : staged;
     setBubbles((b) => [
       ...b,
       {
         role: "user",
-        text: text || attachmentLabel(images),
+        text: text || attachmentLabel(attached),
         pending: true,
       },
     ]);
     try {
-      const attached = [...images];
       const buildBody = (): Record<string, unknown> => {
         const fileParts = attached.map((img) => ({
           type: "file",
@@ -1903,7 +1924,7 @@ export default function ChatView({
         if (agent) body.agent = agent;
         return body;
       };
-      setImages([]);
+      if (usingComposer) setImages([]);
       let body = buildBody();
       let res = await request("POST", `/session/${sessionId}/message`, body);
       // attachments age out of the daemon (30min TTL, or a daemon restart):
@@ -1926,17 +1947,26 @@ export default function ChatView({
         // an attachment problem at all — say so instead of the misleading copy.
         markPending(false);
         if (attached.length === 0) {
-          setError(t("errUpstreamGone"));
+          const gone = t("errUpstreamGone");
+          setError(gone);
+          return { status: "error", message: gone };
         } else {
           const kept = attached.filter((img) => img.raw);
-          setImages(kept);
+          // append: on the composer path the chips were already cleared for
+          // the send (prev = []); on the camera-question path they were never
+          // touched — replacing would drop them
+          setImages((prev) => [...prev, ...kept]);
           if (text) updateInput(text);
-          setError(kept.length === attached.length ? t("errAttachmentExpiredKept") : t("errAttachmentExpiredLost"));
+          const expired = kept.length === attached.length ? t("errAttachmentExpiredKept") : t("errAttachmentExpiredLost");
+          setError(expired);
+          return { status: "error", message: expired };
         }
       } else if (res.status !== 200) {
-        setError(`opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`);
+        const upstream = `opencode responded ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`;
+        setError(upstream);
         markPending(false);
         if (text && res.status >= 500) setRetryText(text);
+        return { status: "error", message: upstream };
       } else {
         markPending(false);
         setRetryText("");
@@ -1966,14 +1996,18 @@ export default function ChatView({
       if (text) {
         enqueue(text);
         markPending("queued");
-        setError(`offline — message queued (${msg})`);
+        const queued = `offline — message queued (${msg})`;
+        setError(queued);
+        return { status: "error", message: queued };
       } else {
         markPending(false);
         setError(msg);
+        return { status: "error", message: msg };
       }
     } finally {
       setSending(false);
     }
+    return { status: "ok" };
   }
 
   async function downscaleImage(file: File): Promise<{ bytes: Uint8Array; mime: string }> {
@@ -2251,6 +2285,65 @@ export default function ChatView({
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // P3-402: camera-ask plumbing. The shutter stages the frame LOCALLY inside
+  // the sheet (camPrivacy promises "the photo only leaves when you send it"),
+  // so the chunked ocr-upload:// upload runs HERE — at send time, never at
+  // capture; abandoning the sheet transmits nothing. Staged shots ride the
+  // same downscale ≤1568px q0.75 + send() path as any composer attachment,
+  // and the sheet stays open for a follow-up probe. Resolves true when the
+  // shots are consumed (sent, or handed back to the composer on a send-level
+  // failure) and false when the sheet must KEEP them staged (streaming guard,
+  // upload failure — nothing was transmitted).
+  async function sendFromCamera(question: string, shots: StagedCameraShot[]): Promise<boolean> {
+    setCamError("");
+    setCamErrorHint(false);
+    // the same streaming guard send() applies — checked BEFORE anything leaves
+    // the device, so a follow-up while the agent streams never silently drops
+    // photos (the sheet keeps them staged and its button re-enables later)
+    if (sending || !!liveText || !!liveThinking) return false;
+    if (shots.length === 0) {
+      const r = await send(question || undefined);
+      if (r.status === "blocked") return false;
+      if (r.status === "error") {
+        setCamError(r.message ?? "");
+        return true;
+      }
+      return true;
+    }
+    setUploading(true);
+    try {
+      const staged: PendingImage[] = [];
+      for (const shot of shots) {
+        const { bytes, mime } = await downscaleImage(shot.file);
+        const filename = `shot-${Date.now()}.jpg`;
+        const id = await uploadBytes(bytes, mime, filename);
+        staged.push({ id, mime, filename, thumb: "", raw: bytes });
+      }
+      const r = await send(question || undefined, staged);
+      if (r.status === "blocked") {
+        // the agent started streaming while the uploads ran: the message was
+        // not sent, but the frames did leave the device — hand the ready
+        // attachments to the composer (410-path pattern) instead of dropping
+        // them, and say why nothing happened yet
+        setImages((prev) => [...prev, ...staged]);
+        setCamError(t("streamingWait"));
+        return true;
+      }
+      if (r.status === "error") {
+        setCamError(r.message ?? "");
+        setCamErrorHint(true);
+      }
+      return true;
+    } catch (err) {
+      // upload failure — nothing was transmitted; the sheet keeps the shots
+      setCamError(err instanceof Error ? err.message : String(err));
+      setCamErrorHint(true);
+      return false;
     } finally {
       setUploading(false);
     }
@@ -3426,6 +3519,15 @@ export default function ChatView({
               {uploading ? "…" : <IconPlus />}
             </button>
             <button
+              className="composer-btn composer-camera"
+              onClick={() => setCamOpen(true)}
+              disabled={uploading || recState === "busy"}
+              aria-label={t("camOpen")}
+              title={t("camOpen")}
+            >
+              <IconCamera />
+            </button>
+            <button
               className="composer-btn composer-mic"
               onPointerDown={(e) => {
                 e.preventDefault();
@@ -3786,6 +3888,21 @@ export default function ChatView({
           descriptor={buildAskDialog("rewind", t)}
           onConfirm={() => void handleRewindConfirm()}
           onClose={() => setRewindAsk(null)}
+        />
+      )}
+      {camOpen && (
+        <CameraSheet
+          onClose={() => {
+            setCamOpen(false);
+            setCamError("");
+          }}
+          onSend={sendFromCamera}
+          getCamAccess={getCamAccess}
+          busy={uploading || sending}
+          sendBlocked={!!liveText || !!liveThinking}
+          canSend={input.trim().length > 0 || images.length > 0}
+          error={camError}
+          errorHint={camErrorHint}
         />
       )}
     </div>

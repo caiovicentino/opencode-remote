@@ -266,6 +266,39 @@ export function IconSpeaker(p: IconProps) {
   );
 }
 
+/** P3-402: camera-ask entry in the composer ("Olho" sheet). */
+export function IconCamera(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
+      <circle cx="12" cy="13" r="3" />
+    </Icon>
+  );
+}
+
+/** P3-402: torch toggle inside the camera sheet (only rendered when the
+ * capture device advertises one). */
+export function IconZap(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+    </Icon>
+  );
+}
+
+/** P3-402: flip between the back and front camera inside the camera sheet. */
+export function IconSwitchCamera(p: IconProps) {
+  return (
+    <Icon {...p}>
+      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
+      <path d="M9 13.5 7.5 15 9 16.5" />
+      <path d="M15 11.5 16.5 13 15 14.5" />
+      <path d="M7.5 15h6a2 2 0 0 0 2-2" />
+      <path d="M16.5 13h-6a2 2 0 0 0-2 2" />
+    </Icon>
+  );
+}
+
 /** P3-086: inline agent/model dropdown chevron. */
 export function IconChevronDown(p: IconProps) {
   return (

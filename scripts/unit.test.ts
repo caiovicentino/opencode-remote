@@ -1561,6 +1561,68 @@ check("QrScanner asks the shell for the camera verdict", qrScannerSource.include
 check("QrScanner keeps the dictionary phrase when the bridge is absent", qrScannerSource.includes("scanErr_") && qrScannerSource.includes("camVerdict?.phrase"));
 check("camera copy exists in both languages", (i18nSource.match(/camOpenPanel:/g) ?? []).length === 2);
 
+// --- camera-ask sheet (P3-402) -------------------------------------------------
+// The "Olho" sheet shares the scanner's proven camera state machine and its
+// permission-verdict bridge; the battery pins the shape, not the pixels.
+
+import { torchSupported, torchConstraint } from "../apps/web/src/lib/camshot";
+
+check(
+  "camera-ask copy exists in both languages",
+  ["camOpen", "camTitle", "camCapture", "camQuestionPlaceholder", "camPrivacy", "camVisionHint"].every(
+    (k) => (i18nSource.match(new RegExp(`${k}:`, "g")) ?? []).length === 2,
+  ) && (i18nSource.match(/"camErr_no-signal":/g) ?? []).length === 2,
+);
+
+const cameraSheetSource = readFileSync(new URL("../apps/web/src/components/CameraSheet.tsx", import.meta.url), "utf8");
+check("CameraSheet asks the shell for the camera verdict", cameraSheetSource.includes("getCamAccess"));
+check("CameraSheet reuses the scanner's reason mapping", cameraSheetSource.includes("errorReason"));
+check("CameraSheet runs the dead-feed watchdog", cameraSheetSource.includes("feedVerdict"));
+check("CameraSheet keeps the iOS abort retry", /AbortError/.test(cameraSheetSource) && /400/.test(cameraSheetSource));
+check("CameraSheet sets playsinline/muted before srcObject", cameraSheetSource.indexOf("playsinline") < cameraSheetSource.indexOf("srcObject"));
+check("CameraSheet states the shutter-only privacy rule", cameraSheetSource.includes("camPrivacy"));
+check("CameraSheet shutter emits a JPEG file for the attach pipeline", cameraSheetSource.includes('type: "image/jpeg"'));
+check("CameraSheet maps the missing-torch state, not a silent button", cameraSheetSource.includes("torchSupported") && cameraSheetSource.includes("torchConstraint"));
+
+// P3-402 round 2: the privacy line (camPrivacy) is only true when capture
+// does no I/O — the shutter stages locally and the upload runs in the send
+// path. The battery pins that split by function body, so a future refactor
+// cannot quietly move the upload back to capture time.
+const cameraSendBody = chatViewSource.slice(
+  chatViewSource.indexOf("function sendFromCamera"),
+  chatViewSource.indexOf("async function micDown"),
+);
+const camCssSource = readFileSync(new URL("../apps/web/src/index.css", import.meta.url), "utf8");
+check("camera shots upload at send time, never at capture", cameraSendBody.includes("downscaleImage") && cameraSendBody.includes("uploadBytes") && cameraSendBody.includes("send("));
+check("camera sheet performs no network of its own", !cameraSheetSource.includes("fetch(") && !cameraSheetSource.includes("request(") && !cameraSheetSource.includes("XMLHttpRequest"));
+check("camera send re-checks the streaming guard before uploading", cameraSendBody.includes("liveText") && cameraSendBody.includes("liveThinking"));
+check("camera upload failure keeps the shots staged (returned to the sheet)", cameraSendBody.includes("return false"));
+check("camera error card is camera-path only, not the composer's global error", chatViewSource.includes("error={camError}"));
+check("camera sheet carries its own dead-feed copy, not the pairing sentence", cameraSheetSource.includes("camErr_no-signal"));
+check("camera flip renders only with a second capture device", cameraSheetSource.includes("switchReady"));
+check("camera sheet minimizes to a live thumbnail so the reply is readable", cameraSheetSource.includes("cam-sheet-min") && camCssSource.includes(".cam-sheet-min"));
+check(
+  "camera minimize/expand copy exists in both languages",
+  (i18nSource.match(/camMinimize:/g) ?? []).length === 2 && (i18nSource.match(/camExpand:/g) ?? []).length === 2,
+);
+
+// P3-402 round 4: the composer keeps its draft while the sheet is open. A
+// typed camera question must never wipe it (data loss), and sending with an
+// empty question consumes the draft itself — the sheet must SAY so, since the
+// fullscreen overlay hides the composer from the reader.
+const sendFnBody = chatViewSource.slice(
+  chatViewSource.indexOf("async function send("),
+  chatViewSource.indexOf("function sendFromCamera"),
+);
+check("camera question never wipes the composer draft (override skips the clear)", sendFnBody.includes("const usingComposer = override === undefined;") && sendFnBody.includes('if (usingComposer) updateInput("");'));
+check("composer chips ride the camera send only when the draft itself is sent", sendFnBody.includes("const attached = usingComposer ? [...images, ...staged] : staged;") && sendFnBody.includes("if (usingComposer) setImages([]);"));
+check("410 recovery appends restored attachments, never replaces preserved chips", sendFnBody.includes("setImages((prev) => [...prev, ...kept])"));
+check("camera sheet says when the composer draft will ride along", cameraSheetSource.includes("draftRides") && cameraSheetSource.includes("camDraftHint") && (i18nSource.match(/camDraftHint:/g) ?? []).length === 2);
+
+check("torchSupported fails closed on absent capabilities", torchSupported(null) === false && torchSupported(undefined) === false && torchSupported({}) === false);
+check("torchSupported admits a real torch capability", torchSupported({ torch: true }) && torchSupported({ torch: false, width: 1280 }));
+check("torchConstraint wraps the toggle in advanced", torchConstraint(true).advanced[0].torch === true && torchConstraint(false).advanced[0].torch === false);
+
 
 
 // --- screen access verdict (P3-404) --------------------------------------------
