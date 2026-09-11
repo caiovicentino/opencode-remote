@@ -135,9 +135,46 @@ export function infraStreakExhausted(n: number, limit = INFRA_STREAK_HARD_FAIL):
   return n >= limit;
 }
 
-/** Human reason recorded on the ## Blocked line / failure lesson. */
-export function infraStarvationReason(kind: InfraFailureKind, n: number): string {
-  return `infra "${kind}" failed ${n}x in a row on this task — treated as a hard failure instead of an endless free retry (read-only remote, dead gh, or unreachable API?)`;
+// ── P3-405: the blocked reason must say WHAT failed, not just that infra did ─
+
+/**
+ * Ceiling (in characters) for the sanitized last-detail that rides into the
+ * Blocked reason and the failure lesson — long enough to name the failing
+ * check and the error class, short enough for one readable BACKLOG.md line.
+ */
+export const INFRA_DETAIL_MAX = 240;
+/** Replacement marker for URLs and token-like runs. */
+export const INFRA_DETAIL_REDACTED = "[redacted]";
+
+/**
+ * Make a raw infra-failure detail safe for the public Blocked line / failure
+ * lesson. Pure and deterministic (no node:fs, no network): control characters
+ * (incl. newlines/tabs) become spaces, URLs and token-like runs (33+ non-space
+ * chars — SHAs, bearer tokens, base64 blobs) are replaced by
+ * INFRA_DETAIL_REDACTED, whitespace collapses, and the result is cut at the
+ * documented INFRA_DETAIL_MAX ceiling. Returns null when there is nothing
+ * usable (non-string, empty, or whitespace-only) — the caller then keeps the
+ * generic hypothesis phrase instead of inventing a cause.
+ */
+export function sanitizeInfraDetail(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const cleaned = raw
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/https?:\/\/\S+/gi, INFRA_DETAIL_REDACTED)
+    .replace(/\S{33,}/g, INFRA_DETAIL_REDACTED)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  return cleaned.length > INFRA_DETAIL_MAX ? `${cleaned.slice(0, INFRA_DETAIL_MAX - 1)}…` : cleaned;
+}
+
+/** Human reason recorded on the ## Blocked line / failure lesson. P3-405: the
+ * caller attaches the LAST failure detail (sanitized); the generic hypothesis
+ * phrase appears only when no useful detail exists. */
+export function infraStarvationReason(kind: InfraFailureKind, n: number, lastDetail?: string | null): string {
+  const detail = sanitizeInfraDetail(lastDetail);
+  const why = detail ? ` — last detail: ${detail}` : " (read-only remote, dead gh, or unreachable API?)";
+  return `infra "${kind}" failed ${n}x in a row on this task — treated as a hard failure instead of an endless free retry${why}`;
 }
 
 /**

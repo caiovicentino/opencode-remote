@@ -2351,7 +2351,13 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
       if (!mergeable || mergeable === "UNKNOWN") return { verdict: "pending", detail: "GitHub still computing mergeability" };
       return { verdict: "merge", detail: `ci-gate green (${green} check(s) reported)` };
     }
-    if (gateDone && !gateGreen) return { verdict: "skip", infra: "ci-red", detail: "CI red: ci-gate aggregate failed" };
+    if (gateDone && !gateGreen) {
+      // P3-405: name the red jobs the same rollup already carries (the
+      // name=CONCLUSION shape of the non-ci-gate path) — no new gh call, and
+      // the ci-gate itself is excluded (this sentence already names it).
+      const jobs = red.filter((r) => !r.startsWith("ci-gate="));
+      return { verdict: "skip", infra: "ci-red", detail: `CI red: ci-gate aggregate failed${jobs.length ? ` (${jobs.join(", ")})` : ""}` };
+    }
   }
   if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}` };
   // P3-346: CI is expected on this repo but GitHub reported no check yet —

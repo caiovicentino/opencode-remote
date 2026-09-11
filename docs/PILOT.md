@@ -392,7 +392,9 @@ sempre) virava loop infinito de builder rounds com zero attempts queimados.
 (`INFRA_STREAK_HARD_FAIL`) o resultado é **falha dura**: evento
 `infra-starvation`, amostra de febre, `taskAttempts` cravado no cap (a task
 sai da fila mesmo que o push do bloqueio falhe no mesmo remote morto) e
-`## Blocked` com o motivo (`infraStarvationReason`) + lição de falha.
+`## Blocked` com o motivo (`infraStarvationReason`, que desde o P3-405 carrega
+o último detalhe da falha saneado — ver "Blocked de infra nomeia a causa
+real") + lição de falha.
 
 O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
 merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**
@@ -1878,3 +1880,21 @@ sonda de drift só drena os slots quando o range `bootHead..HEAD` toca
 `%(refname:short)` sem aspas era erro de sintaxe no `/bin/sh`);
 `scripts/reconnect.test.ts` espera a saída real do daemon antigo antes de subir
 o novo (P3-345, `scripts/procexit.ts`).
+
+## Blocked de infra nomeia a causa real (P3-405)
+
+Três tasks (P3-401, P3-378, P3-371) foram para `## Blocked` com a mesma
+hipótese genérica "read-only remote, dead gh, or unreachable API?" — o motivo
+real (qual check do GitHub falhou) existia no `result.detail`, mas só chegava
+ao log, cortado em 200 caracteres. Agora `infraStarvationReason` recebe o
+último detalhe da falha como terceiro parâmetro, saneado por
+`sanitizeInfraDetail` (função pura em `audit.ts`, sem fs/rede: caracteres de
+controle viram espaço, URLs e trechos com 33+ caracteres sem espaço viram
+`[redacted]`, espaços colapsados, teto de `INFRA_DETAIL_MAX` = 240 chars) —
+a frase de hipótese genérica só aparece quando não há detalhe útil. O detalhe
+saneado viaja no motivo da linha `## Blocked` e no campo `findings` da failure
+lesson. No caminho do `ci-gate` vermelho, `mergeReadiness` acrescenta ao
+detalhe os checks vermelhos do mesmo rollup no formato `nome=CONCLUSAO`
+(excluindo o próprio ci-gate, sem chamada `gh` nova): "CI red: ci-gate
+aggregate failed (verify=FAILURE)". Distinguir vermelho pré-existente no main
+de vermelho só na branch fica para a fatia seguinte.
