@@ -30,9 +30,13 @@ interface Props {
   /** P2-319: camera-permission verdict (desktop shell only) — the scanner's
    * permission refusal becomes an actionable system-panel call to action. */
   getCamAccess?: () => Promise<CameraAccessVerdict | null>;
+  /** P3-413: the desktop shell has real offline panes (gate rail/Go menu),
+   * so the map below the ceremony drops the four padlocks and reads "before
+   * pairing". The phone passes nothing and keeps the fully locked map. */
+  offlinePanes?: boolean;
 }
 
-export default function PairingView({ phase, error, hint, autoRetryMs, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack }: Props) {
+export default function PairingView({ phase, error, hint, autoRetryMs, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack, offlinePanes }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -223,8 +227,10 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
         </div>
       )}
       {/* P3-364: the standing answer to "why pair at all?" — the panes the
-          gate hides, listed where the gate toast (P3-328) is only a flash. */}
-      <PaneMap />
+          gate hides, listed where the gate toast (P3-328) is only a flash.
+          P3-413: inside the desktop shell only the chat carries the lock —
+          the other four panes open pre-pairing from the gate rail. */}
+      <PaneMap offlinePanes={offlinePanes} />
       {onBack && (
         <button className="pair-back" onClick={onBack}>
           {t("pairBack")}

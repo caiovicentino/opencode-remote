@@ -493,15 +493,19 @@ private. That is the product: **local power, remote control, zero trust**.
   English in red — they resolve to the same calm load-failed sentence the
   phone shows, through the shared error humanizer
 - **Pairing gate with a map (P3-364)** — the unpaired screens (manual ceremony and the
-  degraded first boot) carry a persistent "After pairing" card listing the panes that stay
-  locked until connection — Conversations, Artifacts, Browser, Mission Control, Settings — each with a
-  one-line description and a lock glyph, so a first-time user sees what pairing unlocks
-  instead of a transient toast flashing the only explanation away. On the first-boot shell
-  skeleton (P3-365) the card retitles to "Before pairing" and keeps the lock glyph only on
-  Conversations — the rail beside it already opens the other panes, including Settings
+  degraded first boot) carry a persistent card listing the app's panes — Conversations,
+  Artifacts, Browser, Mission Control, Settings — each with a one-line description, so a
+  first-time user sees what the product offers instead of a transient toast flashing the
+  only explanation away. On the first-boot shell skeleton (P3-365) the card retitles to
+  "Before pairing" — the rail beside it already opens the other panes, including Settings
   offline (P3-389) — and since P3-422 it condenses to a single quiet line ("Conversations
   needs pairing; the rest already opens beside it") so the rail is never listed twice on
-  one screen; the manual ceremony keeps the full map. The shell's primary "+ New" CTA reads as disabled there — grayed
+  one screen. Since P3-413 the lock glyph belongs to the chat alone everywhere in the
+  desktop shell: the ceremony and classic centered screens retitle to "Before pairing" and
+  mark only Conversations as locked — the same shot had shown Mission Control open
+  unpaired, so four padlocks understated real offline capability and nudged users to pair
+  before it was needed. The phone (no shell, no offline panes) keeps the fully locked
+  "After pairing" map. The shell's primary "+ New" CTA reads as disabled there — grayed
   chrome plus the same hint tooltip the rail's Conversations slot carries — instead of
   silently swallowing the first click (P3-380)
 - **Offline panes stay calm at the gate (P3-327)** — behind the first-boot gate shell the

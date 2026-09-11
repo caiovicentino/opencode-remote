@@ -12370,7 +12370,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-364: both gate screens mount the map (manual ceremony + degraded first boot)",
-    pairingSrc.includes("<PaneMap />") && /<PaneMap\b[^/]*reachable/.test(degradedSrc),
+    pairingSrc.includes("<PaneMap offlinePanes={offlinePanes} />") && /<PaneMap\b[^/]*reachable/.test(degradedSrc),
   );
   // Copy resolves in every locale, carries no emoji (design bar), and the
   // descriptions are real sentences, not the raw key.
@@ -12403,10 +12403,12 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const degradedSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
   const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
   // The reachable variant exists and is opt-in, keyed by the skeleton hero.
+  // P3-413: the title follows offlinePanes (the desktop shell's offline
+  // panes) instead of the reachable flag alone.
   check(
     "P3-365: PaneMap reachable variant swaps the title and keeps locks conditional",
     mapSrc.includes("reachable = false") &&
-      mapSrc.includes('reachable ? "paneMapTitleBefore" : "paneMapTitle"') &&
+      mapSrc.includes('offlinePanes ? "paneMapTitleBefore" : "paneMapTitle"') &&
       mapSrc.includes("p.locked && <IconLock"),
   );
   // Only Conversations stays locked in the reachable variant (the chat rail
@@ -12414,7 +12416,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-365: reachable variant locks only Conversations",
     (mapSrc.match(/locked: true/g) ?? []).length === 1 &&
-      (mapSrc.match(/locked: !reachable/g) ?? []).length === 4,
+      (mapSrc.match(/locked: !offlinePanes/g) ?? []).length === 4,
   );
   // DegradedView forwards the flag; App passes it ONLY on the skeleton hero
   // (the classic centered screen keeps the fully locked map).
@@ -12424,7 +12426,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-365: skeleton hero passes panesReachable, classic screen does not",
-    degradedSrc.includes("<PaneMap reachable={panesReachable} />") &&
+    degradedSrc.includes("<PaneMap reachable={panesReachable} offlinePanes={desktopShell} />") &&
       heroBlock.includes("panesReachable") &&
       (appSrc.match(/panesReachable/g) ?? []).length === 1,
   );
@@ -12475,6 +12477,26 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       const s = translate(lang, "paneMapRailNote");
       return s !== "paneMapRailNote" && s.trim() !== "" && !/\p{Extended_Pictographic}/u.test(s);
     }),
+  );
+}
+
+// --- P3-413: the ceremony map cannot contradict the offline-capable panes ----
+// The explorer's journey shot caught the gate card locking panes the same
+// screenshot showed open unpaired (Mission Control/Artifacts/Browser in
+// split-pane). Inside the desktop shell only the chat genuinely needs
+// pairing: the map drops the four padlocks and retitles to "before pairing".
+// The phone — no shell, no offline panes — keeps the fully locked map.
+{
+  const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
+  const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  check(
+    "P3-413: desktop-shell ceremony unlocks the offline panes (lock only Conversations)",
+    pairingSrc.includes("offlinePanes?: boolean") &&
+      pairingSrc.includes("<PaneMap offlinePanes={offlinePanes} />") &&
+      (appSrc.match(/offlinePanes=\{!!desktopBridge\(\)\}/g) ?? []).length === 2 &&
+      (mapSrc.match(/locked: !offlinePanes/g) ?? []).length === 4 &&
+      (mapSrc.match(/locked: true/g) ?? []).length === 1,
   );
 }
 
