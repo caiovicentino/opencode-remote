@@ -1809,7 +1809,10 @@ sections — **Pair a phone with this machine** (host entry) first and
 **Connect to another machine** (scan/paste, this device as client) second
 (P3-334): on the desktop, pairing a phone is the primary story, so the host
 entry leads and the client ceremony reads as the secondary option (the phone's
-own screen is unchanged — it never renders the host entry). The host entry
+own screen is unchanged — it never renders the host entry). The submit inside
+the client ceremony is demoted to match (P3-415): it keeps its primary rank
+over the scan option but loses the accent fill — a quiet recessed chip with a
+firm border — so the host card stays the loudest action on the gate. The host entry
 (also in Settings) reads as a button: a trailing chevron and a hover that
 fills the row (P3-335) — it is the only host-pairing action, so it must be
 discoverable at a glance. It carries no inner border (P3-370): one container

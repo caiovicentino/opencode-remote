@@ -2004,6 +2004,24 @@ button.desk-new:disabled {
   cursor: default;
 }
 
+/* P3-415: the desktop ceremony's submit is demoted from the loud accent fill —
+   P3-334 made the host "pair a phone" card the primary story on this screen,
+   and a vibrant green button inside the secondary section out-shouted it. The
+   submit keeps the primary rank inside its section (firm border + recessed
+   chip, still one step above the ghost scan entry — P3-420's rule: never a
+   washed-out ghost) but loses the accent fill, so the host card is the
+   loudest action on the gate. Scoped to the paste-first class combo: the
+   phone's scan-first screen never renders it. */
+.pair-submit.primary {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  font-weight: var(--font-weight-medium);
+}
+.pair-submit.primary:hover {
+  background: var(--gray-hover);
+}
+
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet row inside
    its section card — from the unpaired screen or Settings. P3-335: it is the
    only host-pairing action, so it reads as a button — trailing chevron on the

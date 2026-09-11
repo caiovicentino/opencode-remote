@@ -12628,6 +12628,25 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-415: the gate's brightest CTA is the host card, not the client submit -
+// The explorer's journey shot caught the client ceremony's accent-fill submit
+// out-shouting the host entry P3-334 made the primary story. The submit keeps
+// the primary CLASS (paste-first rank over the ghost scan entry, asserted live
+// by the P3-366 desktop-flow beat) but loses the accent fill in CSS.
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const demoted = css.match(/\.pair-submit\.primary\s*\{[^}]*\}/);
+  check(
+    "P3-415: the desktop paste submit renders demoted (quiet chip, no accent fill)",
+    !!demoted &&
+      /var\(--bg\)/.test(demoted[0]) &&
+      /var\(--border-strong\)/.test(demoted[0]) &&
+      !/var\(--accent\)/.test(demoted[0]) &&
+      pairingSrc.includes('className={preferPaste ? "pair-submit primary" : "pair-submit"}'),
+  );
+}
+
 // --- P3-332: the local-mode pairing screen shows the live auto-connect -------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
