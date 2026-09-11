@@ -44,6 +44,8 @@ import HomeView from "./components/HomeView";
 import GateHint from "./components/GateHint";
 import { dropSurfaceFor, type DropSurface } from "./lib/dropgate";
 import { useDropAbsorb } from "./lib/dropwindow";
+import { quickEntryVerdict, quickSurfaceFor, QUICK_ENTRY_MIN_MS } from "./lib/quickentry";
+import { getCachedSession } from "./lib/sessionCache";
 import { setDraft, markSendOnOpen } from "./lib/drafts";
 import SettingsView, {
   type RelaySetting,
@@ -957,6 +959,10 @@ export default function App() {
         // first draft — set BEFORE the chat mounts so it opens pre-filled and
         // editable (never auto-sent).
         if (prefill) setDraft(created.id, prefill);
+        // P3-406: a conversation created in this run is EMPTY — the quick
+        // entry consults this to focus its composer instead of spawning
+        // another one (freshSessions never invalidates).
+        freshSessions.current.add(created.id);
         dispatchView({ type: "openChat", sessionId: created.id });
         setTick((t) => t + 1); // refresh the sidebar list
         return null;
@@ -1013,12 +1019,84 @@ export default function App() {
     !loadState() &&
     isDesktop;
 
+  // P3-406: the quick entry (global hotkey → "quickEntry" over ocr:menu-action).
+  // App is the action's ONLY owner (P3-398): the pure lib/quickentry verdict
+  // decides between focusing the open composer, creating a conversation,
+  // focusing the gate's offline queue or doing nothing beyond the reveal the
+  // shell already performed — never a focus steal on pairing or wizard. The
+  // live-state snapshot rides a ref refreshed every commit so the menu
+  // subscription (armed on the P1-046 deps) never reads stale surfaces, and
+  // the last-fire instant collapses an immediate double-fire into one action.
+  const quickLastFire = useRef(0);
+  const freshSessions = useRef<Set<string>>(new Set());
+  const [composerFocusTick, setComposerFocusTick] = useState(0);
+  const [queueFocusTick, setQueueFocusTick] = useState(0);
+  const quickSnapshotRef = useRef({ phase, showWelcome: false, addingMachine: false, pairManual: false, helpOpen: false, gateShellUp: false, sessionOpen: false, sessionEmpty: false });
+  useEffect(() => {
+    const cached = session ? getCachedSession(session) : null;
+    quickSnapshotRef.current = {
+      phase,
+      showWelcome,
+      addingMachine,
+      pairManual,
+      helpOpen,
+      gateShellUp,
+      sessionOpen: !!session,
+      // A conversation created in this run is empty by definition; a cached
+      // one is empty only when its bubbles say so; unknown ⇒ NOT empty (the
+      // create path is the safe, useful behavior for an unknown conversation).
+      sessionEmpty: session ? freshSessions.current.has(session) || (cached ? cached.bubbles.length === 0 : false) : false,
+    };
+  });
+  function runQuickEntry() {
+    const snap = quickSnapshotRef.current;
+    // helpOpen (the gate's Settings-help section) is not in the closed set —
+    // it folds into the conservative show-only "pairing" surface.
+    const surface = quickSurfaceFor({
+      phase: snap.phase,
+      welcome: snap.showWelcome,
+      addingMachine: snap.addingMachine,
+      pairManual: snap.pairManual || snap.helpOpen,
+      gateShellUp: snap.gateShellUp,
+      sessionOpen: snap.sessionOpen,
+      sessionEmpty: snap.sessionEmpty,
+    });
+    const now = Date.now();
+    const verdict = quickEntryVerdict(surface, now, quickLastFire.current, QUICK_ENTRY_MIN_MS);
+    if (verdict === "ignore") return;
+    quickLastFire.current = now;
+    if (verdict === "focus-queue") {
+      setQueueFocusTick((n) => n + 1);
+      return;
+    }
+    if (verdict === "focus-composer") {
+      setComposerFocusTick((n) => n + 1);
+      return;
+    }
+    if (verdict === "create") {
+      // The tick bumps FIRST so the freshly mounted ChatView focuses its
+      // composer on mount (the persistent textarea node keeps the focus
+      // across the sessionId change).
+      setComposerFocusTick((n) => n + 1);
+      void createSession();
+    }
+    // "show-only": the shell already revealed and focused the window — the
+    // ceremony on screen (pairing, wizard) keeps its focus untouched.
+  }
+
   // P1-046: keyboard navigation. Inside the Electron shell the Go menu pushes
   // ocr:menu-action (accelerators are OS-level there); in the plain browser a
   // keydown fallback covers the same keys. Registered only when the bridge is
   // absent so actions never fire twice inside Electron.
   useEffect(() => {
     function runMenuAction(id: string) {
+      // P3-406: the quick entry works on every surface — the verdict (not the
+      // phase) decides what it touches, so it reaches the gate's offline
+      // queue too.
+      if (id === "quickEntry") {
+        runQuickEntry();
+        return;
+      }
       if (phase !== "paired") {
         // P3-362: at the gate shell the offline panes have a target — the Go
         // menu matches the rail and opens them, instead of demanding pairing
@@ -1547,6 +1625,9 @@ export default function App() {
               // P3-392: "check again" re-runs the shell's pairing tick; the
               // next push carries a fresh opencode verdict.
               onRecheck={desktopBridge()?.recheckWebApp ? () => desktopBridge()?.recheckWebApp?.() : undefined}
+              // P3-406: the quick entry focuses the offline queue box at the
+              // gate (both degraded renders — full card and gate shell).
+              focusQueueTick={queueFocusTick}
             />
           ) : (
             <PairingView
@@ -1672,6 +1753,9 @@ export default function App() {
               // Mission Control pre-pairing — the hero's pane map must not
               // claim those panes are locked.
               panesReachable
+              // P3-406: the quick entry focuses the offline queue box at the
+              // gate shell (the surface the Go menu's go-quick-entry hits).
+              focusQueueTick={queueFocusTick}
             />
           </main>
           <section className="desk-pane" style={{ display: isPaneOpen(view) ? "block" : "none" }}>
@@ -1734,6 +1818,9 @@ export default function App() {
       // P3-396: the model hint resolves per surface — desktop copy + actions
       // inside the shell, the daemon sentence untouched on the phone.
       desktopShell={!!desktopBridge()}
+      // P3-406: the quick entry's focus request — App bumps the tick, the
+      // persistent composer textarea takes it (mount or update).
+      focusComposerTick={composerFocusTick}
     />
   );
   // (P3-365: settingsNode/filesNode/artifactsNode/browseNode/missionNode/

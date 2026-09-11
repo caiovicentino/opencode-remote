@@ -135,6 +135,11 @@ interface Props {
    * a real credential journey; the phone keeps the daemon sentence, no
    * actions (per-surface keys, lesson P3-394). */
   desktopShell?: boolean;
+  /** P3-406: the quick entry's focus request — App bumps the counter, the
+   * composer takes the focus. The textarea node is persistent across
+   * sessionId changes, so one bump serves both the focus-composer and the
+   * create-then-focus verdicts. */
+  focusComposerTick?: number;
   /** EVAL4-B: reconnect telemetry from the client (App passes them) — real
    * dial attempts since the drop, when the drop started (0 while paired) and
    * the "try now" action that skips the pending backoff. All optional: the
@@ -408,6 +413,7 @@ export default function ChatView({
   getMicAccess,
   getCamAccess,
   desktopShell,
+  focusComposerTick,
   connAttempts: connAttemptsProp,
   connSince = 0,
   onRetryNow,
@@ -566,6 +572,16 @@ export default function ChatView({
   const [modelMenu, setModelMenu] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // P3-406: quick-entry focus — fires on the bump, and on a mount that already
+  // carries a pending bump (create-then-focus lands here). `lastFocusTick`
+  // starts at 0 so a fresh mount with tick > 0 focuses, while plain
+  // conversation switches (same tick, no bump) never steal the caret.
+  const lastFocusTick = useRef(0);
+  useEffect(() => {
+    if (!focusComposerTick || focusComposerTick === lastFocusTick.current) return;
+    lastFocusTick.current = focusComposerTick;
+    taRef.current?.focus();
+  }, [focusComposerTick]);
   const [tapToggle, setTapToggle] = useState(false);
   const [responded, setResponded] = useState<Set<string>>(new Set());
   const [persistedAsks, setPersistedAsks] = useState<PermissionAsk[]>([]);

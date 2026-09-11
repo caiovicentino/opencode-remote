@@ -1673,6 +1673,16 @@ usa a combinação, o registro falha aberto: uma linha no desktop.log e a
 bandeja continua funcionando. Sessões de teste automatizadas nunca registram
 atalho global — um run de teste não pode roubar teclas do sistema inteiro.
 
+**Entrada rápida (P3-406)**: um segundo atalho global — `Command+Shift+N` no
+macOS, `Ctrl+Shift+N` no Windows/Linux — traz a janela de volta E já deixa o
+cursor no compositor: na home ou numa conversa com mensagens ele cria uma
+conversa nova pronta para digitar, numa conversa vazia foca o compositor dela
+e no cartão degradado de primeiro boot foca a fila offline da primeira
+mensagem (nunca roubando o foco da cerimônia de pareamento nem do wizard de
+boas-vindas). Troque a combinação com `OCR_DESKTOP_QUICK_HOTKEY` (mesmas
+regras do `OCR_DESKTOP_HOTKEY`), o menu Ir mostra o item **Entrada rápida** e
+um segundo toque imediato colapsa numa ação só.
+
 **Sair pede confirmação quando o celular perderia o acesso (P2-221)**: o item
 **Quit** da bandeja e o **Encerrar OpenCode Remote** do menu do app (ou
 `Cmd+Q`) fazem um quit de verdade com limpeza completa do daemon — e como o

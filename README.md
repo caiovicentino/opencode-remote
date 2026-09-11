@@ -2179,6 +2179,16 @@ one line in the desktop.log and the tray keeps working. Automated test
 sessions never register a global shortcut — a test run must not steal
 system-wide keys.
 
+**Quick entry (P3-406)**: a second system-wide shortcut — `Command+Shift+N` on
+macOS, `Ctrl+Shift+N` on Windows/Linux — reveals the window AND puts the caret
+in the composer: on the home or a conversation with messages it creates a new
+conversation ready to type into, on an empty conversation it focuses its
+composer, and on the degraded first-boot card it focuses the offline
+first-message queue (never stealing focus from the pairing ceremony or the
+welcome wizard). Override it with `OCR_DESKTOP_QUICK_HOTKEY` (same rules as
+`OCR_DESKTOP_HOTKEY`), the Go menu shows it as **Quick entry**, and an
+immediate double-press collapses into one action.
+
 **Quitting asks when the phone would lose access (P2-221)**: **Quit** in the
 tray menu and **Encerrar OpenCode Remote** in the app menu (or `Cmd+Q`) are a
 real quit with full daemon cleanup — and since the app now opens at login

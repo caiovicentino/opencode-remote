@@ -950,6 +950,7 @@ try {
   if (bridge.ok) check("P1-046: onMenuAction is a function", /function/.test(bridge.stdout));
   const menuIds: [string, keyof ReturnType<typeof shellLabels>["menu"]][] = [
     ["go-new-chat", "newChat"],
+    ["go-quick-entry", "quickEntry"],
     ["go-palette", "commandPalette"],
     ["go-pane-chat", "paneConversations"],
     ["go-pane-artifacts", "paneArtifacts"],
@@ -1406,6 +1407,66 @@ try {
     }
   } finally {
     if (mismatchBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: mismatchEnv });
+  }
+
+  // --- P3-406: quick entry at the gate (dedicated hermetic boot) ---------------
+  // The Go item (the same surface the system-wide hotkey drives) broadcasts
+  // quickEntry over ocr:menu-action; the renderer's pure verdict answers
+  // "focus-queue" on this surface — the offline first-message queue box takes
+  // the focus, the calm card stays, and no pair-first toast appears (the
+  // action HAS a target here). A dedicated FORCE_DOWN instance keeps the gate
+  // deterministic: the first boot's local auto-pair would otherwise race the
+  // probes and flip the app to the paired chat mid-beat.
+  const gateEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-quickgate`,
+    OCR_DAEMON_FORCE_DOWN: "1",
+  };
+  let gateBooted = false;
+  try {
+    const gateOpen = run("P3-406: open (forced-down gate instance)", ["open"], 45_000, gateEnv);
+    gateBooted = gateOpen.ok;
+    if (gateOpen.ok) {
+      run("P3-406: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, gateEnv);
+      const gateAtGate = run("P3-406: the gate card is up with the queue composer", ["ipc", "!!document.querySelector('.degraded') + '|' + !!document.querySelector('.degraded-queue-input')"], 15_000, gateEnv);
+      check("P3-406: deterministic gate precondition", /^true\|true$/.test(gateAtGate.stdout.replace(/"/g, "").trim()), gateAtGate.stdout);
+      run("P3-406: go-quick-entry click at the gate", ["menu-click", "go-quick-entry"], 15_000, gateEnv);
+      const quickGateFocus = run(
+        "P3-406: offline queue box focused after the fire",
+        ["ipc", "(document.activeElement?.className ?? '') + '|' + !!document.querySelector('.degraded-queue-input')"],
+        15_000,
+        gateEnv,
+      );
+      check(
+        "P3-406: the gate's offline queue composer is the focused element",
+        quickGateFocus.ok && /degraded-queue-input/.test(quickGateFocus.stdout),
+        quickGateFocus.stdout,
+      );
+      // The fire must not disturb the gate itself: same calm card, no toast,
+      // no pairing jump (the verdict for this surface is exactly "focus-queue").
+      const quickGateCalm = run(
+        "P3-406: the gate stays on the degraded card after the fire",
+        ["ipc", "!!document.querySelector('.degraded') + '|' + !!document.querySelector('.pair-gate-hint')"],
+        15_000,
+        gateEnv,
+      );
+      check(
+        "P3-406: no gate-hint toast for quickEntry (it has a real target) and no ceremony jump",
+        quickGateCalm.ok && /^true\|false$/.test(quickGateCalm.stdout.replace(/"/g, "").trim()),
+        quickGateCalm.stdout,
+      );
+      // The paired/wizard surfaces keep the show-only verdict — pinned by the
+      // pure-verdict table in scripts/unit.test.ts; the flow here proves the
+      // one surface only a live shell can prove (the queue focus).
+      const gateShot1440 = join(shotsDir, "P3-406-gate-queue-focus-1440.png");
+      const g1 = run("P3-406: 1440x900 gate shot", ["shot", gateShot1440, "1440", "900"], 15_000, gateEnv);
+      if (g1.ok) check("P3-406: gate 1440x900 shot is a real PNG", pngSize(gateShot1440).join("x") === "1440x900");
+      const gateShot390 = join(shotsDir, "P3-406-gate-queue-focus-390.png");
+      const g2 = run("P3-406: 390 gate shot", ["shot", gateShot390, "390", "844"], 15_000, gateEnv);
+      if (g2.ok) check("P3-406: gate 390 shot is a real PNG", pngSize(gateShot390)[0] === 390);
+    }
+  } finally {
+    if (gateBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: gateEnv });
   }
 
   // --- P2-117: Scan-QR screen — the four camera states -------------------------
@@ -2618,8 +2679,12 @@ try {
           "    { id: 'ses-recency-yesterday', title: 'Rascunho de ontem', time: { updated: yesterdayNoon } },",
           "    { id: 'ses-recency-earlier', title: 'Setup antigo', time: { updated: nowMs - 10 * 24 * 3600 * 1000 } },",
           "  ];",
+          // P3-406: creating a conversation must succeed against the fake —
+          // one id per POST, numbered by the hits already recorded (the
+          // current POST is pushed at the top, so the first fire is 1).
+          "  if (u.pathname === '/session' && req.method === 'POST') return json({ id: 'ses-quick-' + hits.filter((h) => h.method === 'POST' && h.path === '/session').length });",
           "  if (u.pathname === '/session') return json([...recency, { id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }, { id: 'ses-autofail', title: 'Auto fail' }]);",
-          "  if (u.pathname === '/session/ses-reentry-check' || u.pathname === '/session/ses-draft-a' || u.pathname === '/session/ses-artifact-auto' || u.pathname === '/session/ses-autofail' || u.pathname === '/session/ses-thinking') return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
+          "  if (/^\\/session\\/(ses-reentry-check|ses-draft-a|ses-artifact-auto|ses-autofail|ses-thinking|ses-quick-\\d+)$/.test(u.pathname)) return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
           "  if (u.pathname === '/session/ses-autofail/permissions/perm-fail') { res.writeHead(500); res.end('auto-approve always rejected'); return; }",
           "  if (/^\\/session\\/ses-thinking\\/message$/.test(u.pathname)) { const t = ROWS.slice(); t[5] = { info: t[5].info, parts: [{ type: 'reasoning', text: 'Raciocinio persistido no historico.' }, ...(t[5].parts ?? [])] }; return json(t); }",
           "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
@@ -3707,6 +3772,62 @@ try {
             run("P1-093: evidence shot", ["shot", join(shotsDir, "P1-093-autofail-1440.png"), "1440", "900"], 15_000, localEnv2);
             run("P1-093: 390 evidence shot", ["shot", join(shotsDir, "P1-093-autofail-390.png"), "390", "844"], 15_000, localEnv2);
           }
+        // --- P3-406: quick entry creates ONE conversation, composer focused ----
+        // Paired boot with the live fake backend: the Go item fires the real
+        // ocr:menu-action broadcast. The first fire creates exactly one
+        // conversation with the composer focused; a second fire — whether it
+        // collapses into the minimum interval or lands on the now-empty chat
+        // (verdict "focus-composer") — must never spawn another conversation.
+        phase("P3-406: quick entry — one key, one conversation, composer focused");
+        run("P3-406: deep-link to the six-row session", ["ipc", `location.hash = '#/session/${REPLAY}'`], 15_000, localEnv2);
+        await waitProbe(
+          "P3-406: history settled on the deep-linked session",
+          "document.querySelectorAll('.messages .msg').length",
+          (v) => v.trim() === String(ROW_COUNT),
+          localEnv2,
+        );
+        const quickPosts = async (): Promise<number> =>
+          await fetch(`${fakeUrl}/__hits`)
+            .then((r) => r.json() as Promise<{ method: string; path: string }[]>)
+            .then((hs) => hs.filter((h) => h.method === "POST" && h.path === "/session").length)
+            .catch(() => -1);
+        const quickBefore = await quickPosts();
+        run("P3-406: first quick-entry fire", ["menu-click", "go-quick-entry"], 15_000, localEnv2);
+        // The composer focus itself is the proof the verdict ran (the chat
+        // never autofocuses on mount or deep-link); the created conversation
+        // is proven by the POST count below.
+        await waitProbe(
+          "P3-406: composer focused after the fire",
+          "document.activeElement?.className ?? ''",
+          (v) => v.includes("composer-text"),
+          localEnv2,
+        );
+        const quickAfterFirst = await quickPosts();
+        check(
+          "P3-406: the first fire created exactly one conversation",
+          quickAfterFirst === quickBefore + 1,
+          `${quickBefore} -> ${quickAfterFirst}`,
+        );
+        run("P3-406: second quick-entry fire (double-fire window)", ["menu-click", "go-quick-entry"], 15_000, localEnv2);
+        const quickAfterSecond = await quickPosts();
+        check(
+          "P3-406: the second fire created no conversation (interval collapse or empty-chat focus)",
+          quickAfterSecond === quickAfterFirst,
+          `${quickAfterFirst} -> ${quickAfterSecond}`,
+        );
+        const quickStill = run(
+          "P3-406: the composer is still the focused element",
+          ["ipc", "document.activeElement?.className ?? ''"],
+          15_000,
+          localEnv2,
+        );
+        check(
+          "P3-406: quick entry leaves the user typing in the new conversation",
+          quickStill.ok && /composer-text/.test(quickStill.stdout),
+          quickStill.stdout,
+        );
+        run("P3-406: 1440x900 evidence shot", ["shot", join(shotsDir, "P3-406-quick-entry-1440.png"), "1440", "900"], 15_000, localEnv2);
+        run("P3-406: 390 evidence shot", ["shot", join(shotsDir, "P3-406-quick-entry-390.png"), "390", "844"], 15_000, localEnv2);
         } finally {
           if (localBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: localEnv2 });
           localBooted = false;

@@ -54,6 +54,10 @@ interface Props {
   /** P3-392: re-runs the shell's pairing tick for the missing-binary
    * "check again" action (app:recheckWebApp). Absent in the plain browser. */
   onRecheck?: () => void;
+  /** P3-406: the quick entry's focus request — App bumps the counter, the
+   * offline first-message queue box takes the focus (never a focus steal on
+   * the pairing ceremony: the gate is the only surface that answers). */
+  focusQueueTick?: number;
 }
 
 /** P3-372: the auto-retry line with live feedback — seconds tick since the
@@ -140,7 +144,7 @@ function EscalationBlock({ totalSec, onOpenHelp, reconnect, desktopShell }: { to
  * "daemon fell" for a daemon the machine never met), a visible auto-retry
  * line with the attempt counter, a reconnect action with real feedback, the
  * purely-local data that keeps working, and manual pairing one click away. */
-export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable, desktopShell, onRecheck }: Props) {
+export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable, desktopShell, onRecheck, focusQueueTick }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
@@ -152,6 +156,14 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   const [queueText, setQueueText] = useState(() => readGateQueue(localStorage));
   const [queueSaved, setQueueSaved] = useState(() => !!readGateQueue(localStorage));
   const queueRef = useRef<HTMLTextAreaElement>(null);
+  // P3-406: quick-entry focus — fires on the bump, and on a mount that
+  // already carries a pending bump (same contract as ChatView's composer).
+  const lastQueueFocusTick = useRef(0);
+  useEffect(() => {
+    if (!focusQueueTick || focusQueueTick === lastQueueFocusTick.current) return;
+    lastQueueFocusTick.current = focusQueueTick;
+    queueRef.current?.focus();
+  }, [focusQueueTick]);
   // Same auto-grow contract as the home composer: grows with content up to
   // the shared 6-line cap, then scrolls internally.
   useEffect(() => {
