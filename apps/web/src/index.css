@@ -2709,12 +2709,25 @@ button.desk-new:disabled {
 }
 /* ── P2-106: benchmark pairing journey ───────────────────────────────────────
    One narrow, vertically centered column of focus. Scoped to .pair-screen so
-   the degraded journey (same wrapper, wider status card) keeps its layout. */
+   the degraded journey (same wrapper, wider status card) keeps its layout.
+   P3-423: the gate outgrows 900px on the desktop (intro + host section +
+   paste form + 5-row pane map) and plain centered flex overflowed BOTH
+   edges — the wordmark rendered sheared half-clipped above the scroll
+   origin (explorer shot journey-pairing-20260911). Same overflow-safe
+   centering P3-387 gave .screen.degraded: when the stack fits it stays
+   centered; when it overflows, `safe` drops the alignment to the start
+   edge and the screen scrolls internally. The screen's top inset moved
+   onto the sticky header below, so the scrollport starts at the header's
+   own padding and the pinned brand block reads flush with the column. */
 .pair-wrap .pair-screen {
   max-width: 420px;
-  justify-content: center;
+  overflow-y: auto;
+  justify-content: safe center;
+  padding-top: 0;
   padding-left: 20px;
   padding-right: 20px;
+  /* focus scrolls (empty-submit → .pair-code) must clear the stuck header */
+  scroll-padding-top: calc(100px + env(safe-area-inset-top));
 }
 /* P3-339: one brand-header treatment across the unpaired journey — the
    welcome wizard centers its h1 (.welcome header, same axis as .home-head)
@@ -2726,6 +2739,17 @@ button.desk-new:disabled {
 .pair-wrap .pair-screen header {
   display: block;
   text-align: center;
+  /* P3-423: the wordmark rides along — sticky at the scrollport top with an
+     opaque page-color background, so the gate's cards slide beneath it and
+     the brand never leaves the screen mid-ceremony. It carries the screen's
+     top inset (moved off .pair-screen above) so the natural layout is
+     unchanged; the extra beat of air below the wordmark is the slide-under
+     clearance when the gate scrolls. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  padding: calc(16px + env(safe-area-inset-top)) 0 var(--space-2);
 }
 /* The two pairing directions (client ceremony / host entry) as titled cards. */
 .pair-section {

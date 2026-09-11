@@ -1638,7 +1638,15 @@ never as loose body-size text. That header can never shear against the viewport 
 (P3-387): when the card stack grows taller than the column — a pane open, a
 short window — the degraded screen becomes a real scroll container with
 overflow-safe centering, so the stack top-anchors with a scrollbar instead of
-clipping the glyph and wordmark at the top edge.
+clipping the glyph and wordmark at the top edge. The pairing gate itself
+(P3-423) got the same treatment and then some: with intro, host section, paste
+form and the 5-row pane map on screen, the manual ceremony outgrows a 900px
+window and the wordmark used to shear half-clipped at the viewport top exactly
+on the screen that establishes the brand. The gate column now scrolls
+internally with the same overflow-safe centering, and its brand header is
+sticky — an opaque page-color strip that keeps glyph and wordmark pinned at
+the top while the cards slide beneath, so the brand never leaves the screen
+mid-ceremony and the paste box focus-scrolls clear of the pinned header.
 
 **Live auto-retry line (P3-372)**: that calm card's "Retrying automatically…"
 line is no longer frozen static copy. It now carries the feedback the
