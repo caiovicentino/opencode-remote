@@ -63,3 +63,36 @@ export function deepLinkFromArgv(argv: unknown): string | null {
   }
   return null;
 }
+
+/**
+ * P2-329 — the cold-start plan: an invite link clicked with the app CLOSED
+ * (Windows) makes the OS launch the shell itself with the URI in argv, so
+ * main.ts consults this once at boot and hands the result to handleDeepLink.
+ * The rules are evaluated in EXACTLY this order, first match wins:
+ *   1. a harness session (OCR_DESKTOP_SESSION) never consumes a link — the
+ *      hermetic e2e shell must not pair off the operator's machine argv;
+ *   2. a non-packaged (dev) build never claims the OS protocol handler, so a
+ *      dev argv carrying a URI is noise, not an invite;
+ *   3. any platform other than win32 returns null — macOS delivers the link
+ *      through open-url, which main.ts already wires to handleDeepLink;
+ *   4. only then is deepLinkFromArgv consulted on the raw argv.
+ * Pure and electron-free like the rest of this module — scripts/unit.test.ts
+ * and scripts/deeplink-coldstart.test.ts pin every branch plus the wiring.
+ */
+export interface ColdStartDeepLinkInput {
+  /** True under the hermetic e2e harness (OCR_DESKTOP_SESSION in main.ts). */
+  harnessSession: boolean;
+  /** Packaged (installer) build indicator — app.isPackaged in main.ts. */
+  packaged: boolean;
+  /** The running shell's process.platform. */
+  platform: string;
+  /** The launching process argv (process.argv on a Windows cold start). */
+  argv: unknown;
+}
+
+export function coldStartDeepLink(input: ColdStartDeepLinkInput): string | null {
+  if (input.harnessSession) return null;
+  if (!input.packaged) return null;
+  if (input.platform !== "win32") return null;
+  return deepLinkFromArgv(input.argv);
+}

@@ -52,6 +52,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "datawipe.test.ts",
   "degraded-retry.test.ts",
   "degraded-theme.test.ts",
+  "deeplink-coldstart.test.ts",
   "desktop-log.test.ts",
   "diagredact.test.ts",
   "drawer.test.ts",

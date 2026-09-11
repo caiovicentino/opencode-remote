@@ -355,6 +355,10 @@ Pairing has two steps, and the desktop pairing screen labels both:
    always there (unchanged; `apps/daemon/src/relayurl.ts` stays the final
    authority on the relay the daemon dials).
 
+On both macOS and Windows the `opencode-remote://` invite link also works
+with the app closed — clicking it launches the app and lands straight on the
+pairing screen.
+
 With the loopback local relay there is no address a phone could reach, so
 step one shows a calm explanation pointing at Settings instead of a QR — an
 address that cannot work is worse than no address. The same discipline holds

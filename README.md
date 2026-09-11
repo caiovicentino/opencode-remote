@@ -2110,7 +2110,9 @@ shown in Settings → About ("Connection: direct (local) / via relay").
 **Pairing deep links**: the packaged desktop app registers the
 `opencode-remote://` protocol with the OS (macOS/Windows). An install or
 invite page can open the app with an `opencode-remote://pair?v=2&…` link and
-it pairs itself through the same path as pasting a code — no QR scan. Links
+it pairs itself through the same path as pasting a code — no QR scan. The
+invite link works with the app closed on both systems: clicking it launches
+the app and lands on the pairing screen. Links
 are validated in the shell (pair action, protocol version 2, query capped at
 4 KB, safe character set) and everything else is ignored. The registration
 only happens in the packaged app; a dev run never claims the OS handler.

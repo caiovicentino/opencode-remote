@@ -104,7 +104,7 @@ import { REPLY_NOTIFY_TITLE, replyNotifyDecision } from "./replynotify";
 import { ASK_NOTIFY_TITLE, askNotifyDecision, sanitizeAskCount } from "./asknotify";
 import { awakePlan, sanitizeBusyCount } from "./awakeplan";
 import { keepAwakeFile, readKeepAwake, writeKeepAwake } from "./awakestore";
-import { deepLinkFromArgv, parseDeepLink } from "./deeplink";
+import { coldStartDeepLink, deepLinkFromArgv, parseDeepLink } from "./deeplink";
 import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
@@ -558,6 +558,11 @@ let updateGuardVerdict: string | null = null;
 let updateGuardReason: string | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
+// P2-329: cache of the last validated deep link, pulled late by the renderer
+// (app:deepLink) and pushed to live windows. Declared BEFORE the single-instance
+// lock branch: the Windows cold-start consult below runs synchronously during
+// module evaluation, so the declaration must already be initialized.
+let lastDeepLink: string | null = null;
 if (!gotLock) {
   // P2-069: a second real instance must never paint its own (white) window on
   // top of the running one. Quit quietly — the winner receives second-instance
@@ -602,6 +607,21 @@ if (!gotLock) {
     // the single-instance winner receives it here.
     handleDeepLink(deepLinkFromArgv(argv));
   });
+  // P2-329: Windows cold start — an invite link clicked with the app closed
+  // launches THIS process with the URI in argv. The plan is consulted exactly
+  // once, here in the single-instance winner (harness sessions, dev builds and
+  // non-win32 platforms never consume it; macOS delivers via open-url above),
+  // and the result rides the existing handleDeepLink cache for the renderer's
+  // late app:deepLink pull — no new IPC, no timer, and the URI (pairing key
+  // material) is never logged.
+  handleDeepLink(
+    coldStartDeepLink({
+      harnessSession: HERMETIC_E2E,
+      packaged: app.isPackaged,
+      platform: process.platform,
+      argv: process.argv,
+    }),
+  );
   // P2-244: the GPU-crash plan is consulted BEFORE the app is ready — the
   // only point where Electron still honors disableHardwareAcceleration. The
   // harness-session rule inside accelerationPlan keeps every test session on
@@ -2260,9 +2280,8 @@ async function onReady(): Promise<void> {
 // (src/deeplink.ts): only a well-formed pair URI passes. A valid link is
 // cached for the renderer's late pull (app:deepLink) and pushed to any live
 // window; the renderer routes it through the same parsePairingUri path as
-// paste-pairing — no new crypto.
-
-let lastDeepLink: string | null = null;
+// paste-pairing — no new crypto. `lastDeepLink` itself is declared next to
+// the single-instance lock, above the P2-329 cold-start consult.
 
 function handleDeepLink(raw: unknown): void {
   const uri = parseDeepLink(raw);

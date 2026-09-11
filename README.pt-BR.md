@@ -1600,7 +1600,9 @@ anti-squatter seguido de 200 autenticado — o app abre direto no chat: sem tela
 de pareamento, sem QR, nada para escanear (P1-070). A cerimônia de QR só
 existe para clientes remotos: aparece quando nenhum daemon local é alcançável
 ou sob demanda em **Config → Parear um celular (dispositivo remoto)** ou via
-deep link `opencode-remote://`. Quando um celular ainda precisa parear na
+deep link `opencode-remote://`. O link de convite funciona com o app fechado
+nos dois sistemas (macOS e Windows): clicar nele abre o app e leva direto à
+tela de pareamento. Quando um celular ainda precisa parear na
 primeira execução, o QR abre com um **splash de boas-vindas** (pt/en): o valor
 do produto logo de cara e um onboarding de 3 passos prometendo o primeiro
 valor real em menos de 1 minuto. A tela manual de QR/colar continua disponível
