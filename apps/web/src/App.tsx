@@ -1031,7 +1031,7 @@ export default function App() {
   const freshSessions = useRef<Set<string>>(new Set());
   const [composerFocusTick, setComposerFocusTick] = useState(0);
   const [queueFocusTick, setQueueFocusTick] = useState(0);
-  const quickSnapshotRef = useRef({ phase, showWelcome: false, addingMachine: false, pairManual: false, helpOpen: false, gateShellUp: false, sessionOpen: false, sessionEmpty: false });
+  const quickSnapshotRef = useRef({ phase, showWelcome: false, addingMachine: false, pairManual: false, helpOpen: false, gateShellUp: false, degradedCard: false, sessionOpen: false, sessionEmpty: false });
   useEffect(() => {
     const cached = session ? getCachedSession(session) : null;
     quickSnapshotRef.current = {
@@ -1041,6 +1041,12 @@ export default function App() {
       pairManual,
       helpOpen,
       gateShellUp,
+      // P3-406 r2: the full-card degraded journey (narrow viewport or a
+      // returning user with stored pairing, daemon down) renders the SAME
+      // offline queue composer — the quick entry reaches it too. Same
+      // verdict the render below uses for `degraded`, minus the width test
+      // gateShellUp already carries.
+      degradedCard: !!desktopBridge() && !pairManual && pairingState?.mode !== "remote" && !loadState(),
       sessionOpen: !!session,
       // A conversation created in this run is empty by definition; a cached
       // one is empty only when its bubbles say so; unknown ⇒ NOT empty (the
@@ -1058,6 +1064,7 @@ export default function App() {
       addingMachine: snap.addingMachine,
       pairManual: snap.pairManual || snap.helpOpen,
       gateShellUp: snap.gateShellUp,
+      degradedCard: snap.degradedCard,
       sessionOpen: snap.sessionOpen,
       sessionEmpty: snap.sessionEmpty,
     });
@@ -1625,8 +1632,9 @@ export default function App() {
               // P3-392: "check again" re-runs the shell's pairing tick; the
               // next push carries a fresh opencode verdict.
               onRecheck={desktopBridge()?.recheckWebApp ? () => desktopBridge()?.recheckWebApp?.() : undefined}
-              // P3-406: the quick entry focuses the offline queue box at the
-              // gate (both degraded renders — full card and gate shell).
+              // P3-406 r2: the quick entry focuses the offline queue box on
+              // this full-card degraded journey too — quickSurfaceFor maps
+              // `degradedCard` to the same "gate" surface as the gate shell.
               focusQueueTick={queueFocusTick}
             />
           ) : (

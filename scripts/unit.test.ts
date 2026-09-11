@@ -25295,12 +25295,21 @@ check(
   // -- real-source assertions over the REAL main.ts ---------------------------
 
   const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
-  // registration goes through the plan, once, after the app is ready
+  // registration goes through the plan, once, after the app is ready. P3-406
+  // r2: the slots are independent — each registers on its OWN verdict, never
+  // gated behind the other slot's early return.
   check(
     "P2-229: the real main.ts resolves hotkeyPlan and registers through the plan verdict",
     mainSrc.includes("hotkeyPlan({") &&
       mainSrc.includes("globalShortcut.register(hotkey.accelerator, showMainWindow)") &&
-      /if \(!hotkey\?\.register \|\| !hotkey\.accelerator\) return;/.test(mainSrc),
+      /if \(hotkey\?\.register && hotkey\.accelerator\) \{/.test(mainSrc),
+  );
+  check(
+    "P3-406 r2: the quick accelerator registers independently of the reopen verdict",
+    mainSrc.includes("if (hotkey?.quickAccelerator) {") &&
+      mainSrc.includes("globalShortcut.register(hotkey.quickAccelerator") &&
+      mainSrc.indexOf("if (hotkey?.register && hotkey.accelerator) {") < mainSrc.indexOf("if (hotkey?.quickAccelerator) {") &&
+      !mainSrc.includes("if (!hotkey?.register || !hotkey.accelerator) return;"),
   );
   // the harness-session rule is the first input consulted: HERMETIC_E2E leads
   // the plan call, and the pure plan checks it before env/accelerator shapes
@@ -25384,6 +25393,18 @@ check(
   check(
     "P3-406: invalid quick override → nothing registers in its place, reopen untouched",
     invalid.quickAccelerator === null && invalid.quickReason.length > 0 && invalid.register && !!invalid.accelerator,
+  );
+
+  // rule 3 mirror (r2 review, the BLOCKING coupling): an invalid REOPEN
+  // override must leave the quick slot registered — and main.ts registers
+  // each slot on its own verdict, so the mirror holds at runtime too.
+  const invalidReopen = plan({ userAccelerator: "Ctrl++" });
+  check(
+    "P3-406 r2: invalid reopen override → the approved quick accelerator survives",
+    !invalidReopen.register &&
+      invalidReopen.accelerator === null &&
+      invalidReopen.quickAccelerator === defaultQuickHotkeyFor("darwin") &&
+      invalidReopen.quickReason.length > 0,
   );
 
   // rule 4 — a valid owner quick override wins over the platform default
@@ -25511,6 +25532,7 @@ check(
       addingMachine: false,
       pairManual: false,
       gateShellUp: false,
+      degradedCard: false,
       sessionOpen: false,
       sessionEmpty: false,
       ...over,
@@ -25522,6 +25544,13 @@ check(
       S({ phase: "unpaired", pairManual: true }) === "pairing" &&
       S({ phase: "unpaired", gateShellUp: true }) === "gate" &&
       S({ phase: "unpaired" }) === "pairing",
+  );
+  check(
+    "P3-406 r2: the full-card degraded journey (narrow viewport / stored pairing, daemon down) is the gate surface too",
+    S({ phase: "unpaired", degradedCard: true }) === "gate" &&
+      S({ phase: "unpaired", degradedCard: true, gateShellUp: true }) === "gate" &&
+      S({ phase: "unpaired", degradedCard: true, pairManual: true }) === "pairing" &&
+      S({ phase: "unpaired", degradedCard: false, gateShellUp: false }) === "pairing",
   );
   check(
     "P3-406: surface mapping — paired emptiness decides, and no open conversation is the create surface",
@@ -25544,6 +25573,10 @@ check(
   check(
     "P3-406: App owns the verdict and never wires it outside the menu action",
     webSrc.includes("quickEntryVerdict(") && webSrc.includes("quickSurfaceFor("),
+  );
+  check(
+    "P3-406 r2: the boot log carries the quick slot's own decision line",
+    /log\(`\[desktop\] quick-entry hotkey: \$\{hotkey\.quickAccelerator \?\? "off"\} \(\$\{hotkey\.quickReason\}\)`\)/.test(mainSrc),
   );
   check(
     "P3-406: the pure quickentry module imports nothing (no React, no DOM, no I/O)",

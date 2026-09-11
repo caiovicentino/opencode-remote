@@ -84,22 +84,29 @@ export function quickEntryVerdict(
 
 /** Everything App knows at fire time, reduced to the closed surface set.
  * Precedence mirrors the render order: the wizard covers every phase, the
- * machine picker covers even a paired phase, and only then does the gate
- * shell (or the plain pairing wall) decide. Paired with no open conversation
- * the quick entry has nothing to focus — that is the "create" surface. */
+ * machine picker covers even a paired phase, and only then does the degraded
+ * gate (either render — the gate-shell skeleton or the full calm card, both
+ * carrying the offline queue composer) or the plain pairing wall decide.
+ * Paired with no open conversation the quick entry has nothing to focus —
+ * that is the "create" surface. */
 export function quickSurfaceFor(input: {
   phase: string;
   welcome: boolean;
   addingMachine: boolean;
   pairManual: boolean;
+  /** The first-boot gate-shell skeleton (wide viewport, nothing stored). */
   gateShellUp: boolean;
+  /** The full-card degraded journey (same shell, narrow viewport or a
+   * returning user with stored pairing whose daemon is down) — it renders the
+   * SAME offline queue composer, so it answers "gate" too. */
+  degradedCard: boolean;
   sessionOpen: boolean;
   sessionEmpty: boolean;
 }): QuickSurface {
   if (input.phase !== "paired") {
     if (input.welcome) return "wizard";
     if (input.addingMachine || input.pairManual) return "pairing";
-    if (input.gateShellUp) return "gate";
+    if (input.gateShellUp || input.degradedCard) return "gate";
     return "pairing";
   }
   if (input.addingMachine) return "pairing";

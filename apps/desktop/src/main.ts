@@ -1413,6 +1413,10 @@ async function onReady(): Promise<void> {
     platform: process.platform,
   });
   log(`[desktop] global hotkey: ${hotkey.register ? hotkey.accelerator : "off"} (${hotkey.reason})`);
+  // P3-406 r2: the quick slot logs its own decision — same shape as the
+  // reopen line, so a refused quick accelerator is diagnosable from the log
+  // alone (the reason travels; silence would lie).
+  log(`[desktop] quick-entry hotkey: ${hotkey.quickAccelerator ?? "off"} (${hotkey.quickReason})`);
   registerGlobalHotkey();
   // P2-276: resolve the shell language ONCE at boot — no renderer preference
   // has arrived yet, so the OS locale decides (shelllang.ts rules 3-4). The
@@ -3312,27 +3316,33 @@ function trayImage(): Electron.NativeImage {
 // already exist (the ocr:menu-action channel carries the new "quickEntry"
 // action id; no new IPC); the renderer's App owns what the action does. The
 // same failure policy: one log line in desktop.log, never a dialog.
+//
+// The two slots are INDEPENDENT (r2 review): each registers whenever its own
+// verdict is non-null — a typo in OCR_DESKTOP_HOTKEY must not also kill the
+// quick entry the plan approved (and vice versa).
 function registerGlobalHotkey(): void {
-  if (!hotkey?.register || !hotkey.accelerator) return;
-  try {
-    const ok = globalShortcut.register(hotkey.accelerator, showMainWindow);
-    if (!ok) {
-      log(`[desktop] global hotkey not registered: ${hotkey.accelerator} — combination likely taken by another application`);
+  if (hotkey?.register && hotkey.accelerator) {
+    try {
+      const ok = globalShortcut.register(hotkey.accelerator, showMainWindow);
+      if (!ok) {
+        log(`[desktop] global hotkey not registered: ${hotkey.accelerator} — combination likely taken by another application`);
+      }
+    } catch (err) {
+      logError("[desktop] global hotkey registration failed:", err);
     }
-  } catch (err) {
-    logError("[desktop] global hotkey registration failed:", err);
   }
-  if (!hotkey.quickAccelerator) return;
-  try {
-    const ok = globalShortcut.register(hotkey.quickAccelerator, () => {
-      showMainWindow();
-      sendMenuAction("quickEntry");
-    });
-    if (!ok) {
-      log(`[desktop] quick-entry hotkey not registered: ${hotkey.quickAccelerator} — combination likely taken by another application`);
+  if (hotkey?.quickAccelerator) {
+    try {
+      const ok = globalShortcut.register(hotkey.quickAccelerator, () => {
+        showMainWindow();
+        sendMenuAction("quickEntry");
+      });
+      if (!ok) {
+        log(`[desktop] quick-entry hotkey not registered: ${hotkey.quickAccelerator} — combination likely taken by another application`);
+      }
+    } catch (err) {
+      logError("[desktop] quick-entry hotkey registration failed:", err);
     }
-  } catch (err) {
-    logError("[desktop] quick-entry hotkey registration failed:", err);
   }
 }
 
