@@ -32,6 +32,9 @@ COPY apps/web/package.json apps/web/package.json
 COPY packages/protocol/package.json packages/protocol/package.json
 RUN npm ci --workspace apps/web --workspace packages/protocol
 COPY packages/protocol packages/protocol
+# P3-401: App.tsx importa localPairing do workspace desktop (P1-070) —
+# o arquivo é lógica pura e precisa existir dentro do contexto de build web.
+COPY apps/desktop/src/pairing.ts apps/desktop/src/pairing.ts
 COPY apps/web/src apps/web/src
 COPY apps/web/public apps/web/public
 COPY apps/web/index.html apps/web/index.html

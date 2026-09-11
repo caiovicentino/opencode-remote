@@ -186,7 +186,7 @@ async function probeFetch(base: string, path: string, method: string): Promise<S
  * Vite 6 emits `assets/<name>-<hash>.js|css` with an 8-char base64-ish hash. */
 function hashedAssetRef(document: string | undefined): string | null {
   if (!document) return null;
-  const match = /(?:src|href)=["'](\/assets\/[^"'#?]+-[A-Za-z0-9_-]{6,}\.(?:js|css))["']/.exec(document);
+  const match = /(?:src|href)=["'](\.?\/assets\/[^"'#?]+-[A-Za-z0-9_-]{6,}\.(?:js|css))["']/.exec(document);
   return match?.[1] ?? null;
 }
 
@@ -204,7 +204,8 @@ async function cli(argv: readonly string[]): Promise<void> {
 
   const healthz = await probeFetch(base, "/healthz", "GET");
   const root = await probeFetch(base, "/", "GET");
-  const asset = hashedAssetRef(root.body);
+  // --base=./ (desktop file://) emite ./assets/x — contra a raiz do relay é /assets/x
+  const asset = hashedAssetRef(root.body)?.replace(/^\.\//, "/");
   const hashed = asset
     ? await probeFetch(base, asset, "GET")
     : { name: "probe", status: 0, body: "", headers: {} };
