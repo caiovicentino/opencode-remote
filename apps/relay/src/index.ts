@@ -7,6 +7,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 // relative imports carry .js specifiers so plain `node` can run the tsc emit
 // (deploy/relay/Dockerfile + tsconfig.build.json) — tsx resolves them too
 import { healthzHandler, type WebBudgetGate, type WebStatic } from "./healthz.js";
+import { resolveInstanceId, INSTANCE_ID_ENV } from "./instanceid.js";
 import { TokenBucket } from "./ratelimit.js";
 import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
@@ -505,6 +506,16 @@ const VERSION = (() => {
   }
 })();
 
+// P3-401: the opaque per-instance identity published on /healthz, resolved
+// exactly once per process so it is stable for the process lifetime. The
+// operator value (INSTANCE_ID_ENV) wins when it passes the closed grammar;
+// anything else — absent, empty, oversized, unsafe character — falls back to
+// a fresh random derivation, so two replicas behind one address answer the
+// probe with different ids and the silent split-room trap becomes a
+// two-minute diagnostic. Never a secret, an address or a room id: the input
+// is only the env value and these random bytes.
+const INSTANCE_ID = resolveInstanceId(process.env[INSTANCE_ID_ENV], randomBytes(8));
+
 interface Socket extends WebSocket {
   id?: string;
   rooms?: Set<string>;
@@ -848,6 +859,10 @@ server.on(
       // shape. Only the short static verdict leaves the process — no
       // subject, issuer, serial, fingerprint, path or host material.
       certChain: () => lastCertChainState,
+      // P3-401: additive — the per-instance identity resolved once at boot
+      // above. Only the short opaque id leaves the process; the pure
+      // instanceid.ts/healthz.ts rules re-validate it before publication.
+      instance: () => INSTANCE_ID,
     },
     isShuttingDown,
     // P2-188: optional static PWA route (RELAY_WEB_DIR); undefined keeps the

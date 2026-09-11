@@ -1138,6 +1138,18 @@ Ready-made alert rules for these series ship in the repo (P2-320):
 sentence per rule, what it anticipates and how to load it, in the alert-rules
 section of [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+The `/healthz` probe also carries the additive `instanceId` field (P3-401):
+the opaque identity of the replica that answered. Room state lives in the
+relay process's memory, so two replicas behind one public address split
+every room in silence — the Mac and the phone land on different processes,
+nothing routes, and the pairing screen waits forever with every replica
+green. The runbook fixes the rule (one live replica per address's
+room-space) and teaches the two-minute test: hit the public `/healthz` a
+dozen times and compare the ids — different values mean pairing is broken
+in silence. The value is the `RELAY_INSTANCE_ID` env value when it passes
+the closed grammar (1–64 characters of `A-Z a-z 0-9 -`) or a generated
+`relay-i-…` id per boot — never a secret, an address or a room id.
+
 **Two-step pairing (P2-189)**: the phone needs an address before there is a
 pairing QR to scan, so the desktop pairing screen shows two labeled steps.
 Step one is the **app address** — `https://…` derived from the relay address

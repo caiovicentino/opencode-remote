@@ -17,6 +17,7 @@ import { conditionalVerdict, etagFor } from "./webcond.js";
 import { rejectionBreakdown } from "./rejectreasons.js";
 import type { CertExpiryVerdict } from "./certexpiry.js";
 import type { CertChainVerdict } from "./certchain.js";
+import { isValidInstanceId } from "./instanceid.js";
 
 /**
  * GET /healthz — public, unauthenticated liveness probe for the hosted
@@ -136,6 +137,20 @@ import type { CertChainVerdict } from "./certchain.js";
  * adds nothing and a verdict is NEVER invented. The field carries only the
  * short static verdict string — never a subject, issuer, serial number,
  * fingerprint, file path, host or port.
+ *
+ * P3-401: an optional `instance` getter lets the probe carry the opaque
+ * per-instance identity (instanceid.ts) — the field that turns the silent
+ * two-replica pairing trap into a two-minute diagnostic: the same public
+ * address answering with two different ids in a row means the room map is
+ * split across replicas and pairing is broken. Same rules as every additive
+ * field above, evaluated IN THIS ORDER: a state without the getter adds
+ * nothing (the body stays byte for byte); a getter answering a non-textual,
+ * empty, oversized or out-of-grammar value adds nothing and a value is NEVER
+ * invented (fail-closed). The value is validated with the same closed
+ * grammar instanceid.ts enforces at boot, so whatever reaches the body is
+ * the short opaque id — never a secret, an address, a room id or any peer
+ * metadata. The drain response keeps the field, exactly like every other
+ * one.
  */
 
 /**
@@ -192,6 +207,10 @@ export interface HealthzState {
    *  decides what (if anything) the payload publishes; a state without the
    *  getter keeps the exact pre-P2-293 shape. */
   roomsRejectedBreakdown?: () => unknown;
+  /** P3-401: additive — the opaque per-instance identity (instanceid.ts).
+   *  When absent (or when it answers a value outside the closed grammar) the
+   *  payload keeps the exact pre-P3-401 shape. */
+  instance?: () => unknown;
 }
 
 export interface HealthzPayload {
@@ -222,6 +241,10 @@ export interface HealthzPayload {
    *  room id, connection id, address or IP — whole counters only. */
   roomsRejectedInvalidRoomId?: number;
   roomsRejectedSocketRoomCap?: number;
+  /** Additive (P3-401): the short opaque per-instance identity, present
+   *  only when the state provides the getter and the value passes the
+   *  closed instanceid.ts grammar. Never a secret, address or room id. */
+  instanceId?: string;
 }
 
 export function healthzPayload(s: HealthzState, now = Date.now(), draining = false): HealthzPayload {
@@ -264,6 +287,15 @@ export function healthzPayload(s: HealthzState, now = Date.now(), draining = fal
   // order, byte-for-byte stable for identical inputs.
   if (s.roomsRejectedBreakdown !== undefined) {
     Object.assign(base, rejectionBreakdown(s.roomsRejectedBreakdown()));
+  }
+  // P3-401: additive instance field, following the header rules in order: a
+  // state without the getter adds nothing; a getter answering a non-textual,
+  // empty, oversized or out-of-grammar value adds nothing and a value is
+  // NEVER invented (fail-closed) — the same closed grammar instanceid.ts
+  // enforces at boot. Identical inputs produce identical bodies.
+  const instance = s.instance?.();
+  if (isValidInstanceId(instance)) {
+    base.instanceId = instance;
   }
   // healthy body stays byte-identical to the pre-P2-145 probe; the additive
   // field only appears while draining (ok flips to false in the same case)
