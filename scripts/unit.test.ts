@@ -11896,6 +11896,41 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-421: quiet dots replace the caps progress caption ---------------------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "WelcomeView.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // The caps caption is gone from the markup; the dots group keeps the i18n
+  // copy as the accessible label and hides the decorative dots themselves.
+  check(
+    "P3-421: the visible caps caption is gone, the dots group carries welcomeStepOf as its label",
+    !src.includes("welcome-step-of") &&
+      src.includes('className="welcome-steps"') &&
+      src.includes('aria-label={t("welcomeStepOf", { n: step })}') &&
+      (src.match(/className=\{`welcome-step-dot/g) ?? []).length === 1 &&
+      src.includes("[1, 2, 3].map((n) =>") &&
+      src.includes('aria-hidden="true"'),
+  );
+  // Dot anatomy: token-ladder fills only (resting line / strong line /
+  // accent), pill radius, and the 150ms ease-out settle for the step change.
+  const dotAt = css.indexOf(".welcome-step-dot {");
+  const dotRule = css.slice(dotAt, css.indexOf("}", dotAt));
+  const onAt = css.indexOf(".welcome-step-dot.on {");
+  const onRule = css.slice(onAt, css.indexOf("}", onAt));
+  check(
+    "P3-421: dots are pill-radius token fills — accent pill active, 150ms settle",
+    dotAt > 0 &&
+      dotRule.includes("border-radius: var(--radius-pill)") &&
+      dotRule.includes("background: var(--border);") &&
+      dotRule.includes("var(--motion-fast) var(--ease-out)") &&
+      css.indexOf(".welcome-step-dot.done {") > 0 &&
+      css.slice(css.indexOf(".welcome-step-dot.done {"), css.indexOf("}", css.indexOf(".welcome-step-dot.done {"))).includes("var(--border-strong)") &&
+      onAt > dotAt &&
+      onRule.includes("width: var(--space-3)") &&
+      onRule.includes("background: var(--accent)"),
+  );
+}
+
 // --- P3-374 round 2: demoted mobile chrome + board listing watchdog -----------
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");

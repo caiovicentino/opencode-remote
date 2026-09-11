@@ -174,7 +174,18 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
           </div>
           <h1 className="brand-wordmark">OpenCode Remote</h1>
           <div className="welcome-meta">
-            <span className="welcome-step-of">{t("welcomeStepOf", { n: step })}</span>
+            {/* P3-421: three quiet dots carry the progress — the brand block
+                stays typography-first instead of a caps caption under the
+                serif wordmark; the copy survives as the accessible label. */}
+            <div className="welcome-steps" role="group" aria-label={t("welcomeStepOf", { n: step })}>
+              {[1, 2, 3].map((n) => (
+                <span
+                  key={n}
+                  className={`welcome-step-dot${n === step ? " on" : n < step ? " done" : ""}`}
+                  aria-hidden="true"
+                />
+              ))}
+            </div>
           </div>
         </header>
         {step === 1 && (

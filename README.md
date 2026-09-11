@@ -1760,7 +1760,10 @@ auto-connect mode off there so the paste form can never be swallowed
 (P3-332 rule).
 The step
 indicator reads as part of the brand block — centered under the wordmark — and
-the first two steps carry their quiet "Skip" inside the card's action row,
+progress is three quiet dots rather than a caps caption: the active step is an
+accent pill, past steps the strong line, future ones the resting line, with
+the "Step {n} of 3" copy kept as the group's accessible label (P3-421). The
+first two steps carry their quiet "Skip" inside the card's action row,
 right beside the primary action, so escape and progress read as one unit
 (P3-374); the final step has a single, in-context way out — "Do this later"
 (or "Done" once paired) — so one action never shows two differently-labeled
