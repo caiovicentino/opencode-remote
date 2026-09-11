@@ -384,6 +384,15 @@ allowlist or state-file writes, no new routes. If the desktop.log has no wake
 lines after a wake, the platform did not expose `powerMonitor` and the shell
 keeps its previous behavior (the existing backoff/reconnect still applies).
 
+Since P2-327, a handled wake also asks the daemon (one loopback POST, bearer
+token from the state file) to redial the relay **immediately** when a retry is
+pending — a Mac that wakes without DNS no longer leaves the phone waiting out
+the full 60 s dial-error floor or the jittered backoff. The daemon answers
+`{ action, reason }`; only that verdict reaches the desktop.log as
+`[desktop] relay redial: …`. A backoff the relay itself asked for (capacity or
+rate-limited close) is always honored, and at most one anticipation happens
+per 10 s.
+
 ## Reauthentication in a loop: clock out of sync (RT-390)
 
 Handshakes now carry an authenticated creation timestamp. The daemon refuses a
