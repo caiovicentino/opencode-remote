@@ -419,7 +419,12 @@ remoto, zero confiança**.
   — para a mesma ação nunca mostrar duas rotas com nomes diferentes (P3-338). Concluir
   ou pular grava a flag no localStorage do renderer (sem IPC, sem tocar o processo
   main), então quem já usa o app — incluindo todo mundo que atualizar com pareamento
-  salvo — nunca a vê. Superfície única em tela cheia: sem banners e sem overlay de
+  salvo — nunca a vê. Enquanto o QR é gerado, o passo de pareamento mostra um esqueleto
+  no lugar de linha nua; sem o QR em 20s, a espera vira um erro inline com retry (P3-333)
+  — e quando o cartão de conexão do passo anterior já sabe que o agente local está fora,
+  a falha é imediata e nomeia o agente como causa (P3-412), com o "Fazer isso depois"
+  sempre como saída calma e o escape "Parear manualmente" ao lado do retry. Superfície
+  única em tela cheia: sem banners e sem overlay de
   pareamento (regra P2-108)
 - **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor
   de agente que ele proxyfica não está (`opencode serve` não instalado, porta errada,

@@ -33,6 +33,13 @@ check("no QR far past the timeout is error", qrWaitVerdict({ qrDataUrl: null, el
 // negative elapsed (clock skew) fails toward waiting, not error
 check("negative elapsed is waiting", qrWaitVerdict({ qrDataUrl: null, elapsedMs: -5 }) === "waiting");
 
+// --- P3-412: a known-down agent fails fast — the QR can never land ---------
+check("agentDown at t=0 is error (no 20s skeleton)", qrWaitVerdict({ qrDataUrl: null, elapsedMs: 0, agentDown: true }) === "error");
+check("agentDown past the timeout stays error", qrWaitVerdict({ qrDataUrl: null, elapsedMs: QR_WAIT_TIMEOUT_MS * 2, agentDown: true }) === "error");
+check("a minted QR still wins over agentDown", qrWaitVerdict({ qrDataUrl: "data:image/png;base64,AA", elapsedMs: 0, agentDown: true }) === "ready");
+check("agentDown=false keeps the wait window", qrWaitVerdict({ qrDataUrl: null, elapsedMs: QR_WAIT_TIMEOUT_MS - 1, agentDown: false }) === "waiting");
+check("agentDown absent (legacy callers) keeps the wait", qrWaitVerdict({ qrDataUrl: null, elapsedMs: 100 }) === "waiting");
+
 // the timeout stays generous-but-bounded: the QR is a local render, seconds
 // not minutes — keeps the first-boot journey recoverable
 check("timeout is between 5s and 60s", QR_WAIT_TIMEOUT_MS >= 5_000 && QR_WAIT_TIMEOUT_MS <= 60_000);

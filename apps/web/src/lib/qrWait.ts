@@ -14,10 +14,16 @@ export const QR_WAIT_TIMEOUT_MS = 20_000;
 export type QrWaitVerdict = "waiting" | "ready" | "error";
 
 /** Pure decision core: a truthy data URL is always ready; a falsy one is a
- * wait until the timeout elapses, then an error. Unknown inputs (null/
- * undefined QR, negative elapsed) fail toward the wait/error pair — never
- * toward a QR that does not exist. */
-export function qrWaitVerdict(opts: { qrDataUrl: string | null | undefined; elapsedMs: number }): QrWaitVerdict {
+ * wait until the timeout elapses, then an error. P3-412: when the caller
+ * already knows the local agent is not healthy (the same `kind`/`busy`
+ * signal the step-2 connection card renders), the wait is pointless — the
+ * QR is minted from the daemon's pairing credential, so a settled
+ * non-healthy state fails fast to the error instead of holding the
+ * skeleton for the full window. Unknown inputs (null/undefined QR,
+ * negative elapsed, absent agentDown) fail toward the wait/error pair —
+ * never toward a QR that does not exist. */
+export function qrWaitVerdict(opts: { qrDataUrl: string | null | undefined; elapsedMs: number; agentDown?: boolean }): QrWaitVerdict {
   if (typeof opts.qrDataUrl === "string" && opts.qrDataUrl !== "") return "ready";
+  if (opts.agentDown === true) return "error";
   return opts.elapsedMs >= QR_WAIT_TIMEOUT_MS ? "error" : "waiting";
 }
