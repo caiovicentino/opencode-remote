@@ -386,7 +386,7 @@ export default function MissionControlView({
     return (
       <div className="screen">
         <header>
-          {onBack && <button onClick={onBack}>←</button>}
+          {onBack && <button className="pane-back" onClick={onBack}>←</button>}
           <h1 className="pane-title">Mission Control</h1>
         </header>
         <div className="list">
@@ -401,7 +401,7 @@ export default function MissionControlView({
   return (
     <div className="screen mission">
       <header>
-        {onBack && <button onClick={onBack}>←</button>}
+        {onBack && <button className="pane-back" onClick={onBack}>←</button>}
         <h1 className="pane-title">
           <IconRadar size={16} /> Mission Control
         </h1>

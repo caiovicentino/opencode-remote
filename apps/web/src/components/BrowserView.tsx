@@ -251,7 +251,7 @@ function WebViewPane({
   return (
     <div className="browser-pane">
       <header className="browser-header">
-        <button onClick={onBack} aria-label={t("browserBack")}>←</button>
+        <button className="pane-back" onClick={onBack} aria-label={t("browserBack")}>←</button>
         <h1 className="pane-title">{t("navBrowser")}</h1>
         {onToggleMaximize && (
           <button
@@ -416,7 +416,7 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack} aria-label={t("back")}>←</button>
+        <button className="pane-back" onClick={onBack} aria-label={t("back")}>←</button>
         <h1 className="pane-title">{t("navBrowser")}</h1>
         <button onClick={() => setShowText((v) => !v)} aria-label={t("browserToggleText")}>
           ≡
