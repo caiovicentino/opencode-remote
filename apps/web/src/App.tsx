@@ -45,7 +45,6 @@ import GateHint from "./components/GateHint";
 import { dropSurfaceFor, type DropSurface } from "./lib/dropgate";
 import { useDropAbsorb } from "./lib/dropwindow";
 import { quickEntryVerdict, quickSurfaceFor, QUICK_ENTRY_MIN_MS } from "./lib/quickentry";
-import { getCachedSession } from "./lib/sessionCache";
 import { setDraft, markSendOnOpen } from "./lib/drafts";
 import SettingsView, {
   type RelaySetting,
@@ -1029,11 +1028,20 @@ export default function App() {
   // the last-fire instant collapses an immediate double-fire into one action.
   const quickLastFire = useRef(0);
   const freshSessions = useRef<Set<string>>(new Set());
+  // P3-406 r3: live emptiness per session, reported by ChatView on every
+  // bubble-count change. Real bubbles are the truth the quick-entry verdict
+  // consults — the created-this-run set is only the fallback for a session
+  // ChatView has not reported yet (created this run ⇒ empty by definition).
+  const sessionEmptiness = useRef<Map<string, boolean>>(new Map());
   const [composerFocusTick, setComposerFocusTick] = useState(0);
   const [queueFocusTick, setQueueFocusTick] = useState(0);
+  // Absolute bump counters: consumption resets the STATE to 0 while the
+  // counter moves forward, so a newer bump is never clobbered by an older
+  // consume/failure reset (r3).
+  const composerBumped = useRef(0);
+  const queueBumped = useRef(0);
   const quickSnapshotRef = useRef({ phase, showWelcome: false, addingMachine: false, pairManual: false, helpOpen: false, gateShellUp: false, degradedCard: false, sessionOpen: false, sessionEmpty: false });
   useEffect(() => {
-    const cached = session ? getCachedSession(session) : null;
     quickSnapshotRef.current = {
       phase,
       showWelcome,
@@ -1048,10 +1056,10 @@ export default function App() {
       // gateShellUp already carries.
       degradedCard: !!desktopBridge() && !pairManual && pairingState?.mode !== "remote" && !loadState(),
       sessionOpen: !!session,
-      // A conversation created in this run is empty by definition; a cached
-      // one is empty only when its bubbles say so; unknown ⇒ NOT empty (the
-      // create path is the safe, useful behavior for an unknown conversation).
-      sessionEmpty: session ? freshSessions.current.has(session) || (cached ? cached.bubbles.length === 0 : false) : false,
+      // Reported live bubbles win; an unreported session falls back to the
+      // created-this-run set (empty) or, for unknown conversations, to NOT
+      // empty — the create path is the safe, useful behavior there.
+      sessionEmpty: session ? (sessionEmptiness.current.get(session) ?? freshSessions.current.has(session)) : false,
     };
   });
   function runQuickEntry() {
@@ -1073,19 +1081,25 @@ export default function App() {
     if (verdict === "ignore") return;
     quickLastFire.current = now;
     if (verdict === "focus-queue") {
-      setQueueFocusTick((n) => n + 1);
+      queueBumped.current += 1;
+      setQueueFocusTick(queueBumped.current);
       return;
     }
     if (verdict === "focus-composer") {
-      setComposerFocusTick((n) => n + 1);
+      composerBumped.current += 1;
+      setComposerFocusTick(composerBumped.current);
       return;
     }
     if (verdict === "create") {
       // The tick bumps FIRST so the freshly mounted ChatView focuses its
       // composer on mount (the persistent textarea node keeps the focus
-      // across the sessionId change).
-      setComposerFocusTick((n) => n + 1);
-      void createSession();
+      // across the sessionId change). If the creation fails there is nothing
+      // to focus — retire the bump so no later mount ever replays it (r3).
+      composerBumped.current += 1;
+      setComposerFocusTick(composerBumped.current);
+      void createSession().then((err) => {
+        if (err) setComposerFocusTick((t) => (t === composerBumped.current ? 0 : t));
+      });
     }
     // "show-only": the shell already revealed and focused the window — the
     // ceremony on screen (pairing, wizard) keeps its focus untouched.
@@ -1636,6 +1650,7 @@ export default function App() {
               // this full-card degraded journey too — quickSurfaceFor maps
               // `degradedCard` to the same "gate" surface as the gate shell.
               focusQueueTick={queueFocusTick}
+              onQueueFocusConsumed={(tick) => setQueueFocusTick((t) => (t === tick ? 0 : t))}
             />
           ) : (
             <PairingView
@@ -1764,6 +1779,7 @@ export default function App() {
               // P3-406: the quick entry focuses the offline queue box at the
               // gate shell (the surface the Go menu's go-quick-entry hits).
               focusQueueTick={queueFocusTick}
+              onQueueFocusConsumed={(tick) => setQueueFocusTick((t) => (t === tick ? 0 : t))}
             />
           </main>
           <section className="desk-pane" style={{ display: isPaneOpen(view) ? "block" : "none" }}>
@@ -1827,8 +1843,16 @@ export default function App() {
       // inside the shell, the daemon sentence untouched on the phone.
       desktopShell={!!desktopBridge()}
       // P3-406: the quick entry's focus request — App bumps the tick, the
-      // persistent composer textarea takes it (mount or update).
+      // persistent composer textarea takes it (mount or update). r3: the tick
+      // is consumed-and-reset so a later remount never replays the bump.
       focusComposerTick={composerFocusTick}
+      onComposerFocusConsumed={(tick) => setComposerFocusTick((t) => (t === tick ? 0 : t))}
+      onEmptinessChange={(sessionId, empty) => {
+        sessionEmptiness.current.set(sessionId, empty);
+        // A created-this-run session that now has bubbles is no longer
+        // "empty by definition" — the fallback set must forget it.
+        if (!empty) freshSessions.current.delete(sessionId);
+      }}
     />
   );
   // (P3-365: settingsNode/filesNode/artifactsNode/browseNode/missionNode/
