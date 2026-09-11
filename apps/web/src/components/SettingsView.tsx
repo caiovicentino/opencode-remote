@@ -23,6 +23,16 @@ export interface RelaySettingWriteResult extends RelaySetting {
   ok: boolean;
 }
 
+/** P2-328: verdict of the relay card's "Test connection" probe (mirrors
+ * apps/desktop/src/preload.ts / apps/desktop/src/relayprobe.ts). state is one
+ * of the documented relayprobe table values; message/messageEn are the static
+ * phrases the module ships — the view picks by language and renders verbatim. */
+export interface RelayProbeResult {
+  state: string;
+  message: string;
+  messageEn: string;
+}
+
 /** P2-189: app address resolution from the desktop shell (mirrors
  * apps/desktop/src/preload.ts). origin says how the address was reached;
  * problems is non-empty when the UI must show the error instead of a QR. */
@@ -73,6 +83,9 @@ interface Props {
   /** P2-187: desktop shell only — phone relay address read + validated write. */
   getRelaySetting?: () => Promise<RelaySetting>;
   setRelayUrl?: (url: string | null) => Promise<RelaySettingWriteResult>;
+  /** P2-328: desktop shell only — one /healthz probe of the address as typed
+   * (the draft), so a typo is caught before the save restarts the daemon. */
+  testRelay?: (url: string) => Promise<RelayProbeResult>;
   /** P2-189: desktop shell only — app address the phone opens, read + validated write. */
   getWebAppUrl?: () => Promise<WebAppSetting>;
   setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
@@ -197,7 +210,7 @@ function forcedAgentFound(): boolean | undefined {
   return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -267,6 +280,11 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // input; `relay` is the main-process resolution (origin + problems).
   const [relay, setRelay] = useState<RelaySetting | null>(null);
   const [relayDraft, setRelayDraft] = useState("");
+  // P2-328: the "Test connection" probe — a boolean testing state and a
+  // result that is ALWAYS terminal (a final verdict phrase, never a spinner
+  // line); the Save action is never blocked by a running test.
+  const [relayTesting, setRelayTesting] = useState(false);
+  const [relayTestResult, setRelayTestResult] = useState<RelayProbeResult | null>(null);
   // P2-189: app address the phone opens (desktop shell only) — same
   // draft/resolution discipline as the relay setting above.
   const [webApp, setWebApp] = useState<WebAppSetting | null>(null);
@@ -395,6 +413,23 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       setMsg(res.ok ? t("saved") : t("relayInvalid"));
     } catch {
       setMsg(t("relayInvalid"));
+    }
+  }
+
+  /** P2-328: probe the DRAFTED relay address (never saved, never restarts the
+   * daemon) and render the verdict — every outcome is a terminal state. */
+  async function testRelayNow() {
+    if (!testRelay || relayTesting) return;
+    setRelayTesting(true);
+    setRelayTestResult(null);
+    try {
+      setRelayTestResult(await testRelay(relayDraft));
+    } catch {
+      // Terminal fallback copy rides the dict (P2-275) — the module's own
+      // phrases cover every verdict the IPC actually returns.
+      setRelayTestResult({ state: "unreachable", message: t("relayTestFailed"), messageEn: t("relayTestFailed") });
+    } finally {
+      setRelayTesting(false);
     }
   }
 
@@ -671,17 +706,43 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 style={{ flex: 1 }}
                 value={relayDraft}
                 readOnly={relay.origin === "env"}
-                onChange={(e) => setRelayDraft(e.target.value)}
+                onChange={(e) => {
+                  setRelayDraft(e.target.value);
+                  // P2-328: a verdict about a previous draft says nothing
+                  // about the address now in the field — drop it.
+                  setRelayTestResult(null);
+                }}
                 placeholder="wss://relay.example.com:8788"
                 aria-label={t("relayTitle")}
                 spellCheck={false}
               />
               {relay.origin !== "env" && (
-                <button className="primary" onClick={() => void saveRelay()}>
-                  {t("relaySave")}
-                </button>
+                <>
+                  <button className="primary" onClick={() => void saveRelay()}>
+                    {t("relaySave")}
+                  </button>
+                  {/* P2-328: test the address as typed BEFORE saving — the
+                  probe never persists, never restarts the daemon and never
+                  blocks Save; every outcome lands in the terminal line below. */}
+                  {testRelay && (
+                    <button onClick={() => void testRelayNow()} disabled={relayTesting}>
+                      {relayTesting ? t("relayTesting") : t("relayTest")}
+                    </button>
+                  )}
+                </>
               )}
             </div>
+            {relayTestResult && (
+              <p
+                className="muted relay-test-result"
+                style={{
+                  margin: "6px 0 0",
+                  color: relayTestResult.state === "ok" || relayTestResult.state === "draining" ? undefined : "var(--danger)",
+                }}
+              >
+                {lang === "en" ? relayTestResult.messageEn : relayTestResult.message}
+              </p>
+            )}
             {relay.problems.length > 0 && (
               <p className="muted" style={{ margin: "6px 0 0", color: "var(--danger)" }}>
                 {t("relayInvalid")}

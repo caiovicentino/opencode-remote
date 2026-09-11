@@ -50,6 +50,7 @@ import { setDraft, markSendOnOpen } from "./lib/drafts";
 import SettingsView, {
   type RelaySetting,
   type RelaySettingWriteResult,
+  type RelayProbeResult,
   type WebAppSetting,
   type WebAppSettingWriteResult,
   type ProxySetting,
@@ -191,6 +192,8 @@ interface DesktopBridge {
   /** P2-187: phone relay address — Settings card (desktop shell only). */
   getRelaySetting?: () => Promise<RelaySetting>;
   setRelayUrl?: (url: string | null) => Promise<RelaySettingWriteResult>;
+  /** P2-328: relay card "Test connection" probe (desktop shell only). */
+  testRelay?: (url: string) => Promise<RelayProbeResult>;
   /** P2-189: app address the phone opens — Settings card (desktop shell only). */
   getWebAppUrl?: () => Promise<WebAppSetting>;
   setWebAppUrl?: (url: string | null) => Promise<WebAppSettingWriteResult>;
@@ -1424,6 +1427,7 @@ export default function App() {
         onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
         getRelaySetting={desktopBridge()?.getRelaySetting}
         setRelayUrl={desktopBridge()?.setRelayUrl}
+        testRelay={desktopBridge()?.testRelay}
         getWebAppUrl={desktopBridge()?.getWebAppUrl}
         setWebAppUrl={desktopBridge()?.setWebAppUrl}
         getProxySetting={desktopBridge()?.getProxySetting}
@@ -1615,15 +1619,16 @@ export default function App() {
         }
         getRelaySetting={desktopBridge()?.getRelaySetting}
         setRelayUrl={desktopBridge()?.setRelayUrl}
+        testRelay={desktopBridge()?.testRelay}
         getWebAppUrl={desktopBridge()?.getWebAppUrl}
         setWebAppUrl={desktopBridge()?.setWebAppUrl}
         getProxySetting={desktopBridge()?.getProxySetting}
         setProxyChoice={desktopBridge()?.setProxyChoice}
         upstream={upstream}
       />
-      </div>
-    );
-  }
+    </div>
+  );
+}
 
   if (phase !== "paired") {
     // P2-112: in the desktop shell the unpaired screen is the degraded journey

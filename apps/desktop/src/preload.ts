@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { MicAccessVerdict } from "./micaccess";
 import type { CameraAccessVerdict } from "./camaccess";
 import type { ScreenAccessVerdict } from "./screenaccess";
+import type { RelayProbeVerdict } from "./relayprobe";
 
 /** Result shape of the /api/browse proxy in apps/desktop/src/main.ts. */
 export interface DaemonBrowseResponse {
@@ -184,6 +185,10 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   getRelaySetting: (): Promise<RelaySetting> => ipcRenderer.invoke("app:relaySetting"),
   setRelayUrl: (url: string | null): Promise<RelaySettingWriteResult> =>
     ipcRenderer.invoke("app:setRelayUrl", url),
+  // P2-328: relay card "Test connection" — one /healthz probe of the address
+  // as typed (main decides; at most one probe in flight). No test-only hatch
+  // under OCR_DESKTOP_SESSION: a hermetic session probes what it is given.
+  testRelay: (url: string): Promise<RelayProbeVerdict> => ipcRenderer.invoke("app:relayTest", url),
   // P2-189: the app address the phone opens — same read + validated write
   // shape as the relay setting (null clears the stored override; validation
   // happens in the main process).
