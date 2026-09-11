@@ -61,7 +61,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   vira fluxo exercitável no primeiro boot (Enter salva, confirmação calma no
   próprio painel, fila sobrevive a restart do app). P3-386: o compositor é
   pintado sobre o branco do card com borda de repouso mais firme — lê como
-  campo ativo que convida a digitar, não como campo desabilitado.
+  campo ativo que convida a digitar, não como campo desabilitado. P3-420: o
+  botão "Salvar mensagem" habilitado segue o mesmo tratamento de campo ativo
+  (superfície pintada + borda firme, hover que acentua) — deixa de parecer um
+  fantasma apagado ao lado do "Reconectar agora".
   próprio painel, fila sobrevive a restart do app)
 - Soltura de arquivo nunca morre em silêncio (P3-398): arrastar um arquivo do
   Finder sobre o app pinta o realce de soltura em qualquer tela; no portão do

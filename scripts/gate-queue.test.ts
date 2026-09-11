@@ -132,6 +132,26 @@ check(
   !!inputRule && !inputRule[0].includes("var(--bg)"),
 );
 
+// --- P3-420: the enabled save button reads as an active field, not a ghost --------
+// Source pin (P3-421 lesson): a DOM test can't see the token ladder, so pin
+// which var() token each state class uses — a silent revert to the transparent
+// ghost border would resurrect the disabled-looking core action.
+const saveRule = css.match(/\.degraded-queue-save\s*\{[^}]*\}/);
+const saveHoverRule = css.match(/\.degraded-queue-save:hover:not\(:disabled\)\s*\{[^}]*\}/);
+check("index.css styles .degraded-queue-save", saveRule !== null);
+check(
+  "save button paints on the card like the composer (var(--surface))",
+  !!saveRule && /background:\s*var\(--surface\)/.test(saveRule[0]),
+);
+check(
+  "save button carries the composer's firmer resting border (var(--border-strong))",
+  !!saveRule && /border-color:\s*var\(--border-strong\)/.test(saveRule[0]),
+);
+check(
+  "save button escalates to the composer's focus border on hover (var(--fg))",
+  !!saveHoverRule && /border-color:\s*var\(--fg\)/.test(saveHoverRule[0]),
+);
+
 if (failures) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);
