@@ -463,6 +463,14 @@ the network dies mid-way it says `Update download stalled — check for updates`
 at the next scheduled recheck; the label only describes the download, it never
 cancels, downgrades or re-downloads anything.
 
+P2-330: when that background download fails outright (network drop, disk
+refusal, rejected package), the tray no longer keeps promising `Update
+available` for the rest of the six-hour interval — it switches to `Update
+download failed — will retry` and the shell re-arms the next check on the same
+failure backoff the dead feed uses (15 min first, doubling up to the base), so
+a flaky network heals by itself. The label never carries the raw error, a path
+or an address; tray → **Check for updates** still retries immediately.
+
 ## Quitting and the phone's access (P2-221)
 
 Closing the window is **not** quitting: the app keeps running in the

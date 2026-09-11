@@ -1105,18 +1105,30 @@ function runUpdateCheck(source: string): void {
       // P2-258: the progress label describes a background download in flight.
       // Statuses with no such download behind them clear it ("update-available"
       // does NOT — the download it announces is exactly what the label tracks,
-      // and feed failures don't either: Squirrel keeps downloading).
+      // and feed failures don't either: Squirrel keeps downloading). P2-330: a
+      // failed download has nothing behind it either — the label must yield to
+      // the failure status the same state now speaks.
       if (
         status === "update-downloaded" ||
         status === "update-not-available" ||
         status === "update-available-manual" ||
         status === "update-installer-ready" ||
+        status === "update-download-failed" ||
         status === "disabled"
       ) {
         clearUpdateProgress();
         // P2-264: with no download pending, a postpone label is stale — the
         // tray goes back to the status the new state speaks for itself.
         setUpdateSpaceLabel(null);
+      }
+      // P2-330: ONLY a failed background download re-arms the recheck from this
+      // sink — the base six-hour wait would leave the tray announcing an
+      // update nobody has been downloading for hours. The existing scheduler
+      // clears its previous handle and the failure backoff (15 min first step)
+      // replaces the wait; every other resolution is still armed by the
+      // check's own promise below, never from here.
+      if (status === "update-download-failed") {
+        scheduleNextUpdateCheck(status);
       }
       refreshTrayMenu();
       // P2-176: the Help menu carries the same status label — rebuild it at
@@ -1222,7 +1234,9 @@ function scheduleNextUpdateCheck(status: UpdateStatus): void {
     updateRecheckTimer = null;
   }
   if (!updatesEnabled()) return;
-  if (status === "feed-unreachable" || status === "unrecognized-feed") updateFeedFailures++;
+  // P2-330: a failed background download joins the feed failures — the
+  // consecutive counter doubles the wait instead of resetting it.
+  if (status === "feed-unreachable" || status === "unrecognized-feed" || status === "update-download-failed") updateFeedFailures++;
   else updateFeedFailures = 0;
   const delay = nextCheckDelayMs(status, updateFeedFailures, Math.random);
   if (delay == null) {

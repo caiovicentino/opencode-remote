@@ -912,7 +912,14 @@ import {
   writeHintFlag,
 } from "../apps/desktop/src/closehint";
 
-import { publicFeedUrl, updateMenuLabel } from "../apps/desktop/src/update";
+import {
+  attachUpdateListeners,
+  publicFeedUrl,
+  statusAfterUpdaterError,
+  updateMenuLabel,
+  type UpdateDialogSinks,
+  type UpdateStatus,
+} from "../apps/desktop/src/update";
 
 import { permissionDecision, requestingScheme, SHELL_PERMISSIONS } from "../apps/desktop/src/permissions";
 
@@ -15990,11 +15997,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 {
   const BASE = UPDATE_RECHECK_BASE_MS;
   const successStatuses = ["update-not-available", "update-available", "update-available-manual"] as const;
-  const failureStatuses = ["feed-unreachable", "unrecognized-feed"] as const;
+  const failureStatuses = ["feed-unreachable", "unrecognized-feed", "update-download-failed"] as const;
   const JITTER_MIN = BASE * (1 - UPDATE_RECHECK_JITTER); // 19_440_000 (5.4 h)
   const JITTER_MAX = BASE * (1 + UPDATE_RECHECK_JITTER); // 23_760_000 (6.6 h)
 
-  // 1. all seven statuses
+  // 1. all nine statuses
   check("P2-155: disabled → null (no surface, zero timers)", nextCheckDelayMs("disabled", 0, Math.random) === null);
   check(
     "P2-155: update-downloaded → null (consent already offered, only restart applies)",
@@ -16082,6 +16089,167 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-155: schedule constants are 6 h base / 5 min floor / 15 min backoff start",
     BASE === 21_600_000 && UPDATE_RECHECK_MIN_MS === 300_000 && UPDATE_RECHECK_BACKOFF_START_MS === 900_000,
   );
+}
+
+
+// --- P2-330: failed background download surfaces in the tray -------------------
+{
+  // Additive status: only an error WHILE the updater's own download was in
+  // flight maps to "update-download-failed"; a plain check error with no offer
+  // stays covered by the feed statuses, and "update-downloaded" never
+  // regresses.
+
+  const ALL_STATUSES: UpdateStatus[] = [
+    "disabled",
+    "update-available",
+    "update-available-manual",
+    "update-installer-ready",
+    "update-not-available",
+    "update-downloaded",
+    "update-download-failed",
+    "unrecognized-feed",
+    "feed-unreachable",
+  ];
+  check(
+    "P2-330: all nine statuses map to stable, distinct tray labels (disabled → null)",
+    ALL_STATUSES.every((s) => (s === "disabled" ? updateMenuLabel(s) === null : typeof updateMenuLabel(s) === "string")) &&
+      new Set(ALL_STATUSES.map((s) => updateMenuLabel(s))).size === 9,
+  );
+  check(
+    "P2-330: the failed-download label matches the sibling failure style — short, no path, no URL, no raw error",
+    updateMenuLabel("update-download-failed") === "Update download failed — will retry" &&
+      !updateMenuLabel("update-download-failed")!.includes("/") &&
+      !updateMenuLabel("update-download-failed")!.includes("://"),
+  );
+
+  // Pure derivation table.
+  const errorTable: [boolean, UpdateStatus | null][] = [
+    [false, null],
+    [true, "update-download-failed"],
+  ];
+  for (const [inFlight, expected] of errorTable) {
+    check(`P2-330: statusAfterUpdaterError(${inFlight}) → ${expected}`, statusAfterUpdaterError(inFlight) === expected);
+  }
+
+  // The schedule treats the new status as a feed failure: first backoff step,
+  // doubling counter, saturation at the base and the 5 min floor intact.
+  check(
+    "P2-330: nextCheckDelayMs(update-download-failed, 1) → first backoff step (15 min)",
+    nextCheckDelayMs("update-download-failed", 1, Math.random) === 900_000,
+  );
+  check(
+    "P2-330: nextCheckDelayMs(update-download-failed) backoff grows and saturates at the base",
+    nextCheckDelayMs("update-download-failed", 2, Math.random) === 1_800_000 &&
+      nextCheckDelayMs("update-download-failed", 50, Math.random) === UPDATE_RECHECK_BASE_MS,
+  );
+  check(
+    "P2-330: nextCheckDelayMs(update-download-failed) floor of five minutes holds",
+    nextCheckDelayMs("update-download-failed", 0, () => 0) >= UPDATE_RECHECK_MIN_MS,
+  );
+
+  // Minimal fake with real listener counting, same shape as the updater
+  // surface attachUpdateListeners consumes.
+  function fakeEmitter330() {
+    const listeners: Record<string, ((...a: unknown[]) => void)[]> = {};
+    return {
+      setFeedURL(): void {},
+      checkForUpdates(): void {
+        for (const l of [...(listeners["update-available"] ?? [])]) l();
+      },
+      on(event: string, l: (...a: unknown[]) => void): unknown {
+        (listeners[event] ??= []).push(l);
+        return this;
+      },
+      listenerCount(event: string): number {
+        return (listeners[event] ?? []).length;
+      },
+      emit(event: string, ...args: unknown[]): void {
+        for (const l of [...(listeners[event] ?? [])]) l(...args);
+      },
+    };
+  }
+
+  {
+    // update-available (the download arms) then error → the derived status
+    // reaches onStatus exactly once, even with a repeated error emission.
+    const statuses: { status: UpdateStatus; version: string | null }[] = [];
+    const failedUpdater = fakeEmitter330();
+    attachUpdateListeners(failedUpdater, {
+      log: () => {},
+      dialog: { askInstall: async () => "later" },
+      onStatus: (status, version) => statuses.push({ status, version }),
+    });
+    failedUpdater.checkForUpdates();
+    failedUpdater.emit("error", new Error("download failed: network dropped"));
+    failedUpdater.emit("error", new Error("download failed again"));
+    check(
+      "P2-330: update-available then error → onStatus receives update-download-failed exactly once",
+      statuses.length === 1 && statuses[0]?.status === "update-download-failed" && statuses[0]?.version === null,
+    );
+  }
+  {
+    // error with NO offer in the air → onStatus is never called (the feed
+    // statuses keep speaking) and no extra listener was registered.
+    const plainStatuses: string[] = [];
+    const plainUpdater = fakeEmitter330();
+    attachUpdateListeners(plainUpdater, {
+      log: () => {},
+      dialog: { askInstall: async () => "later" } satisfies UpdateDialogSinks,
+      onStatus: (status) => plainStatuses.push(status),
+    });
+    plainUpdater.emit("error", new Error("server sent an invalid response"));
+    check(
+      "P2-330: error without update-available → onStatus never fires (feed statuses keep speaking)",
+      plainStatuses.length === 0,
+    );
+    // update-downloaded first, then a late error → the downloaded status never
+    // regresses.
+    plainUpdater.emit("update-downloaded", null, "notes", "0.5.0");
+    plainUpdater.emit("error", new Error("late failure"));
+    check(
+      "P2-330: update-downloaded never regresses — a later error stays log-only",
+      plainStatuses.length === 1 && plainStatuses[0] === "update-downloaded",
+    );
+  }
+  {
+    // Idempotence: a second attach must not stack listeners on the singleton.
+    const dupUpdater = fakeEmitter330();
+    attachUpdateListeners(dupUpdater, { log: () => {}, dialog: { askInstall: async () => "later" } });
+    attachUpdateListeners(dupUpdater, { log: () => {}, dialog: { askInstall: async () => "later" } });
+    check(
+      "P2-330: attachUpdateListeners twice attaches each listener exactly once",
+      dupUpdater.listenerCount("error") === 1 &&
+        dupUpdater.listenerCount("update-available") === 1 &&
+        dupUpdater.listenerCount("update-downloaded") === 1,
+    );
+  }
+  {
+    // Source contract on the real main.ts: the sink re-schedules ONLY for the
+    // failed download and introduces no timer of its own; no periodic timer
+    // appeared in the update path (main.ts keeps its two pre-existing
+    // setInterval calls, update.ts/updateschedule.ts keep none).
+    const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+    const updateSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "update.ts"), "utf8");
+    const scheduleSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "updateschedule.ts"), "utf8");
+    const sinkStart = mainSrc.indexOf("onStatus: (status, version) => {");
+    const sinkEnd = mainSrc.indexOf("// P2-155: the resolved status drives", sinkStart);
+    const sinkSrc = mainSrc.slice(sinkStart, sinkEnd);
+    check(
+      "P2-330: the sink re-schedules ONLY for update-download-failed (one guarded call, no stray arm)",
+      sinkStart >= 0 &&
+        sinkSrc.includes('status === "update-download-failed"') &&
+        (sinkSrc.match(/scheduleNextUpdateCheck\(/g) ?? []).length === 1 &&
+        sinkSrc.indexOf('status === "update-download-failed"') < sinkSrc.indexOf("scheduleNextUpdateCheck("),
+    );
+    check(
+      "P2-330: the sink adds no timer of its own and no periodic timer appeared in the update path",
+      !sinkSrc.includes("setInterval") &&
+        !sinkSrc.includes("setTimeout(") &&
+        (mainSrc.match(/setInterval\(/g) ?? []).length === 2 &&
+        (updateSrc.match(/setInterval\(|setTimeout\(/g) ?? []).length === 0 &&
+        (scheduleSrc.match(/setInterval\(|setTimeout\(/g) ?? []).length === 0,
+    );
+  }
 }
 
 
