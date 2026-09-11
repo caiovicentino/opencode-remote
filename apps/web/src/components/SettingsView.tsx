@@ -63,6 +63,10 @@ interface Props {
   transport?: "local" | "relay";
   /** P1-050: desktop shell only — full support bundle for "Copy diagnostic". */
   getDiagnostics?: () => Promise<string>;
+  /** P3-407: desktop shell only — writes the same redacted bundle to a file
+   * through the native save dialog. Status-only result: ok + the optional
+   * user-cancel flag, never a path (the toast copy stays path-free too). */
+  saveDiagnostics?: () => Promise<{ ok: boolean; canceled?: boolean }>;
   /** P1-070: desktop shell only — explicit "pair a remote phone" action that
    * turns the QR ceremony on (app:setRemotePairing). */
   onPairRemote?: () => void;
@@ -193,7 +197,7 @@ function forcedAgentFound(): boolean | undefined {
   return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -586,22 +590,46 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
 
         <div className="card">
           <h3>{t("diagTitle")}</h3>
-          <button
-            className="primary"
-            onClick={() =>
-              void (async () => {
-                if (!getDiagnostics) return;
-                try {
-                  const ok = await copyText(await getDiagnostics());
-                  setMsg(ok ? t("diagCopied") : t("diagCopy"));
-                } catch {
-                  setMsg(t("diagCopy"));
+          <div className="diag-actions">
+            <button
+              className="primary"
+              onClick={() =>
+                void (async () => {
+                  if (!getDiagnostics) return;
+                  try {
+                    const ok = await copyText(await getDiagnostics());
+                    setMsg(ok ? t("diagCopied") : t("diagCopy"));
+                  } catch {
+                    setMsg(t("diagCopy"));
+                  }
+                })()
+              }
+            >
+              {t("diagCopy")}
+            </button>
+            {/* P3-407: save twin, shell bridge only — the browser/PWA has no
+            file surface, so the button simply never renders there. */}
+            {saveDiagnostics && (
+              <button
+                className="diag-save"
+                onClick={() =>
+                  void (async () => {
+                    try {
+                      const res = await saveDiagnostics();
+                      // Terminal states only (P3-327): a static success or
+                      // failure line — never a path, a spinner or limbo.
+                      if (res.ok && !res.canceled) setMsg(t("diagSaved"));
+                      else if (!res.ok) setMsg(t("diagSaveFailed"));
+                    } catch {
+                      setMsg(t("diagSaveFailed"));
+                    }
+                  })()
                 }
-              })()
-            }
-          >
-            {t("diagCopy")}
-          </button>
+              >
+                {t("diagSave")}
+              </button>
+            )}
+          </div>
         </div>
 
         {onPairRemote && (

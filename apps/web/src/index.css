@@ -3358,6 +3358,14 @@ button.desk-new:disabled {
 .settings-help {
   border-left: 3px solid var(--status-wait);
 }
+/* P3-407: the diagnostics card's action row — copy and save share one line,
+   the same 8px rhythm the machine rows use. */
+.diag-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .settings-help-title {
   margin: 0 0 2px;
   font-weight: 600;

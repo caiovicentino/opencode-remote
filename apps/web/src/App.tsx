@@ -184,6 +184,9 @@ interface DesktopBridge {
   onMenuAction?: (cb: (id: string) => void) => () => void;
   /** P1-050: Settings "Copy diagnostic" support bundle (text, no secrets). */
   getDiagnostics?: () => Promise<string>;
+  /** P3-407: Settings "Save to file" — native save dialog for the same
+   * redacted bundle (desktop shell only). Status-only result, never a path. */
+  saveDiagnostics?: () => Promise<{ ok: boolean; canceled?: boolean }>;
   /** P2-187: phone relay address — Settings card (desktop shell only). */
   getRelaySetting?: () => Promise<RelaySetting>;
   setRelayUrl?: (url: string | null) => Promise<RelaySettingWriteResult>;
@@ -1403,6 +1406,7 @@ export default function App() {
         onBack={goBack}
         transport={clientRef.current?.transport}
         getDiagnostics={desktopBridge()?.getDiagnostics}
+        saveDiagnostics={desktopBridge()?.saveDiagnostics}
         onPairRemote={desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined}
         getRelaySetting={desktopBridge()?.getRelaySetting}
         setRelayUrl={desktopBridge()?.setRelayUrl}
@@ -1590,6 +1594,7 @@ export default function App() {
         request={() => Promise.resolve({ status: 0, body: {} })}
         onBack={() => setHelpOpen(false)}
         getDiagnostics={desktopBridge()?.getDiagnostics}
+        saveDiagnostics={desktopBridge()?.saveDiagnostics}
         onPairRemote={
           desktopBridge()?.setRemotePairing ? () => void desktopBridge()?.setRemotePairing?.(true) : undefined
         }

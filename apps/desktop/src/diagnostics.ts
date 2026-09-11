@@ -8,8 +8,12 @@
 //
 // Privacy contract: the bundle carries file NAMES and statuses only — never
 // the apiToken, allowlist contents or pairing URI (see the redaction notes
-// inline). The log tail itself is user-generated content on the user's own
-// clipboard, which is exactly where it already lives.
+// inline). Since P3-407 the whole report passes through diagredact.ts
+// (applied in main.ts's buildDiagnostics, the single exit point) before it
+// reaches the clipboard or a file: the log tail — user-generated content the
+// builder cannot fully control — is scrubbed of pairing URIs, Bearer
+// credentials, long token-like runs, control characters and the home-folder
+// prefix, so a support attachment never carries the account name either.
 
 /** Last desktop.log lines embedded in the bundle. */
 export const DIAG_LOG_TAIL = 40;

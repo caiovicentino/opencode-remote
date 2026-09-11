@@ -239,6 +239,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // P1-050: Settings "Copy diagnostic" — support bundle (versions, daemon
   // state, desktop.log tail, crash-file names). Text only, no secrets.
   getDiagnostics: (): Promise<string> => ipcRenderer.invoke("app:diagnostics"),
+  // P3-407: Settings "Save to file" — writes the SAME redacted bundle through
+  // the native save dialog (hatch path in hermetic sessions). The result is
+  // status-only: ok + the optional user-cancel flag; never a path.
+  saveDiagnostics: (): Promise<{ ok: boolean; canceled?: boolean }> =>
+    ipcRenderer.invoke("app:saveDiagnostics"),
   // P1-061: fresh loopback WS credentials (port + token) for the local direct
   // transport; null when the state file has no token yet (first health poll).
   getLocalLink: (): Promise<LocalLink | null> => ipcRenderer.invoke("app:localLink"),

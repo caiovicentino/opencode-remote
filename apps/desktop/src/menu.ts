@@ -96,6 +96,9 @@ function helpSubmenu(
   }
   items.push({ id: "help-logs", label: labels.menu.openLogs });
   items.push({ id: "help-diagnostics", label: labels.menu.copyDiagnostics });
+  // P3-407: the save-to-file twin of the copy item — same redacted bundle,
+  // written through the native save dialog (wired by id in main.ts).
+  items.push({ id: "help-save-diagnostics", label: labels.menu.saveDiagnostics });
   // P2-267: the macOS owner has no uninstaller — this item is how the app's
   // own data (identity, paired phones, state, logs) leaves the disk before a
   // machine is sold or shared. Destructive, so it lives behind its own

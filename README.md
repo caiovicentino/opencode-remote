@@ -1955,7 +1955,14 @@ renderer crashes land as timestamped files under
 clipboard — app/electron versions, platform, daemon state, the last desktop.log
 and daemon-sidecar.log lines (20, P2-163) and the crash-file names. No
 secrets: the apiToken, allowlist and pairing URI are never included (the
-sidecar log is already redacted on disk).
+sidecar log is already redacted on disk). Since P3-407 the whole bundle also
+passes through a redaction pass before it leaves the app by any path —
+pairing URIs, `Bearer` credentials, long token-like runs, control characters
+and the home-folder prefix (which names the account) are scrubbed by
+`diagredact.ts` — and the same card (plus the Help menu) offers **Save to
+file**: a native save dialog defaulting to a dated name in Downloads, written
+atomically with a 0600 permission. The toast confirms success or failure in
+plain words — it never carries the file path.
 
 **One shell per userData (P2-069)**: launching the app while an instance is
 already running simply focuses the existing window — a second copy never
