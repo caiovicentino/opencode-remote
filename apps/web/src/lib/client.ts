@@ -25,6 +25,7 @@ import {
   reauthFrameAction,
   reauthVerdict,
 } from "./reauth";
+import { networkReturnAction } from "./netreturn";
 
 export interface Pairing {
   v: 2;
@@ -360,6 +361,16 @@ export class OcrClient {
         }
       });
     }
+    // P3-425: ONE `online` listener per client, registered here (never per
+    // attach()) — the network coming back applies the pure verdict from
+    // netreturn.ts instead of waiting out a backoff of up to 15 s. The
+    // `offline` event forces nothing: dialing without a network would only
+    // burn attempts.
+    if (typeof window !== "undefined") {
+      const onOnline = () => this.applyNetworkReturn();
+      window.addEventListener("online", onOnline);
+      this.onlineDetach = () => window.removeEventListener("online", onOnline);
+    }
   }
 
   private pairing!: Pairing;
@@ -368,6 +379,8 @@ export class OcrClient {
   private rehandshaking = false;
   private gen = 0;
   private intentionalClose = false;
+  // P3-425: removes the single window `online` listener (null after detach).
+  private onlineDetach: (() => void) | null = null;
   private lastSeen = Date.now();
   private awaitingPong = false;
   private hbTimer: number | null = null;
@@ -406,6 +419,43 @@ export class OcrClient {
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     void this.reconnect();
+  }
+
+  /**
+   * P3-425: the window `online` event — the network came back. Applies the
+   * pure verdict from netreturn.ts with the same primitives the other
+   * recovery paths use: retryNow (backoff anticipation), forceReconnect
+   * (zombie socket) and sendControl (liveness ping). Anticipating the dial
+   * also zeroes reconnectAttempt so the NEXT wait starts short (1 s, not
+   * wherever the backoff had climbed to). Registered once in the
+   * constructor — never per attach() — and torn down on intentional close.
+   */
+  private applyNetworkReturn() {
+    if (this.intentionalClose) {
+      this.detachNetworkReturn();
+      return;
+    }
+    const action = networkReturnAction({
+      status: this.status,
+      reconnectPending: this.reconnectTimer !== null,
+      intentionalClose: this.intentionalClose,
+      msSinceLastSeen: Date.now() - this.lastSeen,
+    });
+    if (action === "retry-now") {
+      this.reconnectAttempt = 0;
+      this.retryNow();
+    } else if (action === "force-reconnect") {
+      this.forceReconnect();
+    } else if (action === "probe") {
+      this.awaitingPong = true;
+      this.sendControl({ type: "ping" });
+    }
+  }
+
+  /** P3-425: tear down the window `online` listener (idempotent). */
+  private detachNetworkReturn() {
+    this.onlineDetach?.();
+    this.onlineDetach = null;
   }
 
   private attach(ws: WebSocket) {
@@ -676,6 +726,7 @@ export class OcrClient {
    */
   private expire() {
     this.intentionalClose = true;
+    this.detachNetworkReturn();
     this.stopAllTimers();
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
@@ -691,6 +742,7 @@ export class OcrClient {
   /** EVAL4-F2: same exit as expire() for a sealed not-allowed answer. */
   private rejectSession() {
     this.intentionalClose = true;
+    this.detachNetworkReturn();
     this.stopAllTimers();
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
@@ -724,6 +776,7 @@ export class OcrClient {
    */
   private abandon() {
     this.intentionalClose = true;
+    this.detachNetworkReturn();
     this.stopAllTimers();
     try {
       this.ws.close();
@@ -1019,6 +1072,7 @@ export class OcrClient {
 
   close() {
     this.intentionalClose = true;
+    this.detachNetworkReturn();
     this.stopHeartbeat();
     this.clearConfirmWatchdog();
     this.clearHintVerify();
