@@ -256,7 +256,12 @@ evidências — duas 1440x900 com `prefers-reduced-motion` off/on e uma 390x844
 global zera toda animação (`animation-name` computado vira `none`); a UI
 usa animações 150–300ms ease-out (slide-in/out do painel de artifact com
 backdrop, entrada de mensagens, hover da sidebar, transições de pane) e
-NADA anima em dados tabulares/auditoria (Mission Control/CSV); P2-124
+NADA anima em dados tabulares/auditoria (Mission Control/CSV); P3-407
+adicionou o beat de salvar diagnóstico em arquivo: com o hatch
+OCR_DESKTOP_DIAG_SAVE_PATH (só vale sob OCR_DESKTOP_SESSION — lição P1-081)
+o clique no botão do Settings grava o bundle num caminho temporário e o
+arquivo provado sem a URI de pareamento plantada no desktop.log hermético e
+com o toast de sucesso em estado terminal; P2-124
 adicionou o beat do shell de sidebar nível Claude ("+ Novo" e nav de seções
 no topo da coluna de 280px, zero emoji na sidebar, footer de conta abrindo o
 seletor de máquina); P2-112

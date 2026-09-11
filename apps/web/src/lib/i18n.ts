@@ -211,6 +211,11 @@ export const dict = {
     diagTitle: "Diagnostics",
     diagCopy: "Copy diagnostic",
     diagCopied: "Diagnostic copied — paste it into your support message",
+    // P3-407: save-to-file twin of the copy action. Path-free by contract —
+    // the toast never carries where the file landed or any log content.
+    diagSave: "Save to file",
+    diagSaved: "Diagnostic saved — attach the file to your support message",
+    diagSaveFailed: "Could not save the diagnostic — try again or pick another folder",
     // daemon sidecar gave up (desktop, P2-017) — P1-053: the copy points to the
     // in-banner recovery button; the reconnecting state is the active variant.
     daemonDown: "Local daemon is down — the app stopped retrying.",
@@ -1048,6 +1053,10 @@ export const dict = {
     diagTitle: "Diagnóstico",
     diagCopy: "Copiar diagnóstico",
     diagCopied: "Diagnóstico copiado — cole na sua mensagem de suporte",
+    // P3-407: gêmeo de salvar em arquivo — copy sem caminho e sem segredo.
+    diagSave: "Salvar em arquivo",
+    diagSaved: "Diagnóstico salvo — anexe o arquivo na sua mensagem de suporte",
+    diagSaveFailed: "Não foi possível salvar o diagnóstico — tente de novo ou escolha outra pasta",
     // daemon sidecar gave up (desktop, P2-017) — P1-053: o copy aponta pro botão
     // de recuperação no próprio banner; reconectando é a variante ativa.
     daemonDown: "Daemon local caiu — o app parou de tentar reiniciar.",

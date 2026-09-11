@@ -103,6 +103,9 @@ export interface ShellMenuLabels {
   checkUpdates: string;
   openLogs: string;
   copyDiagnostics: string;
+  /** P3-407: the Help-menu twin of the copy item — writes the redacted
+   * bundle to a file through the native save dialog. */
+  saveDiagnostics: string;
   wipeData: string;
   newChat: string;
   /** P3-406: the Go item that fires the quick-entry action (global hotkey). */
@@ -183,6 +186,7 @@ const EN: ShellLabels = {
     checkUpdates: "Check for updates",
     openLogs: "Open logs folder",
     copyDiagnostics: "Copy diagnostic",
+    saveDiagnostics: "Save diagnostic to file",
     wipeData: "Erase app data…",
     newChat: "New conversation",
     quickEntry: "Quick entry",
@@ -254,6 +258,7 @@ const PT: ShellLabels = {
     checkUpdates: "Verificar atualizações",
     openLogs: "Abrir pasta de logs",
     copyDiagnostics: "Copiar diagnóstico",
+    saveDiagnostics: "Salvar diagnóstico em arquivo",
     wipeData: "Apagar dados do app…",
     newChat: "Nova conversa",
     quickEntry: "Entrada rápida",

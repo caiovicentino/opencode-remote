@@ -1,6 +1,6 @@
 import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, systemPreferences, Tray, shell } from "electron";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, sep } from "node:path";
 import QRCode from "qrcode";
@@ -161,6 +161,7 @@ import {
   zombieWarning,
 } from "./instances";
 import { buildDiagnosticReport, DIAG_LOG_TAIL, DIAG_SIDECAR_TAIL } from "./diagnostics";
+import { redactDiagnosticReport } from "./diagredact";
 import { desktopLogFile } from "./desktop-log";
 import { sidecarLogFile } from "./sidecar-log";
 
@@ -364,7 +365,14 @@ function buildDiagnostics(): string {
     // no crash folder yet
   }
   const { reconnecting, attempts } = reconnectState();
-  return buildDiagnosticReport({
+  // P3-407: the redactor is the LAST step before the report leaves this
+  // process — every consumer (Settings copy, Help-menu copy, boot-health
+  // dialog button, save-to-file) reads this already-redacted string, so no
+  // path can carry the pairing URI, a Bearer credential or the account-named
+  // home prefix out. The redactor itself is pure (diagredact.ts, unit-tested
+  // against the exact table in scripts/diagredact.test.ts).
+  return redactDiagnosticReport(
+    buildDiagnosticReport({
     appVersion: app.getVersion(),
     electronVersion: process.versions.electron ?? "?",
     platform: `${process.platform} ${process.arch}`,
@@ -410,7 +418,82 @@ function buildDiagnostics(): string {
     // P2-291: the update guard's last verdict and short reason only — never a
     // path, an address or a secret (privacy contract in diagnostics.ts).
     updateGuard: updateGuardVerdict ? { state: updateGuardVerdict, reason: updateGuardReason ?? "" } : null,
-  });
+  }), homedir());
+}
+
+// --- diagnostics save-to-file (P3-407) ------------------------------------------
+// The clipboard-only bundle forced a lay user to paste into a support thread
+// with no way to keep the file around; now Settings and the Help menu can
+// write the SAME (already-redacted — see buildDiagnostics) report to disk.
+// The native save dialog defaults to a dated name in Downloads and the write
+// is atomic with a 0600 permission, mirroring the state-file discipline. The
+// harness hatch OCR_DESKTOP_DIAG_SAVE_PATH (honored ONLY under
+// OCR_DESKTOP_SESSION — the same test-only OCR_* policy as the other hatches)
+// answers in place of the dialog with a caller-provided temp path, so a
+// hermetic session never opens a window (lesson P1-081).
+
+/** Result of the save action; `reason` is a static keyword for the log, never
+ * a path and never user content. */
+interface DiagSaveResult {
+  ok: boolean;
+  /** True when the user dismissed the native dialog — a terminal state of
+   * its own (the dialog itself was the feedback), never an error toast. */
+  canceled?: boolean;
+}
+
+/** Atomic 0600 write: temp file in the target folder, fsynced-by-rename into
+ * place — a crashed write can never leave a half-written report. */
+function writeDiagFileAtomic(target: string, text: string): void {
+  const tmp = `${target}.tmp-${process.pid}`;
+  writeFileSync(tmp, text, { encoding: "utf8", mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, target);
+}
+
+/** Dated default file name for the save dialog (locale-neutral ASCII). */
+function diagDefaultFileName(now = new Date()): string {
+  const day = now.toISOString().slice(0, 10);
+  return `opencode-remote-diagnostic-${day}.txt`;
+}
+
+/** The one save action, shared by the Help-menu item and the Settings card's
+ * IPC handler. Log-only outcomes on the menu path; the renderer turns the
+ * result into the terminal success/failure copy. */
+async function saveDiagnosticsToFile(): Promise<DiagSaveResult> {
+  // The redacted bundle — buildDiagnostics applies diagredact.ts BEFORE this
+  // string reaches the clipboard or any file write.
+  const report = buildDiagnostics();
+  // Harness-only escape hatch: write to the given path instead of opening
+  // the native dialog. Never honored outside a hermetic session.
+  const hatchPath = HERMETIC_E2E ? process.env.OCR_DESKTOP_DIAG_SAVE_PATH : undefined;
+  try {
+    if (hatchPath) {
+      writeDiagFileAtomic(hatchPath, report);
+      log(`[desktop] diagnostics saved to the harness hatch path`);
+      return { ok: true };
+    }
+    if (HERMETIC_E2E) {
+      // Lesson P1-081: a hermetic session must never open a window — the
+      // missing hatch is a refused save, not a dialog.
+      log("[desktop] diagnostics save refused: hermetic session without OCR_DESKTOP_DIAG_SAVE_PATH");
+      return { ok: false };
+    }
+    const options: Electron.SaveDialogOptions = {
+      title: currentShellLabels().menu.saveDiagnostics,
+      defaultPath: join(app.getPath("downloads"), diagDefaultFileName()),
+    };
+    const { canceled, filePath } =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+    if (canceled || !filePath) return { ok: true, canceled: true };
+    writeDiagFileAtomic(filePath, report);
+    log(`[desktop] diagnostics saved to file`);
+    return { ok: true };
+  } catch (err) {
+    logError("[desktop] diagnostics save failed:", err);
+    return { ok: false };
+  }
 }
 
 installFatalErrorHandlers(app, {
@@ -1507,6 +1590,10 @@ async function onReady(): Promise<void> {
   // in one clipboard-ready bundle.
   // No secrets: the apiToken, allowlist and pairing URI are never included.
   ipcMain.handle("app:diagnostics", () => buildDiagnostics());
+  // P3-407: "Save diagnostic to file" (Settings card, shell bridge only) —
+  // the same redacted bundle as app:diagnostics, written through the native
+  // save dialog (or the harness hatch) with an atomic 0600 write.
+  ipcMain.handle("app:saveDiagnostics", () => saveDiagnosticsToFile());
   // P2-011: narrow HTTP bridge to the local daemon's /api/browse surface so
   // the renderer can drive the host browser without ever seeing the api token
   // (the 0600 state file stays in this main process). Loopback only, browse
@@ -3187,6 +3274,10 @@ const menuShellHandlers: Record<string, () => void> = {
   // Same diagnostics bundle the app:diagnostics handler serves the renderer,
   // written straight to the clipboard from the menu item.
   "help-diagnostics": () => clipboard.writeText(buildDiagnostics()),
+  // P3-407: the save-to-file twin — same redacted bundle, native save dialog
+  // (hatch path in hermetic sessions); outcomes are log-only here because a
+  // menu click has no toast surface.
+  "help-save-diagnostics": () => void saveDiagnosticsToFile(),
   // P2-221: the menu quit goes through the same explicit-quit path as the
   // tray Quit item (verdict + native confirmation), not the bare role.
   "app-quit": () => void explicitQuit(),

@@ -35,6 +35,17 @@ export interface SidecarRedactorOptions {
 }
 
 /**
+ * P3-407: the one pairing-URI swap, shared. Replaces every occurrence of the
+ * pairing scheme (up to the next whitespace) with the redacted marker — the
+ * exact transformation the sidecar tee applies to each log line, now also
+ * applied by the diagnostics redactor (diagredact.ts) so the credential can
+ * never ride out on the support bundle either. Pure string→string.
+ */
+export function redactPairingUris(text: string): string {
+  return text.replace(PAIRING_URI_RE, REDACTED_MARKER);
+}
+
+/**
  * Build a chunk→chunk redactor. Complete lines are redacted and echoed with
  * their `\n` preserved byte-for-byte (`\r\n` survives — only the redacted
  * content changes); a trailing lineless fragment is buffered until the next
@@ -49,7 +60,7 @@ export function createSidecarRedactor(opts: SidecarRedactorOptions = {}): (chunk
   let partial = "";
   let inQr = false;
 
-  const redactLine = (line: string): string => line.replace(PAIRING_URI_RE, REDACTED_MARKER);
+  const redactLine = (line: string): string => redactPairingUris(line);
 
   const isQrNoise = (line: string): boolean => QR_ONLY_RE.test(line.replace(ANSI_RE, ""));
 

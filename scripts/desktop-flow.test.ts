@@ -4734,6 +4734,131 @@ phase("P2-152: one-time close-to-tray hint");
   }
 }
 
+// --- P3-407: diagnostics save-to-file writes the REDACTED bundle --------------
+// The support report used to ride out clipboard-only and unredacted: the
+// desktop.log tail could carry the daemon's boot-banner pairing credential
+// and account-named absolute paths. Beat: paired hermetic boot with the
+// OCR_DESKTOP_DIAG_SAVE_PATH hatch (honored only under OCR_DESKTOP_SESSION —
+// no native dialog ever opens, lesson P1-081), a planted pairing URI + home
+// path in the hermetic desktop.log, one click on the Settings save button,
+// then the saved file must exist WITHOUT the credential or the home prefix
+// (the sidecar marker instead) and the success toast must be on screen.
+{
+  phase("P3-407: diagnostics save-to-file (hatch) writes the redacted bundle");
+  const diagHome = mkdtempSync(join(tmpdir(), "ocr-flow-diag-"));
+  const diagStateFile = join(diagHome, ".opencode-remote", "daemon.json");
+  const diagPort = await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+  const diagDaemon = spawn(daemonSpawn().command, daemonSpawn().args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: diagHome,
+      OCR_METRICS_PORT: String(diagPort),
+      RELAY_URL: "ws://127.0.0.1:1",
+      OPENCODE_URL: "http://127.0.0.1:1",
+      OCR_LOG_LEVEL: "error",
+    },
+    stdio: ["ignore", "ignore", "ignore"],
+    detached: true,
+  });
+  const killDiagDaemon = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    if (!diagDaemon.pid) return;
+    try {
+      process.kill(-diagDaemon.pid, signal);
+    } catch {
+      /* already gone */
+    }
+  };
+  process.on("exit", () => killDiagDaemon("SIGKILL"));
+  const diagSaveTarget = join(diagHome, "diag-out", "report.txt");
+  mkdirSync(join(diagHome, "diag-out"), { recursive: true });
+  const diagEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-diag`,
+    OCR_DESKTOP_LOCAL_STATE: diagStateFile,
+    OCR_DAEMON_METRICS_PORT: String(diagPort),
+    OCR_DESKTOP_DIAG_SAVE_PATH: diagSaveTarget,
+  };
+  const plantedToken = "6a3f9c1e5d2b4a8f0c7e9d1a3b5f7c9d1".repeat(2);
+  const plantedHome = join(homedir(), "ocr-diag-plant", "notes");
+  let diagBooted = false;
+  try {
+    const diagToken = await waitForDaemonStateFile(diagStateFile, diagPort);
+    check("P3-407: hermetic daemon published the 0600 state file", !!diagToken);
+    if (diagToken) {
+      const open = run("P3-407: open (hermetic launch with the save hatch)", ["open"], 45_000, diagEnv);
+      diagBooted = open.ok;
+      let userDataDir = "";
+      try {
+        userDataDir = (JSON.parse(open.stdout) as { userData?: string }).userData ?? "";
+      } catch {}
+      if (open.ok && userDataDir) {
+        run("P3-407: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, diagEnv);
+        await waitProbe(
+          "P3-407: app paired with the hermetic daemon",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          diagEnv,
+        );
+        run("P3-407: open Settings pane", ["menu-click", "go-pane-settings"], 15_000, diagEnv);
+        await waitProbe(
+          "P3-407: settings loaded (footer shows the daemon version)",
+          "document.body.innerText",
+          (v) => /daemon \d/.test(v.trim()),
+          diagEnv,
+        );
+        // Plant the credentials the redactor must never let through: the
+        // daemon's boot-banner pairing URI and an account-named home path.
+        // The bundle reads the log tail at click time, so appending right
+        // before the click guarantees both ride inside it.
+        const diagLog = join(userDataDir, "logs", "desktop.log");
+        writeFileSync(diagLog, `\nor paste: opencode-remote://pair?ecdh=${plantedToken}\ncrash context: ${plantedHome}/todo.txt\n`, {
+          encoding: "utf8",
+          flag: "a",
+        });
+        run("P3-407: click the save-to-file action", ["click", ".diag-save"], 15_000, diagEnv);
+        // The write is a rename away from the click — poll briefly.
+        let saved = false;
+        for (let i = 0; i < 16 && !saved; i++) {
+          saved = existsSync(diagSaveTarget);
+          if (!saved) await new Promise((r) => setTimeout(r, 500));
+        }
+        check("P3-407: save action wrote the file at the hatch path", saved, diagSaveTarget);
+        if (saved) {
+          const out = readFileSync(diagSaveTarget, "utf8");
+          check("P3-407: saved file carries NO pairing URI (sidecar marker instead)", !out.includes("opencode-remote://pair") && out.includes("[pairing-uri redacted]"));
+          check("P3-407: saved file carries NO planted token and NO home prefix", !out.includes(plantedToken) && !out.includes(plantedHome) && out.includes("~"));
+          check("P3-407: saved file is still a useful report", out.includes("diagnostic report") || out.includes("OpenCode Remote"));
+        }
+        await waitProbe(
+          "P3-407: success toast is the terminal state",
+          "document.body.innerText",
+          (v) => /Diagnostic saved|Diagnóstico salvo/.test(v),
+          diagEnv,
+        );
+        const shotDiag1440 = join(shotsDir, "P3-407-diag-save-1440.png");
+        const s1 = run("P3-407: 1440x900 evidence shot", ["shot", shotDiag1440, "1440", "900"], 15_000, diagEnv);
+        if (s1.ok) check("P3-407: 1440x900 shot is a real PNG", pngSize(shotDiag1440).join("x") === "1440x900");
+        const s2 = run("P3-407: 390 evidence shot", ["shot", join(shotsDir, "P3-407-diag-save-390.png"), "390", "844"], 15_000, diagEnv);
+        if (s2.ok) check("P3-407: 390 shot is a real PNG", pngSize(join(shotsDir, "P3-407-diag-save-390.png"))[0] === 390);
+      } else {
+        check("P3-407: keeper reported its userData dir", false, open.stdout.slice(0, 200));
+      }
+    }
+  } finally {
+    if (diagBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: diagEnv });
+    killDiagDaemon("SIGKILL");
+    rmSync(diagHome, { recursive: true, force: true });
+  }
+}
+
 // Spec criterion 5: hermetic means hermetic — the app log must show the
 // resolveEntry miss and never a sidecar spawn.
 try {
