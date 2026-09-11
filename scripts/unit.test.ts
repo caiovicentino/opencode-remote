@@ -942,7 +942,7 @@ import {
 
 import { appIdForPlatform, applyAppUserModelId, daemonNotify, NOTIFY_BACK_BODY, NOTIFY_DOWN_BODY, WINDOWS_APP_ID } from "../apps/desktop/src/notify";
 
-import { DEEP_LINK_QUERY_MAX, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
+import { DEEP_LINK_QUERY_MAX, coldStartDeepLink, deepLinkFromArgv, parseDeepLink } from "../apps/desktop/src/deeplink";
 
 import { externalOpenDecision } from "../apps/desktop/src/extlink";
 
@@ -1309,6 +1309,35 @@ check("deepLinkFromArgv no link", deepLinkFromArgv(["C:\\app.exe", "--flag"]) ==
 
 check("deepLinkFromArgv rejects non-array", deepLinkFromArgv("opencode-remote://pair?v=2") === null);
 
+// --- P2-329: Windows cold-start deep link ------------------------------------
+// The invite link clicked with the app closed: only a packaged win32 shell
+// consumes the launching argv, in this rule order (harness → dev → platform).
+const coldArgv = ["C:\\Program Files\\opencode-remote\\opencode-remote.exe", "--hidden", deepUri];
+
+check("coldStartDeepLink ignores the link in a harness session", coldStartDeepLink({ harnessSession: true, packaged: true, platform: "win32", argv: coldArgv }) === null);
+
+check("coldStartDeepLink ignores the link in a dev build", coldStartDeepLink({ harnessSession: false, packaged: false, platform: "win32", argv: coldArgv }) === null);
+
+check("coldStartDeepLink ignores argv on darwin (open-url delivers the link)", coldStartDeepLink({ harnessSession: false, packaged: true, platform: "darwin", argv: coldArgv }) === null);
+
+check("coldStartDeepLink extracts the URI from a packaged win32 argv", coldStartDeepLink({ harnessSession: false, packaged: true, platform: "win32", argv: coldArgv }) === deepUri);
+
+check("coldStartDeepLink returns null when argv has only the executable path", coldStartDeepLink({ harnessSession: false, packaged: true, platform: "win32", argv: ["C:\\Program Files\\opencode-remote\\opencode-remote.exe"] }) === null);
+
+check("coldStartDeepLink rejects a foreign scheme in argv", coldStartDeepLink({ harnessSession: false, packaged: true, platform: "win32", argv: ["C:\\app.exe", "https://evil.example/pair?v=2&room=x"] }) === null);
+
+check("coldStartDeepLink rejects an unknown action in argv", coldStartDeepLink({ harnessSession: false, packaged: true, platform: "win32", argv: ["C:\\app.exe", "opencode-remote://evil?v=2&room=x"] }) === null);
+
+check(
+  "coldStartDeepLink rejects an oversize query in argv",
+  coldStartDeepLink({
+    harnessSession: false,
+    packaged: true,
+    platform: "win32",
+    argv: ["C:\\app.exe", `opencode-remote://pair?v=2&room=${"a".repeat(DEEP_LINK_QUERY_MAX)}`],
+  }) === null,
+);
+
 
 
 // --- external open decision (P2-178) ----------------------------------------
@@ -1360,6 +1389,23 @@ check("main.ts routes every shell.openExternal through the extlink decision", op
 check("main.ts imports externalOpenDecision", mainTsSource.includes('from "./extlink"'));
 
 check("main.ts consults externalOpenDecision four times (window-open + release page + context menu + download gate)", (mainTsSource.match(/externalOpenDecision\(/g) ?? []).length === 4);
+
+// --- P2-329: the real main.ts cold-start wiring ------------------------------
+
+check("main.ts consults the cold-start plan exactly once", (mainTsSource.match(/coldStartDeepLink\(/g) ?? []).length === 1);
+
+check("main.ts feeds the cold-start result through handleDeepLink", /handleDeepLink\s*\(\s*coldStartDeepLink\(/.test(mainTsSource));
+
+check("main.ts cold-start consult passes the harness, packaged, platform and argv inputs", /coldStartDeepLink\(\{[\s\S]*?harnessSession:[\s\S]*?packaged:[\s\S]*?platform:[\s\S]*?argv:[\s\S]*?\}\)/.test(mainTsSource));
+
+const deepLinkSection = mainTsSource.slice(
+  mainTsSource.indexOf("// --- opencode-remote:// deep links"),
+  mainTsSource.indexOf("// --- first-run pairing watcher"),
+);
+
+const deepLinkSectionLogs = deepLinkSection.match(/^\s*log\([^\n]*$/gm) ?? [];
+
+check("deep-link section has exactly one log line and it never names the URI", deepLinkSectionLogs.length === 1 && deepLinkSectionLogs[0].includes("deep link accepted (opencode-remote://pair)"));
 
 
 
