@@ -4177,6 +4177,16 @@ button.desk-new:disabled {
   font-size: 0.66rem;
   overflow-wrap: anywhere;
 }
+/* P3-418: the empty/loading body is conversational copy ("Nenhuma missão
+   definida…"), not code — reads in the interface font at the card's base
+   size; the mono 0.66rem treatment stays for real meta lines (repo, models). */
+.mission-active-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 /* Mission v2: the single "end mission" action — plain button, no motion
    (auditoria surface; prefers-reduced-motion has nothing to disable here). */
 .mission-active-actions {
@@ -5176,7 +5186,8 @@ button.desk-new:disabled {
   border-bottom: none;
 }
 .app-root.mobile .mission-active-text,
-.app-root.mobile .mission-active-src {
+.app-root.mobile .mission-active-src,
+.app-root.mobile .mission-active-note {
   font-size: var(--font-size-sm);
   line-height: var(--line-height-body);
 }

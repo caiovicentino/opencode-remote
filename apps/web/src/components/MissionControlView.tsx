@@ -459,7 +459,7 @@ export default function MissionControlView({
       <div className="mission-grid">
         <div className="mission-cards" role="list">
           <div className="mission-active" data-mission={mission ? "set" : "none"}>
-            <span className="mission-active-label">{t("missionActive")}</span>
+            <span className="mission-active-label">{mission ? t("missionActive") : t("missionLabel")}</span>
             {mission ? (
               <>
                 {mission.prompt && <p className="mission-active-text">{mission.prompt}</p>}
@@ -497,7 +497,7 @@ export default function MissionControlView({
                 </div>
               </>
             ) : (
-              <p className="mission-active-src">{mission === null ? t("missionActiveNone") : "…"}</p>
+              <p className="mission-active-note">{mission === null ? t("missionActiveNone") : "…"}</p>
             )}
             {clearStatus && <p className="mission-active-status">{clearStatus}</p>}
           </div>
