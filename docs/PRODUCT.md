@@ -114,13 +114,13 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   scanner de QR) usa a classe compartilhada `.pane-title` — passo md dos
   tokens, peso 600, ellipsis em título longo — sem override inline de
   `fontSize`, então os headers não driftam mais entre si
-- Headers de pane sem seta de voltar no desktop (P3-419): no shell de duas
-  colunas o rail é o navegador, então Artifacts, Browser e Mission Control
-  não abrem mais o header com "←" — chrome mobile escondido no bloco
-  desktop-only (≥1024px), igual ao `.chat-back` do P1-005; o título passa a
-  liderar o header. Em janelas estreitas (<1024px, sem rail) e no celular a
-  seta segue no lugar, porque o pane é a tela inteira e a seta é o caminho
-  de volta
+- Headers de pane sem seta na frente no desktop (P3-419): no shell de duas
+  colunas o rail é o navegador, então em Artifacts, Browser e Mission
+  Control o título passa a liderar o header — o "←" pinta depois do título
+  (order no bloco desktop-only, ≥1024px), e continua clicável: no portão o
+  slot Conversas do rail fica desabilitado e a seta do próprio pane é o
+  caminho de volta pro hero. Em janelas estreitas (<1024px, sem rail) e no
+  celular a seta volta a liderar, porque o pane é a tela inteira
 - Glifo da marca em todas as telas de primeiro contato (P3-373): o glifo de
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas

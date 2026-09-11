@@ -1946,17 +1946,20 @@ button.desk-new:disabled {
   flex-shrink: 0;
 }
 
-/* desktop-only chrome: hide mobile-only controls. P3-419: the desk panes'
-   back arrows join .chat-back — with the rail navigating, a leading "←" in
-   the Artifacts/Browser/Mission headers is mobile chrome with unclear
-   semantics (the pane never leaves the shell). Narrow windows keep the
-   arrow: below 1024px the mobile shell renders the pane full-screen with
-   no rail, so the arrow is still the way back. */
+/* desktop-only chrome: hide mobile-only controls. P3-419: at desk widths the
+   panes' back arrow stops LEADING the header — the rail is the navigator, so
+   the title leads and the arrow paints after it. The button stays rendered
+   and clickable: at the gate shell the rail's Conversas slot is disabled and
+   the pane's own back button is the only way back to the hero (the P3-365
+   desktop-flow beat pins that exit). Narrow windows keep the arrow leading:
+   below 1024px the mobile shell renders the pane full-screen with no rail. */
 @media (min-width: 1024px) {
   .chat-back,
-  .chat-handoff,
-  .pane-back {
+  .chat-handoff {
     display: none;
+  }
+  .pane-back {
+    order: 1;
   }
   .desk-side .list {
     display: flex;
