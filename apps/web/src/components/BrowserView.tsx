@@ -273,7 +273,20 @@ function WebViewPane({
           aria-invalid={rejected || undefined}
           style={{ flex: 1 }}
         />
-        <button onClick={reload} aria-label={t("browserReload")} title={t("browserReload")}>↻</button>
+        {/* P3-416: before any page exists the bar's action is Go (reload would
+            be a no-op on the empty guest); it swaps to reload once one is. */}
+        {started ? (
+          <button onClick={reload} aria-label={t("browserReload")} title={t("browserReload")}>↻</button>
+        ) : (
+          <button
+            onClick={() => go(input)}
+            disabled={input.trim().length === 0}
+            aria-label={t("browserGo")}
+            title={t("browserGo")}
+          >
+            →
+          </button>
+        )}
       </div>
       {error && <p className="browser-error">{error}</p>}
       <div className="browser-frame" ref={frameRef}>
