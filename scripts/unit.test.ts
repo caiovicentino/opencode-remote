@@ -25,7 +25,8 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
   delete process.env[k];
 }
 
-import { b64, clientHello, fromB64, newIdentity, seal, openSealed, seqAad, serverAccept } from "@ocr/protocol";
+import { b64, clientHello, fromB64, newIdentity, seal, openSealed, seqAad, frameSeq, serverAccept } from "@ocr/protocol";
+import { frameVerdict } from "../apps/daemon/src/frameguard";
 
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { classifyConflictPath, isCommentOnlyHunk, parseConflictedFile, repairPlan, resolveConflictedFile } from "../apps/pilot/src/mergerepair";
@@ -1105,6 +1106,68 @@ check("seal/openSealed roundtrip", (await openSealed<{ hello: string }>(sealed, 
 check("wrong seq rejected", (await openSealed(sealed, key, seqAad("client", 2))) === null);
 
 check("wrong sender rejected", (await openSealed(sealed, key, seqAad("other", 1))) === null);
+
+// --- frame seq normalization + envelope verdict (RT-424) ---------------------
+check("frameSeq: undefined -> 0", frameSeq(undefined) === 0);
+check("frameSeq: null -> 0", frameSeq(null) === 0);
+check("frameSeq: 0 -> 0", frameSeq(0) === 0);
+check("frameSeq: 1 -> 1", frameSeq(1) === 1);
+check("frameSeq: MAX_SAFE_INTEGER passes", frameSeq(Number.MAX_SAFE_INTEGER) === Number.MAX_SAFE_INTEGER);
+const frameSeqBad: [string, unknown][] = [
+  ["1.5", 1.5],
+  ["NaN", Number.NaN],
+  ["Infinity", Infinity],
+  ["-1", -1],
+  ['"1"', "1"],
+  ['"abc"', "abc"],
+  ["true", true],
+  ["{}", {}],
+  ["[]", []],
+  ["2^53", 2 ** 53],
+  ["2^64", 2 ** 64],
+];
+for (const [label, bad] of frameSeqBad) {
+  check(`frameSeq: ${label} -> null`, frameSeq(bad) === null);
+}
+
+{
+  let threw = false;
+  try {
+    seqAad("a", 1.5);
+  } catch (e) {
+    threw = e instanceof RangeError;
+  }
+  check("seqAad: fractional seq throws RangeError", threw);
+}
+{
+  let threw = false;
+  try {
+    seqAad("a", 2 ** 53);
+  } catch (e) {
+    threw = e instanceof RangeError;
+  }
+  check("seqAad: >= 2^53 throws RangeError", threw);
+}
+check(
+  "seqAad: AAD bytes for valid seq unchanged (6 id bytes + 8-byte big-endian seq)",
+  Buffer.from(seqAad("client", 1)).toString("hex") === "636c69656e740000000000000001" &&
+    Buffer.from(seqAad("client", 1)).length === 14,
+);
+
+function rejectReason(raw: unknown): string {
+  const v = frameVerdict(raw);
+  return v.ok ? "ok" : v.reason;
+}
+check("frameVerdict: null -> not-object", rejectReason(null) === "not-object");
+check("frameVerdict: number -> not-object", rejectReason(5) === "not-object");
+check("frameVerdict: array -> not-object", rejectReason([]) === "not-object");
+check("frameVerdict: missing from -> bad-from", rejectReason({ payload: "x" }) === "bad-from");
+check("frameVerdict: non-string payload -> bad-payload", rejectReason({ from: "a", payload: 5 }) === "bad-payload");
+check("frameVerdict: fractional seq -> bad-seq", rejectReason({ from: "a", payload: "x", seq: 1.5 }) === "bad-seq");
+{
+  const v = frameVerdict({ from: "a", payload: "" });
+  check("frameVerdict: empty payload (control frame) -> ok with seq 0", v.ok && v.frame.seq === 0);
+}
 
 
 // --- handshake freshness (RT-390) -------------------------------------------

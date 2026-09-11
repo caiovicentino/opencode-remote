@@ -35,6 +35,7 @@ import type {
   RelayFrame,
 } from "@ocr/protocol";
 import { log } from "./log.js";
+import { frameVerdict } from "./frameguard.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
 import { pushSubscriptionVerdict, redactPushEndpoint } from "./pushsubs.js";
@@ -3341,7 +3342,7 @@ async function forwardEvents() {
 // relay websocket: blind pipe; payloads are opaque ciphertext to the relay
 // ---------------------------------------------------------------------------
 
-async function handleSealedFrame(frame: RelayFrame, ws: WebSocket) {
+async function handleSealedFrame(frame: RelayFrame & { seq: number }, ws: WebSocket) {
   const session = sessions.get(frame.from);
   if (!session) {
     log("warn", "sealed frame from unknown session; asking client to re-handshake", {
@@ -3358,7 +3359,7 @@ async function handleSealedFrame(frame: RelayFrame, ws: WebSocket) {
     );
     return;
   }
-  const seq = frame.seq ?? 0;
+  const seq = frame.seq; // RT-424: already normalized by frameVerdict
   if (seq <= session.lastSeq) {
     log("warn", "replay rejected", { from: frame.from, seq, lastSeq: session.lastSeq });
     return;
@@ -3409,14 +3410,29 @@ interface HelloMsg {
 }
 
 async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
-  let frame: RelayFrame;
+  let parsed: unknown;
   try {
-    frame = JSON.parse(data.toString());
+    parsed = JSON.parse(data.toString());
   } catch {
     return;
   }
+  // RT-424: the envelope is clear-text metadata an untrusted sender controls;
+  // malformed frames are dropped BEFORE any crypto or session state. A forged
+  // `from` must never tick attributeAuthFailure, so this is not an auth
+  // failure — just garbage on the wire.
+  const verdict = frameVerdict(parsed);
+  if (!verdict.ok) {
+    metrics.inc("ocr_frames_malformed_total");
+    const rawFrom = (parsed as { from?: unknown } | null);
+    log("warn", "malformed frame dropped", {
+      reason: verdict.reason,
+      ...(typeof rawFrom?.from === "string" ? { from: rawFrom.from.slice(0, 16) } : {}),
+    });
+    return;
+  }
+  const frame = verdict.frame;
   if (frame.from === daemon.room) return;
-  log("debug", "frame received", { from: frame.from, bytes: frame.payload?.length ?? 0 });
+  log("debug", "frame received", { from: frame.from, bytes: frame.payload.length });
 
   // control frames carry clear JSON (b64-encoded) with a `type` field
   let isControl = false;
@@ -3617,6 +3633,18 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
   await handleSealedFrame(frame, ws);
 }
 
+/**
+ * RT-424: single backstop for both transports — `handleMessage` must never
+ * leave a floating rejection (Node 22 kills the process on one). Only the
+ * error NAME is logged: the message could carry frame content.
+ */
+function onSocketMessage(data: WebSocket.RawData, ws: WebSocket) {
+  handleMessage(data, ws).catch((err) => {
+    metrics.inc("ocr_frame_handler_errors_total");
+    log("error", "frame handler failed", { error: err instanceof Error ? err.name : "unknown" });
+  });
+}
+
 // handle to the live relay websocket (shutdown closes it with code 1001)
 let relaySocket: WebSocket | null = null;
 // P2-129: exponential backoff with full jitter for relay reconnects — a fleet
@@ -3695,7 +3723,7 @@ function connectRelay() {
     ws.send(JSON.stringify({ room: daemon.room, from: daemon.room, payload: "" }));
   });
 
-  ws.on("message", (data) => void handleMessage(data, ws));
+  ws.on("message", (data) => onSocketMessage(data, ws));
 
   ws.on("close", (code, reason) => {
     if (isShuttingDown()) return; // drain in progress: do not reconnect
@@ -3797,7 +3825,7 @@ function attachLocalWs(server: HttpServer): void {
           pruneLocalSessions(ws);
         });
         ws.on("error", () => {});
-        ws.on("message", (data) => void handleMessage(data, ws));
+        ws.on("message", (data) => onSocketMessage(data, ws));
       });
     } catch {
       // unreadable state file / malformed URL: never crash the daemon on an

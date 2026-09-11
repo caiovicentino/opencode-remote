@@ -122,6 +122,19 @@ identity servers, no accounts.
   can still be replayed within the ±5 min window right after the restart —
   closing that for good requires a server challenge (handshake v3, out of
   scope).
+- A room member can DoS the daemon with malformed envelope metadata (RT-424):
+  a frame whose clear-text `seq` is not a non-negative safe integer (fraction,
+  numeric string, boolean, NaN/±Infinity, ≥ 2^53), a non-object envelope or a
+  non-string `from`/`payload` used to reach `BigInt()`/`seqAad` and crash the
+  daemon with an unhandled rejection — before any authentication. The envelope
+  is now validated (`frameVerdict`) at the single point both transports pass
+  through and dropped before any crypto, without touching the live session's
+  state (`lastSeq` stays intact, no auth-failure attribution from forged
+  metadata) and counted in `ocr_frames_malformed_total`. A handler error that
+  still slips through is contained by a per-message backstop counted in
+  `ocr_frame_handler_errors_total` (error name only, never frame content).
+  The client applies the same fail-closed `seq` rule and never logs frame
+  content.
 - A rogue device cannot sustain a flood through the relay: message frames are
   token-bucketed per connection (600 msgs/min, burst 1000, tunable via env)
   and the over-budget socket is dropped with close code 4029. Every frame
