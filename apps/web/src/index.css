@@ -1946,10 +1946,16 @@ button.desk-new:disabled {
   flex-shrink: 0;
 }
 
-/* desktop-only chrome: hide mobile-only controls */
+/* desktop-only chrome: hide mobile-only controls. P3-419: the desk panes'
+   back arrows join .chat-back — with the rail navigating, a leading "←" in
+   the Artifacts/Browser/Mission headers is mobile chrome with unclear
+   semantics (the pane never leaves the shell). Narrow windows keep the
+   arrow: below 1024px the mobile shell renders the pane full-screen with
+   no rail, so the arrow is still the way back. */
 @media (min-width: 1024px) {
   .chat-back,
-  .chat-handoff {
+  .chat-handoff,
+  .pane-back {
     display: none;
   }
   .desk-side .list {

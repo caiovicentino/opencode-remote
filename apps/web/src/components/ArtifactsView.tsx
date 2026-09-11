@@ -87,7 +87,7 @@ export default function ArtifactsView({
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack} aria-label={t("back")}>←</button>
+        <button className="pane-back" onClick={onBack} aria-label={t("back")}>←</button>
         <h1 className="pane-title">{t("artifactsTitle")}</h1>
         <button onClick={load} aria-label={t("artifactsRefresh")} title={t("artifactsRefresh")}>
           ↻
