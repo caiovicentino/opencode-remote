@@ -176,6 +176,30 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           ✻
         </div>
         <h1 className="brand-wordmark">OpenCode Remote</h1>
+        {/* P3-411: the ceremony replaces the whole shell, so its exit rides the
+            sticky brand header — top-left and always on screen. The old
+            end-of-flow link rendered under the pane map (below the fold at
+            1440x900) and left users who arrived via the manual escape without
+            a visible way out. */}
+        {onBack && (
+          <button className="pair-back" onClick={onBack}>
+            <svg
+              className="pair-back-chevron"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+            {t("pairBack")}
+          </button>
+        )}
       </header>
       {/* EVAL4-F1: the phone (no host section, scan-first) must not read the
           desktop's "pairs with the daemon on this machine" promise. */}
@@ -231,11 +255,6 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           P3-413: inside the desktop shell only the chat carries the lock —
           the other four panes open pre-pairing from the gate rail. */}
       <PaneMap offlinePanes={offlinePanes} />
-      {onBack && (
-        <button className="pair-back" onClick={onBack}>
-          {t("pairBack")}
-        </button>
-      )}
     </div>
   );
 }

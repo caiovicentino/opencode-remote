@@ -12546,6 +12546,26 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-411: the manual ceremony's exit never sits below the fold -------------
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const headerAt = src.indexOf("<header>");
+  const backAt = src.indexOf('className="pair-back"', headerAt);
+  const headerEnd = src.indexOf("</header>", headerAt);
+  check(
+    "P3-411: the ceremony exit rides the sticky brand header (onBack present), not the flow's end",
+    headerAt !== -1 && backAt > headerAt && backAt < headerEnd &&
+      !/PaneMap offlinePanes=\{offlinePanes\} \/\>\s*\{onBack && \(/.test(src),
+  );
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const ruleAt = css.indexOf(".pair-back {");
+  const rule = ruleAt === -1 ? "" : css.slice(ruleAt, css.indexOf("}", ruleAt));
+  check(
+    "P3-411: .pair-back is pinned top-left inside the positioned header, off the scroll flow",
+    rule.includes("position: absolute") && rule.includes("left: 0") && rule.includes("var(--muted)"),
+  );
+}
+
 // --- P3-334: the desktop pairing screen leads with the host section ----------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");

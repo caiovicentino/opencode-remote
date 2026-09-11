@@ -291,6 +291,10 @@ o ceremony já está na tela; o beat P3-367 do desktop-flow rearma o hint, clica
 de verdade no "Parear agora" e prova a saída (toast dispensado + ceremony
 manual visível) — probes em `join('|')` porque `JSON.stringify` dentro do
 `ipc` volta com escape `\"` do harness e false-faila no regex;
+P3-411 deu exit sempre visível ao ceremony manual: o "Voltar" (`.pair-back`)
+saiu do fim do fluxo (embaixo do mapa de panes, abaixo da dobra em 1440x900)
+e virou controle fixo no topo esquerdo do header de marca sticky — nunca
+sai de tela, nem rolando;
 P3-362 acabou com o toast genérico e circular do portão: o menu Go agora abre
 na tela de portão os mesmos panes offline que o rail já abre (P3-365:
 Mission Control, Artifacts, Browser, Settings — `GATE_SHELL_PANES`), em vez de
