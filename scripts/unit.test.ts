@@ -25,7 +25,7 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
   delete process.env[k];
 }
 
-import { b64, clientHello, fromB64, newIdentity, seal, openSealed, seqAad, frameSeq, serverAccept } from "@ocr/protocol";
+import { b64, clientHello, fromB64, newIdentity, RELAY_WIRE_PROTOCOL, seal, openSealed, seqAad, frameSeq, serverAccept } from "@ocr/protocol";
 import { frameVerdict } from "../apps/daemon/src/frameguard";
 
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
@@ -14726,7 +14726,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     {
       name: "healthz",
       status: 200,
-      body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
     },
     {
       name: "web-root",
@@ -14752,6 +14752,32 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   };
 
   check("P2-196: every probe passing → zero problems", imageSmokeVerdict(okProbes()).length === 0);
+
+  // P2-331: the healthz probe must demand the announced wire protocol
+  const noProtocol = failOne("healthz", {
+    body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+  });
+  check(
+    "P2-331: healthz body without protocol → problem (fail-closed)",
+    noProtocol.length === 1 && noProtocol[0]!.includes("protocol") && noProtocol[0]!.includes("positive integer"),
+    JSON.stringify(noProtocol),
+  );
+  const wrongProtocol = failOne("healthz", {
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL + 1, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+  });
+  check(
+    "P2-331: healthz announcing a different wire protocol → problem",
+    wrongProtocol.length === 1 && wrongProtocol[0]!.includes("incompatible relay wire protocol"),
+    JSON.stringify(wrongProtocol),
+  );
+  const junkProtocol = failOne("healthz", {
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: "2", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+  });
+  check(
+    "P2-331: non-integer protocol → problem",
+    junkProtocol.length === 1 && junkProtocol[0]!.includes("positive integer"),
+    JSON.stringify(junkProtocol),
+  );
 
   const healthz = failOne("healthz", { status: 503, body: "draining" });
   check(
@@ -36470,6 +36496,16 @@ if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
 }
+
+// P2-331 pin: the smoke script runs via bare `npx tsx` (relay-image job has no
+// npm ci), so it inlines RELAY_WIRE_PROTOCOL — this check fails the battery if
+// the literal drifts from packages/protocol.
+{
+  const smoke = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "relay-image-smoke.ts"), "utf8");
+  const literal = /OCR_RELAY_WIRE_PROTOCOL \?\? (\d+)/.exec(smoke);
+  check("relay-image-smoke: inline RELAY_WIRE_PROTOCOL matches @ocr/protocol", !!literal && Number(literal[1]) === RELAY_WIRE_PROTOCOL);
+}
+
 
 console.log("UNIT TESTS PASSED");
 process.exit(0);

@@ -1,4 +1,5 @@
 export type { PairingInfo, RelayFrame, ClientEnvelope, DaemonEnvelope, OpRequest, OpResponse, EventEnvelope, ResChunk, ReauthRequired } from "./types.js";
+export { RELAY_WIRE_PROTOCOL } from "./types.js";
 export {
   b64,
   fromB64,

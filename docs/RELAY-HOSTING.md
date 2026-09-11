@@ -62,7 +62,8 @@ runs the smoke battery of `scripts/relay-image-smoke.ts` against the live
 container (5s fetch timeout per probe):
 
 - `/healthz` answers `200` with today's counter body (`ok`, `version`,
-  `uptimeS`, `rooms`, `roomsRejected`);
+  `protocol`, `uptimeS`, `rooms`, `roomsRejected`), with `protocol` equal to
+  the `RELAY_WIRE_PROTOCOL` constant the tree shipped (P2-331);
 - `/` answers `200` with `text/html` and every security header P2-192
   introduced (CSP, referrer/permissions policies, framing, COOP/CORP);
 - the content-hashed bundle asset referenced by the entry document answers
@@ -667,11 +668,33 @@ changed. No other relay log line ever carries a client address.
 expose publicly (no room ids, no per-peer metadata):
 
 ```json
-{"ok":true,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18"}
+{"ok":true,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18"}
 ```
 
 The image's `HEALTHCHECK` polls it locally every 30s; load balancers should
 use the same path as the HTTP health check.
+
+### The wire protocol field (P2-331)
+
+The body always carries `protocol`, right after `version`: the version of the
+wire protocol itself — the `RelayFrame` format and the join sequence a daemon
+or phone speaks against the relay — as published by the `RELAY_WIRE_PROTOCOL`
+constant of the `@ocr/protocol` package. The field is independent from the
+package `version` and exists so an installed machine can tell "relay
+momentarily unreachable" (reconnect) apart from "relay speaks a frame format
+this build never learned" (a real upgrade is required) once the hosted relay
+starts running versions the installed fleet has never seen.
+
+**When the number rises: only on an incompatible change** — a change that
+prevents an old peer from joining or exchanging frames with a new relay.
+Additive, backwards-compatible changes keep the number. Clients that do not
+know the field ignore it; clients that do compare it against the constant
+they were built with. The field rides the `503` draining body too, exactly
+like every other one:
+
+```json
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
+```
 
 ### Why a room was refused: the rejection breakdown (P2-293)
 
@@ -694,7 +717,7 @@ carries a room identifier, connection id, address or IP — the relay stays
 blind. The drain response keeps the fields, like every other one:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
 ```
 
 ### Certificate verdict on the probe (P2-290)
@@ -715,7 +738,7 @@ count — never a subject, issuer, serial number, fingerprint, file path or
 host. The drain response keeps them, exactly like every other field:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
 ```
 
 The same verdict also feeds the Prometheus series described in the metrics
@@ -746,7 +769,7 @@ host. It is observability, not policy: no connection is refused because of
 it. The drain response keeps the field, exactly like every other one:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"use","certExpiryInS":86400,"certChainState":"leaf-only","draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"use","certExpiryInS":86400,"certChainState":"leaf-only","draining":true}
 ```
 
 ### During the drain: 503 on purpose (P2-145)
@@ -756,7 +779,7 @@ When the relay receives `SIGTERM` it enters a drain window (≤3s) and
 `draining:true` field — every pre-existing field keeps its name and meaning:
 
 ```json
-{"ok":false,"version":"0.2.0","uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18","draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18","draining":true}
 ```
 
 The 503 tells the load balancer to stop routing NEW daemons and phones to
