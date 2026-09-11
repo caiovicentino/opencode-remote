@@ -298,6 +298,9 @@ export const dict = {
     // P3-372: live segment of the auto-retry line — "12s · attempt 3".
     retryElapsed: "{s}s",
     retryAttempt: "attempt {n}",
+    // P3-417: past 90s the same segment reads in minutes, sharing the
+    // escalation title's clock instead of a raw "214s" counter.
+    retryElapsedMin: "{m} min",
     degradedDownHint:
       "Automatic retries stopped. Use Reconnect now — or just wait: the app reconnects by itself when the daemon is back.",
     // P3-360: the offline first-message queue on the calm card — the "nothing
@@ -1142,6 +1145,9 @@ export const dict = {
     // P3-372: segmento vivo da linha de retry — "há 12s · tentativa 3".
     retryElapsed: "há {s}s",
     retryAttempt: "tentativa {n}",
+    // P3-417: passados 90s o mesmo segmento lê em minutos — o mesmo relógio
+    // do título da escalada, nunca um "há 214s" cru ao lado do "há 3 min".
+    retryElapsedMin: "há {m} min",
     degradedDownHint:
       "As tentativas automáticas pararam. Use Reconectar agora — ou espere: quando o daemon voltar, o app reconecta sozinho.",
     degradedLocalTitle: "Disponível offline",

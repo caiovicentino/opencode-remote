@@ -1658,7 +1658,11 @@ so the number doubles as a quiet countdown to the next probe, and the shell's
 attempt counter rides along once it exists. The ticking segment appears from
   the first full second (no awkward "há 0s" first paint) and uses tabular
   numerals (no per-second jitter); it is hidden from screen readers so the
-  status live region is not re-announced every second.
+  status live region is not re-announced every second. Past 90 seconds
+  (P3-417) the segment itself switches to minutes ("há 2 min" / "2 min"),
+  driven by the same clock as the escalation title — the card never shows a
+  raw "há 214s" beside the title's "há 3 min" again, two watches that disagree
+  about the same wait.
 
 **One calm recovery path once escalated (P3-385)**: when the calm card
 escalates after a minute of silent retrying ("No answer from the local daemon
