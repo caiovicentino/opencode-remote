@@ -35311,7 +35311,8 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
   // The red line is reserved for unexpected failures; the expected offline
   // state renders inside the calm empty-world branch, whose condition keeps
-  // the e2e error-absence hook (`.artifacts-error` gone, p.muted present).
+  // the e2e error-absence hook (`.artifacts-error` gone, composed empty copy
+  // present — P3-414's .artifacts-empty-title/hint).
   // Round 3 review: a previously successful load keeps its stale results with
   // the sync hint riding along — never a silent stale pane, never red.
   check(
