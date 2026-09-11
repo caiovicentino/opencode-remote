@@ -12,6 +12,7 @@ export {
   seal,
   openSealed,
   seqAad,
+  frameSeq,
   type Identity,
   type DaemonHello,
   type ServerAccept,

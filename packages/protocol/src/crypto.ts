@@ -115,8 +115,24 @@ async function deriveAesKey(
   );
 }
 
+/**
+ * RT-424: normalized frame `seq`. `undefined`/`null` → 0 (the historical
+ * `?? 0` semantic: the replay guard keeps refusing it). A non-negative safe
+ * integer passes through; anything else → null (fail-closed): numeric
+ * strings, booleans, fractions, NaN, ±Infinity, negatives and values ≥ 2^53
+ * are never allowed into the AAD or the replay guard.
+ */
+export function frameSeq(raw: unknown): number | null {
+  if (raw === undefined || raw === null) return 0;
+  if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0) return raw;
+  return null;
+}
+
 /** AAD binding for data frames: sender id + sequence number. */
 export function seqAad(from: string, seq: number): Uint8Array {
+  if (frameSeq(seq) !== seq) {
+    throw new RangeError("seqAad: seq must be a non-negative safe integer");
+  }
   const f = te.encode(from);
   const out = new Uint8Array(new ArrayBuffer(f.length + 8));
   out.set(f, 0);

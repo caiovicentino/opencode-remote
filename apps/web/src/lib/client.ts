@@ -4,6 +4,7 @@ import {
   seal,
   openSealed,
   seqAad,
+  frameSeq,
   newIdentity,
   type Identity,
 } from "@ocr/protocol";
@@ -411,7 +412,9 @@ export class OcrClient {
     const gen = ++this.gen;
     ws.onmessage = (e) => {
       if (gen !== this.gen) return;
-      void this.onMessage(e.data as string);
+      // RT-424: no floating rejection — a malformed frame is dropped, never
+      // an unhandled promise (the browser would only log it, but stay tidy).
+      this.onMessage(e.data as string).catch(() => {});
     };
     ws.onclose = () => {
       if (gen !== this.gen || this.ws !== ws || this.intentionalClose) return;
@@ -848,6 +851,8 @@ export class OcrClient {
     } catch {
       return;
     }
+    // RT-424: JSON `null` (or any non-object) has no `from` — reading it threw.
+    if (!frame || typeof frame !== "object") return;
     if (!frame.from || frame.from === this.from || !frame.payload) return;
 
     let clearType: ReturnType<typeof readClearControl> = null;
@@ -926,9 +931,10 @@ export class OcrClient {
       return;
     }
 
-    // replay guard: daemon frames must be fresh
-    const seq = frame.seq ?? 0;
-    if (seq <= this.daemonLastSeq) return;
+    // replay guard: daemon frames must be fresh; RT-424: `seq` must be a
+    // non-negative safe integer — anything else is dropped (fail-closed)
+    const seq = frameSeq(frame.seq);
+    if (seq === null || seq <= this.daemonLastSeq) return;
 
     const env = await openSealed<
       { type: "res"; res: OpResponse } | { type: "res-chunk"; chunk: ResChunk } | { type: "event"; event: EventEnvelope } | { type: "pong" }

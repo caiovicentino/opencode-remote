@@ -30,6 +30,10 @@ Settings → About ("Connection: direct (local) / via relay").
 ### packages/protocol
 Shared crypto and wire types. ECDH P-256 identities, HKDF → AES-256-GCM
 session keys, sequence numbers bound as AAD (replay/reorder protection).
+`seq` is validated as a non-negative safe integer (`frameSeq`) before it
+enters the AAD — `seqAad` throws instead of accepting anything else, and
+malformed envelopes are dropped at the boundary, never crash the receiver
+(RT-424).
 No trusted third party: the pairing QR carries the daemon's public key and
 the handshake proves both sides possess the matching secret. The handshake
 also carries an authenticated creation timestamp (sealed inside the hello

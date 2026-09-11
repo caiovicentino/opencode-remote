@@ -209,6 +209,54 @@ ws.send(
   console.log("ping→pong liveness on local WS: OK");
 }
 
+// --- 4b. malformed frames must never kill the daemon (RT-424) ----------------
+// Five wire-level attacks in a row, same socket, live `localtest` session:
+// raw `null` text, fractional seq, string seq, Infinity seq (JSON 1e999 raw)
+// and a seq ≥ 2^64. Before the frameVerdict gate the daemon died on the first
+// one (unhandled RangeError/TypeError). The session state (lastSeq) must also
+// come out untouched: a fresh valid op with seq: 2 still answers 200.
+{
+  ws.send("null");
+  ws.send(JSON.stringify({ room: "localws", from: "localtest", seq: 1.5, payload: "AAAA" }));
+  ws.send(JSON.stringify({ room: "localws", from: "localtest", seq: "abc", payload: "AAAA" }));
+  ws.send('{"room":"localws","from":"localtest","seq":1e999,"payload":"AAAA"}');
+  ws.send('{"room":"localws","from":"localtest","seq":18446744073709555712,"payload":"AAAA"}');
+  await new Promise((r) => setTimeout(r, 1000));
+  if (daemon.exitCode !== null || daemon.signalCode !== null) {
+    throw new Error(`daemon died on malformed frames (exit=${daemon.exitCode} signal=${daemon.signalCode})`);
+  }
+  const id = crypto.randomUUID();
+  const payload = await seal(
+    { type: "op", req: { id, method: "POST", path: "/__ocr/transcribe/chunk", body: { id: "t3", idx: 0, data: "" } } },
+    sessionKey,
+    seqAad("localtest", 2),
+  );
+  ws.send(JSON.stringify({ room: "localws", from: "localtest", seq: 2, payload }));
+  const res = await new Promise<OpResponse>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("no op response after malformed frames (8s)")), 8000);
+    ws.on("message", async (data: WebSocket.RawData) => {
+      const frame = JSON.parse(data.toString());
+      if (frame.from === "localtest") return; // daemon frames only
+      try {
+        const env = await openSealed<{ type: string; res?: OpResponse }>(
+          frame.payload,
+          sessionKey,
+          seqAad(frame.from, frame.seq ?? 0),
+        );
+        if (env?.type === "res" && env.res?.id === id) {
+          ws.removeAllListeners("message");
+          clearTimeout(t);
+          resolve(env.res!);
+        }
+      } catch {
+        // control frame mixed in — keep waiting
+      }
+    });
+  });
+  if (res.status !== 200) throw new Error(`fresh op after malformed frames failed: ${res.status}`);
+  console.log("malformed frames dropped, daemon alive, session intact: OK");
+}
+
 ws.close();
 
 // --- 5. OcrClient.connect transport selection (stubbed getLocalLink) --------
