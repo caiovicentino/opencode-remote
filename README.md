@@ -2100,6 +2100,22 @@ action and the reason. Platforms without the OS signal keep the previous
 behavior unchanged, no new periodic probe is introduced, and pairing is never
 touched by a wake: no re-pairing, no allowlist or state-file writes.
 
+**Keep awake while the agent works**: the other half of the sleep story — a
+long run requested from the phone no longer dies because the machine drifted
+into idle sleep mid-turn. The web UI derives how many agent sessions are busy
+and pushes only that count to the shell; while at least one session is busy
+and the tray checkbox **Keep awake while the agent works** is on (the
+default), the shell holds a `powerSaveBlocker` in the
+`prevent-app-suspension` mode, so an unattended Mac/PC stops dozing off while
+the agent works. The choice is persisted atomically in `userData`
+(`keep-awake.json`), one hold/release transition logs exactly one line, at
+most one blocker is ever alive, and a documented ceiling releases the hold
+after 4 continuous hours of the same busy period (it re-arms on the next
+idle→busy transition). Malformed pushes never hold the machine: invalid input
+always releases. Note the platform limit: on macOS, **closing the lid still
+suspends the machine** — the blocker only suppresses idle sleep, it does not
+defeat a closed lid.
+
 **Daemon/app version mismatch banner**: because the shell adopts an external
 daemon (launchd/CLI install), it can end up talking to a daemon older than the
 app itself — the symptom for a lay user is random breakage, not a clear

@@ -150,6 +150,14 @@ export interface ShellUpdateLabels {
   later: string;
 }
 
+/**
+ * P3-409: the tray's "keep awake while the agent works" checkbox. One label,
+ * static in both languages like every other shell phrase.
+ */
+export interface ShellAwakeLabels {
+  keepAwake: string;
+}
+
 /** The full tray journey vocabulary (mirrors traystatus.ts's rule table). */
 export interface ShellTrayLabels {
   down: ShellTrayPhrase;
@@ -170,6 +178,8 @@ export interface ShellLabels {
   tray: ShellTrayLabels;
   /** P3-393: the update consent dialog's vocabulary. */
   update: ShellUpdateLabels;
+  /** P3-409: the tray's keep-awake checkbox vocabulary. */
+  awake: ShellAwakeLabels;
 }
 
 const EN: ShellLabels = {
@@ -239,6 +249,9 @@ const EN: ShellLabels = {
     whatsNew: "What's new:",
     restart: "Restart now",
     later: "Later",
+  },
+  awake: {
+    keepAwake: "Keep awake while the agent works",
   },
 };
 
@@ -311,6 +324,9 @@ const PT: ShellLabels = {
     whatsNew: "Novidades:",
     restart: "Reiniciar agora",
     later: "Depois",
+  },
+  awake: {
+    keepAwake: "Manter acordado enquanto o agente trabalha",
   },
 };
 
