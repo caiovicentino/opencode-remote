@@ -37,9 +37,10 @@ export function nextCheckDelayMs(
   if (status === "disabled" || status === "update-downloaded") return null;
   const failures = Number.isInteger(consecutiveFailures) && consecutiveFailures > 0 ? consecutiveFailures : 0;
   let delay: number;
-  if (status === "feed-unreachable" || status === "unrecognized-feed") {
-    // Dead/broken feed: exponential backoff 15 min → 6 h, doubling per
-    // consecutive failure, saturated by the Math.min at the base interval.
+  if (status === "feed-unreachable" || status === "unrecognized-feed" || status === "update-download-failed") {
+    // Dead/broken feed, or a background download that failed (P2-330):
+    // exponential backoff 15 min → 6 h, doubling per consecutive failure,
+    // saturated by the Math.min at the base interval.
     delay = Math.min(UPDATE_RECHECK_BASE_MS, UPDATE_RECHECK_BACKOFF_START_MS * 2 ** Math.max(0, failures - 1));
   } else {
     // Healthy resolutions (update-not-available / update-available /

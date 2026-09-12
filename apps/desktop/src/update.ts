@@ -53,6 +53,7 @@ export type UpdateStatus =
   | "update-installer-ready"
   | "update-not-available"
   | "update-downloaded"
+  | "update-download-failed"
   | "unrecognized-feed"
   | "feed-unreachable";
 
@@ -82,6 +83,12 @@ export function updateMenuLabel(status: UpdateStatus): string | null {
       return "Update ready — restart to install";
     case "update-not-available":
       return "Up to date";
+    case "update-download-failed":
+      // P2-330: the background Squirrel.Mac download failed (network dropped,
+      // disk refused, package rejected) — the tray was promising an update that
+      // stopped downloading. Same short sibling phrasing as the feed failures,
+      // never the path, the URL or the raw error message.
+      return "Update download failed — will retry";
     case "unrecognized-feed":
       return "Update check failed — unrecognized feed";
     case "feed-unreachable":
@@ -378,16 +385,37 @@ interface DownloadedState {
   /** P3-393: the release notes the feed carried for `version` (raw — the
    * dialog host sanitizes them). Absent when the feed had none. */
   notes?: string;
+  /** P2-330: the updater's own background download is believed in flight
+   * (armed by the updater's own "update-available" emission, cleared by
+   * "update-downloaded" and by the error itself). Only an error WHILE this is
+   * on maps to "update-download-failed" — a plain check error with no offer
+   * stays covered by the feed statuses, and "update-downloaded" never
+   * regresses to a failure the flow already outgrew. */
+  downloading: boolean;
 }
 const downloaded = new WeakMap<UpdaterLike, DownloadedState>();
 
 function stateFor(updater: UpdaterLike): DownloadedState {
   let st = downloaded.get(updater);
   if (!st) {
-    st = { offering: null, declined: new Set(), version: null, notes: "" };
+    st = { offering: null, declined: new Set(), version: null, notes: "", downloading: false };
     downloaded.set(updater, st);
   }
   return st;
+}
+
+/**
+ * P2-330: pure derivation for an autoUpdater "error" emission. The download
+ * engine's failures used to be swallowed by the log-only handler while the
+ * tray kept announcing an update nobody was downloading for the whole six-hour
+ * recheck interval. Only an error WHILE a download is in flight means
+ * "update-download-failed" — a check error with no offer in the air stays
+ * covered by the feed statuses (null here, so the caller keeps the log-only
+ * behavior), and a download already finished is never regressed. Pure: the
+ * caller owns the flag bookkeeping.
+ */
+export function statusAfterUpdaterError(downloadInProgress: boolean): UpdateStatus | null {
+  return downloadInProgress ? "update-download-failed" : null;
 }
 
 /**
@@ -479,8 +507,25 @@ export function attachUpdateListeners(
   updater.on("error", (err) => {
     const message = err instanceof Error ? err.message : String(err);
     hooks.log(`update check failed (log-only, continuing): ${message}`);
+    // P2-330: a download that was ACTUALLY in flight and failed must surface —
+    // the tray was announcing an update that stopped downloading. The status
+    // is derived BEFORE the flag drops, so a plain check error with no offer
+    // keeps the feed statuses speaking and an already-downloaded release is
+    // never regressed. Same listener, same log line, no new IPC, no new
+    // request — only the existing onStatus sink when the derivation is
+    // non-null.
+    const st = stateFor(updater);
+    const failed = statusAfterUpdaterError(st.downloading);
+    if (failed) hooks.onStatus?.(failed, st.version);
+    st.downloading = false;
   });
-  updater.on("update-available", () => hooks.log("update-available (autoUpdater event) — download continues in background"));
+  updater.on("update-available", () => {
+    // P2-330: the updater's own announcement arms the download-in-flight
+    // indicator — from here on an error means the background download failed,
+    // not just a check.
+    stateFor(updater).downloading = true;
+    hooks.log("update-available (autoUpdater event) — download continues in background");
+  });
   // P2-258: forward the updater's own download-progress emissions to the sink
   // the caller already injected — nothing else. No new network request, no
   // new IPC channel, no new timer; the tray's progress label is the only
@@ -488,6 +533,9 @@ export function attachUpdateListeners(
   updater.on("download-progress", (info) => hooks.onProgress?.(info));
   updater.on("update-downloaded", (...args: unknown[]) => {
     const st = stateFor(updater);
+    // P2-330: the download finished — a later error (install/restart phase)
+    // never regresses this status to a failure the flow already outgrew.
+    st.downloading = false;
     const version = versionFromDownloadedArgs(args) ?? st.version ?? "";
     hooks.log(`update-downloaded: ${version} (autoUpdater event) — ready to install`);
     st.version = version || st.version;

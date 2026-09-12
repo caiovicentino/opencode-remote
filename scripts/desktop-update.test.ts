@@ -313,10 +313,12 @@ import {
   releasePageUrl,
   resolvedFeedUrl,
   shouldOfferInstall,
+  statusAfterUpdaterError,
   updateMenuLabel,
   updatesEnabled,
   versionFromDownloadedArgs,
   type UpdateDialogSinks,
+  type UpdateStatus,
   type WinInstallerRequest,
 } from "../apps/desktop/src/update.ts";
 
@@ -420,6 +422,130 @@ check(
   "P1-050: accepting a NEW version applies it via quitAndInstall",
   dialogLog.length === 2 && dialogLog[1] === "0.4.0" && consentUpdater.installs === 1,
 );
+
+// --- P2-330: a failed background download surfaces in the tray ----------------
+// Squirrel.Mac failing mid-download used to be swallowed by the log-only error
+// handler: the tray kept promising "Update available" for the whole six-hour
+// recheck interval while nothing was downloading. The new status is additive
+// and only fires when a download was actually in flight.
+{
+  const ALL_STATUSES: UpdateStatus[] = [
+    "disabled",
+    "update-available",
+    "update-available-manual",
+    "update-installer-ready",
+    "update-not-available",
+    "update-downloaded",
+    "update-download-failed",
+    "unrecognized-feed",
+    "feed-unreachable",
+  ];
+  check(
+    "P2-330: all nine statuses map to stable, distinct tray labels (disabled → null)",
+    ALL_STATUSES.every((s) => s === "disabled" ? updateMenuLabel(s) === null : typeof updateMenuLabel(s) === "string") &&
+      new Set(ALL_STATUSES.map((s) => updateMenuLabel(s))).size === 9,
+  );
+  check(
+    "P2-330: the failed-download label matches the sibling failure style — short, no path, no URL, no raw error",
+    updateMenuLabel("update-download-failed") === "Update download failed — will retry" &&
+      !updateMenuLabel("update-download-failed")!.includes("/") &&
+      !updateMenuLabel("update-download-failed")!.includes("://"),
+  );
+
+  // Pure derivation table: only an in-flight download maps to the new status.
+  const errorTable: [boolean, UpdateStatus | null][] = [
+    [false, null],
+    [true, "update-download-failed"],
+  ];
+  for (const [inFlight, expected] of errorTable) {
+    check(`P2-330: statusAfterUpdaterError(${inFlight}) → ${expected}`, statusAfterUpdaterError(inFlight) === expected);
+  }
+
+  {
+    // The real sequence: the check resolves update-available (the shell arms
+    // the download), the updater announces its own update-available (the flag
+    // turns on) and THEN the download fails — the derived status reaches
+    // onStatus exactly once, even when the error fires twice (the flag drops
+    // with the first error, so the flow never regresses nor spams).
+    const statuses: { status: UpdateStatus; version: string | null }[] = [];
+    const failedUpdater = fakeEmitter();
+    await checkForUpdatesOnBoot({
+      feedUrl: "http://127.0.0.1:9/feed.json",
+      currentVersion: "0.2.0",
+      updater: failedUpdater as never,
+      fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.4.0", notes: "" })),
+      log: () => {},
+      onStatus: (status, version) => statuses.push({ status, version }),
+    });
+    failedUpdater.emit("error", new Error("download failed: network dropped"));
+    failedUpdater.emit("error", new Error("download failed again"));
+    check(
+      "P2-330: update-available then error → onStatus receives update-download-failed exactly once, with the offered version",
+      JSON.stringify(statuses) ===
+        JSON.stringify([
+          { status: "update-available", version: "0.4.0" },
+          { status: "update-download-failed", version: "0.4.0" },
+        ]),
+      JSON.stringify(statuses),
+    );
+    check(
+      "P2-330: the flag dropped with the first error — the second error stays log-only",
+      statuses.filter((s) => s.status === "update-download-failed").length === 1,
+    );
+  }
+  {
+    // A check error with no offer in the air keeps the feed statuses speaking:
+    // no update-available ever fired, so the derivation is null and onStatus
+    // is never called.
+    const plainStatuses: string[] = [];
+    const plainUpdater = fakeEmitter();
+    attachUpdateListeners(plainUpdater, {
+      log: () => {},
+      dialog: dialogSinks,
+      onStatus: (status) => plainStatuses.push(status),
+    });
+    plainUpdater.emit("error", new Error("server sent an invalid response"));
+    check("P2-330: error without update-available → onStatus never fires (feed statuses keep speaking)", plainStatuses.length === 0);
+  }
+  {
+    // Idempotence survives unchanged: a second attach must not stack listeners.
+    const dupUpdater = fakeEmitter();
+    attachUpdateListeners(dupUpdater, { log: () => {}, dialog: dialogSinks });
+    attachUpdateListeners(dupUpdater, { log: () => {}, dialog: dialogSinks });
+    check(
+      "P2-330: attachUpdateListeners twice attaches each listener exactly once",
+      dupUpdater.listenerCount("error") === 1 &&
+        dupUpdater.listenerCount("update-available") === 1 &&
+        dupUpdater.listenerCount("update-downloaded") === 1,
+    );
+  }
+  {
+    // Source contract on the real main.ts: the sink re-schedules ONLY for the
+    // failed download, the sink introduces no timer of its own, and no new
+    // periodic timer appeared anywhere in the update path.
+    const mainSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "main.ts"), "utf8");
+    const updateSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "update.ts"), "utf8");
+    const scheduleSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "updateschedule.ts"), "utf8");
+    const sinkStart = mainSrc.indexOf("onStatus: (status, version) => {");
+    const sinkEnd = mainSrc.indexOf("// P2-155: the resolved status drives", sinkStart);
+    const sinkSrc = mainSrc.slice(sinkStart, sinkEnd);
+    check(
+      "P2-330: the sink re-schedules ONLY for update-download-failed (one guarded call, no stray arm)",
+      sinkStart >= 0 &&
+        sinkSrc.includes('status === "update-download-failed"') &&
+        (sinkSrc.match(/scheduleNextUpdateCheck\(/g) ?? []).length === 1 &&
+        sinkSrc.indexOf('status === "update-download-failed"') < sinkSrc.indexOf("scheduleNextUpdateCheck("),
+    );
+    check(
+      "P2-330: the sink adds no timer of its own and no periodic timer appeared in the update path",
+      !sinkSrc.includes("setInterval") &&
+        !sinkSrc.includes("setTimeout(") &&
+        (mainSrc.match(/setInterval\(/g) ?? []).length === 2 &&
+        (updateSrc.match(/setInterval\(|setTimeout\(/g) ?? []).length === 0 &&
+        (scheduleSrc.match(/setInterval\(|setTimeout\(/g) ?? []).length === 0,
+    );
+  }
+}
 
 check(
   "resolvedFeedUrl: explicit env wins over packaged default",
