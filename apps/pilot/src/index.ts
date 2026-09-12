@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, type MissionSpec } from "./mission";
+import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, repoSlug, type MissionSpec } from "./mission";
+import { CI_RED_CONCLUSIONS, CI_RED_KIND, ciRedStarvationPlan, redChecksFromDetail } from "./cired";
 import { emit } from "./events";
 import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
 import { nowLocalISO } from "./log";
@@ -46,6 +47,7 @@ import {
   loadConfig,
   loadState,
   recordTaskFailure,
+  recordTaskHold,
   saveState,
   startWatchdog,
   touchHeartbeat,
@@ -644,6 +646,8 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       delete state.taskAttempts[taskKey]; // gate passed — breaker reset
       // P2-137: the spec-format free-retry franchise resets on merge
       if (state.specFails) delete state.specFails[taskKey];
+      // P2-334: the shared-defect hold allowance resets on merge
+      if (state.taskHolds) delete state.taskHolds[taskKey];
       clearTaskInfraStreak(state, taskKey);
     } else {
       // P1-074: infra noise (API down, spawn error, timeout without output)
@@ -660,17 +664,39 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
         // looping builder rounds with zero attempts burned.
         const streak = recordTaskInfraStreak(state, taskKey, infra);
         if (infraStreakExhausted(streak)) {
+          // P2-334: hold or block, the streak never survives the decision — a
+          // held task starts a fresh streak next cycle, a blocked task is gone.
           clearTaskInfraStreak(state, taskKey);
-          const reason = infraStarvationReason(infra, streak, result.detail); // P3-405: the Blocked line + lesson name the real cause
-          log("error", "pipeline infra-starvation", { task: task.id, kind: infra, streak, detail: result.detail.slice(0, 200) });
-          emit("phase", { task: task.id, phase: "infra-starvation", ok: false, detail: reason });
+          // P2-334: when the task's red CI checks are ALSO red on main's
+          // latest commit, the task was punished for a shared defect (the
+          // P3-415/P3-401/P3-378/P3-371 case) — hold it instead of blocking:
+          // attempts stay untouched, one hold is granted and the next cycle
+          // retries when main heals. Every other shape blocks exactly as
+          // before (plan rules in cired.ts; main probe fail-closed → [] keeps
+          // today's behavior on any gh/git failure).
+          const taskRed = redChecksFromDetail(result.detail);
+          const mainRed = infra === CI_RED_KIND ? mainRedChecks(taskCfg) : [];
+          const plan = ciRedStarvationPlan(infra, streak, taskRed, mainRed, state.taskHolds?.[taskKey] ?? 0);
           recordCycle(state, false, task.id);
-          // pin the counter at the cap FIRST: even if the block landing fails
-          // (the same dead remote), overCap keeps the task out of every pick
-          state.taskAttempts[taskKey] = Math.max(state.taskAttempts[taskKey] ?? 0, taskCfg.maxAttemptsPerTask);
-          const attempts = state.taskAttempts[taskKey]!;
-          await blockAndPush(taskCfg, state, task, attempts, reason, true);
-          blockedAttempts = attempts;
+          if (plan.action === "hold") {
+            const holds = recordTaskHold(state, taskKey);
+            log("warn", "pipeline ci-red hold", { task: task.id, streak, holds, checks: taskRed, plan: plan.reason });
+            emit("phase", { task: task.id, phase: "ci-red-hold", ok: false, detail: plan.reason });
+            emit("alert", { task: task.id, ok: false, detail: plan.reason });
+            void notifySupervisor(task.id, false, plan.reason).catch(() => {});
+            // Deliberately no block landing and no attempt cap here: the
+            // task stays queued and the next cycle retries on the healed main.
+          } else {
+            const reason = infraStarvationReason(infra, streak, result.detail); // P3-405: the Blocked line + lesson name the real cause
+            log("error", "pipeline infra-starvation", { task: task.id, kind: infra, streak, detail: result.detail.slice(0, 200) });
+            emit("phase", { task: task.id, phase: "infra-starvation", ok: false, detail: reason });
+            // pin the counter at the cap FIRST: even if the block landing fails
+            // (the same dead remote), overCap keeps the task out of every pick
+            state.taskAttempts[taskKey] = Math.max(state.taskAttempts[taskKey] ?? 0, taskCfg.maxAttemptsPerTask);
+            const attempts = state.taskAttempts[taskKey]!;
+            await blockAndPush(taskCfg, state, task, attempts, reason, true);
+            blockedAttempts = attempts;
+          }
         } else {
           const wake = recordInfraFailure(state);
           log("warn", "pipeline infra-failure", { task: task.id, kind: infra, streak, infraFails: state.infraFails });
@@ -1022,6 +1048,35 @@ async function tripCircuitBreaker(cfg: PilotConfig, st: PilotState, task: Task, 
   return attempts;
 }
 
+/**
+ * P2-334: red check names on the latest commit of main, read through the same
+ * gh CLI the pipeline uses (`exec` with cwd = the slot workspace — no new
+ * dependency, no new listener). Best-effort and FAIL-CLOSED: any failure
+ * (git error, gh error, empty output, unexpected shape) yields [] — an empty
+ * main list makes ciRedStarvationPlan block, which preserves exactly the
+ * pre-P2-334 behavior. Short timeout so the probe never stalls the slot.
+ */
+function mainRedChecks(cfg: PilotConfig): string[] {
+  try {
+    const url = exec("git remote get-url origin", { cwd: cfg.repo, allowFail: true }).output.trim();
+    const slug = repoSlug(url);
+    const sha = exec(`git rev-parse origin/${cfg.baseBranch ?? "main"}`, { cwd: cfg.workspace, allowFail: true }).output.trim();
+    if (!slug || !/^[0-9a-f]{7,64}$/.test(sha)) return [];
+    const reds = CI_RED_CONCLUSIONS.map((c) => `.conclusion == "${c}"`).join(" or ");
+    const r = exec(
+      `gh api repos/${slug.org}/${slug.repo}/commits/${sha}/check-runs --jq '[.check_runs[] | select(.status == "COMPLETED" and (${reds})) | .name] | unique'`,
+      { cwd: cfg.workspace, timeoutMin: 1, allowFail: true },
+    );
+    if (!r.ok) return [];
+    const parsed: unknown = JSON.parse(r.output);
+    if (!Array.isArray(parsed)) return [];
+    const names = parsed.filter((n): n is string => typeof n === "string" && n.trim() !== "");
+    return [...new Set(names.map((n) => n.trim()))];
+  } catch {
+    return [];
+  }
+}
+
 /** Move the task line to ## Blocked and land it via the pilot/meta PR (P1-076).
  * Clears the counter on success so a human/red-team re-queue starts with a
  * fresh allowance. Never notifies twice. Syncs the slot worktree to main first:
@@ -1050,6 +1105,8 @@ async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attemp
   });
   if (push === "pushed") {
     delete st.taskAttempts[attemptsKey(cfg.missionKey, task.id)];
+    // P2-334: a human re-queue after a block starts with a fresh hold allowance
+    if (st.taskHolds) delete st.taskHolds[attemptsKey(cfg.missionKey, task.id)];
     recordBlockEvent(st); // P2-032: block-burst trigger watches landings on main
     // P2-031 failure scribe: one structured lesson per landed block (recording
     // only after the push lands keeps retry cycles from duplicating entries).

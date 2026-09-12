@@ -394,7 +394,10 @@ sempre) virava loop infinito de builder rounds com zero attempts queimados.
 sai da fila mesmo que o push do bloqueio falhe no mesmo remote morto) e
 `## Blocked` com o motivo (`infraStarvationReason`, que desde o P3-405 carrega
 o último detalhe da falha saneado — ver "Blocked de infra nomeia a causa
-real") + lição de falha.
+real") + lição de falha. Única exceção (P2-334): quando o kind é `ci-red` e os
+mesmos checks já estão vermelhos no último commit do main, a task é **segura**
+em vez de bloqueada (um hold por task — ver "Vermelho no main segura a task em
+vez de bloqueá-la").
 
 O gate também roda a invariant **anti module-shadowing** (P2-014): o diff de
 merge (`origin/main...HEAD`) não pode introduzir na **raiz do workspace**
@@ -1897,4 +1900,27 @@ lesson. No caminho do `ci-gate` vermelho, `mergeReadiness` acrescenta ao
 detalhe os checks vermelhos do mesmo rollup no formato `nome=CONCLUSAO`
 (excluindo o próprio ci-gate, sem chamada `gh` nova): "CI red: ci-gate
 aggregate failed (verify=FAILURE)". Distinguir vermelho pré-existente no main
-de vermelho só na branch fica para a fatia seguinte.
+de vermelho só na branch virou realidade no P2-334 — ver "Vermelho no main
+segura a task em vez de bloqueá-la".
+
+## Vermelho no main segura a task em vez de bloqueá-la (P2-334)
+
+O bloqueio de inanição punia a task por um defeito compartilhado quando o
+próprio main estava vermelho no mesmo check — P3-415, P3-401, P3-378 e P3-371
+foram para `## Blocked` assim, com o motivo genérico. Agora, antes de bloquear,
+o pilot lê os checks vermelhos do último commit do main (`mainRedChecks` em
+`index.ts`, pelo mesmo `gh` que o pipeline usa, timeout curto e fail-closed:
+erro, saída vazia ou formato inesperado viram lista vazia — o que preserva
+exatamente o comportamento anterior) e o plano puro `ciRedStarvationPlan`
+(módulo novo `cired.ts`, sem rede/git/I/O, com `redChecksFromDetail` extraindo
+os nomes dos dois formatos reais de detalhe — agregado `ci-gate` e
+`nome=CONCLUSAO`) decide nesta ordem: kind diferente de ci-red bloqueia; lista
+de nomes vazia de qualquer lado bloqueia; nenhum nome em comum bloqueia; hold
+já usado bloqueia; só então hold. No caminho de hold a task NÃO vai para
+`## Blocked`, o contador de tentativas não é cravado no cap, o streak de infra
+é zerado, `state.taskHolds[<key>]` sobe e persiste entre ciclos (limpo quando a
+task mergia ou é bloqueada — um humano que re-enfileira recomeça com hold
+fresco) e o pilot emite evento `alert` + notify do supervisor dizendo que o
+main está vermelho no mesmo check — o próximo ciclo tenta de novo em vez de
+enterrar a task. No máximo um hold por task: no segundo ci-red compartilhado,
+bloqueia como antes.
