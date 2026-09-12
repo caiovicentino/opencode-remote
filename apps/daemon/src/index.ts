@@ -1726,8 +1726,24 @@ end tell`;
     // flows through the same proxy (op() → proxy), so this is the single
     // injection point for both tunnels; the marker keeps it idempotent.
     const sid = req.path.split("/")[2] ?? "";
-    if (sid && artifactSessions.has(sid) && body && typeof body === "object") {
-      injectArtifactsSystem(body);
+    // P2-332: in-memory registration dies with the daemon — a message for an
+    // unknown session re-registers it (one opencode lookup, once per session
+    // per boot) so restarts never leave live sessions without the path line.
+    if (sid && !artifactPathSessions.has(sid) && body && typeof body === "object") {
+      try {
+        const res = await fetch(new URL(`/session/${encodeURIComponent(sid)}`, OPENCODE_URL), {
+          headers: authHeader ? { authorization: authHeader } : {},
+          signal: AbortSignal.timeout(4_000),
+        });
+        if (res.ok) registerArtifactSession((await res.json()) as { id?: string; directory?: string });
+      } catch {
+        // registration is best-effort; the turn still goes through untouched
+      }
+    }
+    if (sid && artifactPathSessions.has(sid) && body && typeof body === "object") {
+      // P2-332: the system block only for sessions whose workspace does not
+      // already teach the protocol; the path line travels for every session.
+      if (artifactSessions.has(sid)) injectArtifactsSystem(body);
       // P1-096: the per-session artifacts dir rides the first turn's parts
       // (the line then lives in the history); the system block stays
       // byte-identical across sessions so the provider prefix-caches it.
@@ -2127,6 +2143,13 @@ const rejectWarnAt = new Map<string, number>();
 // turns must carry the artifacts protocol. In-memory by design: after a
 // restart only newly created sessions are injected (documented behavior).
 const artifactSessions = new Set<string>();
+// P2-332: the per-session artifacts DIR must travel for every daemon-created
+// session — a workspace AGENTS.md that teaches the protocol only carries the
+// <sessionId> SHAPE, never the concrete id, so the covered-workspace dedupe
+// used to leave the agent guessing (writes landed outside the watched root
+// and no session.artifact was ever emitted). The system block keeps its
+// covered-workspace dedupe; the one-shot path line does not.
+const artifactPathSessions = new Set<string>();
 
 // P1-096: sessions that already received the one-shot artifacts path line
 // (injected on the first turn only — afterwards the line lives in the
@@ -2134,12 +2157,16 @@ const artifactSessions = new Set<string>();
 // restart only newly created sessions are told the path again.
 const artifactPathTold = new Set<string>();
 
-/** Register a daemon-created session unless its workspace already teaches the
- * artifacts protocol via AGENTS.md. Missing `directory` fails open (register):
- * a redundant instruction is cheaper than a session without the protocol. */
+/** Register a daemon-created session. The system block stays deduped when the
+ * workspace already teaches the artifacts protocol via AGENTS.md; the per-session
+ * path line is registered for EVERY session (P2-332) — the workspace copy only
+ * knows the `<sessionId>` shape, not the concrete id. Missing `directory` fails
+ * open (register): a redundant instruction is cheaper than a session without
+ * the protocol. */
 function registerArtifactSession(info: { id?: string; directory?: string } | null | undefined) {
   const id = info?.id;
   if (!id || !id.startsWith("ses")) return; // defensive: ignore malformed creates
+  artifactPathSessions.add(id);
   if (artifactSessions.has(id)) return;
   const dir = typeof info?.directory === "string" ? info.directory : "";
   if (dir && workspaceCoversArtifacts(dir)) return;
@@ -2208,12 +2235,13 @@ async function fireRoutine(r: Routine) {
     saveRoutines(routines);
     pendingRuns.set(created.id, r.id);
     // P1-068: routine sessions get the artifacts protocol too (their fetches
-    // bypass proxy(), so the injection is explicit here).
+    // bypass proxy(), so the injection is explicit here). P2-332: the path
+    // line rides for every session; the system block only for uncovered ones.
     const promptBody: { parts: { type: string; text: string }[]; system?: string } = {
       parts: [{ type: "text", text: r.prompt }],
     };
-    if (artifactSessions.has(created.id)) {
-      injectArtifactsSystem(promptBody);
+    if (artifactPathSessions.has(created.id)) {
+      if (artifactSessions.has(created.id)) injectArtifactsSystem(promptBody);
       if (injectArtifactsPathPart(promptBody, created.id)) artifactPathTold.add(created.id);
     }
     await fetch(new URL(`/session/${created.id}/message`, OPENCODE_URL), {

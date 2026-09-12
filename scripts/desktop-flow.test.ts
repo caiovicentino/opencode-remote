@@ -72,13 +72,17 @@ check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
   const covered = mkdtempSync(join(tmpdir(), "ocr-flow-covered-"));
   try {
     writeFileSync(join(covered, "AGENTS.md"), "artifacts em .opencode-remote/artifacts/<sessionId>/");
-    // the daemon's register→inject decision: inject only when not covered
-    const shouldInject = (dir: string) => !workspaceCoversArtifacts(dir);
+    // the daemon's register→inject decision (P2-332): the system block is
+    // injected only when the workspace does not already teach the protocol;
+    // the per-session path line travels for EVERY session — the workspace copy
+    // only knows the `<sessionId>` shape, never the concrete id.
+    const shouldInjectSystem = (dir: string) => !workspaceCoversArtifacts(dir);
+    const shouldInjectPath = () => true;
     const bareTurn: { parts: unknown[]; system?: string } = {
       parts: [{ type: "text", text: "gere um preview HTML do relatório" }],
     };
-    if (shouldInject(bare)) injectArtifactsSystem(bareTurn);
-    if (shouldInject(bare)) injectArtifactsPathPart(bareTurn, "ses_flow");
+    if (shouldInjectSystem(bare)) injectArtifactsSystem(bareTurn);
+    if (shouldInjectPath()) injectArtifactsPathPart(bareTurn, "ses_flow");
     check(
       "P1-068: session in a workspace WITHOUT AGENTS.md receives the protocol (marker + [file: line)",
       bareTurn.system?.includes(ARTIFACTS_MARKER) === true && bareTurn.system?.includes("[file:") === true,
@@ -92,10 +96,17 @@ check("desktop shell built (dist-electron/preload.js)", existsSync(preload));
     const coveredTurn: { parts: unknown[]; system?: string } = {
       parts: [{ type: "text", text: "gere um preview HTML do relatório" }],
     };
-    if (shouldInject(covered)) injectArtifactsSystem(coveredTurn);
+    if (shouldInjectSystem(covered)) injectArtifactsSystem(coveredTurn);
+    if (shouldInjectPath()) injectArtifactsPathPart(coveredTurn, "ses_flow_covered");
     check(
-      "P1-068: session in a workspace whose AGENTS.md covers the protocol gets NO injection",
+      "P1-068: session in a workspace whose AGENTS.md covers the protocol gets NO system block",
       coveredTurn.system === undefined,
+    );
+    check(
+      "P2-332: covered workspace still receives the per-session path line",
+      Array.isArray(coveredTurn.parts) &&
+        (coveredTurn.parts[coveredTurn.parts.length - 1] as { text?: string }).text ===
+          buildArtifactsPathLine("ses_flow_covered"),
     );
   } finally {
     rmSync(bare, { recursive: true, force: true });
