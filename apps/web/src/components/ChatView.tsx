@@ -698,12 +698,15 @@ export default function ChatView({
   const lastSplitRef = useRef<ArtifactMeta | null>(null);
   if (shownArtifact && wide) lastSplitRef.current = shownArtifact;
   const lastOverlayRef = useRef<ArtifactMeta | null>(null);
-  if (artifactView && !wide) lastOverlayRef.current = artifactView;
+  // PWA-1: on narrow viewports the auto-opened artifact presents in the same
+  // overlay a manual pick uses — one presentation surface, same close rules.
+  const overlaySource = artifactView ?? (!wide ? autoArtifact : null);
+  if (overlaySource && !wide) lastOverlayRef.current = overlaySource;
   const splitPhase = useExitAnimation(!!shownArtifact && wide);
   const splitArtifact = shownArtifact ?? (splitPhase !== "closed" ? lastSplitRef.current : null);
   const splitOpen = wide && splitPhase !== "closed" && !!splitArtifact;
-  const overlayPhase = useExitAnimation(!!artifactView && !wide);
-  const overlayArtifact = artifactView ?? (overlayPhase !== "closed" ? lastOverlayRef.current : null);
+  const overlayPhase = useExitAnimation(!!overlaySource && !wide);
+  const overlayArtifact = overlaySource ?? (overlayPhase !== "closed" ? lastOverlayRef.current : null);
   const t = useT();
 
   const [exporting, setExporting] = useState(false);
@@ -1102,10 +1105,12 @@ export default function ChatView({
     st.anchor = events[events.length - 1]?.id ?? null;
     const { open } = consumeArtifactEvents(events.slice(idx + 1), sessionId, st);
     if (!open) return;
-    if (!wideRef.current) return; // P2-062 split-pane is a wide-viewport feature
     if (browserActive) return; // P1-072 browser pane has priority
     if (artifactViewRef.current) return; // user is viewing another artifact
     if (artifactDismissedRef.current.has(open)) return; // user closed it before
+    // P2-062 wide: split-pane. PWA-1 narrow (phone/PWA): the same auto-open
+    // state feeds the chat overlay — the agent presents when the turn is
+    // ready instead of leaving the artifact invisible until a manual pick.
     setAutoArtifact({
       sessionId,
       name: open,
@@ -3921,7 +3926,16 @@ export default function ChatView({
           meta={overlayArtifact}
           request={request}
           closing={overlayPhase === "closing"}
-          onClose={() => setArtifactView(null)}
+          onClose={() => {
+            if (artifactView) {
+              setArtifactView(null);
+            } else if (autoArtifact) {
+              // PWA-1: closing the auto-presented overlay is a choice — the
+              // same file is not re-presented by the next idle.
+              artifactDismissedRef.current.add(autoArtifact.name);
+              setAutoArtifact(null);
+            }
+          }}
         />
       )}
       {rewindAsk && (
