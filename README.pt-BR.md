@@ -1480,6 +1480,11 @@ update… 42%" (ou "Downloading update…" sem número quando o feed não anunci
 total) — e, se a rede morrer no meio, no próximo tique de reverificação o
 rótulo vira "Update download stalled — check for updates", apenas informativo:
 nada é cancelado, rebaixado ou baixado de novo por causa do rótulo. Desde a
+P2-330, um download que falha de vez (rede cai, disco cheio, pacote recusado)
+não deixa mais a bandeja prometendo a atualização pelo resto do intervalo de
+6 h: a linha de status vira "Update check failed — download failed" na hora e
+a próxima checagem é rearmada pelo backoff de falha (15 min, dobrando a cada
+falha seguida, piso de 5 min) em vez de esperar as 6 h inteiras. Desde a
 P2-264, antes de a reverificação agendada começar um download o shell mede o
 espaço livre do volume que hospeda o diretório de dados: quando não cabe o
 pacote mais a cópia descompactada (com uma folga documentada), ou o espaço

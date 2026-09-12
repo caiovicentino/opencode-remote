@@ -313,6 +313,7 @@ import {
   releasePageUrl,
   resolvedFeedUrl,
   shouldOfferInstall,
+  statusAfterUpdaterError,
   updateMenuLabel,
   updatesEnabled,
   versionFromDownloadedArgs,
@@ -420,6 +421,100 @@ check(
   "P1-050: accepting a NEW version applies it via quitAndInstall",
   dialogLog.length === 2 && dialogLog[1] === "0.4.0" && consentUpdater.installs === 1,
 );
+
+// --- P2-330: a failed background download surfaces as update-download-failed --
+// The per-updater "downloading" flag is set by the updater's own
+// update-available event and cleared by update-downloaded and the error event
+// itself; the existing error listener derives the status from it.
+
+check("P2-330: statusAfterUpdaterError — download in flight → update-download-failed", statusAfterUpdaterError(true) === "update-download-failed");
+check("P2-330: statusAfterUpdaterError — no download → null (feed statuses keep covering)", statusAfterUpdaterError(false) === null);
+
+{
+  // update-available then error → the sink sees update-download-failed
+  // EXACTLY once (the promise chain already reported update-available).
+  const seen: { status: string; version: string | null }[] = [];
+  const dlUpdater = fakeEmitter();
+  await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: dlUpdater as never,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.5.0", notes: "" })),
+    log: () => {},
+    onStatus: (status, version) => seen.push({ status, version }),
+  });
+  dlUpdater.emit("error", new Error("download interrupted"));
+  check(
+    "P2-330: update-available + error → onStatus receives update-download-failed exactly once",
+    JSON.stringify(seen) === JSON.stringify([{ status: "update-available", version: "0.5.0" }, { status: "update-download-failed", version: null }]),
+  );
+
+  // error WITHOUT an update-available offer → no status derivation at all
+  // (the error listener stays log-only; the check's own resolution still
+  // covers the surface through the feed statuses).
+  const seenQuiet: string[] = [];
+  const quietUpdater = { ...fakeEmitter(), checkForUpdates() {} } as ReturnType<typeof fakeEmitter>;
+  await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: quietUpdater as never,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.5.0", notes: "" })),
+    log: () => {},
+    onStatus: (status) => seenQuiet.push(status),
+  });
+  quietUpdater.emit("error", new Error("network dropped"));
+  check(
+    "P2-330: error without an offer → onStatus never called with a download-failure status",
+    JSON.stringify(seenQuiet) === JSON.stringify(["update-available"]) && !seenQuiet.includes("update-download-failed"),
+  );
+
+  // update-downloaded clears the flag: a later error never regresses the
+  // strongest state.
+  const seenDone: string[] = [];
+  const doneUpdater = fakeEmitter();
+  await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: doneUpdater as never,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.6.0", notes: "" })),
+    log: () => {},
+    onStatus: (status) => seenDone.push(status),
+  });
+  doneUpdater.emit("update-downloaded", null, "release notes", "0.6.0");
+  await new Promise((r) => setTimeout(r, 5));
+  doneUpdater.emit("error", new Error("late failure after download"));
+  check(
+    "P2-330: update-downloaded never regresses — a later error derives nothing",
+    JSON.stringify(seenDone) === JSON.stringify(["update-available", "update-downloaded"]) && !seenDone.includes("update-download-failed"),
+  );
+
+  // attachUpdateListeners twice on the same instance never duplicates.
+  const twice = fakeEmitter();
+  const hooks = { log: () => {}, dialog: dialogSinks };
+  attachUpdateListeners(twice, hooks);
+  attachUpdateListeners(twice, hooks);
+  check(
+    "P2-330: attachUpdateListeners twice → each listener still attached exactly once",
+    twice.listenerCount("error") === 1 && twice.listenerCount("update-available") === 1 && twice.listenerCount("update-downloaded") === 1,
+  );
+
+  // The error listener keeps its log line exactly as before.
+  const errLogs: string[] = [];
+  const logUpdater = fakeEmitter();
+  await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: logUpdater as never,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.7.0", notes: "" })),
+    log: (l) => errLogs.push(l),
+    onStatus: () => {},
+  });
+  logUpdater.emit("error", new Error("EAI_AGAIN"));
+  check(
+    "P2-330: the error log line is unchanged (raw message only in the log, never in the tray)",
+    errLogs.some((l) => l.includes("update check failed (log-only, continuing): EAI_AGAIN")),
+  );
+}
 
 check(
   "resolvedFeedUrl: explicit env wins over packaged default",

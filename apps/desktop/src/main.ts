@@ -1111,6 +1111,7 @@ function runUpdateCheck(source: string): void {
         status === "update-not-available" ||
         status === "update-available-manual" ||
         status === "update-installer-ready" ||
+        status === "update-download-failed" ||
         status === "disabled"
       ) {
         clearUpdateProgress();
@@ -1123,6 +1124,15 @@ function runUpdateCheck(source: string): void {
       // the same trigger point so the label never goes stale.
       buildMenu();
       log(`[desktop] update status (${source}): ${status}${version ? ` ${version}` : ""}`);
+      // P2-330: a failed background download must not wait out the full
+      // six-hour base interval with the tray promising "Update available".
+      // ONLY this asynchronous status reschedules from the sink — the
+      // existing scheduleNextUpdateCheck already clears the previous handle,
+      // so the six-hour wait is swapped for the failure backoff (and the
+      // recheck tick re-evaluates the progress silence on the way). Every
+      // other async status (update-downloaded) keeps the consent flow's own
+      // path; nothing else here schedules.
+      if (status === "update-download-failed") scheduleNextUpdateCheck(status);
     },
     // P2-155: the resolved status drives the next scheduled recheck (covers
     // "disabled" too, which never passes through onStatus).
@@ -1222,7 +1232,9 @@ function scheduleNextUpdateCheck(status: UpdateStatus): void {
     updateRecheckTimer = null;
   }
   if (!updatesEnabled()) return;
-  if (status === "feed-unreachable" || status === "unrecognized-feed") updateFeedFailures++;
+  // P2-330: a failed background download counts like a feed failure — the
+  // backoff below shortens the wait instead of the six-hour base interval.
+  if (status === "feed-unreachable" || status === "unrecognized-feed" || status === "update-download-failed") updateFeedFailures++;
   else updateFeedFailures = 0;
   const delay = nextCheckDelayMs(status, updateFeedFailures, Math.random);
   if (delay == null) {

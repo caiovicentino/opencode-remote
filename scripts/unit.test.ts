@@ -912,7 +912,7 @@ import {
   writeHintFlag,
 } from "../apps/desktop/src/closehint";
 
-import { publicFeedUrl, updateMenuLabel } from "../apps/desktop/src/update";
+import { publicFeedUrl, statusAfterUpdaterError, updateMenuLabel } from "../apps/desktop/src/update";
 
 import { permissionDecision, requestingScheme, SHELL_PERMISSIONS } from "../apps/desktop/src/permissions";
 
@@ -6774,6 +6774,49 @@ check(
     updateMenuLabel("update-available")?.includes("Update available") === true &&
       updateMenuLabel("update-available")?.includes("check for updates") === true,
   );
+}
+
+
+// --- P2-330: the download-failed status and its pure helpers --------------------
+{
+  // Every UpdateStatus value now has a stable label (nine total). The new
+  // failure row matches the sibling failure style: same language, short, no
+  // path, no URL, no raw error message.
+  const expected: [string, string | null][] = [
+    ["update-available", "Update available — check for updates"],
+    ["update-available-manual", "Update available — open release page"],
+    ["update-installer-ready", "Update downloaded — installer ready"],
+    ["update-downloaded", "Update ready — restart to install"],
+    ["update-not-available", "Up to date"],
+    ["unrecognized-feed", "Update check failed — unrecognized feed"],
+    ["feed-unreachable", "Update check failed — feed unreachable"],
+    ["update-download-failed", "Update check failed — download failed"],
+    ["disabled", null],
+  ];
+  check("P2-330: all nine statuses map to a label", expected.length === 9);
+  for (const [status, label] of expected) {
+    check(`P2-330: label for ${status}`, updateMenuLabel(status as Parameters<typeof updateMenuLabel>[0]) === label);
+  }
+  const labels = expected.map(([, l]) => l);
+  check("P2-330: all nine labels distinct", new Set(labels).size === 9);
+  // Copy discipline (P2-107): no emoji/glyph-as-icon, no path separators in
+  // anything user-visible.
+  const BANNED = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2300}-\u{23FF}\u{2500}-\u{25FF}\u{FE0F}]/u;
+  const visible = labels.filter((l): l is string => l !== null);
+  check("P2-330: the download-failed label has no emoji/glyph-as-icon", visible.every((s) => !BANNED.test(s)));
+  check("P2-330: the download-failed label is path-free and URL-free", visible.every((s) => !s.includes("/") && !s.includes("\\") && !s.includes("http")));
+
+  // statusAfterUpdaterError: the full decision table. True only when a
+  // download was in flight; null otherwise (check errors without an offer
+  // stay covered by the feed statuses).
+  const table: [boolean, string | null][] = [
+    [true, "update-download-failed"],
+    [false, null],
+  ];
+  check("P2-330: statusAfterUpdaterError table is complete", table.length === 2);
+  for (const [flag, want] of table) {
+    check(`P2-330: statusAfterUpdaterError(${flag})`, statusAfterUpdaterError(flag) === want);
+  }
 }
 
 
@@ -15990,11 +16033,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 {
   const BASE = UPDATE_RECHECK_BASE_MS;
   const successStatuses = ["update-not-available", "update-available", "update-available-manual"] as const;
-  const failureStatuses = ["feed-unreachable", "unrecognized-feed"] as const;
+  // P2-330: a failed background download counts as a failure too — the
+  // failureStatuses loops below cover it exactly like the feed failures.
+  const failureStatuses = ["feed-unreachable", "unrecognized-feed", "update-download-failed"] as const;
   const JITTER_MIN = BASE * (1 - UPDATE_RECHECK_JITTER); // 19_440_000 (5.4 h)
   const JITTER_MAX = BASE * (1 + UPDATE_RECHECK_JITTER); // 23_760_000 (6.6 h)
 
-  // 1. all seven statuses
+  // 1. all nine statuses
   check("P2-155: disabled → null (no surface, zero timers)", nextCheckDelayMs("disabled", 0, Math.random) === null);
   check(
     "P2-155: update-downloaded → null (consent already offered, only restart applies)",
@@ -16008,6 +16053,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     const d = nextCheckDelayMs(s, 1, Math.random);
     check(`P2-155: ${s} → first backoff step (15 min)`, d === 900_000);
   }
+  check(
+    "P2-330: update-download-failed follows the failure backoff, never the 6 h base (backoff branch ignores random)",
+    nextCheckDelayMs("update-download-failed", 1, Math.random) === UPDATE_RECHECK_BACKOFF_START_MS &&
+      nextCheckDelayMs("update-download-failed", 0, () => 0) === UPDATE_RECHECK_BACKOFF_START_MS &&
+      nextCheckDelayMs("update-download-failed", 0, () => 1) === UPDATE_RECHECK_BACKOFF_START_MS &&
+      nextCheckDelayMs("update-download-failed", 2, Math.random) === 1_800_000,
+  );
 
   // 2. jitter bounds are exact
   for (const s of successStatuses) {
@@ -16082,6 +16134,32 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-155: schedule constants are 6 h base / 5 min floor / 15 min backoff start",
     BASE === 21_600_000 && UPDATE_RECHECK_MIN_MS === 300_000 && UPDATE_RECHECK_BACKOFF_START_MS === 900_000,
   );
+}
+
+
+// --- P2-330: the download-failure reschedule comes from the sink, once ---------
+{
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  // The onStatus sink: from its opening brace up to the promise-chain
+  // reschedule that follows runUpdateCheck. The ONLY scheduleNextUpdateCheck
+  // call inside the sink body is the download-failure one, gated on the
+  // additive status — every other asynchronous status keeps its own path
+  // (update-downloaded hands its timer to the reminder plan elsewhere).
+  const sinkStart = mainSrc.indexOf("onStatus: (status, version) => {");
+  const sinkEnd = mainSrc.indexOf(".then((status) => scheduleNextUpdateCheck(status))", sinkStart);
+  const sinkBody = sinkStart >= 0 && sinkEnd > sinkStart ? mainSrc.slice(sinkStart, sinkEnd) : "";
+  const sinkCalls = sinkBody.match(/scheduleNextUpdateCheck\(/g) ?? [];
+  check(
+    "P2-330: the sink reschedules ONLY for update-download-failed",
+    sinkCalls.length === 1 &&
+      sinkBody.includes('if (status === "update-download-failed") scheduleNextUpdateCheck(status);'),
+  );
+  // No new periodic timer: main.ts still has exactly the two pre-existing
+  // setInterval loops (the keeper leash and the pairing poll) — the
+  // download-failure path reuses scheduleNextUpdateCheck, which already
+  // clears the previous handle.
+  const intervals = mainSrc.match(/setInterval\(/g) ?? [];
+  check("P2-330: no new periodic timer in main.ts (keeper leash + pairing poll only)", intervals.length === 2);
 }
 
 

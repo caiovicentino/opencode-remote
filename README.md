@@ -2418,6 +2418,12 @@ update… 42%" ("Downloading update…" when the feed announces no total) — an
 the network dies mid-way it becomes "Update download stalled — check for
 updates" at the next scheduled recheck, purely informational: nothing is
 cancelled, downgraded or re-downloaded by the label. Since
+P2-330 a download that fails outright (network drop, full disk, rejected
+package) flips the status line to "Update check failed — download failed"
+right away and re-arms the next check on the failure backoff (15 min,
+doubling per consecutive failure, 5-min floor) instead of waiting out the
+six-hour base interval — the tray never keeps promising an update that
+nothing is fetching. Since
 P2-176 the app menu's **Ajuda** submenu mirrors both items (rebuilt on every
 status change, so its label never goes stale). Applying
 a release always goes through the consent dialog (P1-050): the updater asks
