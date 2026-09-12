@@ -501,7 +501,7 @@ import {
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
 
-import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, normalizePilotConfig, recordTaskFailure, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
+import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, normalizePilotConfig, recordTaskFailure, recordTaskHold, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
 
 import type { PilotState } from "../apps/pilot/src/state";
 
@@ -697,6 +697,7 @@ import { activeModelSubstitutions, clearModelSubstitution, formatModelSubstituti
 import { formatModelSubstitutions as formatModelSubstitutionsView, missionErrorText } from "../apps/web/src/components/MissionControlView";
 
 import { INFRA_STREAK_HARD_FAIL, INFRA_DETAIL_MAX, INFRA_DETAIL_REDACTED, clearTaskInfraStreak, infraStarvationReason, infraStreakExhausted, recordTaskInfraStreak, sanitizeInfraDetail } from "../apps/pilot/src/audit";
+import { CI_RED_CONCLUSIONS, CI_RED_KIND, ciRedStarvationPlan, redChecksFromDetail } from "../apps/pilot/src/cired";
 
 import { formatMissionModels } from "../apps/web/src/components/MissionControlView";
 
@@ -36658,6 +36659,68 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
         appSrc.indexOf("busyRef.current = reduceBusy") < appSrc.indexOf("if (!sid || sid === activeSessionRef.current) return;"),
     );
   }
+}
+
+// --- P2-334: ci-red shared-defect hold (main red on the same checks) ---------
+{
+  // redChecksFromDetail: the two real mergeReadiness ci-red detail shapes
+  const aggDetail = "CI red: ci-gate aggregate failed (verify=FAILURE, desktop-package-win=TIMED_OUT)";
+  const legacyDetail = "CI red: verify=FAILURE, lint=FAILURE";
+  check("P2-334: aggregate detail → the red jobs inside the parens (ci-gate itself is not a job)", JSON.stringify(redChecksFromDetail(aggDetail)) === JSON.stringify(["verify", "desktop-package-win"]));
+  check("P2-334: legacy detail → the name before = for every entry", JSON.stringify(redChecksFromDetail(legacyDetail)) === JSON.stringify(["verify", "lint"]));
+  check("P2-334: aggregate with no job list, empty detail, non-string and unrelated text → [] (tolerant)", redChecksFromDetail("CI red: ci-gate aggregate failed").length === 0 && redChecksFromDetail("").length === 0 && redChecksFromDetail(undefined).length === 0 && redChecksFromDetail(null).length === 0 && redChecksFromDetail("gh pr view failed: boom").length === 0);
+  check("P2-334: duplicate names collapse and whitespace is trimmed", JSON.stringify(redChecksFromDetail("CI red: verify=FAILURE,  verify=TIMED_OUT, win=ERROR")) === JSON.stringify(["verify", "win"]));
+
+  // ciRedStarvationPlan: every rule, in the mandated order
+  const T = ["verify", "desktop-package-win"];
+  check("P2-334: plan rule 1 — non-ci-red kind always blocks", ciRedStarvationPlan("network", 3, T, T, 0).action === "block" && ciRedStarvationPlan("conflict", 5, [], [], 0).action === "block");
+  check("P2-334: plan rule 1 — the block reason is stable", ciRedStarvationPlan("network", 3, T, T, 0).reason === 'infra "network" failed 3x in a row on this task — treated as a hard failure instead of an endless free retry');
+  check("P2-334: plan rule 2 — empty task list blocks", ciRedStarvationPlan(CI_RED_KIND, 3, [], T, 0).action === "block");
+  check("P2-334: plan rule 2 — empty main list blocks (pre-P2-334 behavior preserved)", ciRedStarvationPlan(CI_RED_KIND, 3, T, [], 0).action === "block" && ciRedStarvationPlan(CI_RED_KIND, 3, T, [], 0).reason.includes("main red check names not resolved"));
+  check("P2-334: plan rule 3 — no intersection blocks (the defect belongs to the task)", ciRedStarvationPlan(CI_RED_KIND, 3, T, ["lint", "build"], 0).action === "block" && ciRedStarvationPlan(CI_RED_KIND, 3, T, ["lint", "build"], 0).reason.includes("share no red check with main"));
+  check("P2-334: plan rule 4 — a hold already used blocks again", ciRedStarvationPlan(CI_RED_KIND, 3, T, T, 1).action === "block" && ciRedStarvationPlan(CI_RED_KIND, 3, T, T, 4).reason.includes("hold was already used"));
+  check("P2-334: plan rule 5 — the first hold is granted", ciRedStarvationPlan(CI_RED_KIND, 3, T, T, 0).action === "hold" && ciRedStarvationPlan(CI_RED_KIND, 3, T, T, 0).reason.includes("task held out of ## Blocked"));
+  check("P2-334: plan — the SECOND hold becomes a block", ciRedStarvationPlan(CI_RED_KIND, 3, T, T, 1).action === "block" && ciRedStarvationPlan(CI_RED_KIND, 3, T, T, 2).action === "block");
+  check("P2-334: plan — intersection via the real aggregate ci-gate detail holds", ciRedStarvationPlan(CI_RED_KIND, 3, redChecksFromDetail(aggDetail), ["verify"], 0).action === "hold" && ciRedStarvationPlan(CI_RED_KIND, 3, redChecksFromDetail(legacyDetail), ["lint"], 0).action === "hold");
+  check("P2-334: plan — the hold reason names only the shared checks", ciRedStarvationPlan(CI_RED_KIND, 3, T, ["verify", "lint"], 0).reason.includes("(verify)") && !ciRedStarvationPlan(CI_RED_KIND, 3, T, ["verify", "lint"], 0).reason.includes("desktop-package-win"));
+
+  // taskHolds: the counter rises in state and survives the midnight rollover
+  const hdir = mkdtempSync(join(tmpdir(), "ocr-holds-"));
+  try {
+    const hf = join(hdir, "state.json");
+    writeFileSync(hf, JSON.stringify({ date: "2000-01-01", tasks: 9, taskAttempts: {}, taskHolds: { a: 2, b: -1, c: "x", d: 1.7 } }));
+    const loaded = loadState(hf);
+    check("P2-334: taskHolds survive the rollover, garbage entries dropped", loaded.tasks === 0 && loaded.taskHolds?.a === 2 && loaded.taskHolds.b === undefined && loaded.taskHolds.c === undefined && loaded.taskHolds.d === 1);
+    const fresh: PilotState = { date: "2026-09-11", tasks: 0, deploys: 0, failures: 0, merges: 0, taskAttempts: {} };
+    check("P2-334: recordTaskHold counts 1 then 2 on the same task", recordTaskHold(fresh, "k") === 1 && recordTaskHold(fresh, "k") === 2 && fresh.taskHolds?.k === 2);
+  } finally {
+    rmSync(hdir, { recursive: true, force: true });
+  }
+
+  // Source pins over the real index.ts (lesson P3-409): the hold branch is
+  // structurally before the block landing, and the main read degrades to [].
+  const idx334 = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  const holdAt = idx334.indexOf('if (plan.action === "hold") {');
+  const pinAt = idx334.indexOf("state.taskAttempts[taskKey] = Math.max");
+  const pushAt = idx334.indexOf("await blockAndPush(taskCfg, state, task, attempts, reason, true)");
+  check("P2-334: wiring — the hold branch precedes the attempt pin and the block landing (blockAndPush unreachable from the hold path)", holdAt !== -1 && pinAt !== -1 && pushAt !== -1 && holdAt < pinAt && holdAt < pushAt);
+  const holdBody = idx334.slice(holdAt, idx334.indexOf("} else {", holdAt));
+  check("P2-334: hold branch — no blockAndPush, no attempt pinning, holds counted, alert + supervisor notify", !holdBody.includes("blockAndPush") && !holdBody.includes("maxAttemptsPerTask") && holdBody.includes("recordTaskHold(state, taskKey)") && holdBody.includes('emit("alert"') && holdBody.includes("notifySupervisor"));
+  const exhaustedAt = idx334.indexOf("if (infraStreakExhausted(streak)) {");
+  const clearAt = exhaustedAt !== -1 ? idx334.lastIndexOf("clearTaskInfraStreak(state, taskKey)", holdAt) : -1;
+  check("P2-334: the infra streak is zeroed before the hold/block decision", exhaustedAt !== -1 && clearAt > exhaustedAt && clearAt < holdAt);
+  const fnStart = idx334.indexOf("function mainRedChecks");
+  const fnEnd = idx334.indexOf("async function blockAndPush", fnStart);
+  const mainFn = fnStart !== -1 && fnEnd > fnStart ? idx334.slice(fnStart, fnEnd) : "";
+  check("P2-334: main probe is fail-closed — every failure path returns [] (git/gh error, empty output, unexpected shape)", (mainFn.match(/return \[\];/g) ?? []).length >= 4 && mainFn.includes("} catch {") && mainFn.includes("allowFail: true") && mainFn.includes("!Array.isArray(parsed)"));
+  check("P2-334: main probe uses the same gh path as the pipeline with a short timeout", mainFn.includes("gh api repos/") && mainFn.includes("timeoutMin: 1"));
+  check("P2-334: the plan only runs the main probe on ci-red (other kinds never call gh)", idx334.includes("infra === CI_RED_KIND ? mainRedChecks(taskCfg) : []"));
+
+  // CI_RED_CONCLUSIONS mirrors the pipeline's CHECK_RED set (single source)
+  const pipelineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+  const checkRed = /const CHECK_RED = new Set\(\[([^\]]*)\]\)/.exec(pipelineSrc);
+  const conclusions = checkRed ? checkRed[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")) : [];
+  check("P2-334: CI_RED_CONCLUSIONS matches pipeline.ts CHECK_RED exactly", JSON.stringify([...CI_RED_CONCLUSIONS]) === JSON.stringify(conclusions));
 }
 
 if (failures > 0) {

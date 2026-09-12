@@ -204,6 +204,11 @@ export interface PilotState {
    * streak is a hard failure (read-only remote, dead gh) instead of an
    * infinite free reschedule. Survives midnight like taskAttempts. */
   infraStreaks?: Record<string, { kind: InfraFailureKind; n: number }>;
+  /** P2-334: task key → shared-defect holds already granted (a 3x ci-red
+   * streak whose checks are also red on main). One hold per task lifetime:
+   * when it is spent, a later ci-red starvation blocks again. Survives
+   * midnight like taskAttempts; cleared when the task merges or is blocked. */
+  taskHolds?: Record<string, number>;
   redteamLast?: string;
   researchLast?: string;
   /** P3-052: last YYYY-MM-DD the nightly explorer ran (once per day). */
@@ -313,6 +318,18 @@ function normalizeInfraStreaks(v: unknown): Record<string, { kind: InfraFailureK
   return out;
 }
 
+/** P2-334: tolerant parse of the per-task hold counters — garbage dropped,
+ * positive integers only. */
+function normalizeTaskHolds(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!v || typeof v !== "object") return out;
+  for (const [task, n] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) continue;
+    out[task] = Math.floor(n);
+  }
+  return out;
+}
+
 /** P1-075: tolerant parse of the lesson-impact cohorts — garbage → undefined. */
 function normalizeLessonImpact(v: unknown): LessonImpact | undefined {
   if (!v || typeof v !== "object") return undefined;
@@ -347,6 +364,9 @@ export function loadState(file = STATE_FILE): PilotState {
           ) as Record<string, number>)
         : {},
       infraStreaks: normalizeInfraStreaks(s.infraStreaks),
+      // P2-334: shared-defect hold counters survive midnight like taskAttempts
+      // (garbage/zero/negative/fractional entries dropped, never crash)
+      taskHolds: normalizeTaskHolds(s.taskHolds),
       cycles: Array.isArray(s.cycles) ? s.cycles : [],
       blockEvents: Array.isArray(s.blockEvents) ? s.blockEvents.filter((t) => typeof t === "number") : [],
       auditMode: normalizeAudit(s.auditMode),
@@ -401,6 +421,18 @@ export function recordTaskFailure(state: PilotState, taskId: string, maxAttempts
   const n = (state.taskAttempts[taskId] ?? 0) + 1;
   state.taskAttempts[taskId] = n;
   return n >= maxAttempts;
+}
+
+/**
+ * P2-334: grant one more shared-defect hold (a 3x ci-red streak whose red
+ * checks are also red on main). One per task: the counter feeds the plan rule
+ * "hold already used → block". Returns the new count.
+ */
+export function recordTaskHold(state: PilotState, taskId: string): number {
+  state.taskHolds ??= {};
+  const n = (state.taskHolds[taskId] ?? 0) + 1;
+  state.taskHolds[taskId] = n;
+  return n;
 }
 
 /** P2-024: fs surface writeJsonAtomic needs — injectable so unit tests are
