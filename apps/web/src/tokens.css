@@ -38,6 +38,10 @@
   --on-accent: #06280f;
   --on-danger: #ffffff;
   --on-scrim: #ffffff;
+  /* P2-336: discreet scrollbars — translucent thumb derived from --text so
+     the bar never outshouts the content it belongs to */
+  --scrollbar-thumb: rgba(237, 237, 237, 0.16);
+  --scrollbar-thumb-hover: rgba(237, 237, 237, 0.3);
   /* modal/diff overlay backdrops */
   --scrim: rgba(0, 0, 0, 0.94);
   --scrim-soft: rgba(0, 0, 0, 0.35);
@@ -107,6 +111,8 @@
   --on-accent: #06280f;
   --on-danger: #ffffff;
   --on-scrim: #ffffff;
+  --scrollbar-thumb: rgba(24, 24, 27, 0.18);
+  --scrollbar-thumb-hover: rgba(24, 24, 27, 0.32);
   --scrim: rgba(24, 24, 27, 0.92);
   --scrim-soft: rgba(24, 24, 27, 0.4);
   --shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.18);
