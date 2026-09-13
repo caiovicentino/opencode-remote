@@ -47,6 +47,33 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* P2-336: discreet scrollbars — webkit-only on purpose: setting
+   scrollbar-width/scrollbar-color beside the pseudo styling makes modern
+   Chromium ignore the latter, and the pseudo rules are what keep the bar
+   thin, rounded and translucent. The track stays fully transparent so the
+   bar reads as content affordance, never as chrome. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 button {
   font: inherit;
   background: var(--surface);
