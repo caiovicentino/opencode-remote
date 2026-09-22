@@ -1653,7 +1653,9 @@ artifacts sync as soon as the daemon answers, shows the automatic retry, and
 keeps the purely-local data (language, theme) working — both selects sit right
 on the card and apply instantly (P3-368: the theme control shares the same
 stored choice and apply path as the Settings appearance card, so the copy and
-the card never disagree). "Reconnect now" gives
+the card never disagree; P3-445: the selects wear the card's own control skin
+— surface fill, firm resting border and a drawn chevron — so no native OS
+select chrome leaks into the flat card). "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
 stays one click away. The gate sits on the same brand axis as the welcome
 wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered

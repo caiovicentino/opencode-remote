@@ -381,7 +381,9 @@ remoto, zero confiança**.
    responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
    funcionando — os dois selects ficam no próprio cartão e aplicam na hora (P3-368: o
    controle de tema compartilha a mesma escolha armazenada e o mesmo caminho de aplicação
-   do cartão Aparência das configurações, então a copy e o cartão nunca se contradizem), dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
+   do cartão Aparência das configurações, então a copy e o cartão nunca se contradizem;
+   P3-445: os selects vestem a mesma pele dos controles do cartão — fundo de superfície,
+   borda firme e seta desenhada — sem o chrome nativo do SO vazando no cartão plano), dá feedback real no "Reconectar agora" (spinner + toast) e deixa o
   pareamento manual a um clique. O header de marca fica centrado no mesmo eixo do
   wizard de boas-vindas e agora abre com o glifo de destaque do wizard (P3-373),
   junto do wordmark serifado — as três primeiras telas da jornada compartilham o

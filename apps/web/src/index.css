@@ -3303,15 +3303,48 @@ button.desk-new:disabled {
   font-size: var(--font-size-sm);
 }
 /* P3-368: language and theme side by side — the copy promises both, so both
-   controls share one row on the flat surface, wrapping at phone widths. */
+   controls share one row on the flat surface, wrapping at phone widths.
+   P3-445: the selects wear the same control skin as the card's buttons —
+   surface fill, firm resting border and the small type step, radius flowing
+   from the global select rule — with appearance:none dropping the native
+   macOS chrome that leaked system styling into the otherwise flat card. The
+   chevron is drawn by the shared icon set on the wrapper (a <select> is a
+   replaced element: ::after never renders), so the affordance follows the
+   theme tokens instead of baked-in system art. */
 .degraded-local-prefs {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-.degraded-local-prefs select {
+.degraded-select {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
+}
+.degraded-local-prefs select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  padding: 6px 26px 6px 10px;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--fg);
+  border-color: var(--border-strong);
+  background: var(--surface);
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.degraded-local-prefs select:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border-color: var(--fg);
+}
+.degraded-select svg {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--muted);
 }
 .degraded-manual {
   background: transparent;
