@@ -268,7 +268,7 @@ function WebViewPane({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && go(input)}
-          placeholder="http://localhost:3000"
+          placeholder="https://…"
           spellCheck={false}
           aria-invalid={rejected || undefined}
           style={{ flex: 1 }}

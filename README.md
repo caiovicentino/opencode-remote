@@ -454,7 +454,9 @@ private. That is the product: **local power, remote control, zero trust**.
    silently reached the machine's daemon dashboard from unpaired boots). The URL bar's action
    button reads the moment (P3-416): before any page exists it is a **→ Go** affordance that
    navigates to the typed address (inert while the bar is empty), swapping to **↻ reload** only
-   once a page is loaded — the old bar showed a reload that did nothing on the empty pane. A typed URL that
+   once a page is loaded — the old bar showed a reload that did nothing on the empty pane. While empty the
+   bar shows only a generic `https://…` placeholder (P3-448) — never a concrete URL that reads as already
+   typed. A typed URL that
   parses but isn't http(s) — `file://`, `data:`, … — is rejected with named feedback (P3-378):
   the address bar flags red and a specific sentence explains the sandbox's http(s)-only rule
   and the way out (serve the folder over HTTP and open its localhost URL) instead of leaving

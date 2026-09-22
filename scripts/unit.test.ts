@@ -12326,6 +12326,11 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P3-416: the Go affordance navigates (go(input)) and stays inert on an empty address",
     bar.includes("onClick={() => go(input)}") && bar.includes("disabled={input.trim().length === 0}"),
   );
+  // --- P3-448: the empty bar's placeholder is a hint, never a pre-loaded value
+  check(
+    "P3-448: the browser bar's placeholder is the generic https hint (no concrete URL)",
+    bar.includes('placeholder="https://…"') && !bar.includes("localhost"),
+  );
 }
 
 // --- P3-414: the artifacts pane's empty state is composed, not a bare sentence
