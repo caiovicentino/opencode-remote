@@ -2047,23 +2047,18 @@ button.desk-new:disabled {
   cursor: default;
 }
 
-/* P3-415: the desktop ceremony's submit is demoted from the loud accent fill —
-   P3-334 made the host "pair a phone" card the primary story on this screen,
-   and a vibrant green button inside the secondary section out-shouted it. The
-   submit keeps the primary rank inside its section (firm border + recessed
-   chip, still one step above the ghost scan entry — P3-420's rule: never a
-   washed-out ghost) but loses the accent fill, so the host card is the
-   loudest action on the gate. Scoped to the paste-first class combo: the
-   phone's scan-first screen never renders it. */
-.pair-submit.primary {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  font-weight: var(--font-weight-medium);
-}
-.pair-submit.primary:hover {
-  background: var(--gray-hover);
-}
+/* P3-433: the ceremony's own submit wears the SHARED accent primary — no
+   override rule here on purpose. P3-415 demoted it to a recessed --bg chip so
+   the host card dominated "the gate", but since P3-365 the gate's first
+   contact is the degraded card (no paste form), and every desktop render of
+   this form is the standalone manual ceremony (add machine / the manual
+   escape) where the paste form IS the main action — there the grey-flat chip
+   read as a disabled ghost beside the error. The button keeps the `primary`
+   class (paste-first rank over the quiet scan entry, P3-366's beat) and the
+   class now resolves to the shared button.primary accent fill (P3-449/P3-450:
+   one primary dialect per journey — the wizard's "Começar", the reconnect
+   card and this submit all wear the same identity), instead of a one-off
+   paint. The phone's scan-first screen never renders this combo. */
 
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet row inside
    its section card — from the unpaired screen or Settings. P3-335: it is the
