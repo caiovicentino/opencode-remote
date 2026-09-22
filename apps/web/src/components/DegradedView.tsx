@@ -18,6 +18,8 @@ import PaneMap from "./PaneMap";
 // P3-445: the prefs selects lose the OS chrome (appearance:none) and gain the
 // card's control skin; the chevron is drawn by the shared icon set, sitting on
 // a wrapper because a <select> is a replaced element (::after never renders).
+// P3-429: each select also gains a visible micro-label — the aria-labels alone
+// left a first-boot user guessing which field was which.
 import { IconChevronDown } from "./icons";
 
 interface Props {
@@ -334,45 +336,56 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
         <h3>{t("degradedLocalTitle")}</h3>
         <p className="muted">{t("degradedLocalHint")}</p>
         <div className="degraded-local-prefs">
-          {/* P3-445: the selects wear the same control skin as the card's
-              buttons (surface fill, firm resting border, shared radius via
-              the global select rule) — appearance:none drops the native
-              macOS chrome that leaked system styling into the flat card.
-              The wrapper owns the drawn chevron and the flex sizing. */}
-          <span className="degraded-select">
-            <select
-              aria-label={t("language")}
-              value={lang}
-              onChange={(e) => {
-                const next = e.target.value as Lang;
-                setLang(next);
-                setLangState(next);
-              }}
-            >
-              <option value="en">English</option>
-              <option value="pt">Português</option>
-            </select>
-            <IconChevronDown size={12} />
-          </span>
-          <span className="degraded-select">
-            <select
-              aria-label={t("themeLabel")}
-              value={theme}
-              onChange={(e) => {
-                const next = e.target.value as ThemeChoice;
-                setThemeState(next);
-                try {
-                  localStorage.setItem(THEME_KEY, next);
-                } catch {}
-                applyTheme();
-              }}
-            >
-              <option value="system">{t("themeSystem")}</option>
-              <option value="dark">{t("themeDark")}</option>
-              <option value="light">{t("themeLight")}</option>
-            </select>
-            <IconChevronDown size={12} />
-          </span>
+          {/* P3-429: each control carries a visible micro-label — the
+              aria-labels alone left a first-boot user guessing which select
+              was Idioma and which was Tema. The label wraps its select (same
+              association pattern as the Settings appearance card) and rides
+              the same quiet-caps grammar as the pane map below. P3-445: the
+              selects wear the same control skin as the card's buttons
+              (surface fill, firm resting border, shared radius via the
+              global select rule) — appearance:none drops the native macOS
+              chrome that leaked system styling into the flat card. The field
+              wrapper owns the drawn chevron and the select sizing. */}
+          <label className="degraded-select">
+            <span className="degraded-select-label">{t("language")}</span>
+            <span className="degraded-select-field">
+              <select
+                aria-label={t("language")}
+                value={lang}
+                onChange={(e) => {
+                  const next = e.target.value as Lang;
+                  setLang(next);
+                  setLangState(next);
+                }}
+              >
+                <option value="en">English</option>
+                <option value="pt">Português</option>
+              </select>
+              <IconChevronDown size={12} />
+            </span>
+          </label>
+          <label className="degraded-select">
+            <span className="degraded-select-label">{t("themeLabel")}</span>
+            <span className="degraded-select-field">
+              <select
+                aria-label={t("themeLabel")}
+                value={theme}
+                onChange={(e) => {
+                  const next = e.target.value as ThemeChoice;
+                  setThemeState(next);
+                  try {
+                    localStorage.setItem(THEME_KEY, next);
+                  } catch {}
+                  applyTheme();
+                }}
+              >
+                <option value="system">{t("themeSystem")}</option>
+                <option value="dark">{t("themeDark")}</option>
+                <option value="light">{t("themeLight")}</option>
+              </select>
+              <IconChevronDown size={12} />
+            </span>
+          </label>
         </div>
       </div>
       {/* P3-364: the offline card above is what works NOW; this is what

@@ -3325,22 +3325,39 @@ button.desk-new:disabled {
 }
 /* P3-368: language and theme side by side — the copy promises both, so both
    controls share one row on the flat surface, wrapping at phone widths.
+   P3-429: each select gains a visible micro-label — the aria-labels alone
+   left a first-boot user guessing which field was which — riding the same
+   quiet-caps grammar as the pane map rendered right below on this screen.
    P3-445: the selects wear the same control skin as the card's buttons —
    surface fill, firm resting border and the small type step, radius flowing
    from the global select rule — with appearance:none dropping the native
-   macOS chrome that leaked system styling into the otherwise flat card. The
-   chevron is drawn by the shared icon set on the wrapper (a <select> is a
-   replaced element: ::after never renders), so the affordance follows the
-   theme tokens instead of baked-in system art. */
+   macOS chrome that leaked system styling into the otherwise flat card.
+   The chevron is drawn by the shared icon set on the field wrapper (a
+   <select> is a replaced element: ::after never renders), so the affordance
+   follows the theme tokens instead of baked-in system art. */
 .degraded-local-prefs {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 .degraded-select {
-  position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* The field's micro-label — same quiet-caps furniture as .pane-map-title,
+   one type step smaller: field furniture, never a second heading. */
+.degraded-select-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.degraded-select-field {
+  position: relative;
 }
 .degraded-local-prefs select {
   appearance: none;
@@ -3357,6 +3374,12 @@ button.desk-new:disabled {
 }
 .degraded-local-prefs select:hover {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border-color: var(--fg);
+}
+/* P3-429: focus matches the queue field's active-field grammar (P3-386) —
+   the firm resting border escalates to the fg edge while the control holds
+   the caret, same as .degraded-queue-input:focus-visible. */
+.degraded-local-prefs select:focus-visible {
   border-color: var(--fg);
 }
 .degraded-select svg {

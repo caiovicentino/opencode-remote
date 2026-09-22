@@ -12668,6 +12668,37 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-429: the offline card's prefs selects carry visible micro-labels -------
+// The two selects relied on aria-labels alone (invisible) — a first-boot user
+// had to guess which was language and which was theme. P3-448's lesson: pin
+// the new pattern present AND the old unlabeled markup absent.
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const localAt = src.indexOf('className="degraded-local"');
+  const controls = src.slice(localAt, src.indexOf('className="degraded-manual"', localAt));
+  check(
+    "P3-429: each prefs select sits under a visible micro-label (2 labeled groups)",
+    (controls.match(/<label className="degraded-select">/g) ?? []).length === 2 &&
+      (controls.match(/className="degraded-select-label"/g) ?? []).length === 2 &&
+      controls.includes('{t("language")}') &&
+      controls.includes('{t("themeLabel")}'),
+  );
+  check(
+    "P3-429: the unlabeled direct-child markup is gone (paired pin, P3-448)",
+    !/className="degraded-select">\s*<select/.test(controls) &&
+      /className="degraded-select">\s*<span className="degraded-select-label"/.test(controls),
+  );
+  const labelRule = css.match(/\.degraded-select-label\s*\{[^}]*\}/);
+  const focusRule = css.match(/\.degraded-local-prefs select:focus-visible\s*\{[^}]*\}/);
+  check(
+    "P3-429: the micro-label rides the quiet-caps grammar and focus matches the queue field",
+    !!labelRule && /color:\s*var\(--muted\)/.test(labelRule[0]) &&
+      /text-transform:\s*uppercase/.test(labelRule[0]) &&
+      !!focusRule && /border-color:\s*var\(--fg\)/.test(focusRule[0]),
+  );
+}
+
 // --- P3-364: the gate carries a persistent map of the panes pairing unlocks ----
 // The P3-328 toast is a 4s flash; Artifacts/Browser/Mission Control were
 // invisible until connection, leaving a first-time user no answer to "why
