@@ -12111,10 +12111,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       src.includes("[1, 2, 3].map((n) =>") &&
       src.includes('aria-hidden="true"'),
   );
-  // Dot anatomy: token-ladder fills only (resting line / strong line /
+  // Dot anatomy: token-ladder fills only (resting line / soft accent mix /
   // accent), pill radius, and the 150ms ease-out settle for the step change.
+  // P3-451: done is pinned to the soft accent fill, not the strong line —
+  // --border-strong vs --border was indistinguishable at 6px.
   const dotAt = css.indexOf(".welcome-step-dot {");
   const dotRule = css.slice(dotAt, css.indexOf("}", dotAt));
+  const doneRule = css.slice(css.indexOf(".welcome-step-dot.done {"), css.indexOf("}", css.indexOf(".welcome-step-dot.done {")));
   const onAt = css.indexOf(".welcome-step-dot.on {");
   const onRule = css.slice(onAt, css.indexOf("}", onAt));
   check(
@@ -12124,7 +12127,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       dotRule.includes("background: var(--border);") &&
       dotRule.includes("var(--motion-fast) var(--ease-out)") &&
       css.indexOf(".welcome-step-dot.done {") > 0 &&
-      css.slice(css.indexOf(".welcome-step-dot.done {"), css.indexOf("}", css.indexOf(".welcome-step-dot.done {"))).includes("var(--border-strong)") &&
+      doneRule.includes("color-mix(in srgb, var(--accent) 50%, transparent)") &&
+      !doneRule.includes("var(--border-strong)") &&
       onAt > dotAt &&
       onRule.includes("width: var(--space-3)") &&
       onRule.includes("background: var(--accent)"),

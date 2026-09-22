@@ -1791,8 +1791,10 @@ can land any moment, so only the settled non-healthy states skip the wait.
 The step
 indicator reads as part of the brand block — centered under the wordmark — and
 progress is three quiet dots rather than a caps caption: the active step is an
-accent pill, past steps the strong line, future ones the resting line, with
-the "Step {n} of 3" copy kept as the group's accessible label (P3-421). The
+accent pill, past steps a soft accent fill, future ones the resting line, with
+the "Step {n} of 3" copy kept as the group's accessible label (P3-421; the
+done fill went accent-soft in P3-451 — the former strong-line fill was
+indistinguishable from the resting line at 6px). The
 first two steps carry their quiet "Skip" inside the card's action row,
 right beside the primary action, so escape and progress read as one unit
 (P3-374); the final step has a single, in-context way out — "Do this later"

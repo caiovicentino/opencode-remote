@@ -139,8 +139,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   em vez de texto do tamanho do corpo frouxo sobre o wordmark serifado
 - Progresso do wizard em três pontos silenciosos (P3-421): a legenda caps
   "PASSO 1 DE 3" deu lugar a três pontos sob o wordmark serifado — o passo
-  ativo é uma pílula accent, passos feitos ficam na linha forte e futuros na
-  linha de repouso, tudo da escada de tokens com assentamento de 150ms que
+  ativo é uma pílula accent, passos feitos ficam com o preenchimento accent
+  suave e futuros na linha de repouso (P3-451: a linha forte era
+  indistinguível da linha de repouso a 6px), tudo da escada de tokens com
+  assentamento de 150ms que
   morre em `prefers-reduced-motion`; a copy "Passo {n} de 3" segue viva como
   rótulo acessível do grupo, então o bloco de marca continua
   tipografia-primeiro sem captions cinzas

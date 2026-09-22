@@ -1491,9 +1491,12 @@ button.desk-new:disabled {
 }
 /* P3-421: progress under the wordmark is three quiet dots, not a caps
    caption — active step is the accent (a small pill so it reads without
-   growing the row), past steps the strong line, future the resting line,
-   every fill from the token ladder. The 150ms ease-out settle dies under
-   the global prefers-reduced-motion block. */
+   growing the row), future the resting line, and done steps the soft
+   accent fill (P3-451: done vs future separated only by --border-strong
+   vs --border was invisible at 6px, so the soft accent — same color-mix
+   pattern as the drag overlay — carries the advancement). Every fill
+   from the token ladder. The 150ms ease-out settle dies under the global
+   prefers-reduced-motion block. */
 .welcome-steps {
   display: inline-flex;
   align-items: center;
@@ -1509,7 +1512,7 @@ button.desk-new:disabled {
     width var(--motion-fast) var(--ease-out);
 }
 .welcome-step-dot.done {
-  background: var(--border-strong);
+  background: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .welcome-step-dot.on {
   width: var(--space-3);
