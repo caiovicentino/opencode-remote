@@ -53,7 +53,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
    com "Depois de parear" segue como estava. O botão primário
    "+ Novo" fica visivelmente acinzentado e carrega o mesmo tooltip de dica do
    rail até o pareamento bem-sucedido (P3-380) — o clique mais natural do
-   primeiro boot se explica em vez de morrer em silêncio. Janela
+   primeiro boot se explica em vez de morrer em silêncio. P3-442: a dica é
+   também um caption visível logo sob o botão (o tooltip não aparece em shot
+   estático e a única explicação vivia no rodapé da página) e o estado
+   desabilitado escurece só o rótulo sobre a borda firme — em repouso o CTA
+   lê como esperando de propósito, não como botão quebrado. Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
    clássica centrada. Os panes abertos no portão mostram mundos vazios
    esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control

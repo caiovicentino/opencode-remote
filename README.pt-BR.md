@@ -412,7 +412,11 @@ remoto, zero confiança**.
   borda do pane. P3-375: o estado calmo dos artifacts agora vive no próprio pane —
   qualquer falha de carga "not connected" (primeiro boot, troca de máquina) renderiza a
   cópia vazia em tom calmo mais um aviso discreto "sincronizam sozinhos quando a máquina
-  conectar", reservando a linha vermelha "sem pareamento" para falhas de verdade
+  conectar", reservando a linha vermelha "sem pareamento" para falhas de verdade. P3-442:
+  no esqueleto do shell de primeiro boot a dica do "+ Novo" desabilitado vira um caption
+  visível logo sob o botão (tooltip some em screenshot e a única explicação vivia no rodapé
+  da página), e o cinza desabilitado escurece só o rótulo sobre a borda firme — o CTA em
+  repouso lê como intencional, não como botão quebrado
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a

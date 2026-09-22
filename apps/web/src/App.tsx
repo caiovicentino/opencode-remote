@@ -1750,12 +1750,18 @@ export default function App() {
           <aside className="desk-side">
             <div className="desk-side-top">
               {/* P3-380: the primary CTA is inert until pairing succeeds —
-                  carry the same hint tooltip as the rail's Conversas slot and
-                  let the disabled chrome gray it out, so the shell's most
-                  natural first click explains itself instead of dying. */}
+                  carry the same hint tooltip as the rail's Conversas slot so
+                  the shell's most natural first click explains itself.
+                  P3-442: the hint also renders as a visible caption directly
+                  under the button — a tooltip is invisible in a static view
+                  and the gate's only prose lived at the page bottom, so the
+                  muted CTA read as a broken button. The disabled chrome dims
+                  the label only (see index.css) — a whole-control fade read
+                  as a broken ghost beside the enabled rail. */}
               <button className="primary desk-new" disabled title={t("gateSessionsHint")}>
                 {t("newShort")}
               </button>
+              <p className="desk-new-hint">{t("gateSessionsHint")}</p>
               <nav className="desk-nav">
                 {railButtons.map((b) => (
                   <button
@@ -1772,9 +1778,6 @@ export default function App() {
                   </button>
                 ))}
               </nav>
-            </div>
-            <div className="desk-side-scroll">
-              <p className="muted gate-side-hint">{t("gateSessionsHint")}</p>
             </div>
             {/* P3-365: no account footer at the gate — the mode label would
                 claim a pairing nothing has proven yet (P3-331's sticky local

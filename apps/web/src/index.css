@@ -1051,12 +1051,25 @@ button.desk-new:hover:not(:disabled) {
   border-color: var(--border-strong);
 }
 /* P3-380: a disabled "+ Novo" must read as disabled — the gate shell holds
-   this button inert until pairing succeeds, so gray it (same quiet treatment
-   as .chat-btn/.composer-btn) instead of leaving full-strength chrome that
-   silently swallows clicks. */
+   this button inert until pairing succeeds, so gray it instead of leaving
+   full-strength chrome that silently swallows clicks.
+   P3-442: dim the label only — whole-control opacity read as a broken ghost
+   beside the enabled rail (explorer journey-chat-20260922); the firm border
+   and resting surface stay, so the CTA reads as deliberately waiting, not
+   broken. The visible hint beneath it (P3-442) carries the explanation. */
 button.desk-new:disabled {
-  opacity: 0.45;
+  color: var(--muted);
   cursor: not-allowed;
+}
+/* P3-442: the gate CTA's inline hint — one quiet line directly under the
+   muted "+ Novo", so the disabled state explains itself where the click
+   happens instead of in a tooltip (invisible in a static view) or the
+   footer strip at the page bottom. */
+.desk-new-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--muted);
 }
 .desk-side-scroll {
   flex: 1;
@@ -1074,14 +1087,10 @@ button.desk-new:disabled {
   height: auto;
   min-height: 0;
 }
-/* P3-365: unpaired gate shell — the conversations slot is a quiet hint until
-   a daemon answers; the skeleton keeps the paired column rhythm */
-.gate-side-hint {
-  margin: 0;
-  padding: 12px 12px 6px;
-  font-size: 0.8rem;
-  line-height: 1.5;
-}
+/* P3-365: unpaired gate shell — the conversations slot stays quiet until
+   a daemon answers; the skeleton keeps the paired column rhythm. P3-442:
+   the hint moved up beside the CTA it explains (.desk-new-hint), so the
+   scroll strip no longer carries a far-away caption. */
 .desk-nav {
   display: flex;
   flex-direction: column;
