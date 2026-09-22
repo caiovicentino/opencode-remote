@@ -160,9 +160,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   o "⧉" de copiar caminho vira o ícone de copiar das bolhas (com o mesmo
   estado ✓ de confirmado), e os descartes "✕"/"×" (pré-visualização de
   arquivos, remover servidor MCP, fechar o flash de captura de tela,
-  remover anexo do composer) desenham o ícone de fechar compartilhado —
-  a expansão do pin (pane-icons.test.ts) cobre FileCard e os novos glifos,
-  então o dialecto de texto não volta em nenhum canto do chrome
+  remover anexo do composer) desenham o ícone de fechar compartilhado, e o
+  separador do recorte de vídeo troca o "→" solto pela seta compartilhada —
+  a expansão do pin (pane-icons.test.ts) cobre FileCard, ChatView e
+  ScreenFlash além dos panes, então o dialecto de texto não volta em nenhum
+  canto do chrome
 - Glifo da marca em todas as telas de primeiro contato (P3-373): o glifo de
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas

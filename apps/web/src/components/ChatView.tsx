@@ -73,7 +73,7 @@ import {
 import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unread";
 import { sendAskCountToShell } from "../lib/asks";
 import { frameToFile, screenFailKey, screenWaitVerdict } from "../lib/screenpeek";
-import { ArtifactIcon, IconArrowLeft, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconMonitor, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconArrowRight, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconMonitor, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 
 /** P2-312: microphone verdict from the desktop shell (mirrors
  * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
@@ -3377,7 +3377,11 @@ export default function ChatView({
               onChange={(e) => setTrimStart(e.target.value)}
               aria-label={t("trimStart")}
             />
-            <span className="muted">→</span>
+            {/* P3-437: the range separator draws the shared arrow icon — no
+                bare text glyph beside the drawn icon set. */}
+            <span className="muted" style={{ display: "inline-flex", alignItems: "center" }} aria-hidden="true">
+              <IconArrowRight size={14} />
+            </span>
             <input
               type="number"
               step="0.1"
