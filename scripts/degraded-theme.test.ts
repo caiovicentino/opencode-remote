@@ -46,6 +46,13 @@ for (const lang of ["en", "pt"] as const) {
 
 // --- source wiring: the card renders the control, Settings shares the path -----
 const view = src("apps/web/src/components/DegradedView.tsx");
+const prefs = src("apps/web/src/index.css");
+// Count-based (P3-337 lesson) over the card's controls region only — the file
+// header's prose comment ("<select> is a replaced element") must never count.
+const degradedCard = (() => {
+  const localAt = view.indexOf('className="degraded-local"');
+  return view.slice(localAt, view.indexOf('className="degraded-manual"', localAt));
+})();
 check("DegradedView renders the theme select (themeLabel aria-label)", view.includes(`aria-label={t("themeLabel")}`));
 check(
   "DegradedView offers system/dark/light",
@@ -54,8 +61,37 @@ check(
 check("DegradedView persists through the shared THEME_KEY + applyTheme", view.includes("THEME_KEY") && view.includes("applyTheme()"));
 check("DegradedView keeps the language select beside it", view.includes(`aria-label={t("language")}`));
 check(
-  "exactly one theme select in the card (count-based, P3-337 lesson)",
-  (view.match(/themeLabel/g) ?? []).length === 1,
+  "exactly two selects in the card, one theme control (count-based, P3-337 lesson)",
+  (degradedCard.match(/<select/g) ?? []).length === 2,
+);
+
+// --- P3-429: the selects carry visible micro-labels (P3-448 lesson: paired pin) --
+// The aria-labels alone are invisible — a first-boot user had to guess which
+// select was Idioma and which was Tema. Pin the new labeled groups present AND
+// the old unlabeled direct-child markup absent.
+check(
+  "each prefs select sits under a visible micro-label (2 wrapping label groups)",
+  (view.match(/<label className="degraded-select">/g) ?? []).length === 2 &&
+    (view.match(/className="degraded-select-label"/g) ?? []).length === 2 &&
+    view.includes('<span className="degraded-select-label">{t("language")}</span>') &&
+    view.includes('<span className="degraded-select-label">{t("themeLabel")}</span>'),
+);
+check(
+  "the unlabeled direct-child markup is gone (old pattern absent)",
+  !/className="degraded-select">\s*<select/.test(degradedCard) &&
+    /className="degraded-select">\s*<span className="degraded-select-label"/.test(degradedCard),
+);
+const labelRule = prefs.match(/\.degraded-select-label\s*\{[^}]*\}/);
+check(
+  "the micro-label rides the shared quiet-caps grammar (muted, one step small)",
+  !!labelRule && /color:\s*var\(--muted\)/.test(labelRule[0]) &&
+    /font-size:\s*var\(--font-size-xs\)/.test(labelRule[0]) &&
+    /text-transform:\s*uppercase/.test(labelRule[0]),
+);
+const selectFocus = prefs.match(/\.degraded-local-prefs select:focus-visible\s*\{[^}]*\}/);
+check(
+  "focus escalates to the fg border like the queue field's active-field grammar",
+  !!selectFocus && /border-color:\s*var\(--fg\)/.test(selectFocus[0]),
 );
 
 const settings = src("apps/web/src/components/SettingsView.tsx");
@@ -71,7 +107,6 @@ check("lib/theme keeps the key aligned with Settings' storage", THEME_KEY === "o
 // which var() token each state class uses) — a silent revert of appearance:none
 // would resurrect the native macOS select chrome inside the otherwise flat
 // card (the "detalhe que denuncia cuidado" failure the fable review flagged).
-const prefs = src("apps/web/src/index.css");
 const selectRule = prefs.match(/\.degraded-local-prefs select\s*\{[^}]*\}/);
 const selectHover = prefs.match(/\.degraded-local-prefs select:hover\s*\{[^}]*\}/);
 check("index.css styles .degraded-local-prefs select", selectRule !== null);
