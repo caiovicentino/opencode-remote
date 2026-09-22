@@ -12646,6 +12646,26 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-447: the reachable note renders bare, not as a bordered card ---------
+// Inheriting the full .pane-map chrome (border, surface, radius) made the
+// one-line caption read as an interactive row beside a rail that already
+// lists the same items (explorer shot journey-chat-20260922). The note is
+// bare muted prose; only the unreachable branch keeps the card.
+{
+  const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  check(
+    "P3-447: the reachable note is a bare <p> outside the .pane-map card",
+    mapSrc.includes("return reachable ? (") &&
+      mapSrc.indexOf('<p className="pane-map-note">') > -1 &&
+      mapSrc.indexOf('<p className="pane-map-note">') < mapSrc.indexOf('<section className="pane-map"'),
+  );
+  check(
+    "P3-447: the ceremony branch keeps the full card (border + surface)",
+    /<section className="pane-map"/.test(mapSrc) && /\.pane-map\s*\{[^}]*var\(--surface\)/.test(css),
+  );
+}
+
 // --- P3-413: the ceremony map cannot contradict the offline-capable panes ----
 // The explorer's journey shot caught the gate card locking panes the same
 // screenshot showed open unpaired (Mission Control/Artifacts/Browser in
