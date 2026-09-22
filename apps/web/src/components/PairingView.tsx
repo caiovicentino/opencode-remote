@@ -124,6 +124,7 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
       <textarea
         className="pair-code"
         rows={2}
+        aria-invalid={codeError ? true : undefined}
         placeholder="opencode-remote://pair?v=2&relay=…"
         value={code}
         onChange={(e) => {
