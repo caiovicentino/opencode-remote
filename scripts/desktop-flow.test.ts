@@ -617,15 +617,17 @@ try {
   if (degraded.ok) check("P2-112: .degraded present", /true/.test(degraded.stdout));
   const kindEl = run("P2-112: journey kind attribute", ["ipc", "document.querySelector('.degraded')?.getAttribute('data-degraded-kind') ?? ''"], 15_000);
   if (kindEl.ok) check("P2-112: never-seen daemon reads as first contact", kindEl.stdout.includes("first-contact"), kindEl.stdout);
-  // P3-371: presence alone proves nothing about the paint — the CTA must be
-  // the neutral solid (bg === --fg, color === --bg) and never the warn family,
-  // so the eye separates the state from the action on this calm screen.
+  // P3-371: presence alone proves nothing about the paint. P3-450 unifies the
+  // primary identity: the CTA must wear the shared accent fill (bg ===
+  // --accent, color === --on-accent — the same green the wizard's "Começar"
+  // wears) and never the warn family, so the eye still separates the state
+  // from the action on this calm screen.
   const ctaPaint = run(
-    "P3-371: reconnect CTA wears the neutral solid",
-    ["ipc", "(() => { const b = document.querySelector('.degraded-reconnect-btn'); if (!b) return 'ABSENT'; const cs = getComputedStyle(b); const p = document.createElement('i'); p.style.color = 'var(--fg)'; document.body.appendChild(p); const fg = getComputedStyle(p).color; p.style.color = 'var(--bg)'; const bg = getComputedStyle(p).color; p.style.color = 'var(--warn)'; const warn = getComputedStyle(p).color; p.remove(); return 'bgIsFg:' + (cs.backgroundColor === fg) + '|colorIsBg:' + (cs.color === bg) + '|notWarn:' + (cs.backgroundColor !== warn && cs.color !== warn); })()"],
+    "P3-450: reconnect CTA wears the shared accent primary",
+    ["ipc", "(() => { const b = document.querySelector('.degraded-reconnect-btn'); if (!b) return 'ABSENT'; const cs = getComputedStyle(b); const p = document.createElement('i'); p.style.color = 'var(--accent)'; document.body.appendChild(p); const accent = getComputedStyle(p).color; p.style.color = 'var(--on-accent)'; const onAccent = getComputedStyle(p).color; p.style.color = 'var(--warn)'; const warn = getComputedStyle(p).color; p.remove(); return 'bgIsAccent:' + (cs.backgroundColor === accent) + '|colorIsOnAccent:' + (cs.color === onAccent) + '|notWarn:' + (cs.backgroundColor !== warn && cs.color !== warn); })()"],
     15_000,
   );
-  if (ctaPaint.ok) check("P3-371: computed CTA paint is the neutral solid, not warn", /bgIsFg:true\|colorIsBg:true\|notWarn:true/.test(ctaPaint.stdout), ctaPaint.stdout);
+  if (ctaPaint.ok) check("P3-450: computed CTA paint is the accent fill, not warn", /bgIsAccent:true\|colorIsOnAccent:true\|notWarn:true/.test(ctaPaint.stdout), ctaPaint.stdout);
   const noRed = run("P2-112: accusatory red banner absent on first contact", ["ipc", "!!document.querySelector('.daemon-down')"], 15_000);
   if (noRed.ok) check("P2-112: .daemon-down not rendered for a never-seen daemon", /false/.test(noRed.stdout));
   const calmTitle = run("P2-112: first-contact status copy", ["ipc", "document.querySelector('.degraded-status h2')?.textContent ?? ''"], 15_000);

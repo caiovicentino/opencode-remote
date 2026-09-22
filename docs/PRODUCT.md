@@ -72,6 +72,14 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   (superfície pintada + borda firme, hover que acentua) — deixa de parecer um
   fantasma apagado ao lado do "Reconectar agora".
   próprio painel, fila sobrevive a restart do app)
+- Uma identidade primária na jornada de primeiro boot (P3-450): o "Reconectar
+  agora" do card calmo deixa de ser o único botão sólido invertido
+  (fg/bg) do app e veste o mesmo fill de accent do "Começar" do wizard —
+  minutos antes na mesma jornada — então "o botão que faz a coisa principal"
+  tem uma cara só (o mesmo veredito do P3-415: accent = a ação mais alta da
+  tela). A separação estado × ação do P3-371 segue: o tom de aviso fica no
+  dot pulsante + linha de retry, nunca no CTA; fill sólido neutro fica
+  reservado para superfícies só de status
 - Soltura de arquivo nunca morre em silêncio (P3-398): arrastar um arquivo do
   Finder sobre o app pinta o realce de soltura em qualquer tela; no portão do
   primeiro boot o drop responde com o mesmo aviso calmo de parear-primeiro

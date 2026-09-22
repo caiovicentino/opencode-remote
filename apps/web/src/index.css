@@ -3181,18 +3181,11 @@ button.desk-new:disabled {
   padding-left: 22px;
 }
 /* P3-371: state vs action — the warn tone stays on the status dot + retry
-   label (this screen's only chroma); the primary action is a solid neutral
-   (inverted fg/bg fill, theme-aware) so it reads as the thing you can do,
-   not a second warning. */
-.degraded-reconnect-btn {
-  color: var(--bg);
-  background: var(--fg);
-  border: none;
-  font-weight: var(--font-weight-medium);
-}
-.degraded-reconnect-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--fg) 85%, var(--bg));
-}
+   label (this screen's only chroma), never on the CTA. P3-450 supersedes the
+   solid-neutral paint: the card's one main action wears the shared accent
+   fill (button.primary) — the same identity as the wizard's "Começar" minutes
+   earlier — so the first-boot journey has ONE primary dialect. Solid neutral
+   fills stay reserved for status-only surfaces. */
 .degraded-reconnect-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
