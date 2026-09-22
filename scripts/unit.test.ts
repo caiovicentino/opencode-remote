@@ -12858,6 +12858,43 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-432: the invalid-code error keeps its voice down ---------------------
+// A paste mistake used to be the loudest element on the pairing ceremony: red
+// border + tinted background + red-outlined retry, while PRODUCT principle 2
+// says errors never shout. The block now wears the .degraded-upstream tone —
+// neutral surface, thin red left accent — and red is reserved for the title.
+// DOM tests cannot observe borders/fills, so these pins read the rule blocks.
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const errAt = css.indexOf(".pair-error {");
+  const errBlock = errAt > -1 ? css.slice(errAt, css.indexOf("}", errAt)) : "";
+  check(
+    "P3-432: .pair-error is a neutral surface with a thin red left accent (degraded-upstream tone)",
+    errAt > -1 &&
+      errBlock.includes("border: 1px solid var(--border)") &&
+      /border-left:\s*3px solid var\(--danger\)/.test(errBlock) &&
+      errBlock.includes("background: var(--surface)") &&
+      !errBlock.includes("banner-danger-bg") &&
+      !errBlock.includes("color: var(--danger)"),
+  );
+  const msgAt = css.indexOf(".pair-error-msg {");
+  const msgBlock = msgAt > -1 ? css.slice(msgAt, css.indexOf("}", msgAt)) : "";
+  check("P3-432: the red lives on the title alone", msgAt > -1 && msgBlock.includes("color: var(--danger)") && msgBlock.includes("font-weight: 600"));
+  const retryAt = css.indexOf(".pair-error-retry {");
+  const retryBlock = retryAt > -1 ? css.slice(retryAt, css.indexOf("}", retryAt)) : "";
+  check(
+    "P3-432: the retry button speaks the quiet bordered language (no danger tokens)",
+    retryAt > -1 && retryBlock.includes("color: var(--fg)") && retryBlock.includes("border-color: var(--border)") && !retryBlock.includes("var(--danger)"),
+  );
+  // The restyle is visual only — the alert semantics stay exactly as the
+  // desktop-flow gate asserts them.
+  const view = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  check(
+    "P3-432: both .pair-error blocks keep role=alert + aria-live=assertive",
+    (view.match(/<div className="pair-error" role="alert" aria-live="assertive">/g) ?? []).length === 2,
+  );
+}
+
 // --- P3-413: the ceremony map cannot contradict the offline-capable panes ----
 // The explorer's journey shot caught the gate card locking panes the same
 // screenshot showed open unpaired (Mission Control/Artifacts/Browser in
