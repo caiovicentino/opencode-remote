@@ -27,6 +27,11 @@ import { IconChat, IconGlobe, IconLayers, IconLock, IconRadar, IconSettings } fr
  * beside the rail read as double navigation on one screen. The manual
  * ceremony (PairingView) keeps the full map.
  *
+ * P3-447: the note renders BARE — one muted line of prose, no card chrome.
+ * Inheriting the .pane-map border/surface/radius made the caption read as an
+ * interactive row beside a rail that already lists the same items (explorer
+ * shot journey-chat-20260922). Only the unreachable branch keeps the card.
+ *
  * P3-413: the padlock is the chat's alone, everywhere. The explorer's journey
  * shot caught the ceremony's full map locking Artifacts/Browser/Mission
  * Control/Settings one click after the skeleton had opened them unpaired —
@@ -50,29 +55,25 @@ export default function PaneMap({ reachable = false, offlinePanes = false }: { r
     { icon: <IconRadar size={14} />, label: t("navMission"), desc: t("paneMapMission"), locked: !offlinePanes },
     { icon: <IconSettings size={14} />, label: t("navSettings"), desc: t("paneMapSettings"), locked: !offlinePanes },
   ];
-  return (
+  return reachable ? (
+    <p className="pane-map-note">{t("paneMapRailNote")}</p>
+  ) : (
     <section className="pane-map" aria-label={t(titleKey)}>
-      {reachable ? (
-        <p className="pane-map-note">{t("paneMapRailNote")}</p>
-      ) : (
-        <>
-          <h2 className="pane-map-title">{t(titleKey)}</h2>
-          <ul className="pane-map-list">
-            {panes.map((p) => (
-              <li key={p.label} className="pane-map-row">
-                <span className="pane-map-icon" aria-hidden="true">
-                  {p.icon}
-                </span>
-                <span className="pane-map-copy">
-                  <b>{p.label}</b>
-                  <span className="muted">{p.desc}</span>
-                </span>
-                {p.locked && <IconLock size={12} className="pane-map-lock" aria-hidden="true" />}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+      <h2 className="pane-map-title">{t(titleKey)}</h2>
+      <ul className="pane-map-list">
+        {panes.map((p) => (
+          <li key={p.label} className="pane-map-row">
+            <span className="pane-map-icon" aria-hidden="true">
+              {p.icon}
+            </span>
+            <span className="pane-map-copy">
+              <b>{p.label}</b>
+              <span className="muted">{p.desc}</span>
+            </span>
+            {p.locked && <IconLock size={12} className="pane-map-lock" aria-hidden="true" />}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

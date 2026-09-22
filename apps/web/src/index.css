@@ -2874,7 +2874,10 @@ button.desk-new:disabled {
    The panes stay invisible until connection; this card is the standing map
    the transient gate toast can only flash. Deliberately NOT .pair-section:
    the P2-106/P3-334 battery pins that class's count and title order on the
-   ceremony screen. Same flat card language, tokens only. */
+   ceremony screen. Same flat card language, tokens only.
+   P3-447: this chrome is the FULL map's only — the reachable (first-boot
+   shell) variant renders its note bare, so a caption beside the rail doesn't
+   read as one more clickable card. */
 .pane-map {
   display: flex;
   flex-direction: column;
@@ -2895,7 +2898,9 @@ button.desk-new:disabled {
   color: var(--muted);
 }
 /* P3-422: the reachable variant's one-line note — the rail beside the hero
-   already lists the panes, so the card says it once in quiet prose. */
+   already lists the panes, so the card says it once in quiet prose.
+   P3-447: the note is bare prose (no border/surface/radius) — the card
+   chrome made the caption read as an interactive row. */
 .pane-map-note {
   margin: 0;
   font-size: var(--font-size-sm);

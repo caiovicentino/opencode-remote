@@ -41,7 +41,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
    (P1-071: todo fluxo alcançável no primeiro boot); P3-422: o mapa vira uma
    linha só ("Conversas pede pareamento; o resto já abre ao lado") — o rail
    ao lado já lista os mesmos itens, então repetir o card era navegação
-   duplicada na mesma tela. O mapa lista também
+   duplicada na mesma tela; P3-447: a nota é prosa nua — sem borda, fundo
+   ou raio de card — porque herdar o chrome do card fazia a frase ler como
+   uma linha clicável ao lado de um rail que já lista o mesmo. O mapa lista também
    Ajustes, que o rail abre offline no primeiro boot (P3-389). Na tela clássica
    centrada e na cerimônia manual do shell desktop o mapa também não mente
    sobre capacidade offline (P3-413): vira "Antes de parear" com cadeado só em
