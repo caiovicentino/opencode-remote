@@ -3279,8 +3279,11 @@ button.desk-new:disabled {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
   border-color: var(--fg);
 }
+/* P3-449: disabled keeps the firm border — only the label dims (color, not
+   whole-button opacity), so the core action reads as "ready when you type"
+   instead of a washed-out ghost beside the solid reconnect CTA. */
 .degraded-queue-save:disabled {
-  opacity: 0.45;
+  color: var(--muted);
   cursor: default;
 }
 .degraded-local {
