@@ -1843,9 +1843,14 @@ device)") first and
 (P3-334): on the desktop, pairing a phone is the primary story, so the host
 entry leads and the client ceremony reads as the secondary option (the phone's
 own screen is unchanged — it never renders the host entry). The submit inside
-the client ceremony is demoted to match (P3-415): it keeps its primary rank
-over the scan option but loses the accent fill — a quiet recessed chip with a
-firm border — so the host card stays the loudest action on the gate. The host entry
+the client ceremony wears the shared accent primary identity (P3-433): the
+demotion P3-415 gave it (a quiet recessed chip) was tuned for a gate whose
+first contact has since moved to the degraded card (P3-365) — every desktop
+render of this form is now the standalone manual ceremony, where the paste
+form IS the main action and the grey-flat chip read as a disabled ghost beside
+the error. It renders with the same accent fill as the wizard's "Começar" and
+the reconnect card (one primary dialect per journey, P3-449/P3-450), keeping
+its primary rank over the quiet scan option (P3-366). The host entry
 (also in Settings) reads as a button: a trailing chevron and a hover that
 fills the row (P3-335) — it is the only host-pairing action, so it must be
 discoverable at a glance. It carries no inner border (P3-370): one container

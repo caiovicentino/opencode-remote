@@ -12909,21 +12909,21 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
-// --- P3-415: the gate's brightest CTA is the host card, not the client submit -
-// The explorer's journey shot caught the client ceremony's accent-fill submit
-// out-shouting the host entry P3-334 made the primary story. The submit keeps
-// the primary CLASS (paste-first rank over the ghost scan entry, asserted live
-// by the P3-366 desktop-flow beat) but loses the accent fill in CSS.
+// --- P3-433: the ceremony's submit wears the shared accent primary -----------
+// P3-415 demoted the desktop paste submit to a recessed --bg chip so the host
+// card dominated the gate; on the standalone manual ceremony (every desktop
+// render of this form — the gate's first contact moved to the degraded card
+// with P3-365, so no paste form leads there) the grey-flat chip read as a
+// disabled ghost beside the error. P3-433 removes the override: the `primary`
+// class resolves to the shared button.primary accent identity (P3-449/P3-450:
+// one primary dialect per journey), and the P3-366 desktop-flow beat still
+// pins the class presence over the quiet scan entry.
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
   const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
-  const demoted = css.match(/\.pair-submit\.primary\s*\{[^}]*\}/);
   check(
-    "P3-415: the desktop paste submit renders demoted (quiet chip, no accent fill)",
-    !!demoted &&
-      /var\(--bg\)/.test(demoted[0]) &&
-      /var\(--border-strong\)/.test(demoted[0]) &&
-      !/var\(--accent\)/.test(demoted[0]) &&
+    "P3-433: the desktop paste submit keeps no recessed-chip override (shared accent primary)",
+    !/\.pair-submit\.primary\s*\{/.test(css) &&
       pairingSrc.includes('className={preferPaste ? "pair-submit primary" : "pair-submit"}'),
   );
 }
