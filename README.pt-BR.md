@@ -222,10 +222,10 @@ remoto, zero confiança**.
   drawer e o botão de nova conversa), no mesmo padrão do indicador de passo
   do wizard, em vez de título de página em tamanho cheio
 - **Voltar cai no painel (P3-374)** — no layout de telefone, sair de uma
-  conversa pelo botão ← sempre mostra a lista de conversas (mesmo quando a
+  conversa pela seta de voltar sempre mostra a lista de conversas (mesmo quando a
   conversa foi aberta por deep link, que substitui o histórico de navegação);
-  a home segue como superfície padrão do app, e mais um ← na lista volta pra
-  ela
+  a home segue como superfície padrão do app, e mais uma seta de voltar na
+  lista volta pra ela
 - **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
   filtram o painel pelas conversas com ou sem badge de não-lidas
 - **Troca rápida de sessão (P1-064)** — abrir uma conversa busca só as últimas
@@ -1402,9 +1402,11 @@ implementou o prompt e as caixas ignoravam o idioma e o tema.
 vite, dev server…) e menciona `http://localhost:<porta>` na resposta, o pane
 Browser abre sozinho ao lado do chat apontando pra URL, renderizado como um
 webview real e sandboxed — scroll, click e edição de formulário funcionam de
-verdade. A barra de URL é editável, `↻` recarrega, `⤢` alterna o pane para
-~80% da largura e volta, e `←` retorna pro chat. Falha de carregamento mostra
-o erro e o botão de reload, nunca um pane em branco.
+verdade. A barra de URL é editável e as ações do cabeçalho/barra desenham o
+conjunto SVG compartilhado (P3-452): o ícone de refresh recarrega, o ícone de
+maximizar alterna o pane para ~80% da largura e volta, e a seta de voltar
+retorna pro chat. Falha de carregamento mostra o erro e o botão de reload,
+nunca um pane em branco.
 
 **Indicador de não lidas (P3-053/P2-150)**: quando chega mensagem na conversa
 aberta com a janela em segundo plano, o ícone do app mostra o indicador —

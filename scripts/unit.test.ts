@@ -11132,6 +11132,26 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-436: the "nothing is lost" promise lives once, in the queue card -----
+{
+  // The degraded hero used to promise "nothing is lost" twice ~200px apart:
+  // the status card body (firstContactHint) ended with it and the queue-card
+  // hint (degradedQueueHint) carried it again. The promise belongs where the
+  // user acts — the status card now states only what happens next. This pins
+  // the DEDUP (not a deletion): the status hint drops the promise in BOTH
+  // locales while the queue card keeps it, so a regression restoring the
+  // duplicate promise fails here (rule 5's eval coverage for the copy change).
+  for (const [lang, promise, next] of [
+    ["en", "nothing is lost", "keeps trying on its own"],
+    ["pt", "nada se perde", "segue tentando sozinha"],
+  ] as const) {
+    const statusHint = translate(lang, "firstContactHint");
+    check(`P3-436: ${lang} status card no longer repeats the queue card's promise`, !statusHint.toLowerCase().includes(promise));
+    check(`P3-436: ${lang} the queue card keeps the promise (dedup, not deletion)`, translate(lang, "degradedQueueHint").toLowerCase().includes(promise));
+    check(`P3-436: ${lang} the status card still says what happens next`, statusHint.includes(next));
+  }
+}
+
 
 // --- P2-112: first-boot degraded journey decision (pure logic) ------------------
 {

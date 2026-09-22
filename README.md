@@ -277,10 +277,10 @@ private. That is the product: **local power, remote control, zero trust**.
   drawer and new-chat buttons), matching the wizard's step indicator instead
   of a full-size page title
 - **Back lands on the board (P3-374)** — on the phone layout, leaving a
-  conversation with the ← button always shows the conversations list (even
+  conversation with the back arrow always shows the conversations list (even
   when the chat was opened by a deep link, which replaces the navigation
-  history); the home stays the app's default surface and one more ← from the
-  list returns to it
+  history); the home stays the app's default surface and one more back arrow
+  from the list returns to it
 - **Session filters** — chips above the search (All / With badge / No badge)
   narrow the board to sessions with or without an unread badge
 - **Fast session switching (P1-064)** — opening a conversation fetches only
@@ -449,17 +449,17 @@ private. That is the product: **local power, remote control, zero trust**.
   `nodeIntegration` off, popups off), with an editable URL bar, reload and a maximize toggle
   (~80% width). The webview guest always fills the whole pane — including after the maximize
   toggle or a window resize — instead of painting in a top strip (P2-092). The pane's first
-   paint is a designed new-tab empty state (P3-379): nothing loads until you type an address
-   or a preview event arrives — it never auto-navigates to a host service (the old default URL
-   silently reached the machine's daemon dashboard from unpaired boots). Behind the unpaired
-   gate the empty hint defers the chat path (P3-446): "After pairing, you can also open a
-   preview from the chat" instead of pointing at Conversas — the pane that needs pairing.
-   The URL bar's action
-   button reads the moment (P3-416): before any page exists it is a **→ Go** affordance that
-   navigates to the typed address (inert while the bar is empty), swapping to **↻ reload** only
-   once a page is loaded — the old bar showed a reload that did nothing on the empty pane. While empty the
-   bar shows only a generic `https://…` placeholder (P3-448) — never a concrete URL that reads as already
-   typed. A typed URL that
+  paint is a designed new-tab empty state (P3-379): nothing loads until you type an address
+  or a preview event arrives — it never auto-navigates to a host service (the old default URL
+  silently reached the machine's daemon dashboard from unpaired boots). Behind the unpaired
+  gate the empty hint defers the chat path (P3-446): "After pairing, you can also open a
+  preview from the chat" instead of pointing at Conversas — the pane that needs pairing. The
+  URL bar's action button reads the moment (P3-416): before any page exists it draws the
+  shared SVG Go arrow (P3-452) — navigating to the typed address, inert while the bar is
+  empty — and swaps to the shared SVG reload icon only once a page is loaded (the old bar
+  showed a reload that did nothing on the empty pane). While empty the bar shows only a
+  generic `https://…` placeholder (P3-448) — never a concrete URL that reads as already
+  typed. A typed URL that
   parses but isn't http(s) — `file://`, `data:`, … — is rejected with named feedback (P3-378):
   the address bar flags red and a specific sentence explains the sandbox's http(s)-only rule
   and the way out (serve the folder over HTTP and open its localhost URL) instead of leaving
@@ -1883,9 +1883,10 @@ adding a machine explicitly never gets swallowed by local mode.
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered
 as a real sandboxed webview — scroll, click and form edits are live. The URL
-bar is editable, `↻` reloads, `⤢` toggles the pane to ~80% width and back, and
-`←` returns to the chat. A load failure shows an error and the reload button
-instead of a blank pane.
+bar is editable and its header/bar actions draw the shared SVG icon set
+(P3-452): the refresh icon reloads, the maximize icon toggles the pane to ~80%
+width and back, and the back arrow returns to the chat. A load failure shows
+an error and the reload button instead of a blank pane.
 
 **Mission Control** (Cmd+6) is a navigable post-mortem of the pilot's
 autonomous runs: one card per agent task (goal, progress, wall-clock effort,
