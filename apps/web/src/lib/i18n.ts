@@ -297,9 +297,12 @@ export const dict = {
     // degraded first-boot journey (desktop, P2-112): a dead daemon on first
     // boot is never a dead end — calm status, visible auto-retry, minimal
     // local data, and the manual pairing screen one click away.
+    // P3-436: the status card says what happens next only — the "nothing is
+    // lost" promise lives once, in the queue card where the user acts, so two
+    // adjacent cards never repeat the same promise.
     firstContactTitle: "Connecting for the first time…",
     firstContactHint:
-      "Conversations, files and artifacts sync as soon as the local daemon answers. Nothing is lost — this screen keeps trying on its own.",
+      "Conversations, files and artifacts sync as soon as the local daemon answers — this screen keeps trying on its own.",
     degradedRetrying: "Retrying automatically…",
     // P3-372: live segment of the auto-retry line — "12s · attempt 3".
     retryElapsed: "{s}s",
@@ -1162,9 +1165,12 @@ export const dict = {
     // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
     // primeiro contato nunca vira beco sem saída — status calmo, retry
     // automático visível, dados locais mínimos e o pareamento a um clique.
+    // P3-436: o card de status diz só o que acontece a seguir — a promessa
+    // "nada se perde" vive uma vez, no card da fila onde o usuário age, para
+    // dois cards vizinhos nunca repetirem a mesma promessa.
     firstContactTitle: "Conectando pela primeira vez…",
     firstContactHint:
-      "Conversas, arquivos e artifacts sincronizam assim que o daemon local responder. Nada se perde — esta tela segue tentando sozinha.",
+      "Conversas, arquivos e artifacts sincronizam assim que o daemon local responder — esta tela segue tentando sozinha.",
     degradedRetrying: "Tentando sozinho…",
     // P3-372: segmento vivo da linha de retry — "há 12s · tentativa 3".
     retryElapsed: "há {s}s",

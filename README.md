@@ -1650,7 +1650,9 @@ first launch, the app no longer dead-ends on the pairing screen. A calm status
 card — "Connecting for the first time…" for a daemon this machine has never
 met, never a red "daemon fell" alert — explains that conversations, files and
 artifacts sync as soon as the daemon answers, shows the automatic retry, and
-keeps the purely-local data (language, theme) working — both selects sit right
+keeps the purely-local data (language, theme) working (P3-436: the status card
+states only what happens next — the "nothing is lost" promise is said once, in
+the first-message queue card beneath it, where the user actually types) — both selects sit right
 on the card and apply instantly (P3-368: the theme control shares the same
 stored choice and apply path as the Settings appearance card, so the copy and
 the card never disagree; P3-445: the selects wear the card's own control skin
