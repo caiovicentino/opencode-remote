@@ -22560,7 +22560,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     errorName: "",
     ...over,
   });
-  const okBody = JSON.stringify({ ok: true, version: "1.2.3", uptimeS: 1, rooms: 0, roomsRejected: 0 });
+  // P2-332: the ok body now carries the wire protocol field the P2-331 relay
+  // publishes — the classifier compares it against RELAY_WIRE_PROTOCOL.
+  const okBody = JSON.stringify({ ok: true, version: "1.2.3", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 1, rooms: 0, roomsRejected: 0 });
   const drainingBody = JSON.stringify({ ok: false, version: "1.2.3", draining: true });
 
   check(
@@ -22653,6 +22655,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // every state: static pt + en phrases, path/scheme-free, no echoed error
   const allVerdicts = [
     relayProbeVerdict(input({ status: 200, body: okBody })), // ok
+    relayProbeVerdict(input({ status: 200, body: JSON.stringify({ ok: true, version: "1.2.3", protocol: RELAY_WIRE_PROTOCOL + 1 }) })), // protocol-mismatch
+    relayProbeVerdict(input({ status: 200, body: JSON.stringify({ ok: true, version: "1.2.3", protocol: 0 }) })), // protocol-outdated
     relayProbeVerdict(input({ status: 503, body: drainingBody })), // draining
     relayProbeVerdict(input({ status: 200, body: "<html>nginx</html>" })), // not-a-relay
     relayProbeVerdict(input({ errorName: "ENOTFOUND" })), // dns
@@ -22662,9 +22666,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     relayProbeVerdict(input({ errorName: "net::ERR_SOMETHING_ELSE" })), // unreachable
     relayProbeVerdict(input({ raw: "" })), // invalid
   ];
-  const everyState = ["ok", "draining", "not-a-relay", "dns", "refused", "tls", "timeout", "unreachable", "invalid"];
+  const everyState = ["ok", "protocol-mismatch", "protocol-outdated", "draining", "not-a-relay", "dns", "refused", "tls", "timeout", "unreachable", "invalid"];
   check(
-    "P2-328: the classifier answers exactly the nine documented states",
+    "P2-332: the classifier answers exactly the eleven documented states",
     allVerdicts.map((v) => v.state).join(",") === everyState.join(","),
   );
   check(
@@ -22729,6 +22733,138 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-328: the test button and result keys exist in BOTH locales",
     ["relayTest", "relayTesting", "relayTestFailed"].every(
+      (k) =>
+        typeof (dict.en as Record<string, string>)[k] === "string" &&
+        typeof (dict.pt as Record<string, string>)[k] === "string" &&
+        (i18nSource.match(new RegExp(`${k}:`, "g")) ?? []).length === 2,
+    ),
+  );
+}
+
+// --- P2-332: relay probe learns the wire protocol field (relayprobe.ts) ---------
+
+{
+  // Full protocol-field table: the healthy-looking 200 answer (ok true +
+  // version string) now splits three ways. Every case reuses the same
+  // address and body envelope; only the protocol field moves. Absent is
+  // modeled by simply not shipping the field (relay from before P2-331).
+  const input = (over: Partial<RelayProbeInput>): RelayProbeInput => ({
+    raw: "wss://relay.example.com:8788",
+    status: null,
+    redirected: false,
+    body: "",
+    errorName: "",
+    ...over,
+  });
+  const proto = (value: unknown): RelayProbeInput =>
+    input({
+      status: 200,
+      body: JSON.stringify(value === undefined ? { ok: true, version: "1.2.3" } : { ok: true, version: "1.2.3", protocol: value }),
+    });
+  check("P2-332: protocol equal to RELAY_WIRE_PROTOCOL → ok", relayProbeVerdict(proto(RELAY_WIRE_PROTOCOL)).state === "ok");
+  check(
+    "P2-332: positive integer above the constant → protocol-mismatch (relay is newer than this app)",
+    relayProbeVerdict(proto(RELAY_WIRE_PROTOCOL + 1)).state === "protocol-mismatch" &&
+      relayProbeVerdict(proto(RELAY_WIRE_PROTOCOL + 100)).state === "protocol-mismatch",
+  );
+  check(
+    "P2-332: positive integer below the constant → protocol-mismatch (relay declares an older wire)",
+    relayProbeVerdict(proto(RELAY_WIRE_PROTOCOL - 1)).state === "protocol-mismatch",
+  );
+  check(
+    "P2-332: zero, negative and fractional numbers are not a wire version → protocol-outdated",
+    relayProbeVerdict(proto(0)).state === "protocol-outdated" &&
+      relayProbeVerdict(proto(-2)).state === "protocol-outdated" &&
+      relayProbeVerdict(proto(2.5)).state === "protocol-outdated",
+  );
+  check(
+    "P2-332: a string — even the right number as text — is not a wire version → protocol-outdated",
+    relayProbeVerdict(proto("2")).state === "protocol-outdated" &&
+      relayProbeVerdict(proto(String(RELAY_WIRE_PROTOCOL))).state === "protocol-outdated",
+  );
+  check(
+    "P2-332: absent field (relay predates P2-331) and null → protocol-outdated, never declared broken",
+    relayProbeVerdict(proto(undefined)).state === "protocol-outdated" &&
+      relayProbeVerdict(proto(null)).state === "protocol-outdated",
+  );
+
+  // The 503 draining rule is untouched: it stays where it was (AFTER the 200
+  // branch) and classifies by ok false alone, whatever protocol says.
+  check(
+    "P2-332: a 503 with ok false stays draining whatever protocol says — equal, alien, absent",
+    relayProbeVerdict(input({ status: 503, body: JSON.stringify({ ok: false, version: "1.2.3", protocol: RELAY_WIRE_PROTOCOL, draining: true }) }))
+      .state === "draining" &&
+      relayProbeVerdict(input({ status: 503, body: JSON.stringify({ ok: false, version: "1.2.3", protocol: 999, draining: true }) })).state ===
+        "draining" &&
+      relayProbeVerdict(input({ status: 503, body: JSON.stringify({ ok: false, version: "1.2.3", draining: true }) })).state === "draining",
+  );
+
+  // the two new verdicts carry the same static-phrase bar as their siblings
+  const mismatch = relayProbeVerdict(proto(RELAY_WIRE_PROTOCOL + 1));
+  const outdated = relayProbeVerdict(proto(null));
+  check(
+    "P2-332: protocol-mismatch says to update the app or the hosted relay — static pt + en, no URL, host, port, version number or raw error",
+    mismatch.message.includes("atualize o app ou o relay hospedado") &&
+      mismatch.messageEn.includes("update the app or the hosted relay") &&
+      !mismatch.message.includes("/") &&
+      !mismatch.messageEn.includes("/") &&
+      !mismatch.message.includes("127.0.0.1") &&
+      !mismatch.messageEn.includes("http") &&
+      !/\d/.test(mismatch.message) &&
+      !/\d/.test(mismatch.messageEn),
+  );
+  check(
+    "P2-332: protocol-outdated is calm — the relay is old, it keeps working",
+    outdated.message.includes("convém atualizá-lo") &&
+      outdated.messageEn.includes("updating it") &&
+      !outdated.message.includes("/") &&
+      !outdated.messageEn.includes("/") &&
+      !outdated.message.includes("127.0.0.1") &&
+      !outdated.messageEn.includes("http") &&
+      !/\d/.test(outdated.message) &&
+      !/\d/.test(outdated.messageEn),
+  );
+
+  // real-source assertions over the REAL relayprobe.ts — the compared value
+  // must come from the imported packages/protocol constant, never a literal.
+  const probeSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "relayprobe.ts"), "utf8");
+  check(
+    "P2-332: relayprobe.ts imports RELAY_WIRE_PROTOCOL from packages/protocol and compares against it, not a literal",
+    probeSrc.includes('import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol/relaywire.js"') &&
+      probeSrc.includes("proto === RELAY_WIRE_PROTOCOL") &&
+      /proto === \d/.test(probeSrc) === false &&
+      /RELAY_WIRE_PROTOCOL\s*===\s*\d/.test(probeSrc) === false,
+  );
+  check(
+    "P2-332: the protocol branch sits BEFORE the 503 draining rule — the order of the other rules never moved",
+    probeSrc.indexOf("proto === RELAY_WIRE_PROTOCOL") > -1 &&
+      probeSrc.indexOf("proto === RELAY_WIRE_PROTOCOL") < probeSrc.indexOf("p.status === 503"),
+  );
+  const settingsSrc332 = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"), "utf8");
+  check(
+    "P2-332: SettingsView treats both protocol states at the terminal result point through their own i18n keys",
+    settingsSrc332.includes('relayTestPhrase(relayTestResult.verdict)') &&
+      settingsSrc332.includes('v.state === "protocol-mismatch"') &&
+      settingsSrc332.includes('v.state === "protocol-outdated"'),
+  );
+  check(
+    "P2-332: the outdated relay is not painted broken — the calm state keeps the neutral color, mismatch alone goes danger",
+    settingsSrc332.includes('relayTestResult.verdict.state === "protocol-outdated"') &&
+      settingsSrc332.indexOf('relayTestResult.verdict.state === "protocol-outdated"') <
+        settingsSrc332.indexOf('relayTestPhrase(relayTestResult.verdict)'),
+  );
+  // Save is never gated by a verdict: the save button carries no disabled and
+  // no protocol-state condition — the phrase helper is pure rendering.
+  const saveBtnAt = settingsSrc332.indexOf('<button className="primary" onClick={() => void saveRelay()}>');
+  check(
+    "P2-332: Save stays unconditional — the button has no disabled and no verdict condition",
+    saveBtnAt > -1 &&
+      settingsSrc332.slice(saveBtnAt, saveBtnAt + 140).includes("relaySave") &&
+      !settingsSrc332.slice(saveBtnAt, saveBtnAt + 140).includes("disabled"),
+  );
+  check(
+    "P2-332: the two protocol keys exist in BOTH locales (exactly twice — en + pt)",
+    ["relayTestProtocolMismatch", "relayTestProtocolOutdated"].every(
       (k) =>
         typeof (dict.en as Record<string, string>)[k] === "string" &&
         typeof (dict.pt as Record<string, string>)[k] === "string" &&

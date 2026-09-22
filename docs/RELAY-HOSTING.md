@@ -984,7 +984,13 @@ button: it probes the public `/healthz` endpoint derived from the address as
 typed (same host and port, `wss://` → `https://`), before anything is saved or
 the daemon restarts, and reports whether the relay answered healthy, is
 draining, or why it did not answer (unknown name, refused, untrusted
-certificate, timeout, or something other than this relay answering).
+certificate, timeout, or something other than this relay answering). A
+healthy-looking answer is also checked against the wire protocol above
+(P2-332): a relay that publishes a different `protocol` number reports an
+incompatible relay (update the app or the hosted relay — saving would leave
+the daemon reconnecting forever), and a relay that does not publish the field
+at all reports it is old — it still works and can be saved, but consider
+updating it.
 
 ## Pointing the PWA at the hosted relay
 

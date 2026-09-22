@@ -246,6 +246,12 @@ export const dict = {
     relayTest: "Test connection",
     relayTesting: "Testing…",
     relayTestFailed: "Could not test the connection — try again.",
+    // P2-332: the two protocol verdicts of the relay probe. The mismatch one
+    // is a real incompatibility (the daemon would never join); the outdated
+    // one is calm by design — a relay that predates the protocol field keeps
+    // working, it is just old. No host, port, version number or raw error.
+    relayTestProtocolMismatch: "The relay speaks a different wire protocol — update the app or the hosted relay.",
+    relayTestProtocolOutdated: "The relay is outdated — consider updating it.",
     // pairing step one + app address setting (desktop, P2-189)
     pairStepOne: "Step 1 — open the app on your phone",
     pairStepTwo: "Step 2 — pair this machine",
@@ -1122,6 +1128,12 @@ export const dict = {
     relayTest: "Testar conexão",
     relayTesting: "Testando…",
     relayTestFailed: "Não foi possível testar a conexão — tente de novo.",
+    // P2-332: os dois vereditos de protocolo da sonda do relay. O mismatch é
+    // uma incompatibilidade real (o daemon nunca entraria); o outdated é
+    // calmo de propósito — um relay anterior ao campo de protocolo continua
+    // funcionando, só é antigo. Sem host, porta, número de versão ou erro cru.
+    relayTestProtocolMismatch: "O relay fala um protocolo de fio diferente — atualize o app ou o relay hospedado.",
+    relayTestProtocolOutdated: "O relay está desatualizado — convém atualizá-lo.",
     // passo 1 do pareamento + endereço do app (desktop, P2-189)
     pairStepOne: "Passo 1 — abra o app no celular",
     pairStepTwo: "Passo 2 — pareie esta máquina",

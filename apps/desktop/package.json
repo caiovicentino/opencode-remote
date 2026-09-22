@@ -14,6 +14,7 @@
     "dist:smoke": "node scripts/dist-smoke.mjs"
   },
   "dependencies": {
+    "@ocr/protocol": "*",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
