@@ -982,6 +982,7 @@ import { extractReport, FORENSIC_MARKER, FORENSIC_WINDOW_MS, forensicDue, forens
 
 import {
   activeSlots,
+  gateActiveSlots,
   initialViewState,
   isPaneOpen,
   topSlot,
@@ -10645,6 +10646,22 @@ check(
   check(
     "p1-046 topSlot falls back to chat on the home screen",
     topSlot(base) === "chat" && activeSlots(base).has("chat"),
+  );
+  // P3-430: the gate renders the chat rail button disabled until pairing
+  // succeeds — the selected pill must not paint on it (the home screen's
+  // topSlot fallback made the one dead click read as the open pane).
+  check(
+    "p3-430 gateActiveSlots suppresses the pill on the locked chat slot",
+    gateActiveSlots(base, ["chat"]).size === 0 && activeSlots(base).has("chat"),
+  );
+  const gateArtifacts = viewReducer(base, { type: "open", slot: "artifacts" });
+  check(
+    "p3-430 gateActiveSlots keeps the pill on a pane the gate really opens",
+    gateActiveSlots(gateArtifacts, ["chat"]).size === 1 && gateActiveSlots(gateArtifacts, ["chat"]).has("artifacts"),
+  );
+  check(
+    "p3-430 gateActiveSlots is a no-op when nothing is locked",
+    gateActiveSlots(gateArtifacts, []).has("artifacts") && gateActiveSlots(base, ["settings"]).has("chat"),
   );
   const share = viewReducer(chat, { type: "open", slot: "share" });
   const shareClosed = viewReducer(share, { type: "back" });

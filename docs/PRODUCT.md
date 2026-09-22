@@ -57,7 +57,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
    também um caption visível logo sob o botão (o tooltip não aparece em shot
    estático e a única explicação vivia no rodapé da página) e o estado
    desabilitado escurece só o rótulo sobre a borda firme — em repouso o CTA
-   lê como esperando de propósito, não como botão quebrado. Janela
+   lê como esperando de propósito, não como botão quebrado. P3-430: o slot
+   Conversas do próprio rail também perde a pill de selecionado enquanto
+   estiver travado — o fallback do topo ("chat") pintava o item desabilitado
+   como o painel aberto, contradizendo o próprio tooltip. Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
    clássica centrada. Os panes abertos no portão mostram mundos vazios
    esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control

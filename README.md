@@ -521,7 +521,9 @@ private. That is the product: **local power, remote control, zero trust**.
   silently swallowing the first click (P3-380); since P3-442 the hint also shows as a
   visible caption directly under the CTA (a tooltip is invisible in a static view) and the
   disabled state dims only the label over the firm border, so the resting button reads as
-  deliberately waiting rather than broken
+  deliberately waiting rather than broken; since P3-430 the locked Conversations slot itself
+  also drops the selected pill — the gate used to paint the home screen's chat fallback on
+  the one disabled item, so it read as the open pane while its own tooltip said otherwise
 - **Offline panes stay calm at the gate (P3-327)** — behind the first-boot gate shell the
   reachable panes read as expected empty worlds, not errors: Mission Control opens on the
   forensic view with its "no sessions recorded yet" copy (the dashboard and live-shot

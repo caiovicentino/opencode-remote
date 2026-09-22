@@ -29,6 +29,7 @@ import { gateVerify, gateEnroll } from "./lib/gate";
 import { useT } from "./lib/i18n";
 import {
   activeSlots,
+  gateActiveSlots,
   initialViewState,
   isPaneOpen,
   topSlot,
@@ -258,6 +259,11 @@ const GATE_ACTION_LABELS: Record<string, string> = {
  * the toast, now naming it). The Go menu must match this set exactly. */
 const GATE_SHELL_PANES = new Set<string>(["artifacts", "browser", "mission", "settings"]);
 
+/** P3-430: rail slots the gate locks behind pairing — the chat row renders
+ * disabled with the gate hint until pairing succeeds, so the selected pill
+ * must never paint on it (gateActiveSlots). */
+const GATE_LOCKED_SLOTS: readonly Slot[] = ["chat"];
+
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
@@ -300,6 +306,9 @@ export default function App() {
   const session = view.chatSession;
   const top = topSlot(view);
   const slots = activeSlots(view);
+  // P3-430: at the gate the chat slot is locked behind pairing — the same
+  // topSlot fallback paints the pill on a button the gate renders disabled.
+  const gateSlots = gateActiveSlots(view, GATE_LOCKED_SLOTS);
   // stable handle: the bridge returns a fresh fn each render, which would
   // re-trigger the BrowserView's open-on-mount effect forever
   const [browseFn] = useState<BrowseFn | null>(() => desktopBridge()?.daemonBrowse ?? null);
@@ -1763,20 +1772,26 @@ export default function App() {
               </button>
               <p className="desk-new-hint">{t("gateSessionsHint")}</p>
               <nav className="desk-nav">
-                {railButtons.map((b) => (
-                  <button
-                    key={b.slot}
-                    className={slots.has(b.slot) ? "active" : ""}
-                    onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
-                    disabled={b.slot === "chat"}
-                    title={b.slot === "chat" ? t("gateSessionsHint") : b.label}
-                    data-pane={b.slot}
-                  >
-                    {b.icon}
-                    <span>{b.label}</span>
-                    {b.beta && <span className="beta-pill">Beta</span>}
-                  </button>
-                ))}
+                {railButtons.map((b) => {
+                  // P3-430: the gate locks the chat slot — disabled, hint
+                  // tooltip and NO selected pill (a dead click must not read
+                  // as the open pane; gateActiveSlots holds the same rule).
+                  const locked = GATE_LOCKED_SLOTS.includes(b.slot);
+                  return (
+                    <button
+                      key={b.slot}
+                      className={gateSlots.has(b.slot) ? "active" : ""}
+                      onClick={() => (b.slot === "chat" ? goChat() : openPane(b.slot))}
+                      disabled={locked}
+                      title={locked ? t("gateSessionsHint") : b.label}
+                      data-pane={b.slot}
+                    >
+                      {b.icon}
+                      <span>{b.label}</span>
+                      {b.beta && <span className="beta-pill">Beta</span>}
+                    </button>
+                  );
+                })}
               </nav>
             </div>
             {/* P3-365: no account footer at the gate — the mode label would
