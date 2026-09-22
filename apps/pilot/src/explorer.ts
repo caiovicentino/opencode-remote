@@ -233,7 +233,9 @@ async function landFindings(
  * (P1-076). The addTask insertions are re-applied inside every attempt — the
  * `checkout -B` rewind wipes prior edits, and nextId derives from the rewound
  * file so retried commits are byte-identical. Returns true only when the
- * landing actually armed (or completed) the PR merge.
+ * landing actually armed (or completed) the PR merge. P2-336: addTask is
+ * fail-closed — a finding whose line fails validation is dropped with a
+ * warning and never written; a landing with zero applied findings aborts.
  */
 export async function commitAndPushFindings(
   ws: string,
@@ -243,11 +245,14 @@ export async function commitAndPushFindings(
   attempts: number = EXPLORER_PUSH_RETRIES,
 ): Promise<boolean> {
   return landFindings(ws, message, io, attempts, () => {
+    let applied = 0;
     for (const f of findings) {
       const id = nextId(ws, "P3");
-      addTask(ws, id, "P3", `[explorer][${f.severity}] ${f.title}`, explorerSpec(f));
+      const res = addTask(ws, id, "P3", `[explorer][${f.severity}] ${f.title}`, explorerSpec(f));
+      if (res === "applied") applied++;
+      else log("warn", "explorer finding dropped — task line failed validation", { id, result: res });
     }
-    return { action: "apply" };
+    return applied > 0 ? { action: "apply" } : { action: "abort" };
   });
 }
 
@@ -264,11 +269,14 @@ export async function commitAndPushFableFindings(
   attempts: number = EXPLORER_PUSH_RETRIES,
 ): Promise<boolean> {
   return landFindings(ws, message, io, attempts, () => {
+    let applied = 0;
     for (const f of findings) {
       const id = nextId(ws, "P3");
-      addTask(ws, id, "P3", `[fable][${f.priority}] ${f.title}`, fableSpec(f));
+      const res = addTask(ws, id, "P3", `[fable][${f.priority}] ${f.title}`, fableSpec(f));
+      if (res === "applied") applied++;
+      else log("warn", "fable improvement dropped — task line failed validation", { id, result: res });
     }
-    return { action: "apply" };
+    return applied > 0 ? { action: "apply" } : { action: "abort" };
   });
 }
 
