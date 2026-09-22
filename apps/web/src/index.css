@@ -1272,25 +1272,29 @@ button.desk-new:disabled {
   animation: msg-in var(--motion-fast) var(--ease-out);
 }
 .browser-empty-icon,
-.artifacts-empty-icon {
+.artifacts-empty-icon,
+.mission-empty-icon {
   color: var(--muted);
   display: block;
   margin-bottom: 6px;
 }
 .browser-empty-icon svg,
-.artifacts-empty-icon svg {
+.artifacts-empty-icon svg,
+.mission-empty-icon svg {
   width: 2.2rem;
   height: 2.2rem;
 }
 .browser-empty-title,
-.artifacts-empty-title {
+.artifacts-empty-title,
+.mission-empty-title {
   margin: 0 0 4px;
   font-size: 1rem;
   font-weight: 600;
   color: var(--text);
 }
 .browser-empty-hint,
-.artifacts-empty-hint {
+.artifacts-empty-hint,
+.mission-empty-hint {
   margin: 0;
   font-size: 0.85rem;
   line-height: 1.45;
@@ -4437,6 +4441,41 @@ button.desk-new:disabled {
 }
 .mission-down-actions button {
   font-size: 0.7rem;
+}
+/* P3-444: with zero sessions the forensic grid kept its two columns — the
+   cards' border-right painted a full-height divider beside a dead half-pane
+   (explorer journey shot). The pane collapses to one centered empty world,
+   the same composed browser/artifacts pattern, until the first session card
+   exists. Fill adapted to the .screen flex column: flex: 1 like
+   .artifacts-empty's in-flow variant, not the browser's absolute overlay. */
+.mission-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: 16px;
+  color: var(--muted);
+  animation: msg-in var(--motion-fast) var(--ease-out);
+}
+.mission-empty-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 320px;
+}
+/* The mission card rides below the empty world so its state and clear action
+   stay reachable; grid-context margins and the muted empty-world color don't
+   apply — it stays a full text-colored card, capped like .mission-down. */
+.mission-empty .mission-active {
+  margin: 0;
+  width: 100%;
+  max-width: 520px;
+  text-align: left;
+  color: var(--text);
 }
 @media (max-width: 1023px) {
   .mission-grid {

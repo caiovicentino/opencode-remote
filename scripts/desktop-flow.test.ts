@@ -543,16 +543,18 @@ try {
   );
   if (gateMission.ok) check("P3-365: mission pane visible while unpaired", /pane:block\|mission:true/.test(gateMission.stdout), gateMission.stdout);
   // P3-327: a dead daemon is the EXPECTED state behind the gate — Mission
-  // Control answers with the calm empty world (no red error line, muted
-  // empty/loading copy in the cards column) instead of "daemon unreachable".
+  // Control answers with the calm empty world (no red error line) instead of
+  // "daemon unreachable". P3-444: that world is the composed empty state —
+  // the radar glyph + title + hint + the mission card beneath — replacing
+  // the old two-column grid whose divider split a dead half-pane.
   const gateMissionCalm = run(
     "P3-327: Mission Control stays calm behind the gate",
-    ["ipc", "(() => { const m = document.querySelector('.desk-pane .mission'); return 'err:' + !!m?.querySelector('.mission-error') + '|empty:' + !!m?.querySelector('.mission-cards p.muted'); })()"],
+    ["ipc", "(() => { const m = document.querySelector('.desk-pane .mission'); return 'err:' + !!m?.querySelector('.mission-error') + '|empty:' + !!m?.querySelector('.mission-empty') + '|title:' + (m?.querySelector('.mission-empty-title')?.textContent ?? '') + '|card:' + !!m?.querySelector('.mission-empty .mission-active'); })()"],
     15_000,
   );
   check(
     "P3-327: mission pane renders the calm empty state",
-    gateMissionCalm.ok && /err:false\|empty:true/.test(gateMissionCalm.stdout.replace(/"/g, "").trim()),
+    gateMissionCalm.ok && /err:false\|empty:true\|title:.+\|card:true/.test(gateMissionCalm.stdout.replace(/"/g, "").trim()),
     gateMissionCalm.stdout,
   );
   run("P3-365: open Artifacts from the rail", ["click", 'button[data-pane="artifacts"]'], 15_000);

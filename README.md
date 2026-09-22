@@ -530,7 +530,12 @@ private. That is the product: **local power, remote control, zero trust**.
   pane edge. P3-375: the calm artifact state now lives in the pane itself — any
   "not connected" load failure (first boot, machine switch) renders the muted empty
   copy plus a quiet "syncs on its own once the machine connects" hint, so the red
-  "not paired — pair again" line is reserved for real failures on every mount
+  "not paired — pair again" line is reserved for real failures on every mount.
+  Since P3-444 Mission Control's zero-session state is that same composed empty
+  world — radar glyph, "no sessions recorded yet" title, a hint about what fills
+  it, and the mission card beneath (its state and clear action stay reachable) —
+  replacing the old two-column grid whose divider painted a dead half-pane;
+  the split forensic layout only returns once the first session card exists
 - **Quiet chrome, one status surface** — the mobile sessions header reads as a
   0.72rem overline (machine name + connection dot) instead of a page title, the
   shell title included (P3-373: the build-5 token bump had briefly promoted it
