@@ -696,6 +696,17 @@ like every other one:
 {"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
 ```
 
+Since P2-335 the daemon itself is one of those clients: when its reconnect
+loop has seen enough failed dial cycles (3 consecutive, outside the 10-minute
+throttle, no mismatch on record), it reads this field from the probe and
+records the verdict on `GET /api/health` as the additive `relayProtocol`
+object (`state` + one static pt-BR phrase — see docs/api.md). Only a
+different positive integer is a hard verdict (`mismatch`); a relay that
+predates the field reads as `legacy` and keeps working, and every network
+failure, timeout or unrecognizable body stays `unknown` — so publishing an
+incompatible `protocol` here is the one change that turns "reconnecting
+forever" into a named, actionable state for the machine's owner.
+
 ### Why a room was refused: the rejection breakdown (P2-293)
 
 A single opaque `roomsRejected` total cannot answer the operator's actual

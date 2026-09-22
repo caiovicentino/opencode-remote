@@ -67,6 +67,17 @@ import {
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { relayDialVerdict, RELAY_DIAL_FLOOR_MS } from "../apps/daemon/src/relaydialerror";
 import {
+  RELAY_PROTOCOL_BODY_MAX,
+  RELAY_PROTOCOL_PROBE_MIN_FAILURES,
+  RELAY_PROTOCOL_PROBE_THROTTLE_MS,
+  RELAY_PROTOCOL_PROBE_TIMEOUT_MS,
+  relayHealthUrlFromWs,
+  relayProtocolProbePlan,
+  relayProtocolVerdict,
+  type RelayProtocolPlanInput,
+  type RelayProtocolProbeInput,
+} from "../apps/daemon/src/relayprotocol";
+import {
   RELAY_REDIAL_THROTTLE_MS,
   relayRedialGate,
   relayRedialPlan,
@@ -22487,6 +22498,222 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         typeof (dict.pt as Record<string, string>)[k] === "string" &&
         (i18nSource.match(new RegExp(`${k}:`, "g")) ?? []).length === 2,
     ),
+  );
+}
+
+// --- P2-335: relay wire-protocol verdict in the reconnect loop (relayprotocol.ts) ---
+
+{
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const protocolSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "relayprotocol.ts"), "utf8");
+
+  // 1. the verdict table — the full closed set over one shared body shape
+  type RelayProtocolVerdictState = ReturnType<typeof relayProtocolVerdict>["state"];
+  const okBody = (proto: unknown) =>
+    JSON.stringify({ ok: true, version: "0.2.0", protocol: proto, uptimeS: 3, rooms: 1, roomsRejected: 0 });
+  const verdictOf = (status: number | null, bodyText: string | null, expected = RELAY_WIRE_PROTOCOL): RelayProtocolVerdictState =>
+    relayProtocolVerdict({ status, body: bodyText === null ? null : JSON.parse(bodyText), expected }).state;
+
+  check("P2-335: protocol equal to the expected constant → ok", verdictOf(200, okBody(RELAY_WIRE_PROTOCOL)) === "ok");
+  check("P2-335: protocol greater than expected → mismatch", verdictOf(200, okBody(RELAY_WIRE_PROTOCOL + 7)) === "mismatch");
+  check("P2-335: protocol lesser but positive → mismatch", verdictOf(200, okBody(RELAY_WIRE_PROTOCOL - 1)) === "mismatch");
+  check("P2-335: protocol zero → legacy (an old relay keeps working)", verdictOf(200, okBody(0)) === "legacy");
+  check("P2-335: protocol negative → legacy", verdictOf(200, okBody(-2)) === "legacy");
+  check("P2-335: protocol fractional → legacy", verdictOf(200, okBody(2.5)) === "legacy");
+  check("P2-335: protocol string → legacy", verdictOf(200, okBody("2")) === "legacy");
+  check("P2-335: protocol absent → legacy", verdictOf(200, JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 })) === "legacy");
+  check("P2-335: protocol null → legacy", verdictOf(200, okBody(null)) === "legacy");
+  check("P2-335: status 500 → unknown", verdictOf(500, okBody(RELAY_WIRE_PROTOCOL)) === "unknown");
+  check(
+    "P2-335: non-JSON body → unknown",
+    verdictOf(200, null) === "unknown" &&
+      relayProtocolVerdict({ status: 200, body: "<html>nginx</html>", expected: RELAY_WIRE_PROTOCOL }).state === "unknown",
+  );
+  check(
+    "P2-335: body without version → unknown",
+    verdictOf(200, JSON.stringify({ ok: true, protocol: RELAY_WIRE_PROTOCOL + 1 })) === "unknown",
+  );
+  check(
+    "P2-335: non-string version → unknown (fail-closed, never a hard verdict)",
+    verdictOf(200, JSON.stringify({ ok: true, version: 42, protocol: RELAY_WIRE_PROTOCOL + 1 })) === "unknown",
+  );
+  check("P2-335: a failed attempt (status null) → unknown", verdictOf(null, okBody(RELAY_WIRE_PROTOCOL + 3)) === "unknown");
+  check(
+    "P2-335: a body identified by version alone is still classified — an incompatible relay may drop any other field",
+    verdictOf(200, JSON.stringify({ version: "9.9.9", protocol: RELAY_WIRE_PROTOCOL + 1 })) === "mismatch" &&
+      verdictOf(200, JSON.stringify({ version: "9.9.9", protocol: RELAY_WIRE_PROTOCOL })) === "ok",
+  );
+  check(
+    "P2-335: only mismatch is a hard verdict — every other answer preserves the reconnect behavior",
+    [verdictOf(200, okBody(RELAY_WIRE_PROTOCOL)), verdictOf(200, okBody(0)), verdictOf(500, okBody(RELAY_WIRE_PROTOCOL)), verdictOf(null, null)].every(
+      (s) => s !== "mismatch",
+    ),
+  );
+  const everyProtocolVerdict = [
+    relayProtocolVerdict({ status: 200, body: JSON.parse(okBody(RELAY_WIRE_PROTOCOL)), expected: RELAY_WIRE_PROTOCOL }), // ok
+    relayProtocolVerdict({ status: 200, body: JSON.parse(okBody(RELAY_WIRE_PROTOCOL + 1)), expected: RELAY_WIRE_PROTOCOL }), // mismatch
+    relayProtocolVerdict({ status: 200, body: JSON.parse(okBody(undefined)), expected: RELAY_WIRE_PROTOCOL }), // legacy
+    relayProtocolVerdict({ status: 404, body: null, expected: RELAY_WIRE_PROTOCOL }), // unknown
+  ];
+  check(
+    "P2-335: the classifier answers exactly the four documented states",
+    everyProtocolVerdict.map((v) => v.state).join(",") === "ok,mismatch,legacy,unknown",
+  );
+  check(
+    "P2-335: every verdict carries a static pt phrase with no URL, scheme, digit or raw error",
+    everyProtocolVerdict.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("http") &&
+        !v.message.includes("127.0.0.1") &&
+        !/\d/.test(v.message),
+    ),
+  );
+
+  // 2. the probe plan — every rule, consulted in the documented order
+  const basePlan: RelayProtocolPlanInput = {
+    relayDisabled: false,
+    connected: false,
+    dialFailures: RELAY_PROTOCOL_PROBE_MIN_FAILURES,
+    msSinceLastProbe: null,
+    mismatchKnown: false,
+  };
+  const plan = (over: Partial<RelayProtocolPlanInput>) => relayProtocolProbePlan({ ...basePlan, ...over });
+  const planRows: [string, Partial<RelayProtocolPlanInput>, string, string][] = [
+    // rule 1 — a disabled relay beats everything (connectRelay refuses anyway)
+    ["disabled wins over connected", { relayDisabled: true, connected: true, dialFailures: 99 }, "skip", "disabled"],
+    ["disabled wins over a stale throttle", { relayDisabled: true, dialFailures: 99, msSinceLastProbe: 0 }, "skip", "disabled"],
+    // rule 2 — connected: frames are flowing, nothing to diagnose
+    ["connected wins over failures", { connected: true, dialFailures: 9 }, "skip", "connected"],
+    // rule 3 — fewer than three consecutive failed dial cycles are a blip
+    ["one failed dial cycle is a blip", { dialFailures: 1 }, "skip", "few-dial-failures"],
+    ["two failed dial cycles are a blip", { dialFailures: RELAY_PROTOCOL_PROBE_MIN_FAILURES - 1 }, "skip", "few-dial-failures"],
+    // rule 4 — a known mismatch skips until the relay speaks again
+    ["mismatch already known wins over the throttle", { dialFailures: 9, mismatchKnown: true, msSinceLastProbe: 0 }, "skip", "mismatch-known"],
+    // rule 5 — inside the documented 10-minute throttle window
+    ["throttled inside the 10-minute window", { dialFailures: 9, msSinceLastProbe: RELAY_PROTOCOL_PROBE_THROTTLE_MS - 1 }, "skip", "throttled"],
+    // rule 6 — only then a probe
+    ["the first probe ever is not throttled", { dialFailures: 9, msSinceLastProbe: null }, "probe", "probe-due"],
+  ];
+  for (const [name, over, action, reason] of planRows) {
+    const v = plan(over);
+    check(`P2-335: ${name}`, v.action === action && v.reason === reason);
+  }
+  check(
+    "P2-335: the throttle window boundary is exact (10 minutes), probed on both sides",
+    plan({ dialFailures: 9, msSinceLastProbe: RELAY_PROTOCOL_PROBE_THROTTLE_MS }).action === "probe" &&
+      plan({ dialFailures: 9, msSinceLastProbe: RELAY_PROTOCOL_PROBE_THROTTLE_MS - 1 }).reason === "throttled" &&
+      RELAY_PROTOCOL_PROBE_THROTTLE_MS === 600_000,
+  );
+  check(
+    "P2-335: the probe fires at exactly three consecutive failed dial cycles",
+    plan({ dialFailures: 3 }).action === "probe" && RELAY_PROTOCOL_PROBE_MIN_FAILURES === 3,
+  );
+
+  // 3. URL derivation parity — the same host table the P2-328 desktop probe pins
+  const healthUrlTable = [
+    "wss://relay.example.com:8788",
+    "ws://127.0.0.1:8787",
+    "wss://relay.example.com",
+    "ws://127.0.0.1",
+    "wss://u:p@relay.example.com/some/path?q=1#frag",
+    "wss://relay.example.com:443/room/deep?x=1",
+    "ws://192.168.1.10:8787/",
+    "ws://[::1]:8787",
+    "wss://Relay.Example.COM",
+  ];
+  check(
+    "P2-335: relayHealthUrlFromWs matches the desktop relayHealthUrl derivation on every host in the table",
+    healthUrlTable.every((raw) => relayHealthUrlFromWs(raw) === relayHealthUrl(raw)),
+  );
+  check(
+    "P2-335: relayHealthUrlFromWs refuses non-ws schemes, garbage and non-strings, like the desktop probe",
+    relayHealthUrlFromWs("https://relay.example.com") === null &&
+      relayHealthUrlFromWs("not a url") === null &&
+      relayHealthUrlFromWs(42) === null &&
+      relayHealthUrlFromWs(null) === null,
+  );
+
+  // 4. purity: no I/O of any kind in the module (index.ts boots a daemon on import)
+  check(
+    "P2-335: relayprotocol.ts is I/O-free (no imports, no clock, no timers, no fetch)",
+    !/from\s+["']/.test(protocolSrc) &&
+      !protocolSrc.includes("Date.now(") &&
+      !protocolSrc.includes("setTimeout(") &&
+      !protocolSrc.includes("setInterval(") &&
+      !protocolSrc.includes("fetch(") &&
+      !protocolSrc.includes("process.env"),
+  );
+
+  // 5. the wired daemon: the compared constant comes from @ocr/protocol,
+  //    the plan is consulted exactly once (the existing retry path) and no
+  //    timer, route or listener is created
+  const protoImportEnd = daemonSrc.indexOf('from "@ocr/protocol"');
+  const protoImport = daemonSrc.slice(daemonSrc.lastIndexOf("import {", protoImportEnd), protoImportEnd);
+  check(
+    "P2-335: the compared value comes from the RELAY_WIRE_PROTOCOL constant imported from @ocr/protocol, never a literal",
+    protoImport.includes("RELAY_WIRE_PROTOCOL") &&
+      (daemonSrc.match(/expected: RELAY_WIRE_PROTOCOL/g) ?? []).length >= 2 &&
+      !/expected:\s*\d/.test(daemonSrc) &&
+      !/\bexpected\s*===?\s*\d/.test(protocolSrc) &&
+      !/RELAY_WIRE_PROTOCOL\s*=/.test(protocolSrc),
+  );
+  const consultCount = (daemonSrc.match(/relayProtocolProbePlan\(\{/g) ?? []).length;
+  check("P2-335: the plan is consulted exactly once — inside the existing reconnect loop", consultCount === 1);
+  const connectStart = daemonSrc.indexOf("function connectRelay(");
+  const connectFn = daemonSrc.slice(connectStart, daemonSrc.indexOf("\nfunction applyRelayProtocolState", connectStart));
+  check(
+    "P2-335: the consultation sits in the relay close handler (the existing retry path), after the failure streak",
+    connectFn.includes('ws.on("close"') &&
+      /relayDialFailures\+\+;[\s\S]*?relayProtocolProbePlan\(\{/.test(connectFn) &&
+      /relayProtocolProbePlan\(\{[\s\S]*?action === "probe"/.test(connectFn),
+  );
+  check("P2-335: the relay socket keeps exactly its four existing listeners (no new listener)", (connectFn.match(/ws\.on\(/g) ?? []).length === 4);
+  const consultBlock = connectFn.slice(
+    connectFn.indexOf("relayDialFailures++;"),
+    connectFn.indexOf("relayRetryTimer = setTimeout("),
+  );
+  check(
+    "P2-335: the consultation block creates no timer — the retry scheduling after it is the pre-existing one",
+    consultBlock.includes("relayProtocolProbePlan({") && !consultBlock.includes("setTimeout("),
+  );
+  const probeStart = daemonSrc.indexOf("async function probeRelayProtocol");
+  const probeFn = daemonSrc.slice(probeStart, daemonSrc.indexOf("// local direct mode (P1-061)", probeStart));
+  check(
+    "P2-335: the probe is one best-effort GET with the documented 5s timeout and the 4KB body cap",
+    probeFn.includes("AbortSignal.timeout(RELAY_PROTOCOL_PROBE_TIMEOUT_MS)") &&
+      probeFn.includes("readRelayBodyPrefix(res, RELAY_PROTOCOL_BODY_MAX)") &&
+      probeFn.includes('redirect: "manual"') &&
+      RELAY_PROTOCOL_PROBE_TIMEOUT_MS === 5_000 &&
+      RELAY_PROTOCOL_BODY_MAX === 4_096,
+  );
+  check(
+    "P2-335: the probe creates no timer, no route and no listener — any failure degrades to unknown",
+    !probeFn.includes("setTimeout(") &&
+      !probeFn.includes("setInterval(") &&
+      !probeFn.includes("createServer") &&
+      !probeFn.includes(".on(") &&
+      !/url\.pathname[^\n]*relayProtocol/.test(daemonSrc),
+  );
+  const onSocketStart = daemonSrc.indexOf("function onSocketMessage(");
+  const onSocketFn = daemonSrc.slice(onSocketStart, onSocketStart + 1200);
+  check(
+    "P2-335: an inbound relay frame ends the failure streak and supersedes a stale mismatch verdict",
+    onSocketFn.includes("if (ws === relaySocket)") &&
+      onSocketFn.includes("relayDialFailures = 0;") &&
+      onSocketFn.includes('applyRelayProtocolState("unknown")'),
+  );
+  check(
+    "P2-335: the health payload gains the additive relayProtocol field next to relayConnected and relayRetry",
+    /relayConnected,\n\s*\/\/ P2-335[\s\S]*?relayProtocol: \{ state: relayProtocolState, message: RELAY_PROTOCOL_PHRASES\[relayProtocolState\] \},[\s\S]*?relayRetry: relayConnected/.test(
+      daemonSrc,
+    ),
+  );
+  check(
+    "P2-335: exactly one log line records each state transition, with the static line table",
+    (daemonSrc.match(/applyRelayProtocolState\(/g) ?? []).length === 4 &&
+      daemonSrc.includes("log(next === \"mismatch\" ? \"warn\" : \"info\", RELAY_PROTOCOL_LOG[next]"),
   );
 }
 
