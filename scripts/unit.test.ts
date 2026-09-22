@@ -12446,6 +12446,37 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-434: the Mission Control pane title speaks the pane-title grammar -----
+// The mission header was the odd pane in the row: an inline
+// `<IconRadar size={16}/> Mission Control` literal where every sibling
+// (Artifacts, Browser, Settings) renders a plain t() dictionary string —
+// the leading glyph made MC the one decorated header beside bare titles,
+// and the English literal shipped hardcoded chrome in a bilingual app.
+// Both h1 branches (the !daemonApi fallback and the paired world) now reuse
+// the rail's navMission key verbatim so pane and rail can never disagree,
+// and the dashboard iframe's a11y title rides the same key instead of a
+// second English literal.
+{
+  const src = readFileSync(new URL("../apps/web/src/components/MissionControlView.tsx", import.meta.url), "utf8");
+  check(
+    "P3-434: the mission h1s ride the dict title (no hardcoded English, no leading icon)",
+    (src.match(/<h1 className="pane-title">\{t\("navMission"\)\}<\/h1>/g) ?? []).length === 2 &&
+      !src.includes(">Mission Control</h1>") &&
+      !src.includes("IconRadar size={16}"),
+  );
+  check(
+    "P3-434: the pane + iframe title reuse the rail's navMission key (exactly 3 uses)",
+    src.split('t("navMission")').length - 1 === 3,
+  );
+  check(
+    "P3-434: navMission resolves per locale (no raw-key fallback)",
+    (["en", "pt"] as const).every((lang) => {
+      const s = translate(lang, "navMission");
+      return s !== "navMission" && s.trim() !== "";
+    }),
+  );
+}
+
 // --- P3-446: pre-pairing empty states never point at the locked chat ----------
 // Behind the unpaired gate, Conversas is exactly the pane that needs pairing —
 // yet the mission card's empty copy ("define it in the chat") and the browser's

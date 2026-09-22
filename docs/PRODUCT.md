@@ -146,6 +146,14 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   scanner de QR) usa a classe compartilhada `.pane-title` — passo md dos
   tokens, peso 600, ellipsis em título longo — sem override inline de
   `fontSize`, então os headers não driftam mais entre si
+- Título de pane é só dicionário, sem ícone à frente (P3-434): o header do
+  Mission Control era o único do rosto com um glifo inline
+  (`IconRadar 16px` + "Mission Control" cravado em inglês) — o radar já
+  fala no rail, no mapa de panes e no empty state, então o h1 passa a
+  renderizar a mesma chave `t("navMission")` do rail (idem o fallback
+  sem daemon e o title acessível do iframe), sem ícone à frente. Régua:
+  ícone é linguagem do rail/paleta, título de pane é string de dicionário
+  puro — os headers da mesma fileira nunca mais divergem
 - Headers de pane sem seta na frente no desktop (P3-419): no shell de duas
   colunas o rail é o navegador, então em Artifacts, Browser e Mission
   Control o título passa a liderar o header — o "←" pinta depois do título
