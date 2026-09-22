@@ -3,7 +3,7 @@ import { downloadFile, mimeFor, saveFile, type OcrRequest } from "../lib/files";
 // P3-452: header actions speak the shared SVG icon language (like the rail);
 // the icon-only back button needs its accessible name from the dict.
 import { useT } from "../lib/i18n";
-import { IconArrowLeft, IconRefresh } from "./icons";
+import { IconArrowLeft, IconRefresh, IconX } from "./icons";
 
 interface RemoteFile {
   path: string;
@@ -174,8 +174,8 @@ export default function FilesView({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={closePreview} aria-label="Close preview">
-              ✕
+            <button className="pane-close" onClick={closePreview} aria-label={t("close")}>
+              <IconX size={16} />
             </button>
             <div
               style={{

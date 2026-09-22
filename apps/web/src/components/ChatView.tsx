@@ -3533,7 +3533,7 @@ export default function ChatView({
                     onClick={() => setImages((prev) => prev.filter((i) => i.id !== img.id))}
                     aria-label={t("removeImage")}
                   >
-                    ×
+                    <IconX size={14} />
                   </button>
                 </span>
               ))}

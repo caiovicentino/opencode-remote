@@ -194,11 +194,14 @@ textarea {
 /* P3-452: pane header actions carry the rail's SVG language — no bare text
    glyphs beside the drawn icon set. Icon-only buttons flex-center the stroke
    like .chat-btn (P2-107), so the mark sits true in the bordered box at every
-   hit-target size. */
+   hit-target size. P3-437: the last text-glyph controls (composer chip ×,
+   screen-flash ×) join the same list instead of one-off rules. */
 .screen > header button,
 .browser-header button,
 .browser-bar button,
-.pane-close {
+.pane-close,
+.composer-att-x,
+.screen-flash-x {
   display: inline-flex;
   align-items: center;
   justify-content: center;

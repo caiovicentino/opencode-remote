@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useT } from "../lib/i18n";
+// P3-437: the dismiss control joins the shared SVG icon set.
+import { IconX } from "./icons";
 import type { ScreenSourceInfo } from "../lib/screenresponder";
 
 // P3-404: the shell's screen-peek indicator — a calm, bounded flash (the
@@ -40,7 +42,7 @@ export default function ScreenFlash({
           })}
         </span>
         <button className="screen-flash-x" onClick={onClose} aria-label={t("close")}>
-          ×
+          <IconX size={14} />
         </button>
       </div>
       {flash.sources.length > 1 && (
