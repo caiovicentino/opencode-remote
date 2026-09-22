@@ -527,14 +527,25 @@ try {
   );
   if (gateSide.ok) check("P3-365: .desk-side present while not paired", /side=true\|phase=(unpaired|connecting|error)/.test(gateSide.stdout), gateSide.stdout);
   // P3-380: the shell's primary CTA is inert until pairing succeeds — it must
-  // carry the gate hint tooltip and visible disabled chrome, not silently
-  // swallow the most natural first click.
+  // carry the gate hint tooltip and visibly disabled chrome, not silently
+  // swallow the most natural first click. P3-442: the disabled chrome dims the
+  // label only (whole-control opacity read as a broken ghost beside the
+  // enabled rail) and the hint renders as a visible caption directly under
+  // the button, where the click happens — not just in an invisible tooltip.
   const gateNewDisabled = run(
-    "P3-380: gate + Novo reads as disabled with a hint",
-    ["ipc", "(() => { const b = document.querySelector('.desk-new'); if (!b) return 'missing'; const cs = getComputedStyle(b); return 'disabled:' + b.disabled + '|hint:' + (b.title ? 'yes' : 'no') + '|opacity:' + cs.opacity + '|cursor:' + cs.cursor; })()"],
+    "P3-442: gate + Novo reads as resting-disabled with a hint at the button",
+    [
+      "ipc",
+      "(() => { const b = document.querySelector('.desk-new'); if (!b) return 'missing'; const h = document.querySelector('.desk-new-hint'); if (!h) return 'nohint'; const cs = getComputedStyle(b); const r = b.getBoundingClientRect(); const hr = h.getBoundingClientRect(); return 'disabled:' + b.disabled + '|hint:' + (b.title ? 'yes' : 'no') + '|opacity:' + cs.opacity + '|dim:' + (cs.color === getComputedStyle(h).color) + '|border:' + cs.borderTopWidth + '|cursor:' + cs.cursor + '|gap:' + Math.round(hr.top - r.bottom); })()",
+    ],
     15_000,
   );
-  if (gateNewDisabled.ok) check("P3-380: .desk-new disabled + hinted + grayed at the gate", /disabled:true\|hint:yes\|opacity:0\.45\|cursor:not-allowed/.test(gateNewDisabled.stdout), gateNewDisabled.stdout);
+  if (gateNewDisabled.ok)
+    check(
+      "P3-442: .desk-new disabled, label-dimmed, hinted inline at the gate",
+      /disabled:true\|hint:yes\|opacity:1\|dim:true\|border:1px\|cursor:not-allowed\|gap:(\d|1[0-9])$/.test(gateNewDisabled.stdout),
+      gateNewDisabled.stdout,
+    );
   run("P3-365: open Mission Control from the rail", ["click", 'button[data-pane="mission"]'], 15_000);
   const gateMission = run(
     "P3-365: Mission Control renders behind the gate",
