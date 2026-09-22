@@ -3116,6 +3116,48 @@ button.desk-new:disabled {
   flex: none;
 }
 
+/* ── P3-441: the manual ceremony composes on desktop ─────────────────────────
+   At 1440px the ceremony rendered the phone column (~420px) with ~70% of the
+   window empty and the five-row pane map clipped mid-row at the fold — the
+   mobile layout reused on desktop (explorer shot scratch-manual-pair-empty).
+   From the shell breakpoint (1024px, the same verdict App uses for the desk
+   skeleton) the ceremony becomes a desktop-composed two-column layout: the
+   brand header keeps its centered full-width stage, the pairing directions
+   and the error block stay in the action column, and the pane map moves
+   beside them as the support column — one screen of content, nothing
+   clipped. Mobile (<1024px) keeps the exact single-column flow: the wrappers
+   only re-declare the .screen gap the wrapped children inherited before
+   (P3-414 lesson — adapt the fill mechanism, never copy it verbatim). The
+   header stays a direct child of .pair-screen, OUTSIDE the composition, so
+   its sticky block (P3-423) keeps the scroll container as its containing
+   block and the screen's overflow-safe centering keeps governing the stack.
+   The side column always renders (PaneMap has no empty branch), so no
+   divider is painted beside a dead half-pane (P3-444 lesson). */
+.pair-columns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+}
+.pair-main,
+.pair-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .pair-wrap .pair-screen {
+    max-width: 960px;
+  }
+  .pair-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
+    column-gap: var(--space-6);
+    row-gap: var(--space-3);
+  }
+}
+
 /* ── P2-112: first-boot degraded journey ─────────────────────────────────────
    Desktop shell, daemon unreachable: one calm status card (never a dead-end
    pairing wall), visible auto-retry, reconnect with real feedback, the

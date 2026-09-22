@@ -12898,6 +12898,67 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-441: the manual ceremony composes on desktop instead of reusing the phone column ---
+// At 1440px the ceremony rendered the ~420px phone column with ~70% of the
+// window empty and the five-row pane map clipped mid-row at the fold
+// (explorer shot scratch-manual-pair-empty). The action column (intro,
+// directions, error) and the pane-map support column are separate wrappers
+// the ≥1024px media query turns into a grid; below the breakpoint the
+// wrappers are transparent blocks and the single-column flow is unchanged.
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  check(
+    "P3-441: PairingView splits the ceremony into an action column and a map support column",
+    src.includes('<div className="pair-columns">') &&
+      src.includes('<div className="pair-main">') &&
+      src.includes('<aside className="pair-side">'),
+  );
+  // The header stays OUTSIDE the composition (direct child of .pair-screen)
+  // so the P3-423 sticky brand block keeps the scroll container as its
+  // containing block; the map alone rides the support column.
+  const columnsAt = src.indexOf('<div className="pair-columns">');
+  const sideAt = src.indexOf('<aside className="pair-side">', columnsAt);
+  const mapAt = src.indexOf("<PaneMap offlinePanes={offlinePanes} />", sideAt);
+  const asideEnd = src.indexOf("</aside>", sideAt);
+  check(
+    "P3-441: the pane map is the support column's only content, inside the composition",
+    columnsAt !== -1 && sideAt > columnsAt && mapAt > sideAt && asideEnd > mapAt,
+  );
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // Mobile keeps the .screen rhythm: the wrappers re-declare the gap the
+  // wrapped children inherited before (12px on .screen), not a copied rule.
+  const baseAt = css.indexOf(".pair-columns {");
+  const base = baseAt === -1 ? "" : css.slice(baseAt, css.indexOf("}", baseAt));
+  check(
+    "P3-441: the wrappers keep the .screen rhythm below the breakpoint (flex column + gap)",
+    base.includes("display: flex") && base.includes("flex-direction: column") && /gap:\s*var\(--space-3\)/.test(base),
+  );
+  // The ≥1024px block (the shell breakpoint App itself uses) turns the
+  // composition into a grid: flexible action column + capped support column,
+  // and the ceremony container widens past the phone column.
+  const deskBlock = css.split(/@media \(min-width: 1024px\) \{/).pop() ?? "";
+  const deskRule = deskBlock.match(/\.pair-columns\s*\{([^}]*)\}/);
+  check(
+    "P3-441: ≥1024px composes the ceremony as a two-column grid (action + map)",
+    !!deskRule &&
+      deskRule[1].includes("display: grid") &&
+      /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*\d+px\)/.test(deskRule[1]),
+  );
+  const deskScreen = deskBlock.match(/\.pair-wrap \.pair-screen\s*\{([^}]*)\}/);
+  const maxWidth = deskScreen ? Number(deskScreen[1].match(/max-width:\s*(\d+)px/)?.[1] ?? 0) : 0;
+  check(
+    "P3-441: the ceremony container widens past the phone column on desktop",
+    maxWidth >= 900,
+  );
+  // The pinned P3-423 safe-center contract survives on the base rule (the
+  // desktop block only widens the container).
+  const pairRule = css.match(/\.pair-wrap \.pair-screen\s*\{[^}]*\}/);
+  check(
+    "P3-441: the base pair-screen rule keeps overflow-safe centering and the phone cap",
+    !!pairRule && pairRule[0].includes("justify-content: safe center") && /max-width:\s*420px/.test(pairRule[0]),
+  );
+}
+
 // --- P3-334: the desktop pairing screen leads with the host section ----------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
