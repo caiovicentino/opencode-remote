@@ -1622,6 +1622,11 @@ Pane headers share one title class (P3-384): every pane (Artifacts, Browser,
 Files, Mission Control, Settings, Send to agent, QR scanner) renders its `h1`
 via `.pane-title` on the `--font-size-md` token step — no per-view inline
 `fontSize` overrides left to drift, mirroring the `.brand-wordmark` discipline.
+Pane titles are plain dictionary strings (P3-434): Mission Control's header
+dropped its inline leading glyph and hardcoded English — both h1 branches
+(and the dashboard iframe's accessible title) now render the same
+`t("navMission")` key the rail uses, so the headers in one row stay uniform
+and localized. Icons live in the rail/palette/map, not in the pane `h1`.
 
 **Benchmark conversation list & ⌘K (P3-084)**: the sidebar groups conversations
 into **Today / Yesterday / Earlier** (bounded by local calendar midnights, so

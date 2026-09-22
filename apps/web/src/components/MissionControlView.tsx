@@ -387,7 +387,7 @@ export default function MissionControlView({
       <div className="screen">
         <header>
           {onBack && <button className="pane-back" onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>}
-          <h1 className="pane-title">Mission Control</h1>
+          <h1 className="pane-title">{t("navMission")}</h1>
         </header>
         <div className="list">
           <p className="muted" style={{ padding: 16 }}>
@@ -457,9 +457,7 @@ export default function MissionControlView({
     <div className="screen mission">
       <header>
         {onBack && <button className="pane-back" onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>}
-        <h1 className="pane-title">
-          <IconRadar size={16} /> Mission Control
-        </h1>
+        <h1 className="pane-title">{t("navMission")}</h1>
         {!phone && !prePairing && (
           <>
             <button className={view === "dash" ? "on" : ""} onClick={() => setView("dash")} aria-label={t("missionDash")}>
@@ -506,7 +504,7 @@ export default function MissionControlView({
       {view === "dash" && dashUrl && (
         <iframe
           src={dashUrl}
-          title="Mission Control"
+          title={t("navMission")}
           style={{ flex: 1, width: "100%", border: "0", background: "var(--bg)" }}
         />
       )}
