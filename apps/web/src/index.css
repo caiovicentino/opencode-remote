@@ -3039,16 +3039,22 @@ button.desk-new:disabled {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 /* Invalid-code error: styled block (was an inline-colored <p>) + inline
-   helper with the expected format, announced via role=alert/aria-live. */
+   helper with the expected format, announced via role=alert/aria-live.
+   P3-432: errors never shout (PRODUCT principle 2) — a paste mistake is not
+   an incident, so the block drops the red banner (danger border + tinted
+   fill) and wears the .degraded-upstream tone instead: neutral surface,
+   thin red left accent. The red stays on the title alone; the retry button
+   speaks the same quiet bordered language as the other pairing controls. */
 .pair-error {
   display: flex;
   flex-direction: column;
   gap: 2px;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid var(--danger);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
   border-radius: var(--radius-md);
-  background: var(--banner-danger-bg);
+  background: var(--surface);
   text-align: left;
 }
 .pair-error-msg {
@@ -3068,9 +3074,12 @@ button.desk-new:disabled {
   align-self: flex-start;
   padding: 6px 12px;
   font-size: var(--font-size-sm);
-  color: var(--danger);
-  border-color: var(--danger);
+  color: var(--fg);
+  border-color: var(--border);
   background: transparent;
+}
+.pair-error-retry:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 /* P3-361: empty-submit nudge — the paste form answers an empty "Pair" click
    with the same small, quiet voice as the invalid-code hint, inline with the

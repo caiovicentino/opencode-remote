@@ -126,6 +126,12 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   não tem alvo (Conversas, nova conversa, paleta, Arquivos), o toast passa a
   nomear o que foi pedido ("Pareie com sua máquina primeiro para abrir
   Artifacts.") em vez de uma frase genérica igual pra tudo
+- Erro de código inválido no portão fala baixo (P3-432): um erro de colar
+  deixou de ser o elemento mais alto da cerimônia — o bloco `.pair-error` sai
+  do banner vermelho (borda de perigo + fundo tingido) e veste o tom do
+  `.degraded-upstream`: superfície neutra com filete vermelho fino à esquerda,
+  vermelho só no título, e o botão "Tentar de novo" na mesma linguagem quieta
+  dos outros controles; `role=alert` segue intacto (princípio 2)
 - Marca do produto com escala tipográfica própria (P3-336): o h1 "OpenCode
   Remote" das telas de primeiro contato (boas-vindas, pareamento, jornada
   degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo
