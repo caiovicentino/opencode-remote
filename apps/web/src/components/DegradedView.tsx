@@ -283,7 +283,12 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
         <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} reconnect={reconnect} desktopShell={desktopShell} />
       ) : (
         <div className="degraded-actions">
-          <ReconnectButton className="degraded-reconnect-btn" reconnect={reconnect} />
+          {/* P3-450: the card's one main action wears the shared accent
+              primary (`button.primary`) — the same identity the wizard's
+              "Começar" wears minutes earlier — instead of a third, one-off
+              inverted-fg dialect. P3-371's separation survives: the warn
+              tone stays on the dot + retry label, never on the CTA. */}
+          <ReconnectButton className="primary degraded-reconnect-btn" reconnect={reconnect} />
         </div>
       )}
       {/* P3-360: the offline first-message queue — the core chat surface,
