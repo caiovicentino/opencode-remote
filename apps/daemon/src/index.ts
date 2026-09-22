@@ -36,6 +36,7 @@ import type {
 } from "@ocr/protocol";
 import { log } from "./log.js";
 import { frameVerdict } from "./frameguard.js";
+import { allowedUpstreamPath, relativePathVerdict } from "./pathguard.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
 import { pushSubscriptionVerdict, redactPushEndpoint } from "./pushsubs.js";
@@ -882,6 +883,19 @@ const VOICE_RATE_MESSAGE =
   "Muitas solicitações de voz seguidas — espere alguns segundos e tente de novo.";
 
 async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
+  // RT-453: `req.path` is attacker-controllable content inside a sealed
+  // envelope, and building the passthrough URL from it drops the base when
+  // the value carries a scheme/authority — an absolute path would send the
+  // opencode credential to an attacker host. Fail closed on shape before any
+  // route logic: 400, never an auth-failure attribution (RT-424 lesson), and
+  // never a log/audit of the rejected path or its query (log-injection).
+  const pathVerdict = relativePathVerdict(req.path, req.method);
+  if (!pathVerdict.ok) {
+    metrics.inc("ocr_op_path_rejected_total");
+    log("warn", "op path rejected", { reason: pathVerdict.reason });
+    audit("op.path-rejected", { reason: pathVerdict.reason });
+    return { id: req.id, status: 400, body: { error: "invalid path" } };
+  }
   // daemon-local endpoints never reach opencode
   if (req.path === "/__ocr/clip-style" && req.method === "GET") {
     const p = join(STATE_DIR, "clip-style.json");
@@ -1874,9 +1888,21 @@ end tell`;
     }
   }
 
+  // RT-453: the verdict already pinned the shape; this second gate is the
+  // anchored allowlist — only opencode routes the clients actually use pass
+  // through, everything else fails closed (400, never a silent passthrough).
+  if (!allowedUpstreamPath(req.path)) {
+    metrics.inc("ocr_op_path_rejected_total");
+    log("warn", "op path rejected", { reason: "not-allowlisted" });
+    audit("op.path-rejected", { reason: "not-allowlisted" });
+    return { id: req.id, status: 400, body: { error: "invalid path" } };
+  }
   const url = new URL(req.path, OPENCODE_URL);
   if (req.query) {
-    for (const [k, v] of Object.entries(req.query)) url.searchParams.set(k, v);
+    for (const [k, v] of Object.entries(req.query)) {
+      if (typeof v !== "string") continue;
+      url.searchParams.set(k, v);
+    }
   }
   // prompt-idempotency: a replayed in-flight op (WS reconnect on the PWA)
   // carries the same op id — never prompt the agent twice for it

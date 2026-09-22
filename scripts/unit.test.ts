@@ -27,6 +27,7 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
 
 import { b64, clientHello, fromB64, newIdentity, RELAY_WIRE_PROTOCOL, seal, openSealed, seqAad, frameSeq, serverAccept } from "@ocr/protocol";
 import { frameVerdict } from "../apps/daemon/src/frameguard";
+import { allowedUpstreamPath, relativePathVerdict } from "../apps/daemon/src/pathguard";
 
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { classifyConflictPath, isCommentOnlyHunk, parseConflictedFile, repairPlan, resolveConflictedFile } from "../apps/pilot/src/mergerepair";
@@ -1192,6 +1193,114 @@ check("frameVerdict: fractional seq -> bad-seq", rejectReason({ from: "a", paylo
 {
   const v = frameVerdict({ from: "a", payload: "" });
   check("frameVerdict: empty payload (control frame) -> ok with seq 0", v.ok && v.frame.seq === 0);
+}
+
+
+// --- op path verdict + upstream allowlist (RT-453) ---------------------------
+function pathRejectReason(rawPath: unknown, rawMethod: unknown): string {
+  const v = relativePathVerdict(rawPath, rawMethod);
+  return v.ok ? "ok" : v.reason;
+}
+
+// one exact reason per rejection, evaluated in the documented order
+const pathRejectCases: [string, unknown, unknown, string][] = [
+  ["absolute http url", "http://evil.example/x", "GET", "not-absolute"],
+  ["absolute https url", "https://evil.example", "GET", "not-absolute"],
+  ["protocol-relative url", "//evil.example/x", "GET", "authority"],
+  ["backslash authority", "/\\evil.example/x", "GET", "authority"],
+  ["leading space", " http://evil.example", "GET", "control-char"],
+  ["leading tab", "\thttp://evil.example", "GET", "control-char"],
+  ["userinfo trick host", "http://127.0.0.1:4096@evil.example/", "GET", "not-absolute"],
+  ["file scheme", "file:///etc/passwd", "GET", "not-absolute"],
+  ["javascript scheme", "javascript:alert(1)", "GET", "not-absolute"],
+  ["embedded CRLF", "/a\r\nX", "GET", "control-char"],
+  ["query in path", "/x?y=1", "GET", "query-or-fragment"],
+  ["fragment in path", "/x#f", "GET", "query-or-fragment"],
+  ["traversal segment", "/../x", "GET", "traversal"],
+  ["empty path", "", "GET", "not-absolute"],
+  ["relative path", "session", "GET", "not-absolute"],
+  ["embedded backslash", "/session/a\\b", "GET", "authority"],
+  ["dot segment mid-path", "/a/../b", "GET", "traversal"],
+  ["non-string number", 123, "GET", "not-string"],
+  ["non-string null", null, "GET", "not-string"],
+  ["non-string object", {}, "GET", "not-string"],
+  ["513 chars", "/" + "a".repeat(512), "GET", "too-long"],
+  ["method TRACE", "/session", "TRACE", "bad-method"],
+  ["method lowercase", "/session", "get", "bad-method"],
+  ["method non-string", "/session", 7, "bad-method"],
+];
+for (const [label, p, m, want] of pathRejectCases) {
+  check(`relativePathVerdict: ${label} -> ${want}`, pathRejectReason(p, m) === want);
+}
+
+// every daemon-local /__ocr route served by proxy() must pass the shape verdict
+const ocrLiterals = [
+  ["/__ocr/settings", "GET"],
+  ["/__ocr/settings", "PATCH"],
+  ["/__ocr/skills", "DELETE"],
+  ["/__ocr/mcp", "PUT"],
+  ["/__ocr/download/chunk", "GET"],
+  ["/__ocr/screen/frame", "GET"],
+  ["/__ocr/transcribe/chunk", "POST"],
+] as const;
+for (const [p, m] of ocrLiterals) {
+  check(`relativePathVerdict: accepts ${p} ${m}`, pathRejectReason(p, m) === "ok");
+}
+// the three sample literals from the spec, explicitly
+check("relativePathVerdict: accepts /__ocr/settings", pathRejectReason("/__ocr/settings", "GET") === "ok");
+check("relativePathVerdict: accepts /__ocr/download/chunk", pathRejectReason("/__ocr/download/chunk", "GET") === "ok");
+check("relativePathVerdict: accepts /__ocr/screen/frame", pathRejectReason("/__ocr/screen/frame", "GET") === "ok");
+// a valid path + valid method returns the same values it was given
+{
+  const v = relativePathVerdict("/session/ses_1/message", "POST");
+  check("relativePathVerdict: ok echoes path/method", v.ok && v.path === "/session/ses_1/message" && v.method === "POST");
+}
+
+// the 17 real upstream forms (method+path shapes) used by the clients today
+const realUpstreamPaths: string[] = [
+  "/session",
+  "/provider",
+  "/permission",
+  "/question",
+  "/session/ses_faf9b0c7affeiczb2SfIDIH3Ns",
+  "/session/ses-x.y_z9",
+  "/session/ses-1/message",
+  "/session/ses-1/diff",
+  "/session/ses-1/revert",
+  "/session/ses-1/unrevert",
+  "/session/ses-1/abort",
+  "/session/ses-1/permissions/per_m.1-a",
+  "/question/q_1.a-2/reply",
+  "/question/q_1.a-2/reject",
+  "/session/A",
+  "/session/0",
+  "/session/s1/permissions/p1",
+  // deviation from the planned list: the live soak/smoke/chunk tests probe
+  // the tunnel with this fixed literal (see pathguard.ts)
+  "/global/health",
+];
+for (const p of realUpstreamPaths) {
+  check(`allowedUpstreamPath: accepts ${p}`, allowedUpstreamPath(p) === true);
+}
+const upstreamRejects: [string, string][] = [
+  ["event stream", "/event"],
+  ["deep segment", "/session/a/b/c"],
+  ["prefix trick", "/sessionX"],
+  ["trailing slash", "/session/"],
+  ["traversal to provider", "/session/../provider"],
+  ["empty", ""],
+];
+for (const [label, p] of upstreamRejects) {
+  check(`allowedUpstreamPath: rejects ${label} (${p})`, allowedUpstreamPath(p) === false);
+}
+
+// regression: exactly one passthrough URL construction and it is guarded
+{
+  const daemonSrc = readFileSync(new URL("../apps/daemon/src/index.ts", import.meta.url), "utf8");
+  const passthroughCount = daemonSrc.split("new URL(req.path").length - 1;
+  check("RT-453 regression: exactly one new URL(req.path passthrough", passthroughCount === 1);
+  check("RT-453 regression: passthrough guarded by allowedUpstreamPath", daemonSrc.includes("allowedUpstreamPath("));
+  check("RT-453 regression: proxy entry guarded by relativePathVerdict", daemonSrc.includes("relativePathVerdict("));
 }
 
 

