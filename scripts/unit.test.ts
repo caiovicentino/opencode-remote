@@ -12402,7 +12402,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "browserNoPage", "browserShotAlt", "browserInvalidUrl", "browserLocalFile",
     "browserLoadFailed", "browserCrashed", "browserErrUnreachable",
     "browserErrDesktopOnly", "browserErrUnexpected", "browserErrGeneric",
-    "browserEmptyHint",
+    "browserEmptyHint", "browserEmptyHintPrePairing",
   ];
   check(
     "P3-382: every browser key resolves per locale (no raw-key fallback)",
@@ -12443,6 +12443,54 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-448: the browser bar's placeholder is the generic https hint (no concrete URL)",
     bar.includes('placeholder="https://…"') && !bar.includes("localhost"),
+  );
+}
+
+// --- P3-446: pre-pairing empty states never point at the locked chat ----------
+// Behind the unpaired gate, Conversas is exactly the pane that needs pairing —
+// yet the mission card's empty copy ("define it in the chat") and the browser's
+// empty hint ("open a preview from the chat") both sent the first-boot user to
+// that locked surface. Both carry a prePairing-aware variant that defers the
+// chat path ("after pairing…"); the paired world keeps the legacy copy
+// (P3-413: opt-in boolean, the legacy render is the default).
+{
+  const keys = ["missionActiveNonePrePairing", "browserEmptyHintPrePairing"];
+  check(
+    "P3-446: pre-pairing empty-state keys resolve in both locales, no emoji",
+    (["en", "pt"] as const).every((lang) =>
+      keys.every((k) => {
+        const s = translate(lang, k);
+        return s !== k && s.trim() !== "" && !/\p{Extended_Pictographic}/u.test(s);
+      }),
+    ),
+  );
+  // The variant names the gate ("after pairing") — that deferral is the fix;
+  // the legacy keys stay untouched for the paired world.
+  check(
+    "P3-446: both pre-pairing variants defer the chat path to after pairing",
+    translate("en", "missionActiveNonePrePairing").includes("After pairing") &&
+      translate("pt", "missionActiveNonePrePairing").includes("Depois de parear") &&
+      translate("en", "browserEmptyHintPrePairing").includes("After pairing") &&
+      translate("pt", "browserEmptyHintPrePairing").includes("Depois de parear"),
+  );
+  const mcvSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "MissionControlView.tsx"), "utf8");
+  check(
+    "P3-446: the mission card's empty note picks the variant by prePairing",
+    mcvSrc.includes('t(prePairing ? "missionActiveNonePrePairing" : "missionActiveNone")'),
+  );
+  const bvSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "BrowserView.tsx"), "utf8");
+  check(
+    "P3-446: BrowserView threads prePairing into the webview pane and its empty hint picks by it",
+    bvSrc.includes("prePairing={prePairing}") &&
+      bvSrc.includes('t(prePairing ? "browserEmptyHintPrePairing" : "browserEmptyHint")'),
+  );
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  // Exactly two opt-in mounts: the gate Mission Control (P3-327) and the gate
+  // shell's BrowserView. The phone's browser node and the paired shell keep
+  // the legacy copy — there the chat is reachable.
+  check(
+    "P3-446: only the gate shell's BrowserView mounts pre-pairing (paired shell + phone keep the legacy hint)",
+    (appSrc.match(/prePairing/g) ?? []).length === 2 && appSrc.includes("prePairing\n                />"),
   );
 }
 

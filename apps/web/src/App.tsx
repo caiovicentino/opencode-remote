@@ -1814,12 +1814,15 @@ export default function App() {
           <section className="desk-pane" style={{ display: isPaneOpen(view) ? "block" : "none" }}>
             {(browseFn || top === "browser") && (
               <div style={{ display: top === "browser" ? "block" : "none", height: "100%" }}>
+                {/* P3-446: the gate shell's instance knows the chat is locked —
+                    the empty hint defers the preview path to after pairing. */}
                 <BrowserView
                   browse={browseFn}
                   onBack={goBack}
                   previewUrl={previewUrl}
                   maximized={browserMaximized}
                   onToggleMaximize={() => setBrowserMaximized((v) => !v)}
+                  prePairing
                 />
               </div>
             )}

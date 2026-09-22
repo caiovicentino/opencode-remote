@@ -74,12 +74,16 @@ export default function BrowserView({
   previewUrl,
   maximized,
   onToggleMaximize,
+  prePairing,
 }: {
   browse: BrowseFn | null;
   onBack: () => void;
   previewUrl?: string | null;
   maximized?: boolean;
   onToggleMaximize?: () => void;
+  /** P3-446: mounted behind the unpaired gate — the empty hint defers the
+   * chat path ("after pairing…") instead of pointing at the locked pane. */
+  prePairing?: boolean;
 }) {
   if (isDesktopShell()) {
     return (
@@ -88,6 +92,7 @@ export default function BrowserView({
         maximized={maximized}
         onToggleMaximize={onToggleMaximize}
         onBack={onBack}
+        prePairing={prePairing}
       />
     );
   }
@@ -101,11 +106,14 @@ function WebViewPane({
   maximized,
   onToggleMaximize,
   onBack,
+  prePairing,
 }: {
   previewUrl?: string | null;
   maximized?: boolean;
   onToggleMaximize?: () => void;
   onBack: () => void;
+  /** P3-446: swaps the empty hint to the after-pairing variant pre-pairing. */
+  prePairing?: boolean;
 }) {
   const t = useT();
   // P3-379: "" means "new tab" — no src attribute is rendered, so the pane
@@ -304,7 +312,11 @@ function WebViewPane({
               <IconGlobe />
             </span>
             <p className="browser-empty-title">{t("browserNoPage")}</p>
-            <p className="browser-empty-hint">{t("browserEmptyHint")}</p>
+            {/* P3-446: pre-pairing the chat is the locked pane — the hint
+                defers that path instead of a dead-end instruction. */}
+            <p className="browser-empty-hint">
+              {t(prePairing ? "browserEmptyHintPrePairing" : "browserEmptyHint")}
+            </p>
           </div>
         )}
         {loading && <div className="browser-loading" aria-hidden="true" />}
