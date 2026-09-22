@@ -367,6 +367,27 @@ elapsed), never a guarantee; `effortMin` is wall-clock agent time. The desktop
 app renders this feed in the **Mission Control** pane (⌘6); agents can reuse
 the same endpoints via the SDK/curl.
 
+### Session handoff to Terminal (RT-439)
+
+`POST /__ocr/handoff` with `{ sessionId }` opens Terminal.app attached to
+that opencode session (`opencode -s ses_…`). The id must match the same
+strict shape every session-scoped route enforces — `ses_` plus 4–64
+alphanumerics — anything else answers **400**
+`{"error": "valid session id required"}` before any fetch or shell use. The
+session directory (opencode's `GET /session/<id>`, `directory || path`) must
+be an absolute path of 1–4096 characters with no control characters;
+anything else answers **422** `{"error": "session directory rejected"}` and
+logs one warning carrying the session id only — never the rejected value
+(log-injection). The command that reaches the user's shell is POSIX
+single-quoted and reaches `osascript` as argv (`on run argv` + `do script
+(item 1 of argv)`), never interpolated into the AppleScript source — so
+quotes, `$()`, backticks, `;`, `|`, `&&` or trailing backslashes in a
+project path stay literal, the same hardening as `/api/pilot-takeover`
+(P2-048), while real directory names (spaces, accents, quotes,
+parentheses) remain legal. A missing directory still answers **404**
+(`session directory unknown`), an opencode origin failure **502**, and a
+non-macOS host **500** (osascript absent) — all unchanged.
+
 ## Request body limit (P2-180)
 
 Every JSON request body on the daemon's `/api/*` routes is capped at

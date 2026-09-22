@@ -36,6 +36,12 @@ import type {
 } from "@ocr/protocol";
 import { log } from "./log.js";
 import { frameVerdict } from "./frameguard.js";
+import {
+  buildHandoffCommand,
+  buildHandoffOsascriptArgs,
+  validateHandoffDirectory,
+  validateHandoffSessionId,
+} from "./handoff.js";
 import { allowedUpstreamPath, relativePathVerdict } from "./pathguard.js";
 import { IdempotencyCache } from "./idempotency.js";
 import { writeStateAtomic } from "./statefile.js";
@@ -1464,26 +1470,36 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
     }
   }
   // --- handoff: open this session in Terminal on the Mac ---------------------
+  // RT-439: `do script` hands the text to the user's shell, so both layers
+  // must be inert by construction — the session id is regex-validated (same
+  // shape as /__ocr/context) before the fetch URL, the directory is
+  // POSIX-quoted, and the quoted command reaches osascript as argv instead of
+  // being interpolated into the AppleScript source (see handoff.ts header).
   if (req.path === "/__ocr/handoff" && req.method === "POST") {
-    const { sessionId } = req.body as { sessionId?: string };
-    if (!sessionId || !sessionId.startsWith("ses")) {
-      return { id: req.id, status: 400, body: { error: "sessionId required" } };
+    const { sessionId } = req.body as { sessionId?: unknown };
+    const id = validateHandoffSessionId(sessionId);
+    if (!id) {
+      return { id: req.id, status: 400, body: { error: "valid session id required" } };
     }
     try {
-      const res = await fetch(new URL(`/session/${sessionId}`, OPENCODE_URL), {
+      const res = await fetch(new URL(`/session/${id}`, OPENCODE_URL), {
         headers: authHeader ? { authorization: authHeader } : {},
       });
       if (!res.ok) return { id: req.id, status: 502, body: { error: `opencode ${res.status}` } };
-      const info = (await res.json()) as { directory?: string; path?: string };
-      const dir = info.directory || info.path;
-      if (!dir) return { id: req.id, status: 404, body: { error: "session directory unknown" } };
-      const script = `tell application "Terminal"
-  activate
-  do script "cd ${dir.replace(/"/g, '\\"')} && opencode -s ${sessionId}"
-end tell`;
-      await promisify(execFile)("osascript", ["-e", script]);
-      log("info", "session handed off to desktop", { sessionId, dir });
-      audit("session.handoff", { sessionId, dir });
+      const info = (await res.json()) as { directory?: unknown; path?: unknown };
+      const rawDir = info.directory || info.path;
+      if (!rawDir) return { id: req.id, status: 404, body: { error: "session directory unknown" } };
+      const dir = validateHandoffDirectory(rawDir);
+      if (!dir) {
+        log("warn", "handoff: session directory rejected", { sessionId: id });
+        return { id: req.id, status: 422, body: { error: "session directory rejected" } };
+      }
+      await promisify(execFile)(
+        "osascript",
+        buildHandoffOsascriptArgs(buildHandoffCommand(dir, id)),
+      );
+      log("info", "session handed off to desktop", { sessionId: id, dir });
+      audit("session.handoff", { sessionId: id, dir });
       return { id: req.id, status: 200, body: { ok: true, dir } };
     } catch (err) {
       return {
