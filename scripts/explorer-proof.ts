@@ -97,14 +97,31 @@ writeFileSync(
 process.env.PATH = `${fakeGhBin}:${process.env.PATH ?? ""}`;
 
 const saved: string[] = [];
+const P3_440_ORDER: string[] = [];
 const scratch: PilotState = { date: "scratch", tasks: 0, deploys: 0, failures: 0, merges: 0, taskAttempts: {} };
 await runExplorer({ workspace: ws } as PilotConfig, scratch, {
   save: (st) => {
     saved.push(st.explorerLast ?? "");
+    P3_440_ORDER.push("claim");
+  },
+  // P3-440: the scratch already carries freshly copied dists (see setup) —
+  // inject the recorder so the runner's rebuild step is proven, not skipped,
+  // and no scratch build slows the proof run.
+  rebuild: (rebuildWs) => {
+    P3_440_ORDER.push("rebuild");
+    return { ok: rebuildWs === ws, output: "" };
   },
 });
 
 proof("claim persisted before the run", saved.length === 1 && saved[0] === today, `explorerLast=${saved[0] ?? "none"}`);
+// P3-440: the pre-journey rebuild is wired into the real flow — exactly one
+// call, after the once-per-day claim (so a failed build can never retry-build
+// every scheduler cycle) and before the agent spawns.
+proof(
+  "P3-440: bundle rebuild wired before the journey (once, after the claim)",
+  P3_440_ORDER.length === 2 && P3_440_ORDER[0] === "claim" && P3_440_ORDER[1] === "rebuild",
+  P3_440_ORDER.join(" -> ") || "no calls",
+);
 const events = readEvents(50).filter((e) => e.task === "explorer" && e.ts >= startedAt);
 proof(
   "task:explorer done event in events.jsonl",

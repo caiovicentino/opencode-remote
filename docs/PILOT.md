@@ -1749,6 +1749,19 @@ diretório de evidência, somente a pass do fable.
   um `git add -A` de builder chegou a commitar a variante allow-all —
   rastreada, cada divergência virava sujeira rastreada pro tamper check do
   gate e pro dirty guard de deploy (o review r2 pegou).
+- **Bundles sempre frescos (P3-440)**: o dist é output de build ignorado pelo
+  git e sobrevive a todo `git clean -qfd` e sync de workspace — um slot pode
+  carregar um bundle dias mais velho que o próprio checkout (em 2026-09-22 o
+  explorer registrou o silêncio do submit vazio/inválido do pareamento como
+  finding novo, embora P3-361/P3-410 já tivessem corrigido — o dist do
+  workspace era anterior às correções e o prompt só buildava quando o arquivo
+  faltava). Antes de cada jornada o `runExplorer` roda
+  `EXPLORER_BUNDLE_BUILD_CMD` (`npm run build --workspace @ocr/web && …
+  @ocr/desktop`) no workspace, com um retry para passo flaky (precedente
+  P1-101); a build que não fecha pula o agente e consome o dia
+  (fail-closed — revisar código morto queima rounds de builder). O prompt do
+  agente nunca pede build: boot que falha vira finding com shot, não
+  rebuild silencioso (lição P3-052).
 - **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
   explorer não participa do circuit breaker nem reprova merge. Guard diário
   próprio em `state.json` (`explorerLast`), independente do `redteamLast`

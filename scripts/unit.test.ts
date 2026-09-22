@@ -572,7 +572,7 @@ import { clearPendingRefill, defaultPendingRefillFile, readPendingRefill, reland
 
 import { landMetaCommit, mayPushUnderDir, metaIo, META_BRANCH, type MetaPushIo } from "../apps/pilot/src/metapush";
 
-import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
+import { EXPLORER_MAX_FINDINGS, EXPLORER_MAX_STEPS, EXPLORER_TIMEOUT_MIN, EXPLORER_PUSH_RETRIES, EXPLORER_PUSH_WAIT_MS, FABLE_MARKER, FABLE_MAX_FINDINGS, JOURNEY_STEPS, claimExplorerRun, commitAndPushFindings, commitAndPushFableFindings, explorerPrompt, explorerSessionName, explorerSpec, fablePrompt, fableSpec, journeyShotName, parseExplorerFindings, parseFableFindings, rebuildNightlyBundles, type ExplorerFinding, type FableFinding } from "../apps/pilot/src/explorer";
 
 import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, runAgentForRole, API_PREFLIGHT, apiHealthy, TIERB_SPAWN_ALERT_EVERY, shouldAlertTierBSpawn, claudeArgs, idScanner, mergeAgentIds, OPENCODE_URL_DEFAULT, scanIds, shouldFallbackTierB, waitForApi } from "../apps/pilot/src/runner";
 
@@ -10179,6 +10179,27 @@ check(
       claimSaves++;
     });
     check("explorer claim: same-day re-claim is a no-op that never re-saves", reclaim === false && claimState.explorerLast === "2026-09-03" && claimSaves === 1);
+
+    // P3-440: the nightly journey reviews what origin/main merged — never a
+    // bundle outliving its checkout (the 2026-09-22 explorer filed the
+    // pair-submit silence twice fixed since Sep 9/11 because the workspace's
+    // dist predated the fixes and the runner only built when files were
+    // missing). The rebuild is deterministic and injectable; a failed build
+    // surfaces as not-ok so the runner can fail closed before the agent.
+    const buildCmds: string[] = [];
+    const built = rebuildNightlyBundles("/tmp/p3-440-ws", (cmd) => {
+      buildCmds.push(cmd);
+      return { ok: true, output: "vite built" };
+    });
+    check("explorer rebuild: runs the workspace build for both bundles", built.ok && buildCmds.length === 1 && buildCmds[0]!.includes("@ocr/web") && buildCmds[0]!.includes("@ocr/desktop"));
+    const failing = rebuildNightlyBundles("/tmp/p3-440-ws", (cmd) => {
+      buildCmds.push(cmd);
+      return { ok: false, output: `npm error (attempt ${buildCmds.length})` };
+    });
+    check("explorer rebuild: one flaky retry then a fail-closed signal", !failing.ok && buildCmds.length === 3 && failing.output.includes("attempt 3"));
+    const freshPrompt = explorerPrompt("/abs/shots", "explorer-fresh-20260902");
+    check("explorer prompt: never instructs the agent to build", !freshPrompt.includes("build them first") && !freshPrompt.includes("npm run build --workspace"));
+    check("explorer prompt: names the pre-journey fresh-bundle guarantee", freshPrompt.includes("rebuilt both bundles") && freshPrompt.includes("NEVER run"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

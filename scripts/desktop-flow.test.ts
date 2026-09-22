@@ -779,6 +779,32 @@ try {
     check("P3-366: paste is primary, scan is secondary on the escape", /^true\|false$/.test(pasteFirst.stdout.replace(/"/g, "").trim()), pasteFirst.stdout);
   }
 
+  // --- P3-440/P3-361: an empty "Parear" click is a validation event in the
+  // REAL desktop too — the form answers with the inline alert hint (P3-361's
+  // recovery voice, so far only asserted statically by pairempty.test.ts)
+  // and hands focus back to the paste box, instead of the byte-identical
+  // silence a 2026-09-22 nightly explorer once filed as a finding (its
+  // workspace dist predated the fix; the runner now rebuilds, P3-440).
+  const emptyShot = run("P3-440: click Parear with an empty box", ["click", ".pair-submit"], 15_000);
+  if (emptyShot.ok) {
+    const emptyHint = run("P3-440: inline empty-submit hint", ["ipc", "document.querySelector('.pair-empty-hint')?.textContent ?? ''"], 15_000);
+    check(
+      "P3-440: empty submit answers with the pairEmptyCode copy (en|pt)",
+      /Paste the pairing code first|Cole o código de pareamento primeiro/.test(emptyHint.stdout.replace(/"/g, "")),
+      emptyHint.stdout,
+    );
+    const emptyRole = run("P3-440: empty hint announces to screen readers", ["ipc", "(() => { const el = document.querySelector('.pair-empty-hint'); return el ? el.getAttribute('role') : ''; })()"], 15_000);
+    if (emptyRole.ok) check("P3-440: .pair-empty-hint is role=alert", /alert/.test(emptyRole.stdout.replace(/"/g, "")), emptyRole.stdout);
+    const focused = run("P3-440: empty submit focuses the paste box", ["ipc", "document.activeElement?.classList.contains('pair-code') ?? false"], 15_000);
+    if (focused.ok) check("P3-440: .pair-code holds focus after the empty submit", /true/.test(focused.stdout.replace(/"/g, "")), focused.stdout);
+    const shotEmptySubmit = join(shotsDir, "P3-440-pairing-empty-submit.png");
+    const es1 = run("P3-440: 1440x900 empty-submit shot", ["shot", shotEmptySubmit, "1440", "900"], 15_000);
+    if (es1.ok) check("P3-440: empty-submit 1440x900 shot is a real PNG", pngSize(shotEmptySubmit).join("x") === "1440x900");
+    // The nudge is one-shot (P3-361): typing dissolves it — clear the field
+    // so the P2-106 reference shots below stay clean.
+    run("P3-440: clear the empty-submit nudge", ["type", "textarea", ""], 15_000);
+  }
+
   // --- P2-106: benchmark pairing journey — 4 evidence states ------------------
   // (1) two titled sections on the ceremony screen, (2) scanner route,
   // (3) styled invalid-code error with the inline format helper, and (4) the
