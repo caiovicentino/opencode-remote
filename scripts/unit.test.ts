@@ -12832,6 +12832,32 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-438: the note stays chrome-free on the CSS side too ------------------
+// P3-447 pinned the TSX shape (bare <p> before the card) but left the CSS
+// unguarded: a later refactor could quietly re-add border/background/radius
+// to .pane-map-note and the caption would read as a content card again — the
+// exact regression the explorer shot (journey-chat-20260912) captured before
+// the P3-422-era chrome was removed. Card affordances belong to the
+// full-ceremony .pane-map branch only.
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const noteAt = css.indexOf(".pane-map-note {");
+  const noteBlock = noteAt > -1 ? css.slice(noteAt, css.indexOf("}", noteAt)) : "";
+  check(
+    "P3-438: .pane-map-note carries none of the card chrome (bare muted prose)",
+    noteAt > -1 && !/\b(border|background|box-shadow|radius)/.test(noteBlock),
+  );
+  // The reachable branch must stay the ONLY user of the note class — if the
+  // class ever leaks back onto the .pane-map card itself, the ceremony map
+  // would lose its surface and the note would inherit the card again.
+  const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
+  check(
+    "P3-438: the note class lives only on the reachable <p>, never on the card",
+    (mapSrc.match(/pane-map-note/g) ?? []).length === 1 &&
+      mapSrc.indexOf("pane-map-note") < mapSrc.indexOf('<section className="pane-map"'),
+  );
+}
+
 // --- P3-413: the ceremony map cannot contradict the offline-capable panes ----
 // The explorer's journey shot caught the gate card locking panes the same
 // screenshot showed open unpaired (Mission Control/Artifacts/Browser in
