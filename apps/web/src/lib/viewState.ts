@@ -79,6 +79,21 @@ export function activeSlots(state: ViewState): Set<Slot> {
   return new Set([topSlot(state)]);
 }
 
+/**
+ * P3-430: gate rail painting — before pairing succeeds the chat slot is
+ * locked (its button renders disabled with the gate hint), so the selected
+ * pill must never paint on it: the home screen falls back to "chat" as the
+ * top slot and a dead click wearing the active state contradicts its own
+ * hint. Locked slots that are NOT the top slot are unaffected, and a top
+ * slot outside the locked list (a pane the gate really opens) keeps its
+ * pill. The paired shell keeps painting plain activeSlots.
+ */
+export function gateActiveSlots(state: ViewState, locked: readonly Slot[]): Set<Slot> {
+  const slots = activeSlots(state);
+  for (const slot of locked) slots.delete(slot);
+  return slots;
+}
+
 /** True while the right-hand desktop pane has content to show. */
 export function isPaneOpen(state: ViewState): boolean {
   return PANE_SLOTS.includes(topSlot(state));
