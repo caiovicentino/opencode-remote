@@ -13,3 +13,7 @@ apps/web/ios/App/App/public/
 
 # desktop: bundled daemon sidecar (built by apps/desktop/scripts/bundle-daemon.mjs)
 apps/desktop/dist-daemon/
+
+# pipeline: per-agent sandbox permissions — rewritten at every agent spawn
+# (writeSandboxConfig / writeAuxSandboxConfig); never a repo file (P3-437 r2)
+opencode.json

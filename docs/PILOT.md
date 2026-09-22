@@ -1724,7 +1724,12 @@ diretório de evidência, somente a pass do fable.
   escrito no início da janela noturna — o explorer spawnava sem permissões, o
   opencode headless rejeitava o primeiro comando bash e o evento
   `task:explorer done` nunca chegava ao events.jsonl. `runExplorer` e
-  `runFableReview` re-escrevem a sandbox config antes de cada spawn.
+  `runFableReview` re-escrevem a sandbox config antes de cada spawn. Desde a
+  P3-437 o `opencode.json` também vive no `.gitignore`: é plumbing por-agente
+  (reescrito a cada spawn — `writeSandboxConfig`/`writeAuxSandboxConfig`), e
+  um `git add -A` de builder chegou a commitar a variante allow-all —
+  rastreada, cada divergência virava sujeira rastreada pro tamper check do
+  gate e pro dirty guard de deploy (o review r2 pegou).
 - **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
   explorer não participa do circuit breaker nem reprova merge. Guard diário
   próprio em `state.json` (`explorerLast`), independente do `redteamLast`
