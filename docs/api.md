@@ -87,6 +87,53 @@ never persisted — a proxy that answers the CONNECT with 407 surfaces through
 the existing `lastDial` classification with its own pt-BR hint ("o proxy
 pediu autenticação e recusou a credencial"), still classified `refused`.
 
+### `/api/health` — relay wire protocol (P2-335)
+
+Since P2-335 the payload also carries an additive `relayProtocol` object next
+to `relayConnected` and `relayRetry`:
+`{ state, message }`. The state comes from a closed set:
+
+| State | Meaning |
+|---|---|
+| `unknown` | the daemon has not probed yet (or the probe failed, timed out, got a non-200 answer or an unrecognizable body) — the reconnect loop behaves exactly as before |
+| `ok` | the last probe saw the relay announce the same wire protocol this build speaks |
+| `mismatch` | the last probe saw the relay announce a DIFFERENT positive integer — the ONLY hard verdict: the hosted relay was updated to an incompatible wire version and this build can never talk to it; update the app (or roll the relay back) |
+| `legacy` | the last probe saw a relay that predates the `protocol` field (or answers with junk in it) — an older relay that keeps working exactly as before |
+
+`message` is one static pt-BR phrase per state — no URL, host, IP, port,
+version number or raw error ever rides the surface. The verdict is read from
+the relay's public `/healthz` (P2-331): the daemon derives the http(s) URL
+from its configured `ws://`/`wss://` address (same host and port, path,
+query and credentials dropped — the same derivation rule the desktop's
+"Test connection" probe uses, duplicated on purpose because a cross-app
+import would drag desktop code into the daemon build) and issues ONE
+best-effort GET with a 5s timeout and a 4KB body ceiling. The probe is
+gated by a pure planner and only ever runs inside the EXISTING reconnect
+loop — no new timer, no new route, no new listener:
+
+1. a disabled relay never probes;
+2. a connected relay never probes (frames are flowing);
+3. fewer than 3 consecutive failed dial cycles are a blip and probe nothing
+   — a cycle counts as failed whenever the relay socket closes, and the
+   count only clears when the relay actually DELIVERS a frame, the one
+   end-to-end proof the wire protocol round-trips (so a relay that accepts
+   the upgrade and then closes the socket on an unrecognized join still
+   reaches the probe);
+4. a mismatch already on record skips further probes — the answer will not
+   change until the relay is updated; the record clears itself the moment
+   the relay delivers a frame again (the operator fixed it), and the next
+   failure streak probes fresh;
+5. probes are throttled to one per 10 minutes (the instant of the ATTEMPT,
+   so a down relay is not probed per close);
+6. only then the probe runs.
+
+Only `mismatch` is a hard verdict: every other state — and the probe itself —
+preserves byte for byte the reconnect behavior the daemon had before. Each
+state transition logs exactly one static line (`relay wire protocol
+mismatch — update the app or the hosted relay` for the mismatch case, warn
+level; the others are info). The next slice (the UI) consumes this field;
+the reconnect loop itself is untouched.
+
 ### `/api/health` — upstream agent state (P2-135)
 
 `GET /api/health` keeps the legacy `opencodeHealthy` boolean untouched and

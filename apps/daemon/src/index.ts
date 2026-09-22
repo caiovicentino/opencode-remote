@@ -24,6 +24,7 @@ import {
   seal,
   openSealed,
   seqAad,
+  RELAY_WIRE_PROTOCOL,
   type Identity,
   speakBrief,
 } from "@ocr/protocol";
@@ -106,6 +107,17 @@ import {
   relayRedialPlan,
   type RelayFloorSource,
 } from "./relayredial.js";
+// P2-335: pure wire-protocol verdict + probe planner for the reconnect loop
+import {
+  RELAY_PROTOCOL_BODY_MAX,
+  RELAY_PROTOCOL_LOG,
+  RELAY_PROTOCOL_PROBE_TIMEOUT_MS,
+  RELAY_PROTOCOL_PHRASES,
+  relayHealthUrlFromWs,
+  relayProtocolProbePlan,
+  relayProtocolVerdict,
+  type RelayProtocolState,
+} from "./relayprotocol.js";
 import { parseRelayUrl, redactRelayUrl } from "./relayurl.js";
 import { normalizeProxyEnv, relayProxyVerdict, type RelayProxyVerdict } from "./relayproxy.js";
 import { createRelayTunnelConnect } from "./relaytunnel.js";
@@ -3715,6 +3727,17 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
  * error NAME is logged: the message could carry frame content.
  */
 function onSocketMessage(data: WebSocket.RawData, ws: WebSocket) {
+  // P2-335: a frame delivered BY the relay is the only end-to-end proof the
+  // wire protocol round-trips. It ends any failed-dial streak (the plan's
+  // "consecutive" counts failed cycles, not all closes since boot) and
+  // supersedes a mismatch verdict a stale probe left behind — the operator
+  // fixed or downgraded the relay while the daemon was still failing, and the
+  // next failure streak must be allowed to probe fresh again. Local WS
+  // sessions never touch this state.
+  if (ws === relaySocket) {
+    relayDialFailures = 0;
+    if (relayProtocolState === "mismatch") applyRelayProtocolState("unknown");
+  }
   handleMessage(data, ws).catch((err) => {
     metrics.inc("ocr_frame_handler_errors_total");
     log("error", "frame handler failed", { error: err instanceof Error ? err.name : "unknown" });
@@ -3755,6 +3778,25 @@ let relayDialInFlight = false;
 let relayRetryFloorSource: RelayFloorSource = "none";
 // P2-327: instant of the last anticipation (redial-now), for the 10s throttle.
 let relayLastRedialAt: number | null = null;
+// P2-335: the closed-set wire-protocol verdict of the last healthz probe —
+// "unknown" until the first probe attempt. Surfaced additively in /api/health
+// as relayProtocol next to relayConnected/relayRetry; only the state and one
+// static pt-BR phrase ride (no URL, host, IP, port, version number or raw
+// error), and the daemon's dialing behavior is untouched by every state but
+// the recording itself.
+let relayProtocolState: RelayProtocolState = "unknown";
+// P2-335: instant of the last probe ATTEMPT (answer or failure alike) — the
+// throttle bookkeeping relayProtocolProbePlan consults. null = never probed.
+let relayProtocolProbedAt: number | null = null;
+// P2-335: consecutive failed dial cycles. Every close of the relay socket is
+// one — the dial itself failing (never opened) and an upgrade that answers
+// open-then-close are indistinguishable at this level and both must reach the
+// probe. The count clears only when the relay actually delivers a frame (see
+// onSocketMessage): the one end-to-end proof the wire protocol round-trips.
+let relayDialFailures = 0;
+// P2-335: at most one healthz protocol probe in flight — a second close while
+// the first fetch is pending must not mint a second request.
+let relayProtocolProbeInFlight = false;
 // handle to the loopback API/metrics server (shutdown calls .close())
 let apiServer: HttpServer | null = null;
 // P2-161: the port the loopback API server actually bound (set in main()).
@@ -3859,6 +3901,28 @@ function connectRelay() {
       if (s.socket === ws) sessions.delete(from);
     }
     metrics.gauge("ocr_sessions_active", sessions.size);
+    // P2-335: the reconnect loop is where an incompatible wire version would
+    // hide as "relay temporarily off the air" forever — every close is one
+    // more failed dial cycle, and once the pattern looks real (enough of them,
+    // outside the documented throttle, no mismatch on record yet) the loop
+    // consults the relay's own /healthz once and records the closed-set
+    // verdict. Only mismatch is a hard verdict; every other outcome — and the
+    // probe itself — changes nothing about the dialing that follows.
+    relayDialFailures++;
+    const protocolPlan = relayProtocolProbePlan({
+      relayDisabled,
+      connected: metrics.get("ocr_relay_connected") === 1,
+      dialFailures: relayDialFailures,
+      msSinceLastProbe:
+        relayProtocolProbedAt === null ? null : Date.now() - relayProtocolProbedAt,
+      mismatchKnown: relayProtocolState === "mismatch",
+    });
+    if (protocolPlan.action === "probe") {
+      // the throttle instant is the ATTEMPT instant — a down relay is probed
+      // at most once per RELAY_PROTOCOL_PROBE_THROTTLE_MS, not per close
+      relayProtocolProbedAt = Date.now();
+      void probeRelayProtocol();
+    }
     // P2-327: the handle is kept so the redial route can anticipate the wait;
     // a defensive clear first — two overlapping sockets must never schedule
     // two timers — and the handle is nulled when the timer fires.
@@ -3881,6 +3945,86 @@ function connectRelay() {
     relayLastDial = { kind: verdict.kind, hint: verdict.hint };
     log("error", "relay dial failed", { kind: verdict.kind, hint: verdict.hint });
   });
+}
+
+// ---------------------------------------------------------------------------
+// P2-335: relay wire-protocol probe — the daemon-side consumer of the healthz
+// `protocol` field (P2-331). Runs ONLY inside the existing reconnect loop
+// (relayProtocolProbePlan gates it): no new timer, no new route, no new
+// listener. One best-effort GET against the /healthz URL derived from the
+// configured RELAY_URL, with the documented 5s timeout and a 4KB body
+// ceiling; every error, timeout or unexpected body degrades to unknown and
+// changes nothing — only a confirmed mismatch is a hard verdict, and it never
+// alters the dialing behavior either, it only says WHY the machine keeps
+// reconnecting (health field + one log line per transition).
+// ---------------------------------------------------------------------------
+
+/** Record one closed-set verdict; one static log line per transition only. */
+function applyRelayProtocolState(next: RelayProtocolState) {
+  if (next === relayProtocolState) return;
+  const prev = relayProtocolState;
+  relayProtocolState = next;
+  log(next === "mismatch" ? "warn" : "info", RELAY_PROTOCOL_LOG[next], { from: prev, to: next });
+}
+
+/** First ≤RELAY_PROTOCOL_BODY_MAX bytes of a response body, byte-capped. */
+async function readRelayBodyPrefix(res: Response, max: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) chunks.push(value);
+    total += value?.byteLength ?? 0;
+    if (total >= max) {
+      void reader.cancel().catch(() => {});
+      break;
+    }
+  }
+  const parts = chunks.map((c) => Buffer.from(c));
+  return Buffer.concat(parts).subarray(0, max).toString("utf-8");
+}
+
+/**
+ * The probe itself: derive the healthz URL, GET it once, parse at most 4KB,
+ * classify against RELAY_WIRE_PROTOCOL — the constant imported from
+ * @ocr/protocol, never a literal — and record the transition. Any failure
+ * (fetch error, timeout, non-200, unparseable body) is relayProtocolVerdict's
+ * "unknown": it changes nothing.
+ */
+async function probeRelayProtocol() {
+  if (relayProtocolProbeInFlight) return;
+  const healthUrl = relayHealthUrlFromWs(RELAY_URL);
+  // defensive only: relayDisabled gates the plan, and a dialable RELAY_URL is
+  // always ws/wss — but a non-ws value must never become a fetch to guess
+  if (healthUrl === null) return;
+  relayProtocolProbeInFlight = true;
+  try {
+    const res = await fetch(healthUrl, {
+      signal: AbortSignal.timeout(RELAY_PROTOCOL_PROBE_TIMEOUT_MS),
+      // the same posture the desktop probe (P2-328) has: never follow a
+      // redirect — a 3xx says nothing about the wire protocol anyway
+      redirect: "manual",
+    });
+    const bodyText = await readRelayBodyPrefix(res, RELAY_PROTOCOL_BODY_MAX);
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(bodyText);
+    } catch {
+      parsed = null;
+    }
+    applyRelayProtocolState(
+      relayProtocolVerdict({ status: res.status, body: parsed, expected: RELAY_WIRE_PROTOCOL }).state,
+    );
+  } catch {
+    applyRelayProtocolState(
+      relayProtocolVerdict({ status: null, body: null, expected: RELAY_WIRE_PROTOCOL }).state,
+    );
+  } finally {
+    relayProtocolProbeInFlight = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4354,6 +4498,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           versionCheckedAt: readinessCheckedAt(readinessState["opencode-version"].probedAt),
         },
         relayConnected,
+        // P2-335: additive relay wire-protocol verdict — the closed-set state
+        // of the last healthz probe (ok / mismatch / legacy / unknown, unknown
+        // until the first probe) plus one static pt-BR phrase. No URL, host,
+        // IP, port, version number or raw error ever rides this surface; only
+        // a mismatch is a hard verdict, and nothing here changes the dialing.
+        relayProtocol: { state: relayProtocolState, message: RELAY_PROTOCOL_PHRASES[relayProtocolState] },
         // P2-156: additive lastClose inside relayRetry — the close code and
         // triage kind of the most recent relay close (null until the first
         // close happens). No raw reason, URL or room id is ever exposed.
