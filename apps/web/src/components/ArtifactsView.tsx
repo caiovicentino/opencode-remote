@@ -10,7 +10,7 @@ import { useExitAnimation } from "../lib/motion";
 import { humanizeError, isNotConnected } from "../lib/errors";
 import type { OcrRequest } from "../lib/files";
 import ArtifactViewer from "./ArtifactViewer";
-import { ArtifactIcon } from "./icons";
+import { ArtifactIcon, IconArrowLeft, IconRefresh } from "./icons";
 import { useT } from "../lib/i18n";
 
 /**
@@ -87,10 +87,12 @@ export default function ArtifactsView({
   return (
     <div className="screen">
       <header>
-        <button className="pane-back" onClick={onBack} aria-label={t("back")}>←</button>
+        {/* P3-452: header actions carry the rail's SVG language — no bare
+            text glyphs beside the drawn icon set. */}
+        <button className="pane-back" onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>
         <h1 className="pane-title">{t("artifactsTitle")}</h1>
         <button onClick={load} aria-label={t("artifactsRefresh")} title={t("artifactsRefresh")}>
-          ↻
+          <IconRefresh />
         </button>
       </header>
       <div className="list">

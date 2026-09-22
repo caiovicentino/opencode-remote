@@ -140,6 +140,13 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   slot Conversas do rail fica desabilitado e a seta do próprio pane é o
   caminho de volta pro hero. Em janelas estreitas (<1024px, sem rail) e no
   celular a seta volta a liderar, porque o pane é a tela inteira
+- Uma linguagem de ícone no chrome dos panes (P3-452): as ações de header
+  (voltar, atualizar, maximizar/restaurar, Ir, alternar texto) saem dos
+  glifos de texto soltos ("←", "↻", "⤢", "→", "≡") e desenham o mesmo
+  conjunto SVG do rail ao lado (icons.tsx) — a mesma jornada nunca mais
+  mostra dois dialetos de ícone. O nome acessível segue no aria-label (o
+  glifo nunca foi o rótulo), e glifo de texto em header de pane é dialeto
+  proibido, pinado no gate (scripts/pane-icons.test.ts)
 - Glifo da marca em todas as telas de primeiro contato (P3-373): o glifo de
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas

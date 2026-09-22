@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
 import { feedVerdict } from "../lib/qrFeed";
 import { useT } from "../lib/i18n";
+import { IconArrowLeft } from "./icons";
 
 /** P2-319: shape mirrored from apps/desktop/src/camaccess.ts — the web
  * workspace never imports the desktop one (same pattern as MicAccessVerdict
@@ -193,7 +194,7 @@ export default function QrScanner({ onScan, onCancel, onPaste, getCamAccess }: P
       data-reason={phase === "unavailable" ? reason : undefined}
     >
       <header>
-        <button onClick={onCancel} aria-label={t("scanBackManual")}>←</button>
+        <button onClick={onCancel} aria-label={t("scanBackManual")}><IconArrowLeft /></button>
         <h1 className="pane-title">{t("scanPairingTitle")}</h1>
       </header>
       {phase === "unavailable" ? (
