@@ -71,6 +71,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "paircode.test.ts",
   "pane-back.test.ts",
   "pane-icons.test.ts",
+  "handoff.test.ts",
   "pairempty.test.ts",
   "permission-cards.test.ts",
   "proxyplan.test.ts",

@@ -142,6 +142,23 @@ identity servers, no accounts.
   `ocr_frame_handler_errors_total` (error name only, never frame content).
   The client applies the same fail-closed `seq` rule and never logs frame
   content.
+- A hostile project directory could execute commands on the daemon host
+  through the session handoff (RT-439): `POST /__ocr/handoff` interpolated
+  the session directory into an AppleScript `do script "cd ${dir} && opencode
+  -s ${id}"` string — escaping only `"` protected the AppleScript literal
+  layer but not the shell layer, since `do script` hands the text to the
+  user's shell, so `;`, `$()`, backticks, `&&`, `|`, a trailing `\` or a
+  newline inside `dir` executed arbitrary commands; the session id was only
+  prefix-checked and also interpolated raw into the opencode fetch URL. The
+  handler now validates the id against the same strict shape the other
+  session routes enforce (`ses_` + 4–64 alphanumerics) before any fetch,
+  refuses directories with control characters (422), and passes the
+  POSIX-quoted command to osascript as argv (`on run argv` + `do script
+  (item 1 of argv)`) — never interpolated into the script source, so quotes,
+  `$()`, backticks, `;`, `|`, `&&` and trailing backslashes stay literal
+  while real directory names (spaces, accents, quotes, parentheses) remain
+  legal. The rejection log carries the session id only — never the rejected
+  value (log-injection).
 - A paired client could turn the daemon into a reading SSRF proxy with the
   opencode credential attached (RT-453): `req.path` inside the sealed op
   envelope is attacker-controllable text, and `new URL(req.path,
