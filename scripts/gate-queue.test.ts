@@ -152,6 +152,16 @@ check(
   !!saveHoverRule && /border-color:\s*var\(--fg\)/.test(saveHoverRule[0]),
 );
 
+// --- P3-449: the disabled save keeps the firm border — dimming is label-only ----
+// Source pin: a revert to whole-button opacity washes out the border/surface and
+// resurrects the broken-button read beside the solid reconnect CTA.
+const saveDisabledRule = css.match(/\.degraded-queue-save:disabled\s*\{[^}]*\}/);
+check("index.css styles .degraded-queue-save:disabled", saveDisabledRule !== null);
+check(
+  "disabled save dims only the label (color: var(--muted)), never whole-button opacity",
+  !!saveDisabledRule && /color:\s*var\(--muted\)/.test(saveDisabledRule[0]) && !/opacity/.test(saveDisabledRule[0]),
+);
+
 if (failures) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);
