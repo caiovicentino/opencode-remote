@@ -9,9 +9,24 @@
 // forever. Harmless on today's loopback relay, dangerous once the room lives
 // on a hosted relay — the room id travels on a QR that ends up in photos,
 // screen shares and support screenshots. The window is fail-closed: it opens
-// at boot, re-arms on every authenticated pairing-screen read (exactly the
-// period the QR is on screen), and once closed unknown clients are refused
-// until the operator reopens the pairing screen or restarts the daemon.
+// at boot (virgin daemons only), re-arms on every authenticated
+// pairing-screen read (exactly the period the QR is on screen), and once
+// closed unknown clients are refused until the operator reopens the pairing
+// screen or restarts the daemon.
+//
+// Second-device pairing (P1-056 "Celular" pane): the desktop app shows the
+// pairing QR even when a phone is already paired — "pairing a SECOND device
+// is legitimate". Before this window carried consent, that promise was a
+// lie: bootstrapDecision rejected every unknown client on a non-virgin
+// allowlist inside or outside the window, so the second phone hit
+// "not authorized" in a loop while the screen told the user to keep it open.
+// The window IS the consent: it is armed only by an authenticated
+// /__ocr/pairing-uri read (Bearer token, loopback API) — the operator
+// showing the QR — and it is time-boxed. A handshake completed inside the
+// open window persists the client into the allowlist (the same write the
+// virgin bootstrap performs), so the fresh-read-per-handshake rule and the
+// invariant "handshake só pareia clientes na allowlist" keep holding: the
+// entry exists by the time the pairing completes.
 
 /** Default bootstrap window: 15 minutes from boot (or last pairing-screen read). */
 export const DEFAULT_PAIR_WINDOW_MS = 15 * 60_000;
@@ -79,11 +94,15 @@ export type BootstrapDecision = "allow" | "reject-expired" | "reject-not-allowli
  * Decide what a completed handshake may do on a daemon bootstrapping its
  * allowlist. Pure: `now` is injected, never read from the clock.
  *
- * - A non-empty allowlist never bootstraps: unknown clients are rejected on
- *   the regular not-allowlisted path, inside or outside the window.
- * - An empty allowlist pairs the first client only while the window is open
- *   (`0 <= now - openedAt < windowMs`, strictly above the ceiling is closed).
- * - A future open instant (clock jumped ahead) counts as NOT extended, so an
+ * - An open window is the operator's consent (armed at boot on a virgin
+ *   daemon, re-armed by every authenticated pairing-screen read): the
+ *   completed handshake is allowed and its client is persisted — virgin or
+ *   not. This is what makes the desktop app's second-device QR real.
+ * - A closed window on an empty allowlist is "reject-expired": nobody has
+ *   paired yet and nobody may until the window opens again.
+ * - A closed window on a non-empty allowlist is "reject-not-allowlisted":
+ *   unknown clients are refused on the regular path.
+ * - A future open instant (clock jumped ahead) counts as NOT open, so an
  *   early clock can never widen the window — recovery is documented: reopen
  *   the pairing screen to re-arm with a fresh timestamp.
  * - `openedAt = 0` (window never opened) is already expired: fail-closed.
@@ -94,9 +113,8 @@ export function bootstrapDecision(
   now: number,
   windowMs: number = DEFAULT_PAIR_WINDOW_MS,
 ): BootstrapDecision {
-  if (allowlistSize !== 0) return "reject-not-allowlisted";
   const elapsed = now - openedAt;
-  if (elapsed < 0) return "reject-expired";
-  if (elapsed < windowMs) return "allow";
-  return "reject-expired";
+  const open = elapsed >= 0 && elapsed < windowMs;
+  if (allowlistSize === 0) return open ? "allow" : "reject-expired";
+  return open ? "allow" : "reject-not-allowlisted";
 }

@@ -68,7 +68,26 @@ function snapshot() {
   };
 }
 
-/** Starts the loopback server; returns it so shutdown can close it (P2-020). */
+/**
+ * Exponential backoff (ms) for the bind retry: 2s, 4s, 8s, 16s, 32s, then a
+ * flat 60s cap. Pure so the unit suite can pin the schedule without opening
+ * sockets.
+ */
+export function bindBackoffMs(attempt: number): number {
+  return Math.min(60_000, 2_000 * 2 ** Math.min(Math.max(0, attempt - 1), 5));
+}
+
+/**
+ * Starts the loopback server; returns it so shutdown can close it (P2-020).
+ *
+ * The port can be busy at boot: the desktop shell may hold :8792 with its own
+ * sidecar while the launchd daemon starts (the exact race that left a daemon
+ * running WITHOUT its API forever — un-adoptable by the shell, invisible to
+ * every local surface, and the reason a stale sidecar used to split the
+ * machine into two daemons). The bind now retries with backoff until the
+ * squatter exits, then takes the port and becomes adoptable. Only EADDRINUSE
+ * retries; any other listen error keeps the old single log line.
+ */
 export function startMetricsServer(port: number, api?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>): Server {
   const server = createHttpServer(async (req, res) => {
     if (req.url?.startsWith("/metrics")) {
@@ -80,11 +99,26 @@ export function startMetricsServer(port: number, api?: (req: IncomingMessage, re
     if (api && req.url && (await api(req, res, new URL(req.url, "http://127.0.0.1")))) return;
     res.writeHead(404).end();
   });
-  server.listen(port, "127.0.0.1", () => {
-    log("info", "metrics server listening", { port, bind: "127.0.0.1" });
-  });
+  let bound = false;
+  let attempt = 0;
+  const listen = () => {
+    server.listen(port, "127.0.0.1", () => {
+      bound = true;
+      log("info", "metrics server listening", { port, bind: "127.0.0.1", attempts: attempt });
+    });
+  };
   server.on("error", (err) => {
+    // A runtime error after a successful bind is not a bind failure — never
+    // re-listen a server that is already serving (double-listen would throw).
+    if ((err as NodeJS.ErrnoException).code === "EADDRINUSE" && !bound) {
+      attempt++;
+      const delay = bindBackoffMs(attempt);
+      log("warn", "metrics port busy — retrying bind", { port, attempt, retryInMs: delay });
+      setTimeout(listen, delay);
+      return;
+    }
     log("info", "metrics server unavailable", { error: (err as Error).message });
   });
+  listen();
   return server;
 }

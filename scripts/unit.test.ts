@@ -308,6 +308,7 @@ import {
   PAIR_WINDOW_CEILING_MS,
   pairWindow,
 } from "../apps/daemon/src/pairwindow";
+import { bindBackoffMs } from "../apps/daemon/src/metrics";
 import {
   DEVICE_TOUCH_INTERVAL_MS,
   nextDeviceLabel,
@@ -20861,9 +20862,14 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     bootstrapDecision(0, base, base + DEFAULT_PAIR_WINDOW_MS + 1) === "reject-expired",
   );
   check(
-    "P2-190: non-empty allowlist → reject-not-allowlisted inside AND outside the window",
-    bootstrapDecision(1, base, base + 1) === "reject-not-allowlisted" &&
-      bootstrapDecision(3, base, base + PAIR_WINDOW_CEILING_MS * 10) === "reject-not-allowlisted",
+    "P2-190: non-empty allowlist + window OPEN → allow (the pairing screen is the operator's consent)",
+    bootstrapDecision(1, base, base + 1) === "allow" &&
+      bootstrapDecision(3, base, base + DEFAULT_PAIR_WINDOW_MS - 1) === "allow",
+  );
+  check(
+    "P2-190: non-empty allowlist + window CLOSED → reject-not-allowlisted (unchanged regular path)",
+    bootstrapDecision(1, base, base + DEFAULT_PAIR_WINDOW_MS + 1) === "reject-not-allowlisted" &&
+      bootstrapDecision(3, 0, base) === "reject-not-allowlisted",
   );
   check(
     "P2-190: re-arm reopens the window (expired before, allow after a fresh openedAt)",
@@ -20923,6 +20929,35 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-190: the real bootstrap branch decides through bootstrapDecision(",
     bootstrapAt > -1 && daemonIndexSrc.slice(bootstrapAt, bootstrapAt + 800).includes("bootstrapDecision("),
+  );
+  // real-source assertion: the boot-time window auto-open must stay gated on
+  // the allowlist being EMPTY. Unconditional `pairWindowOpenedAt =
+  // Date.now()` at boot would silently reopen a 15-minute consent window on
+  // every restart of an established daemon (a leaked room id would join on
+  // the next boot).
+  const bootGateAt = daemonIndexSrc.indexOf("pairWindowOpenedAt = readAllowlist().length === 0");
+  check(
+    "P2-190: boot-time window auto-open is gated on a virgin allowlist (real index.ts)",
+    bootGateAt > -1 &&
+      daemonIndexSrc.slice(bootGateAt - 40, bootGateAt + 120).includes("Date.now() : 0"),
+  );
+}
+
+// --- bind retry backoff (metrics.ts) ------------------------------------------
+
+{
+  // 2s, 4s, 8s, 16s, 32s, then a flat 60s cap — the launchd daemon that lost
+  // the port race at boot keeps retrying until the squatter (a dying desktop
+  // sidecar) exits, then takes the port and becomes adoptable.
+  check(
+    "metrics: bind retry backoff doubles up to the 60s cap",
+    bindBackoffMs(1) === 2_000 &&
+      bindBackoffMs(2) === 4_000 &&
+      bindBackoffMs(3) === 8_000 &&
+      bindBackoffMs(4) === 16_000 &&
+      bindBackoffMs(5) === 32_000 &&
+      bindBackoffMs(6) === 60_000 &&
+      bindBackoffMs(100) === 60_000,
   );
 }
 
