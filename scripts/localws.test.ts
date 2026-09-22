@@ -268,6 +268,10 @@ ws.close();
   setInterval,
   clearTimeout,
   clearInterval,
+  // P3-425 made OcrClient register a real `online` listener (guarded by
+  // typeof window) — a shim without the method crashed the constructor.
+  addEventListener: () => {},
+  removeEventListener: () => {},
 };
 interface IdbRequestShim {
   result?: unknown;
