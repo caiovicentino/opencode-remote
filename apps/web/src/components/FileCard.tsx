@@ -2,6 +2,10 @@ import { useRef, useState, type ReactElement, type ReactNode } from "react";
 import { copyText } from "../lib/clipboard";
 import { downloadFile, saveFile, type OcrRequest } from "../lib/files";
 import { useT } from "../lib/i18n";
+// P3-437: the fullscreen viewer header and the copy-path action speak the
+// shared SVG icon set — the last text glyphs on the chrome (P3-452 covered
+// the pane headers).
+import { IconArrowLeft, IconCheck, IconCopy } from "./icons";
 
 export default function FileCard({
   path,
@@ -54,7 +58,8 @@ export default function FileCard({
     }
   }
 
-  // fullscreen viewer: "View" opens the document full-bleed, "← Chat" returns
+  // fullscreen viewer: "View" opens the document full-bleed, the back button
+  // returns to the chat (P3-437: shared SVG back icon, like ArtifactViewer)
   if (preview?.html || (preview?.url && kind === "pdf")) {
     return (
       <div
@@ -78,7 +83,9 @@ export default function FileCard({
             borderBottom: "1px solid var(--border)",
           }}
         >
-          <button onClick={() => setPreview(null)}>← Chat</button>
+          <button className="pane-close" onClick={() => setPreview(null)} aria-label={t("back")}>
+            <IconArrowLeft />
+          </button>
           <span
             style={{
               flex: 1,
@@ -146,12 +153,12 @@ export default function FileCard({
         </span>
         <button
           disabled={busy}
-          style={{ padding: "6px 10px", minWidth: copied ? undefined : 34 }}
+          style={{ padding: "6px 10px", minWidth: 34 }}
           title={t("copyPath")}
-          aria-label={t("copyPath")}
+          aria-label={copied ? t("copied") : t("copyPath")}
           onClick={() => void copyPath()}
         >
-          {copied ? t("copied") : "⧉"}
+          {copied ? <IconCheck size={15} /> : <IconCopy size={15} />}
         </button>
         {kind && !preview && (
           <button disabled={busy} style={{ padding: "6px 10px" }} onClick={() => void loadPreview()}>

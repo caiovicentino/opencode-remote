@@ -31,7 +31,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { bootVerdict, CANARY } from "./packaged-boot-verdict.mjs";
 import { candidatePaths, isExecutableEntry } from "./packaged-boot-layout.mjs";
-import { exitPlan, runExitPlan } from "./packaged-boot-exit.mjs";
+import { exitPlan, postVerdictExitCode, runExitPlan } from "./packaged-boot-exit.mjs";
 
 const BOOT_TIMEOUT_MS = 120_000;
 const LOAD_TIMEOUT_MS = 45_000;
@@ -140,9 +140,15 @@ async function closeApp(electronApp) {
       electronApp.process().kill("SIGKILL");
     } catch {}
   }, CLOSE_DEADLINE_MS);
-  try {
-    await electronApp.close();
-  } catch {}
+  // P3-437 (runs 35776744184 and peers): on a wedged renderer/CDP pipe the
+  // SIGKILL kills the app but close()'s promise never settles — the await
+  // hung past the 120s watchdog and the runner reported FAIL for a boot that
+  // had already passed its verdict. Race against a hard ceiling so the
+  // finally always reaches the deterministic exit plan below.
+  await Promise.race([
+    electronApp.close().catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, CLOSE_DEADLINE_MS + 1_000)),
+  ]);
   clearTimeout(killer);
 }
 
@@ -201,13 +207,15 @@ async function main() {
   watchdog = setTimeout(() => {
     console.error(
       verdictPrinted
-        ? "packaged-boot: FAIL — travou após o veredito, forçando a saída"
+        ? `packaged-boot: teardown travou após o veredito — saindo com o veredito (${process.exitCode ?? 1})`
         : `packaged-boot: FAIL — boot smoke exceeded ${BOOT_TIMEOUT_MS}ms, killing the app`,
     );
     try {
       activeApp?.process().kill("SIGKILL");
     } catch {}
-    process.exit(1);
+    // P3-437: the verdict is the gate — a post-verdict teardown wedge keeps
+    // finish()'s code instead of flipping a proven-OK boot to FAIL.
+    process.exit(postVerdictExitCode(verdictPrinted, process.exitCode));
   }, BOOT_TIMEOUT_MS);
   watchdog.unref?.();
 

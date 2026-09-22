@@ -7,6 +7,11 @@
  * go, toggle-text) now reuse the shared SVG set; this pin keeps the glyph
  * dialect from creeping back into the pane files, comments excluded (the
  * arrow characters are legitimate prose inside review notes).
+ * P3-437: the last glyph controls joined the set — FileCard's fullscreen
+ * viewer header ("← Chat") and copy-path action ("⧉"), the dismiss ✕/× in
+ * FilesView/SettingsView/ScreenFlash/ChatView (composer attachment chip and
+ * the trim range separator) — so those glyphs join the pin alongside the pane
+ * files, including the two chip/flash homes (review r1).
  * Run: npx tsx scripts/pane-icons.test.ts
  */
 import { readFileSync } from "node:fs";
@@ -24,7 +29,9 @@ function check(name: string, ok: boolean, detail = "") {
 const web = join(import.meta.dirname, "..", "apps", "web", "src");
 
 // every pane whose header renders chrome buttons — the surfaces the rail
-// sits beside (P3-384's pane-title census, plus the artifact viewer header)
+// sits beside (P3-384's pane-title census, plus the artifact viewer header,
+// P3-437's file-card viewer header and the two chip/flash homes where the
+// last dismiss glyphs lived)
 const panes = [
   "ArtifactsView.tsx",
   "BrowserView.tsx",
@@ -34,9 +41,12 @@ const panes = [
   "SendToAgentView.tsx",
   "QrScanner.tsx",
   "ArtifactViewer.tsx",
+  "FileCard.tsx",
+  "ChatView.tsx",
+  "ScreenFlash.tsx",
 ];
 
-const glyphs = ["←", "↻", "⤢", "⤡", "→", "≡"];
+const glyphs = ["←", "↻", "⤢", "⤡", "→", "≡", "✕", "×", "⧉"];
 for (const pane of panes) {
   const lines = readFileSync(join(web, "components", pane), "utf8").split("\n");
   const offenders = lines

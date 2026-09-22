@@ -184,7 +184,13 @@ inteira com `taskkill /T /F` (best-effort) antes de `process.exit` com o
 código do veredito, e o watchdog de `BOOT_TIMEOUT_MS` também cobre o caminho
 pós-veredito — porque no win32 a árvore de processos sobrevivia ao `close()` e
 mantinha o node vivo até o timeout do runner; o passo win do ci.yml acompanha
-com teto próprio de 4 minutos. Desde a P2-251 os dois jobs de
+com teto próprio de 4 minutos. Desde a P3-437 esse caminho pós-veredito não
+vira mais falha: um `close()` preso num pipe CDP morto (o screenshot da janela
+oculta que nunca resolve — runs 35776744184 e pares, o mesmo wedge que já
+pintou CI vermelho em PRs e no main) é cercado por um teto próprio no
+`closeApp` (race de 13s) e o watchdog sai com o código do veredito impresso
+(`postVerdictExitCode` no módulo puro) — o veredito é o portão; a teardown
+presa é ruído de harness, não regressão do produto. Desde a P2-251 os dois jobs de
 empacotamento do release também executam o lado que o boot smoke desliga de
 propósito — o passo `Smoke the packaged daemon sidecar`
 (`apps/desktop/scripts/packaged-daemon-smoke.mjs`, depois do boot do pacote e
@@ -1718,7 +1724,12 @@ diretório de evidência, somente a pass do fable.
   escrito no início da janela noturna — o explorer spawnava sem permissões, o
   opencode headless rejeitava o primeiro comando bash e o evento
   `task:explorer done` nunca chegava ao events.jsonl. `runExplorer` e
-  `runFableReview` re-escrevem a sandbox config antes de cada spawn.
+  `runFableReview` re-escrevem a sandbox config antes de cada spawn. Desde a
+  P3-437 o `opencode.json` também vive no `.gitignore`: é plumbing por-agente
+  (reescrito a cada spawn — `writeSandboxConfig`/`writeAuxSandboxConfig`), e
+  um `git add -A` de builder chegou a commitar a variante allow-all —
+  rastreada, cada divergência virava sujeira rastreada pro tamper check do
+  gate e pro dirty guard de deploy (o review r2 pegou).
 - **Nunca bloqueia**: qualquer falha (sync, agente, push) é log-only — o
   explorer não participa do circuit breaker nem reprova merge. Guard diário
   próprio em `state.json` (`explorerLast`), independente do `redteamLast`

@@ -32,6 +32,20 @@ export function exitPlan({ platform, exitCode, pid, childAlive } = {}) {
   return plan;
 }
 
+/**
+ * P3-437: the code the watchdog exits with, from the observed facts. The boot
+ * verdict is the gate — a teardown that wedges AFTER the verdict (runs
+ * 35776744184 and peers: `page.screenshot` timed out on a hidden window, then
+ * close() hung on the dead CDP pipe) must not flip a proven-OK boot to FAIL.
+ * Once the verdict is printed the watchdog preserves finish()'s exit code
+ * (0 when the boot passed, 1 when it failed; a non-integer stays fail-closed).
+ * Before the verdict the smoke genuinely never finished — always 1.
+ */
+export function postVerdictExitCode(verdictPrinted, exitCode) {
+  if (verdictPrinted !== true) return 1;
+  return Number.isInteger(exitCode) ? exitCode : 1;
+}
+
 /** Execute the plan in order: kill is best-effort (a throwing kill never
  * changes the code), exit is the final step and is called exactly once. */
 export function runExitPlan(plan, { kill, exit }) {
