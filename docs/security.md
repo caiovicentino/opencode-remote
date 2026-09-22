@@ -23,12 +23,19 @@ identity servers, no accounts.
    pairing window is open: 15 minutes by default (`OCR_PAIR_WINDOW_MS`,
    positive whole milliseconds, ceiling 24 h; a non-numeric, negative, zero,
    fractional or above-ceiling value makes the daemon refuse to boot). The
-   window opens at daemon boot and re-arms on every authenticated read of the
-   pairing screen, so the QR staying on screen keeps pairing available. Once
-   the window closed, an unknown client is rejected on the regular refusal
-   path and an audit event `client.bootstrap-expired` is recorded: reopen the
-   pairing screen in the desktop app or restart the daemon to pair a new
-   device. Afterwards only listed client keys connect. Revocation is instant
+   window auto-opens at daemon boot **on a virgin daemon (empty allowlist)
+   only**; on an established daemon it starts closed and is armed by every
+   authenticated read of the pairing screen — so the QR staying on screen
+   keeps pairing available, and a leaked room id can never silently join
+   after a routine restart. While the window is open, a completed handshake
+   pairs **and persists** the client into the allowlist — this is the
+   operator-consent path that makes the desktop app's second-device
+   "Celular → pareamento" QR real (the same allowlist write the virgin
+   bootstrap performs, fresh-read per handshake). Once the window closed, an
+   unknown client is rejected on the regular refusal path (audit
+   `client.rejected`; `client.bootstrap-expired` on the virgin path):
+   reopen the pairing screen in the desktop app to pair a new device.
+   Afterwards only listed client keys connect. Revocation is instant
    (state file re-read per handshake) and available from the app or
    `manage.ts revoke-all`.
    Each entry also carries a **stable label** (`Telefone <n>`, no personal

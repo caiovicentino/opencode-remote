@@ -5072,9 +5072,14 @@ async function main() {
     console.log(`  or paste: ${pairingUri}\n`);
   }
 
-  // P2-190: the bootstrap window opens at boot; pairing right after the
-  // daemon starts keeps working (the localws e2e depends on this).
-  pairWindowOpenedAt = Date.now();
+  // P2-190: the bootstrap window opens at boot on a VIRGIN daemon only —
+  // pairing right after the daemon starts keeps working (the localws e2e
+  // depends on this). An established daemon (allowlist non-empty) starts with
+  // the window CLOSED: pairing a second device requires the operator to open
+  // the pairing screen (the authenticated /__ocr/pairing-uri read re-arms the
+  // window — consent, exactly the period the QR is on screen), so a leaked
+  // room id can never silently join after a routine restart.
+  pairWindowOpenedAt = readAllowlist().length === 0 ? Date.now() : 0;
   connectRelay();
   void forwardEvents();
 }
