@@ -1802,6 +1802,10 @@ agent is out, the QR step fails fast instead of holding the skeleton for the
 full window (P3-412): the error block names the agent as the cause — the same
 signal that card renders — while the auto-connect is still in flight the QR
 can land any moment, so only the settled non-healthy states skip the wait.
+That branch also self-heals in place (P3-443): when the shell carries the
+restart bridge, the bare retry is replaced by the accent "Reconnect now" —
+the action that actually fixes the cause, wearing the same identity as the
+step-2 card — while a boot without the bridge keeps the retry.
 The step
 indicator reads as part of the brand block — centered under the wordmark — and
 progress is three quiet dots rather than a caps caption: the active step is an

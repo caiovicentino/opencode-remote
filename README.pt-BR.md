@@ -428,7 +428,11 @@ remoto, zero confiança**.
   no lugar de linha nua; sem o QR em 20s, a espera vira um erro inline com retry (P3-333)
   — e quando o cartão de conexão do passo anterior já sabe que o agente local está fora,
   a falha é imediata e nomeia o agente como causa (P3-412), com o "Fazer isso depois"
-  sempre como saída calma e o escape "Parear manualmente" ao lado do retry. Superfície
+  sempre como saída calma e o escape "Parear manualmente" ao lado do retry. Esse ramo
+  também se cura no lugar (P3-443): quando a ponte do shell pode reiniciar o daemon,
+  o retry deixa o lugar para o "Reconectar agora" accent — a ação que de fato resolve
+  a causa, com a mesma identidade do card do passo anterior — enquanto um boot sem a
+  ponte mantém o retry. Superfície
   única em tela cheia: sem banners e sem overlay de
   pareamento (regra P2-108)
 - **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor

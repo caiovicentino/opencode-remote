@@ -1626,6 +1626,14 @@ button.desk-new:disabled {
 .welcome-qr-manual:hover {
   border-color: var(--fg);
 }
+/* P3-443: the agent-down block self-heals in place — the reconnect wears the
+   shared accent identity (P3-450: one primary dialect per journey) beside the
+   quiet manual escape, and its trying state borrows the degraded card's
+   disabled treatment (same feedback grammar, no second dialect). */
+.welcome-qr-reconnect:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .welcome-step {
   display: flex;

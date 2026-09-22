@@ -39,6 +39,7 @@ function InlinePair({
   qrDataUrl,
   phonePaired,
   agentDown,
+  reconnect,
   onPairRemote,
   onCancelPairRemote,
   onPairManually,
@@ -48,6 +49,9 @@ function InlinePair({
   /** P3-412: the settled non-healthy verdict of the same kind/busy signal the
    * step-2 connection card renders — true means the QR can never land. */
   agentDown: boolean;
+  /** P3-443: the shell restart bridge (app:reconnectDaemon) — absent in the
+   * plain browser, so the agent-down branch keeps the bare retry there. */
+  reconnect?: () => Promise<boolean>;
   onPairRemote: () => void;
   onCancelPairRemote?: () => void;
   onPairManually?: () => void;
@@ -131,9 +135,18 @@ function InlinePair({
               agent's pairing credential; with the agent down nothing loads. */}
           <p className="muted welcome-qr-hint">{t("welcomeQrErrorHint")}</p>
           <div className="welcome-qr-actions">
-            <button className="welcome-qr-retry" onClick={retry}>
-              {t("welcomeQrRetry")}
-            </button>
+            {agentDown && reconnect ? (
+              // P3-443: with the restart bridge present, the agent-down branch
+              // self-heals in place — the reconnect that fixes the cause
+              // replaces the bare retry (which cannot mint anything while the
+              // daemon is out), wearing the shared accent identity so the
+              // first-boot journey keeps ONE primary dialect (P3-450).
+              <ReconnectButton className="primary welcome-qr-reconnect" reconnect={reconnect} />
+            ) : (
+              <button className="welcome-qr-retry" onClick={retry}>
+                {t("welcomeQrRetry")}
+              </button>
+            )}
             {onPairManually && (
               <button className="welcome-qr-manual" onClick={onPairManually}>
                 {t("welcomeQrManual")}
@@ -278,6 +291,7 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
                 qrDataUrl={qrDataUrl}
                 phonePaired={phonePaired}
                 agentDown={agentDown}
+                reconnect={reconnect}
                 onPairRemote={onPairRemote}
                 onCancelPairRemote={onCancelPairRemote}
                 onPairManually={onPairManually}

@@ -35776,6 +35776,59 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   );
 }
 
+// --- P3-443: the agent-down error block self-heals in place ------------------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const welcome = read(join("components", "WelcomeView.tsx"));
+  const app = read("App.tsx");
+  const css = read("index.css");
+
+  // P3-450: the reconnect in the wizard wears the SHARED accent identity —
+  // parallel primary actions in the same first-boot journey keep one dialect
+  const reconnectAt = welcome.indexOf('className="primary welcome-qr-reconnect"');
+  check("P3-443: the agent-down reconnect wears the shared accent primary", reconnectAt !== -1);
+  check(
+    "P3-443: no bespoke hover/one-off paint on the reconnect",
+    !css.includes(".welcome-qr-reconnect:hover") &&
+      css.includes(".welcome-qr-reconnect:disabled {"),
+  );
+
+  // the reconnect replaces the retry ONLY when the shell restart bridge exists
+  // (the plain-browser boot has no IPC to restart the daemon, so the retry
+  // stays there) — and the retry string survives for that path
+  const branchAt = welcome.indexOf("agentDown && reconnect ? (");
+  const reconnectBtnAt = welcome.indexOf("<ReconnectButton", branchAt);
+  const retryAt = welcome.indexOf('className="welcome-qr-retry"');
+  check(
+    "P3-443: the reconnect replaces the bare retry only on the bridged agent-down branch",
+    branchAt !== -1 && reconnectBtnAt > branchAt && reconnectBtnAt < retryAt,
+  );
+  check("P3-443: the bridge is passed into InlinePair from the wizard", welcome.includes("reconnect={reconnect}"));
+
+  // App already builds the reconnect closure only when the shell bridge
+  // exists (app:reconnectDaemon) — the wizard never renders a dead button
+  const bridgeAt = app.indexOf("desktopBridge()?.reconnectDaemon");
+  const welcomeAt = app.indexOf("<WelcomeView");
+  const reconnectPropAt = app.indexOf("reconnect={reconnectBtn}", welcomeAt);
+  check(
+    "P3-443: App hands the wizard the bridge-gated reconnect closure",
+    bridgeAt !== -1 && welcomeAt > bridgeAt && reconnectPropAt > welcomeAt,
+  );
+
+  // the manual escape survives in both branches — the self-heal never trades
+  // away the labeled escape to the paste-code ceremony (P3-329 rule)
+  const manualAt = welcome.indexOf('className="welcome-qr-manual"');
+  check("P3-443: the manual escape stays beside the reconnect", manualAt > reconnectBtnAt && manualAt < welcome.indexOf('t("welcomeQrWaitHint")'));
+
+  // copy-independent hook: the reconnect is selectable by class, not by
+  // locale-pinned words (P3-421 lesson); the retry copy survives for the
+  // non-bridged path, so no rendered key goes orphaned
+  check(
+    "P3-443: the reconnect hook is the welcome-qr-reconnect class, retry copy survives",
+    welcome.includes('className="primary welcome-qr-reconnect"') &&
+      welcome.includes('t("welcomeQrRetry")'),
+  );
+}
 
 // ── eval r3: doctorDist + mergeReadiness (operator landing P1-060) ──────
 // --- eval r3: merge readiness — GitHub's verdict is read BEFORE the merge is armed --
