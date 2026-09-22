@@ -184,7 +184,13 @@ inteira com `taskkill /T /F` (best-effort) antes de `process.exit` com o
 código do veredito, e o watchdog de `BOOT_TIMEOUT_MS` também cobre o caminho
 pós-veredito — porque no win32 a árvore de processos sobrevivia ao `close()` e
 mantinha o node vivo até o timeout do runner; o passo win do ci.yml acompanha
-com teto próprio de 4 minutos. Desde a P2-251 os dois jobs de
+com teto próprio de 4 minutos. Desde a P3-437 esse caminho pós-veredito não
+vira mais falha: um `close()` preso num pipe CDP morto (o screenshot da janela
+oculta que nunca resolve — runs 35776744184 e pares, o mesmo wedge que já
+pintou CI vermelho em PRs e no main) é cercado por um teto próprio no
+`closeApp` (race de 13s) e o watchdog sai com o código do veredito impresso
+(`postVerdictExitCode` no módulo puro) — o veredito é o portão; a teardown
+presa é ruído de harness, não regressão do produto. Desde a P2-251 os dois jobs de
 empacotamento do release também executam o lado que o boot smoke desliga de
 propósito — o passo `Smoke the packaged daemon sidecar`
 (`apps/desktop/scripts/packaged-daemon-smoke.mjs`, depois do boot do pacote e

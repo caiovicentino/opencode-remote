@@ -1014,7 +1014,7 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
 import { candidatePaths, isExecutableEntry } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
-import { exitPlan, runExitPlan } from "../apps/desktop/scripts/packaged-boot-exit.mjs";
+import { exitPlan, postVerdictExitCode, runExitPlan } from "../apps/desktop/scripts/packaged-boot-exit.mjs";
 import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
 import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
 
@@ -23510,6 +23510,29 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-348: the ci win boot step ceiling is 4 minutes; the mac step keeps 10",
     winBootSlice.includes("timeout-minutes: 4") && macBootSlice.includes("timeout-minutes: 10"),
+  );
+
+  // --- P3-437: a post-verdict teardown wedge keeps the verdict's code -------
+
+  check(
+    "P3-437: postVerdictExitCode preserves the printed verdict (OK stays 0, FAIL stays 1)",
+    postVerdictExitCode(true, 0) === 0 && postVerdictExitCode(true, 1) === 1,
+  );
+  check(
+    "P3-437: a non-integer verdict code still fails closed",
+    postVerdictExitCode(true, undefined) === 1 && postVerdictExitCode(true, Number.NaN) === 1,
+  );
+  check(
+    "P3-437: before the verdict the watchdog timeout is always a failure",
+    postVerdictExitCode(false, 0) === 1 && postVerdictExitCode(undefined, 0) === 1,
+  );
+  check(
+    "P3-437: the watchdog exits through postVerdictExitCode (never a bare exit(1) after the verdict)",
+    bootSrc.includes("process.exit(postVerdictExitCode(verdictPrinted, process.exitCode))"),
+  );
+  check(
+    "P3-437: closeApp races the wedged close() against a hard ceiling so the finally always reaches the exit plan",
+    bootSrc.includes("Promise.race") && bootSrc.includes("CLOSE_DEADLINE_MS + 1_000"),
   );
 }
 
