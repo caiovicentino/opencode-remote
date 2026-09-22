@@ -19422,6 +19422,58 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         !noteRule.includes("--font-mono"),
     );
   }
+  // P3-444: with zero sessions the forensic grid kept its two columns — the
+  // cards' border-right painted a full-height divider beside a dead half-pane
+  // (explorer journey-mission-control shot). The pane now collapses to one
+  // centered empty world (the browser/artifacts composed pattern) until the
+  // first session card exists, and the mission card stays rendered inside it
+  // so the mission state and its clear action never orphan. Source-level like
+  // P3-414: no DOM harness reaches a paired zero-session world cheaply.
+  {
+    const mcvSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "MissionControlView.tsx"), "utf8");
+    const webCss = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+    const emptyAt = mcvSrc.indexOf('<div className="mission-empty">');
+    const emptyEnd = emptyAt >= 0 ? mcvSrc.indexOf(") : (", emptyAt) : -1;
+    const emptyBlock = emptyEnd >= 0 ? mcvSrc.slice(emptyAt, emptyEnd) : "";
+    check(
+      "P3-444: the empty world composes the radar glyph + title + hint (browser-empty pattern)",
+      emptyAt >= 0 &&
+        emptyBlock.includes("<IconRadar") &&
+        emptyBlock.includes('t("missionEmpty")') &&
+        emptyBlock.includes('t("missionEmptyHint")'),
+    );
+    check(
+      "P3-444: the composed world replaces the two-column grid while the list is empty (no divider half-pane)",
+      mcvSrc.includes("cards !== null && cards.length === 0 ? (") &&
+        mcvSrc.indexOf("mission-grid") > emptyAt,
+    );
+    check(
+      "P3-444: the mission card stays inside the empty world (state + clear action never orphaned)",
+      emptyBlock.includes("{missionCard}") && mcvSrc.includes("const missionCard = ("),
+    );
+    check(
+      "P3-444: the bare one-paragraph empty state is gone from the grid branch",
+      !mcvSrc.includes('{cards !== null && cards.length === 0 && ('),
+    );
+    check(
+      "P3-444: .mission-empty reuses the shared composed empty-state lists (no parallel one-off rules)",
+      /browser-empty-icon,\n\.artifacts-empty-icon,\n\.mission-empty-icon \{/.test(webCss) &&
+        /browser-empty-icon svg,\n\.artifacts-empty-icon svg,\n\.mission-empty-icon svg \{/.test(webCss) &&
+        /browser-empty-title,\n\.artifacts-empty-title,\n\.mission-empty-title \{/.test(webCss) &&
+        /browser-empty-hint,\n\.artifacts-empty-hint,\n\.mission-empty-hint \{/.test(webCss),
+    );
+    check(
+      "P3-444: the empty world fills the screen flex column like the artifacts variant (flex: 1)",
+      webCss.includes(".mission-empty {") && /\.mission-empty \{[^}]*flex:\s*1/.test(webCss),
+    );
+    check(
+      "P3-444: missionEmptyHint resolves per locale (no raw-key fallback)",
+      (["en", "pt"] as const).every((lang) => {
+        const s = translate(lang, "missionEmptyHint");
+        return s !== "missionEmptyHint" && s.trim() !== "";
+      }),
+    );
+  }
   check("mission card: models line renders role=model pairs, empty when absent", formatMissionModels({ builder: "glm52/glm-5.2", scribe: "opencode/big-pickle" }) === "builder=glm52/glm-5.2, scribe=opencode/big-pickle" && formatMissionModels(undefined) === "" && formatMissionModels({}) === "");
 
   // source pins: the loop routes mission drift through the pure seam, the

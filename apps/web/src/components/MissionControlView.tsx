@@ -398,6 +398,61 @@ export default function MissionControlView({
     );
   }
 
+  // P3-444: the mission card renders in two worlds — the cards column of the
+  // forensic grid (once sessions exist) and the centered empty world (while
+  // they don't) — so the mission state and its clear action stay reachable in
+  // both instead of being orphaned by the collapse.
+  const missionCard = (
+    <div className="mission-active" data-mission={mission ? "set" : "none"}>
+      <span className="mission-active-label">{mission ? t("missionActive") : t("missionLabel")}</span>
+      {mission ? (
+        <>
+          {mission.prompt && <p className="mission-active-text">{mission.prompt}</p>}
+          {mission.repoUrl && (
+            <p className="mission-active-src">
+              {t("missionSourceRepo")}: {mission.repoUrl}
+            </p>
+          )}
+          {formatMissionModels(mission.models) && (
+            <p className="mission-active-src" data-mission-models>
+              {t("missionModels")}: {formatMissionModels(mission.models)}
+            </p>
+          )}
+          {formatModelSubstitutions(modelSubs) && (
+            <p className="mission-active-src mission-bad" data-mission-model-subst>
+              {t("missionModelSubstituted")}: {formatModelSubstitutions(modelSubs)}
+            </p>
+          )}
+          <p className="mission-active-src">
+            {t("missionSource")}:{" "}
+            {[mission.prompt ? t("missionSourcePrompt") : "", mission.repoUrl ? t("missionSourceRepo") : ""]
+              .filter(Boolean)
+              .join(" + ")}
+            {fmtDateTime(mission.setAt) ? ` · ${t("missionSetAt")} ${fmtDateTime(mission.setAt)}` : ""}
+          </p>
+          <div className="mission-active-actions">
+            <button
+              type="button"
+              onClick={() => void clearMission()}
+              disabled={clearBusy}
+              aria-label={clearArmed ? t("missionClearConfirm") : t("missionClear")}
+            >
+              {clearBusy ? "…" : clearArmed ? t("missionClearConfirm") : t("missionClear")}
+            </button>
+          </div>
+        </>
+      ) : (
+        /* P3-446: behind the gate the chat is the pane that needs
+            pairing — the empty card points at the after-pairing world
+            instead of the unreachable "define it in the chat". */
+        <p className="mission-active-note">
+          {mission === null ? t(prePairing ? "missionActiveNonePrePairing" : "missionActiveNone") : "…"}
+        </p>
+      )}
+      {clearStatus && <p className="mission-active-status">{clearStatus}</p>}
+    </div>
+  );
+
   return (
     <div className="screen mission">
       <header>
@@ -455,61 +510,28 @@ export default function MissionControlView({
           style={{ flex: 1, width: "100%", border: "0", background: "var(--bg)" }}
         />
       )}
-      {view === "forensic" && (
+      {view === "forensic" && (cards !== null && cards.length === 0 ? (
+        // P3-444: with zero sessions the forensic grid kept its two columns —
+        // the cards' border-right painted a full-height divider beside a dead
+        // half-pane (explorer journey shot). Until the first session card
+        // exists the pane collapses to one centered empty world, the same
+        // composed browser/artifacts pattern; the mission card rides below so
+        // its state and clear action never orphan.
+        <div className="mission-empty">
+          <div className="mission-empty-stack">
+            <span className="mission-empty-icon" aria-hidden="true">
+              <IconRadar />
+            </span>
+            <p className="mission-empty-title">{t("missionEmpty")}</p>
+            <p className="mission-empty-hint">{t("missionEmptyHint")}</p>
+          </div>
+          {missionCard}
+        </div>
+      ) : (
       <div className="mission-grid">
         <div className="mission-cards" role="list">
-          <div className="mission-active" data-mission={mission ? "set" : "none"}>
-            <span className="mission-active-label">{mission ? t("missionActive") : t("missionLabel")}</span>
-            {mission ? (
-              <>
-                {mission.prompt && <p className="mission-active-text">{mission.prompt}</p>}
-                {mission.repoUrl && (
-                  <p className="mission-active-src">
-                    {t("missionSourceRepo")}: {mission.repoUrl}
-                  </p>
-                )}
-                {formatMissionModels(mission.models) && (
-                  <p className="mission-active-src" data-mission-models>
-                    {t("missionModels")}: {formatMissionModels(mission.models)}
-                  </p>
-                )}
-                {formatModelSubstitutions(modelSubs) && (
-                  <p className="mission-active-src mission-bad" data-mission-model-subst>
-                    {t("missionModelSubstituted")}: {formatModelSubstitutions(modelSubs)}
-                  </p>
-                )}
-                <p className="mission-active-src">
-                  {t("missionSource")}:{" "}
-                  {[mission.prompt ? t("missionSourcePrompt") : "", mission.repoUrl ? t("missionSourceRepo") : ""]
-                    .filter(Boolean)
-                    .join(" + ")}
-                  {fmtDateTime(mission.setAt) ? ` · ${t("missionSetAt")} ${fmtDateTime(mission.setAt)}` : ""}
-                </p>
-                <div className="mission-active-actions">
-                  <button
-                    type="button"
-                    onClick={() => void clearMission()}
-                    disabled={clearBusy}
-                    aria-label={clearArmed ? t("missionClearConfirm") : t("missionClear")}
-                  >
-                    {clearBusy ? "…" : clearArmed ? t("missionClearConfirm") : t("missionClear")}
-                  </button>
-                </div>
-              </>
-            ) : (
-              /* P3-446: behind the gate the chat is the pane that needs
-                  pairing — the empty card points at the after-pairing world
-                  instead of the unreachable "define it in the chat". */
-              <p className="mission-active-note">
-                {mission === null ? t(prePairing ? "missionActiveNonePrePairing" : "missionActiveNone") : "…"}
-              </p>
-            )}
-            {clearStatus && <p className="mission-active-status">{clearStatus}</p>}
-          </div>
+          {missionCard}
           {cards === null && <p className="muted" style={{ padding: 12 }}>{t("missionLoading")}</p>}
-          {cards !== null && cards.length === 0 && (
-            <p className="muted" style={{ padding: 12 }}>{t("missionEmpty")}</p>
-          )}
           {(cards ?? []).map((c) => (
             <button
               key={c.id}
@@ -606,7 +628,7 @@ export default function MissionControlView({
           )}
         </div>
       </div>
-      )}
+      ))}
     </div>
   );
 }
