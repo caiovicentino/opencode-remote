@@ -1690,10 +1690,11 @@ never as loose body-size text. That header can never shear against the viewport 
 short window — the degraded screen becomes a real scroll container with
 overflow-safe centering, so the stack top-anchors with a scrollbar instead of
 clipping the glyph and wordmark at the top edge. The pairing gate itself
-(P3-423) got the same treatment and then some: with intro, host section, paste
-form and the 5-row pane map on screen, the manual ceremony outgrows a 900px
-window and the wordmark used to shear half-clipped at the viewport top exactly
-on the screen that establishes the brand. The gate column now scrolls
+(P3-423) got the same treatment and then some: in the single-column phone flow
+(below the shell breakpoint, P3-441) the stacked intro, host section, paste
+form and 5-row pane map can outgrow a short window and the wordmark used to
+shear half-clipped at the viewport top exactly on the screen that establishes
+the brand. The gate column now scrolls
 internally with the same overflow-safe centering, and its brand header is
 sticky — an opaque page-color strip that keeps glyph and wordmark pinned at
 the top while the cards slide beneath, so the brand never leaves the screen
@@ -1848,15 +1849,24 @@ opens that help section straight from the first-boot card. The daemon's own
 reason/hint strings render as secondary text only; no tokens or secrets are
 ever part of the displayed copy.
 
-**Benchmark pairing journey (P2-106)**: the manual pairing screen is a narrow
-(~420px), vertically centered column with a one-sentence intro and two titled
+**Benchmark pairing journey (P2-106)**: below the shell breakpoint (P3-441)
+the manual pairing screen is a narrow (~420px), vertically centered column
+with a one-sentence intro and two titled
 sections — **On this computer** (host entry, P3-435: the caps label names the
 direction; the card below keeps the action name, "Pair a phone (remote
 device)") first and
 **Connect to another machine** (scan/paste, this device as client) second
 (P3-334): on the desktop, pairing a phone is the primary story, so the host
 entry leads and the client ceremony reads as the secondary option (the phone's
-own screen is unchanged — it never renders the host entry). The submit inside
+own screen is unchanged — it never renders the host entry). From the shell
+breakpoint (1024px) the same ceremony composes for the desktop (P3-441): the
+intro, the two sections and the error block stay in the action column while
+the 5-row pane map moves beside them as a support column — a ~960px
+two-column composition, vertically centered, so a 1440px window no longer
+renders the phone column with ~70% of it empty and the map's last row
+(Configurações) no longer clips at the fold. The brand header stays a direct
+child of the scroll container, outside the composition, so its sticky block
+(P3-423) keeps the full-height containing block. The submit inside
 the client ceremony wears the shared accent primary identity (P3-433): the
 demotion P3-415 gave it (a quiet recessed chip) was tuned for a gate whose
 first contact has since moved to the degraded card (P3-365) — every desktop

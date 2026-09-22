@@ -314,6 +314,18 @@ degradado: o PairingView alcançado por "Parear outro dispositivo manualmente"
 é o botão primário verde e "Escanear QR code" a opção secundária nesse caminho
 também (o celular segue scan-first); o beat `P3-366` do desktop-flow prova a
 hierarquia de classes pós-clique em `.degraded-manual`;
+P3-441 compôs o ceremony manual pro desktop: em 1440px ele renderizava a
+coluna de celular (~420px) com ~70% da janela vazia e a lista "Antes de
+parear" cortada na dobra (Configurações raspando o fim) — o PairingView agora
+separa o conteúdo em duas colunas (`.pair-main` com intro + seções + erro e
+`.pair-side` com o mapa de panes) dentro de `.pair-columns`, que o media
+query `min-width: 1024px` (mesma fronteira do `isDesktop` do shell) transforma
+em grid — abaixo dela os wrappers são blocos transparentes e o fluxo de
+coluna única do celular segue idêntico; o header de marca continua filho
+direto de `.pair-screen` (fora da composição) para o sticky da P3-423
+preservar o scroll container como containing block, e o beat do desktop-flow
+provou a composição (largura ≥700, coluna de suporte à direita, mapa inteiro
+acima da dobra em 1440x900 e a coluna de celular ≤420 de volta em 390);
 use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app

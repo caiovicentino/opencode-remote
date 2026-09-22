@@ -802,23 +802,54 @@ try {
   const shotSections390 = join(shotsDir, "P2-106-pairing-sections-390.png");
   const sec1 = run("P2-106: 1440x900 sections shot", ["shot", shotSections1440, "1440", "900"], 15_000);
   if (sec1.ok) check("P2-106: sections 1440x900 shot is a real PNG", pngSize(shotSections1440).join("x") === "1440x900");
-  // Geometry is read at 1440x900 (the shot command just set it): the column is
-  // capped at ~420px wide and vertically centered in the window.
+  // Geometry is read at 1440x900 (the shot command just set it): P3-441 the
+  // ceremony composes as a desktop two-column layout — the action column plus
+  // the pane-map support column fill the width instead of the old ~420px
+  // phone column (~70% of the window empty), the whole stack stays vertically
+  // centered, and the map's last row must not clip at the fold.
   const centerCol = run(
-    "P2-106: narrow centered column (~420px)",
-    ["ipc", "(() => { const el = document.querySelector('.pair-screen'); if (!el) return ''; const r = el.getBoundingClientRect(); return String(Math.round(r.width)) + 'x' + String(Math.round((r.top + r.bottom) / 2)); })()"],
+    "P3-441: desktop-composed ceremony (action column + map support)",
+    ["ipc", "(() => { const el = document.querySelector('.pair-screen'); if (!el) return ''; const r = el.getBoundingClientRect(); const map = document.querySelector('.pane-map')?.getBoundingClientRect(); return String(Math.round(r.width)) + 'x' + String(Math.round((r.top + r.bottom) / 2)) + '|' + (map ? String(Math.round(map.bottom)) : 'none'); })()"],
     15_000,
   );
   if (centerCol.ok) {
-    const m = centerCol.stdout.replace(/"/g, "").match(/(\d+)x(\d+)/);
+    const m = centerCol.stdout.replace(/"/g, "").match(/(\d+)x(\d+)\|(\d+)/);
     check(
-      "P2-106: pair column reads ~420px wide, vertically centered",
-      !!m && Number(m[1]) >= 380 && Number(m[1]) <= 420 && Number(m[2]) >= 375 && Number(m[2]) <= 525,
+      "P3-441: two-column composition fills the width, stays centered, map above the fold",
+      !!m && Number(m[1]) >= 700 && Number(m[2]) >= 375 && Number(m[2]) <= 525 && Number(m[3]) <= 900,
       centerCol.stdout,
+    );
+  }
+  const sideCol = run(
+    "P3-441: the map rides its own column beside the ceremony",
+    ["ipc", "(() => { const el = document.querySelector('.pair-main'); const side = document.querySelector('.pair-side'); if (!el || !side) return ''; const er = el.getBoundingClientRect(); const sr = side.getBoundingClientRect(); return String(Math.round(er.right)) + '|' + String(Math.round(sr.left)); })()"],
+    15_000,
+  );
+  if (sideCol.ok) {
+    const m = sideCol.stdout.replace(/"/g, "").match(/(\d+)\|(\d+)/);
+    check(
+      "P3-441: support column sits to the right of the action column",
+      !!m && Number(m[1]) < Number(m[2]),
+      sideCol.stdout,
     );
   }
   const sec2 = run("P2-106: 390 sections shot", ["shot", shotSections390, "390", "844"], 15_000);
   if (sec2.ok) check("P2-106: sections 390 shot is a real PNG", pngSize(shotSections390)[0] === 390);
+  // P3-441: below the shell breakpoint the composition folds back to the
+  // phone column — the mobile flow keeps its own pinned geometry.
+  const narrowCol = run(
+    "P3-441: phone column below the shell breakpoint",
+    ["ipc", "(() => { const el = document.querySelector('.pair-screen'); if (!el) return ''; const r = el.getBoundingClientRect(); return String(Math.round(r.width)) + 'x' + String(Math.round((r.top + r.bottom) / 2)); })()"],
+    15_000,
+  );
+  if (narrowCol.ok) {
+    const m = narrowCol.stdout.replace(/"/g, "").match(/(\d+)x(\d+)/);
+    check(
+      "P3-441: the ceremony folds back to the ~420px phone column at 390",
+      !!m && Number(m[1]) >= 340 && Number(m[1]) <= 420 && Number(m[2]) >= 375 && Number(m[2]) <= 525,
+      narrowCol.stdout,
+    );
+  }
 
   // (2) scanner route: open it, prove the screen swapped, come back. The
   // hermetic shell has no camera — the scanner's own error fallback is a
