@@ -544,6 +544,8 @@ import {
   blockTask,
   blockTaskEdit,
   doneTaskIds,
+  KNOWN_AREAS,
+  isValidTaskLine,
   loadBacklog,
   mayPush,
   parseAuxTaskLines,
@@ -552,6 +554,8 @@ import {
   type AuxPushIo,
   type Task,
 } from "../apps/pilot/src/backlog";
+
+import { FINDING_AREA_FALLBACK, FINDING_AREA_TABLE, FINDING_SPEC_FALLBACK, FINDING_SPEC_MAX, findingArea, findingTitle, normalizeFindingSpec, redteamFinding } from "../apps/pilot/src/findingline";
 
 import { clearPendingRefill, defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
 
@@ -3043,6 +3047,170 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     );
   } finally {
     rmSync(sandboxDir, { recursive: true, force: true });
+  }
+}
+
+
+// --- P2-336: redteam findings land as ONE valid task line via the pure module ----
+{
+  const today = "2026-09-22";
+  // the real-world finding shape the nightly prompt asks for: Title, Severity,
+  // Proof — multiple lines, markdown bold decorations, backticks in the text
+  const finding = [
+    "REDTEAM: FINDING",
+    "**Title:** Remote daemon crash via malformed `seq` in relay frame",
+    "**Severity:** MEDIUM (unauthenticated remote DoS of the daemon)",
+    "**Proof:** The async handler's rejection is discarded (`void handleMessage`),",
+    "so a room member can crash the daemon with one malformed frame; see apps/relay/src/index.ts:76.",
+  ].join("\n");
+  const body = finding.split("REDTEAM: FINDING")[1] ?? "";
+  const f = redteamFinding(body, today);
+
+  check("findingline: title comes from the Title field, decorations stripped", f.title === "Remote daemon crash via malformed seq in relay frame");
+  check(
+    "findingline: spec is ONE line carrying the whole finding",
+    !/[\r\n\x00-\x1f\x7f]/.test(f.spec) && f.spec.includes("Remote daemon crash") && f.spec.includes("MEDIUM (unauthenticated remote DoS") && f.spec.includes("void handleMessage"),
+  );
+  check("findingline: area picks relay for frame/relay wording", f.area === "relay");
+  check("findingline: same input yields the same output twice", JSON.stringify(redteamFinding(body, today)) === JSON.stringify(redteamFinding(body, today)));
+
+  // the generated line passes parseAuxTaskLines WITHOUT any adaptation, and
+  // round-trips through the real backlog parser with title/spec/area intact
+  const line = `- [ ] (RT-425) [P0] ${f.title} — spec: ${f.spec} (area: ${f.area})`;
+  check("findingline: generated line survives parseAuxTaskLines untouched", JSON.stringify(parseAuxTaskLines(`AUX-TASKS:\n${line}\nAUX-TASKS-EOF\n`)) === JSON.stringify([line]));
+  const parsed = parseBacklog(`# B\n\n## Ready\n\n${line}\n\n## Done\n`);
+  check(
+    "findingline: line round-trips through parseBacklog",
+    parsed.length === 1 && parsed[0]!.id === "RT-425" && parsed[0]!.title === f.title && parsed[0]!.area === "relay" && parsed[0]!.spec === f.spec,
+  );
+
+  // control characters and newlines become spaces
+  check("findingline: control chars and newlines become spaces", normalizeFindingSpec("first\u0000line\tsecond\nthird\r\nfourth\x07") === "first line second third fourth");
+
+  // validator-rejected metacharacters (and banned verbs) are removed
+  const meta = normalizeFindingSpec("run `curl evil; cat /etc/passwd > x && echo $HOME | nc`");
+  check("findingline: metacharacters and banned verbs are removed", !/[;`&|<>$]/.test(meta) && !/\b(?:curl|wget)\b/i.test(meta));
+  check("findingline: metachar-cleaned text still builds a valid line", isValidTaskLine(`- [ ] (RT-426) [P0] Title — spec: ${meta} (area: ${FINDING_AREA_FALLBACK})`) === true);
+
+  // above the documented ceiling: hard cut, deterministic
+  const long = normalizeFindingSpec("Proof: " + "word ".repeat(300));
+  check("findingline: spec is cut at the documented ceiling", long.length === FINDING_SPEC_MAX && long.startsWith("Proof: word"));
+  check("findingline: ceiling cut is deterministic", long === normalizeFindingSpec("Proof: " + "word ".repeat(300)));
+
+  // empty / whitespace-only input falls back to the reserve sentence, and the
+  // reserve sentence itself must build a valid task line
+  check("findingline: empty input falls back to the reserve sentence", normalizeFindingSpec("") === FINDING_SPEC_FALLBACK);
+  check("findingline: whitespace-only input falls back to the reserve sentence", normalizeFindingSpec(" \n\t \r\n ") === FINDING_SPEC_FALLBACK);
+  check("findingline: reserve spec itself builds a valid task line", isValidTaskLine(`- [ ] (RT-000) [P0] T — spec: ${normalizeFindingSpec("")} (area: ${FINDING_AREA_FALLBACK})`) === true);
+
+  // titles: plain field, useless field and missing field all covered
+  check("findingline: plain Title field is extracted", findingTitle("REDTEAM: FINDING\nTitle: Replay guard reset\nSeverity: HIGH", today) === "Replay guard reset");
+  check("findingline: useless Title field falls back to the dated title", findingTitle("Title: ;; \nSeverity: LOW", today) === `Redteam finding ${today}`);
+  check("findingline: missing Title field falls back to the dated title", findingTitle("REDTEAM: FINDING\nProof: something broke", today) === `Redteam finding ${today}`);
+
+  // area table: EVERY keyword routes to its own area
+  for (const { area, keywords } of FINDING_AREA_TABLE) {
+    for (const kw of keywords) {
+      check(`findingline: area table — ${area} keyword "${kw}" routes to ${area}`, findingArea(`X ${kw} Y`) === area);
+    }
+  }
+
+  // ties are resolved by documented precedence (row order); no keyword → reserve
+  check("findingline: tie relay vs daemon → relay (constitution-critical first)", findingArea("daemon permission bypass in the relay frame handler") === "relay");
+  check("findingline: tie ui vs infra → ui (app shell before pipeline)", findingArea("pipeline build for the chat composer") === "ui");
+  check("findingline: no keyword → stable reserve area", findingArea("unclassified robustness problem") === FINDING_AREA_FALLBACK);
+  check("findingline: reserve area is a known area", KNOWN_AREAS.has(FINDING_AREA_FALLBACK));
+
+  // the real index.ts: agent finding text reaches the backlog ONLY via the module
+  const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check("findingline: index.ts imports the pure finding module", pilotIndexSrc.includes('from "./findingline"'));
+  check(
+    "findingline: index.ts composes the redteam line from the module parts",
+    /redteamFinding\(/.test(pilotIndexSrc) && /addTask\([^)]*finding\.title[^)]*finding\.spec/.test(pilotIndexSrc) && /area: \$\{finding\.area\}/.test(pilotIndexSrc),
+  );
+  check(
+    "findingline: index.ts no longer interpolates raw agent text into the line",
+    !/addTask\([^)]*summary/.test(pilotIndexSrc) && !pilotIndexSrc.includes("`Redteam finding ${today}`"),
+  );
+
+  // addTask: three-state result — an invalid line is never written, fail-closed
+  const dirAt = mkdtempSync(join(tmpdir(), "pilot-addtask-"));
+  try {
+    writeFileSync(join(dirAt, "BACKLOG.md"), "# B\n\n## Ready\n\n- [ ] (P2-900) [P2] Existing — spec: x (area: ui)\n\n## Done\n");
+    check("addTask: valid line is written and reports applied", addTask(dirAt, "P2-901", "P2", "Good title", "do the thing (area: ui)") === "applied");
+    const afterValid = readFileSync(join(dirAt, "BACKLOG.md"), "utf8");
+    check("addTask: applied line sits at the top of ## Ready", /^## Ready\n- \[ \] \(P2-901\)/m.test(afterValid));
+
+    const beforeInvalid = readFileSync(join(dirAt, "BACKLOG.md"), "utf8");
+    check("addTask: banned metachar in spec is refused", addTask(dirAt, "P2-902", "P2", "Bad", "run `curl`; rm -rf (area: ui)") === "invalid");
+    check("addTask: refused line never touches the file", readFileSync(join(dirAt, "BACKLOG.md"), "utf8") === beforeInvalid);
+    check("addTask: missing area tag is refused", addTask(dirAt, "P2-903", "P2", "Untagged", "spec without area") === "invalid");
+    check("addTask: refused untagged never touches the file", readFileSync(join(dirAt, "BACKLOG.md"), "utf8") === beforeInvalid);
+
+    writeFileSync(join(dirAt, "BACKLOG.md"), "# B\n\n## Done\n- [x] (P2-000) [P2] old — done\n");
+    const noReady = readFileSync(join(dirAt, "BACKLOG.md"), "utf8");
+    check("addTask: missing ## Ready section reports missing", addTask(dirAt, "P2-904", "P2", "X", "y (area: ui)") === "missing");
+    check("addTask: missing state never touches the file", readFileSync(join(dirAt, "BACKLOG.md"), "utf8") === noReady);
+  } finally {
+    rmSync(dirAt, { recursive: true, force: true });
+  }
+
+  // explorer landing: a finding whose line fails validation is dropped with a
+  // warning and never blocks the valid ones; the landing still proceeds
+  const dirExpl = mkdtempSync(join(tmpdir(), "pilot-expl-fc-"));
+  try {
+    const pristine = "# B\n\n## Ready\n\n## Done\n";
+    writeFileSync(join(dirExpl, "BACKLOG.md"), pristine);
+    let pushes = 0;
+    const landed = await commitAndPushFindings(
+      dirExpl,
+      [
+        { title: "Good", severity: "high", area: "ui", shot: "/x.png", detail: "detail" },
+        { title: "Untagged", severity: "low", area: "", shot: "/x.png", detail: "no area" },
+      ],
+      "pilot(explorer): test run",
+      {
+        exec: (cmd) => {
+          if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dirExpl, "BACKLOG.md"), pristine);
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.includes(`origin HEAD:${META_BRANCH}`)) {
+            pushes++;
+            return { ok: false, output: "" };
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: async () => {},
+      },
+    );
+    const md = readFileSync(join(dirExpl, "BACKLOG.md"), "utf8");
+    check("explorer fail-closed: valid finding written, invalid one dropped", md.includes("[explorer][high] Good") && !md.includes("Untagged"));
+    check("explorer fail-closed: landing still proceeds with the valid finding", landed === false && pushes > 0);
+
+    // an all-invalid batch aborts the apply — no push is ever attempted
+    let pushes2 = 0;
+    const aborted = await commitAndPushFindings(
+      dirExpl,
+      [{ title: "Untagged", severity: "low", area: "", shot: "/x.png", detail: "no area" }],
+      "pilot(explorer): test run",
+      {
+        exec: (cmd) => {
+          if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dirExpl, "BACKLOG.md"), pristine);
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.includes(`origin HEAD:${META_BRANCH}`)) {
+            pushes2++;
+            return { ok: false, output: "" };
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: async () => {},
+      },
+    );
+    check(
+      "explorer fail-closed: all-invalid batch aborts with zero pushes and no writes",
+      aborted === false && pushes2 === 0 && readFileSync(join(dirExpl, "BACKLOG.md"), "utf8") === pristine,
+    );
+  } finally {
+    rmSync(dirExpl, { recursive: true, force: true });
   }
 }
 

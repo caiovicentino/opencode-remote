@@ -1655,6 +1655,25 @@ duplicado) e tenta relanding com o mesmo `appendCommitAndPush` (mesmo guard `may
 `pushed`/`empty`/`refused` limpam o arquivo; `failed` o mantém e re-tenta no ciclo
 seguinte — a fila nunca mais seca porque um push lento comeu o refill.
 
+**Achado do red team vira UMA linha válida (P2-336)**: o texto cru do agente nunca mais
+interpola direto na linha do backlog (o formato antigo derramava as linhas 2..N do
+achado em `## Ready` como parágrafo solto e podia reduzir o spec a `**`). O caminho do
+red team monta título, spec e área pelo módulo puro `apps/pilot/src/findingline.ts`:
+`normalizeFindingSpec` acha o achado inteiro em UMA linha (quebra de linha e caractere
+de controle viram espaço, metacaracteres/verbos que o validador recusa são removidos,
+corte no teto documentado `FINDING_SPEC_MAX`, frase de reserva estável quando nada útil
+sobra), `findingTitle` extrai um título curto do campo `Title:` (fallback: título
+datado de hoje) e `findingArea` escolhe exatamente UMA área conhecida por tabela de
+palavras-chave — precedência é a ordem das linhas da tabela (superfícies críticas da
+constituição primeiro: relay → daemon → desktop → ui → infra) e a reserva estável é
+`desktop`. E `addTask` passou a validar a linha que ela mesma produz pelo MESMO
+validador de `parseAuxTaskLines` (`isValidTaskLine`, extraído e compartilhado — nunca
+duplicado) e devolve três estados: `applied` escreve, `invalid`/`missing` não tocam no
+arquivo e o chamador registra aviso — fail-closed para todo chamador (red team,
+explorer, fable); landing com zero linhas aplicadas aborta. Os blocos de texto livre
+antigos que já estavam em `## Ready` não são limpos por nenhuma task — ficam para o
+operador.
+
 ## Dashboard sem token no HTML (P1-057)
 
 `GET /dashboard` nunca mais embute o apiToken no HTML (`__APITOKEN__` vira `""`). O
