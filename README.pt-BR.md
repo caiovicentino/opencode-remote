@@ -379,7 +379,9 @@ remoto, zero confiança**.
   primeira vez…" — nunca um alerta vermelho de "daemon caiu" pra um daemon nunca
   visto) explica que conversas, arquivos e artifacts sincronizam quando o daemon
    responder, mostra o retry automático visível, mantém os dados locais (idioma, tema)
-   funcionando — os dois selects ficam no próprio cartão e aplicam na hora (P3-368: o
+   funcionando (P3-436: o card de status diz só o que acontece a seguir — a promessa
+   "nada se perde" é dita uma vez, no card da fila da primeira mensagem logo abaixo,
+   onde o usuário digita de fato) — os dois selects ficam no próprio cartão e aplicam na hora (P3-368: o
    controle de tema compartilha a mesma escolha armazenada e o mesmo caminho de aplicação
    do cartão Aparência das configurações, então a copy e o cartão nunca se contradizem;
    P3-445: os selects vestem a mesma pele dos controles do cartão — fundo de superfície,
