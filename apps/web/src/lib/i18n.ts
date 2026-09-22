@@ -479,7 +479,9 @@ export const dict = {
       "OpenCode Remote pairs with the daemon on this machine automatically — to connect from another device, scan the daemon's QR or paste a pairing code.",
     // P2-106: the two pairing directions get titled sections (client / host).
     pairConnectTitle: "Connect to another machine",
-    pairHostTitle: "Pair a phone with this machine",
+    // P3-435: the caps label names the direction; the card below carries the
+    // action ("Pair a phone…"), so the pair of words is never stacked twice.
+    pairHostTitle: "On this computer",
     scanQr: "Scan QR code",
     orPaste: "— or paste manually —",
     // QR scanner state machine (P2-117): looking → preview → unavailable
@@ -1349,7 +1351,9 @@ export const dict = {
       "O OpenCode Remote se conecta sozinho ao daemon desta máquina — para conectar outro dispositivo, escaneie o QR do daemon ou cole um código de pareamento.",
     // P2-106: as duas direções do pareamento viram seções tituladas (cliente/host).
     pairConnectTitle: "Conectar a outra máquina",
-    pairHostTitle: "Parear um celular com esta máquina",
+    // P3-435: o rótulo em caps nomeia a direção; o card abaixo carrega a ação
+    // ("Parear um celular…"), então o par de palavras nunca se empilha duas vezes.
+    pairHostTitle: "Neste computador",
     scanQr: "Escanear QR code",
     orPaste: "— ou cole manualmente —",
     // QR scanner state machine (P2-117): looking → preview → unavailable

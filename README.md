@@ -1833,7 +1833,9 @@ ever part of the displayed copy.
 
 **Benchmark pairing journey (P2-106)**: the manual pairing screen is a narrow
 (~420px), vertically centered column with a one-sentence intro and two titled
-sections — **Pair a phone with this machine** (host entry) first and
+sections — **On this computer** (host entry, P3-435: the caps label names the
+direction; the card below keeps the action name, "Pair a phone (remote
+device)") first and
 **Connect to another machine** (scan/paste, this device as client) second
 (P3-334): on the desktop, pairing a phone is the primary story, so the host
 entry leads and the client ceremony reads as the secondary option (the phone's

@@ -773,13 +773,15 @@ try {
   // QR overlay with the demoted "pair later" link (local-boot beat below).
   // P3-334: the host section leads — pairing a phone is the primary story on
   // the desktop — and the client ceremony follows as the secondary option.
+  // P3-435: the caps label names the direction ("On this computer"), the card
+  // below carries the action — no repeated "pair a phone" 40px apart.
   const sectionTitles = run("P3-334: section order host → client", ["ipc", "[...document.querySelectorAll('.pair-section-title')].map((el) => el.textContent).join('|')"], 15_000);
   if (sectionTitles.ok) {
     const titles = sectionTitles.stdout.replace(/"/g, "").trim();
     check(
       "P3-334: host section first, client ceremony second (en|pt)",
-      titles === "Pair a phone with this machine|Connect to another machine" ||
-        titles === "Parear um celular com esta máquina|Conectar a outra máquina",
+      titles === "On this computer|Connect to another machine" ||
+        titles === "Neste computador|Conectar a outra máquina",
       sectionTitles.stdout,
     );
   }
