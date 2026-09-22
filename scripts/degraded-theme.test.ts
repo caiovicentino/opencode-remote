@@ -66,6 +66,46 @@ check(
 check("single source of truth: lib/theme owns the key", src("apps/web/src/lib/theme.ts").includes(`export const THEME_KEY = "ocr_theme"`));
 check("lib/theme keeps the key aligned with Settings' storage", THEME_KEY === "ocr_theme");
 
+// --- P3-445: the selects wear the card's control skin, never OS chrome ---------
+// Source pin (P3-421 lesson: a DOM test can't see the token ladder, so pin
+// which var() token each state class uses) — a silent revert of appearance:none
+// would resurrect the native macOS select chrome inside the otherwise flat
+// card (the "detalhe que denuncia cuidado" failure the fable review flagged).
+const prefs = src("apps/web/src/index.css");
+const selectRule = prefs.match(/\.degraded-local-prefs select\s*\{[^}]*\}/);
+const selectHover = prefs.match(/\.degraded-local-prefs select:hover\s*\{[^}]*\}/);
+check("index.css styles .degraded-local-prefs select", selectRule !== null);
+check("select drops the OS chrome (appearance: none)", !!selectRule && /appearance:\s*none/.test(selectRule[0]));
+check(
+  "select paints the card's surface like the queue-save button (var(--surface))",
+  !!selectRule && /background:\s*var\(--surface\)/.test(selectRule[0]),
+);
+check(
+  "select carries the composer/save firm resting border (var(--border-strong))",
+  !!selectRule && /border-color:\s*var\(--border-strong\)/.test(selectRule[0]),
+);
+check(
+  "select escalates to the focus border on hover like the save button (var(--fg))",
+  !!selectHover && /border-color:\s*var\(--fg\)/.test(selectHover[0]),
+);
+check(
+  "select keeps the card's small type step",
+  !!selectRule && /font-size:\s*var\(--font-size-sm\)/.test(selectRule[0]),
+);
+check(
+  "the wrapper owns the flex sizing (the select fills it at 100%)",
+  /(\.degraded-select\s*\{[^}]*flex:\s*1 1 auto)/.test(prefs) && !!selectRule && /width:\s*100%/.test(selectRule[0]),
+);
+const chevronRule = prefs.match(/\.degraded-select svg\s*\{[^}]*\}/);
+check(
+  "the drawn chevron is positioned by CSS with the muted token (no OS art)",
+  !!chevronRule && /position:\s*absolute/.test(chevronRule[0]) && /pointer-events:\s*none/.test(chevronRule[0]) && /color:\s*var\(--muted\)/.test(chevronRule[0]),
+);
+check(
+  "DegradedView renders the shared chevron icon on each wrapper (::after never renders on a replaced element)",
+  (view.match(/<IconChevronDown size=\{12\} \/>/g) ?? []).length === 2,
+);
+
 if (failures) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);

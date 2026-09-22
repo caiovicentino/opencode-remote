@@ -15,6 +15,10 @@ import { clampComposerHeight } from "../lib/composer";
 import ReconnectButton from "./ReconnectButton";
 import UpstreamMissingActions from "./UpstreamMissingActions";
 import PaneMap from "./PaneMap";
+// P3-445: the prefs selects lose the OS chrome (appearance:none) and gain the
+// card's control skin; the chevron is drawn by the shared icon set, sitting on
+// a wrapper because a <select> is a replaced element (::after never renders).
+import { IconChevronDown } from "./icons";
 
 interface Props {
   kind: DegradedKind;
@@ -325,34 +329,45 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
         <h3>{t("degradedLocalTitle")}</h3>
         <p className="muted">{t("degradedLocalHint")}</p>
         <div className="degraded-local-prefs">
-          <select
-            aria-label={t("language")}
-            value={lang}
-            onChange={(e) => {
-              const next = e.target.value as Lang;
-              setLang(next);
-              setLangState(next);
-            }}
-          >
-            <option value="en">English</option>
-            <option value="pt">Português</option>
-          </select>
-          <select
-            aria-label={t("themeLabel")}
-            value={theme}
-            onChange={(e) => {
-              const next = e.target.value as ThemeChoice;
-              setThemeState(next);
-              try {
-                localStorage.setItem(THEME_KEY, next);
-              } catch {}
-              applyTheme();
-            }}
-          >
-            <option value="system">{t("themeSystem")}</option>
-            <option value="dark">{t("themeDark")}</option>
-            <option value="light">{t("themeLight")}</option>
-          </select>
+          {/* P3-445: the selects wear the same control skin as the card's
+              buttons (surface fill, firm resting border, shared radius via
+              the global select rule) — appearance:none drops the native
+              macOS chrome that leaked system styling into the flat card.
+              The wrapper owns the drawn chevron and the flex sizing. */}
+          <span className="degraded-select">
+            <select
+              aria-label={t("language")}
+              value={lang}
+              onChange={(e) => {
+                const next = e.target.value as Lang;
+                setLang(next);
+                setLangState(next);
+              }}
+            >
+              <option value="en">English</option>
+              <option value="pt">Português</option>
+            </select>
+            <IconChevronDown size={12} />
+          </span>
+          <span className="degraded-select">
+            <select
+              aria-label={t("themeLabel")}
+              value={theme}
+              onChange={(e) => {
+                const next = e.target.value as ThemeChoice;
+                setThemeState(next);
+                try {
+                  localStorage.setItem(THEME_KEY, next);
+                } catch {}
+                applyTheme();
+              }}
+            >
+              <option value="system">{t("themeSystem")}</option>
+              <option value="dark">{t("themeDark")}</option>
+              <option value="light">{t("themeLight")}</option>
+            </select>
+            <IconChevronDown size={12} />
+          </span>
         </div>
       </div>
       {/* P3-364: the offline card above is what works NOW; this is what
