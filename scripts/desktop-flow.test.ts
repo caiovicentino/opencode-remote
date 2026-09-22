@@ -31,6 +31,7 @@ import {
 } from "../apps/daemon/src/sessionctx";
 import { CLOSE_HINT_LOG } from "../apps/desktop/src/closehint";
 import { shellLabels } from "../apps/desktop/src/shelllang";
+import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -968,7 +969,9 @@ try {
       "http.createServer((req, res) => {",
       "  if (req.url === '/healthz') {",
       "    res.writeHead(200, { 'content-type': 'application/json' });",
-      "    res.end(JSON.stringify({ ok: true, version: '9.9.9-p2-328', uptimeS: 1, rooms: 0, roomsRejected: 0 }));",
+      // P2-332: the current wire protocol rides the body (a real relay), so
+      // the healthy answer stays state ok under the new classification.
+      "    res.end(JSON.stringify({ ok: true, version: '9.9.9-p2-328', protocol: " + RELAY_WIRE_PROTOCOL + ", uptimeS: 1, rooms: 0, roomsRejected: 0 }));",
       "    return;",
       "  }",
       "  res.writeHead(404); res.end();",
@@ -1023,6 +1026,62 @@ try {
         }
       } else {
         check("P2-328: closed port for the refused probe", false, `${closedPortProbe.stdout}\n${closedPortProbe.stderr}`);
+      }
+
+      // P2-332: a hosted relay speaking an INCOMPATIBLE wire protocol answers
+      // the same healthy-looking /healthz JSON but with a different protocol
+      // number — the live probe must say protocol-mismatch (BEFORE anything
+      // is saved), not the old blind ok.
+      const mismatchPortProbe = spawnSync(
+        process.execPath,
+        ["-e", "const s=require('node:http').createServer();s.listen(0,'127.0.0.1',()=>{console.log('PORT='+s.address().port);s.close()})"],
+        { encoding: "utf8" },
+      );
+      const relayMismatchPort = Number((mismatchPortProbe.stdout.match(/PORT=(\d+)/) ?? [])[1]);
+      if (Number.isInteger(relayMismatchPort)) {
+        const mismatchChild = [
+          "const http = require('node:http');",
+          "http.createServer((req, res) => {",
+          "  if (req.url === '/healthz') {",
+          "    res.writeHead(200, { 'content-type': 'application/json' });",
+          `    res.end(JSON.stringify({ ok: true, version: '9.9.9-p2-332', protocol: ${RELAY_WIRE_PROTOCOL + 1}, uptimeS: 1, rooms: 0, roomsRejected: 0 }));`,
+          "    return;",
+          "  }",
+          "  res.writeHead(404); res.end();",
+          `}).listen(${relayMismatchPort}, '127.0.0.1');`,
+        ].join("\n");
+        const mismatchServer = spawn(process.execPath, ["-e", mismatchChild], { stdio: "ignore", detached: true });
+        mismatchServer.unref();
+        try {
+          let mismatchReady = false;
+          for (let i = 0; i < 50 && !mismatchReady; i++) {
+            await new Promise((r) => setTimeout(r, 200));
+            mismatchReady = await fetch(`http://127.0.0.1:${relayMismatchPort}/healthz`)
+              .then((r) => r.ok)
+              .catch(() => false);
+          }
+          const relayMismatch = run(
+            "P2-332: live testRelay round-trip — an incompatible wire protocol is protocol-mismatch",
+            [
+              "ipc",
+              `(async () => { const r = await window.ocrDesktop.testRelay('ws://127.0.0.1:${relayMismatchPort}'); return JSON.stringify({ state: r.state }); })()`,
+            ],
+            20_000,
+          );
+          if (relayMismatch.ok) {
+            const flat = relayMismatch.stdout.replace(/\\/g, "");
+            check(
+              "P2-332: the live probe of the incompatible relay is state protocol-mismatch",
+              /"state":"protocol-mismatch"/.test(flat),
+              relayMismatch.stdout,
+            );
+          }
+          check("P2-332: the ephemeral mismatch relay child answers its own /healthz", mismatchReady, mismatchPortProbe.stdout);
+        } finally {
+          mismatchServer.kill();
+        }
+      } else {
+        check("P2-332: free port for the mismatch relay probe", false, `${mismatchPortProbe.stdout}\n${mismatchPortProbe.stderr}`);
       }
     } finally {
       relayServer.kill();

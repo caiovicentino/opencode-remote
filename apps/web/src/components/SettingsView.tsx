@@ -26,7 +26,9 @@ export interface RelaySettingWriteResult extends RelaySetting {
 /** P2-328: verdict of the relay card's "Test connection" probe (mirrors
  * apps/desktop/src/preload.ts / apps/desktop/src/relayprobe.ts). state is one
  * of the documented relayprobe table values; message/messageEn are the static
- * phrases the module ships — the view picks by language and renders verbatim. */
+ * phrases the module ships — the view picks by language and renders verbatim,
+ * except the two protocol states (P2-332), which speak through their own
+ * i18n keys below so the copy is reviewed in the dict like every other line. */
 export interface RelayProbeResult {
   state: string;
   message: string;
@@ -443,6 +445,16 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
     }
   }
 
+  /** P2-332: the phrase the terminal result line renders. The two protocol
+   * verdicts speak from their own i18n keys (both languages carry the key);
+   * every other state renders the module's static phrase, language-picked.
+   * Pure rendering — Save is never gated by any of it. */
+  function relayTestPhrase(v: RelayProbeResult): string {
+    if (v.state === "protocol-mismatch") return t("relayTestProtocolMismatch");
+    if (v.state === "protocol-outdated") return t("relayTestProtocolOutdated");
+    return lang === "en" ? v.messageEn : v.message;
+  }
+
   /** P2-187: "use the local relay" — clears the stored setting (the env still
    * wins when exported; the resolution returned by main says which origin). */
   async function resetRelay() {
@@ -748,12 +760,14 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 style={{
                   margin: "6px 0 0",
                   color:
-                    relayTestResult.verdict.state === "ok" || relayTestResult.verdict.state === "draining"
+                    relayTestResult.verdict.state === "ok" ||
+                    relayTestResult.verdict.state === "draining" ||
+                    relayTestResult.verdict.state === "protocol-outdated"
                       ? undefined
                       : "var(--danger)",
                 }}
               >
-                {lang === "en" ? relayTestResult.verdict.messageEn : relayTestResult.verdict.message}
+                {relayTestPhrase(relayTestResult.verdict)}
               </p>
             )}
             {relay.problems.length > 0 && (

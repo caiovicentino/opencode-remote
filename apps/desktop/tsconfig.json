@@ -8,7 +8,15 @@
     "noEmit": false,
     "outDir": "dist-electron",
     "sourceMap": true,
-    "types": ["node"]
+    "types": ["node"],
+    // P2-332: relayprobe imports the wire-protocol constant from
+    // @ocr/protocol/relaywire.js; moduleResolution "node" cannot read the
+    // package exports map, so the type is mapped here (the emitted require
+    // still resolves through node_modules at runtime, and electron-builder
+    // ships the declared dependency).
+    "paths": {
+      "@ocr/protocol/relaywire.js": ["../../packages/protocol/src/relaywire.d.ts"]
+    }
   },
   "include": ["src"]
 }

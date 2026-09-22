@@ -12,6 +12,7 @@
 // Messages are static pt-BR and English with no URL, no host, no IP, no port
 // and no raw error (the P2-140 bar): a short phrase the operator can act on.
 
+import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol/relaywire.js";
 import { relayUrlProblems } from "./relaysetting";
 
 /** Documented probe ceiling — mirrors the AbortSignal timeout in main.ts (5s). */
@@ -23,6 +24,8 @@ export const RELAY_PROBE_BODY_MAX = 4_096;
 
 export type RelayProbeState =
   | "ok"
+  | "protocol-mismatch"
+  | "protocol-outdated"
   | "draining"
   | "not-a-relay"
   | "dns"
@@ -70,6 +73,14 @@ const VERDICTS: Record<RelayProbeState, { message: string; messageEn: string }> 
   ok: {
     message: "o relay respondeu e está saudável",
     messageEn: "the relay answered and is healthy",
+  },
+  "protocol-mismatch": {
+    message: "o relay fala outro formato de fio — atualize o app ou o relay hospedado",
+    messageEn: "the relay speaks another wire format — update the app or the hosted relay",
+  },
+  "protocol-outdated": {
+    message: "o relay é antigo — convém atualizá-lo",
+    messageEn: "the relay is old — consider updating it",
   },
   draining: {
     message: "o relay respondeu, mas está encerrando — teste de novo em instantes",
@@ -162,7 +173,12 @@ export function relayHealthUrl(raw: unknown): string | null {
  * secret-free. An address with relayUrlProblems is "invalid" and never dials
  * (the caller honors the same rule); a network failure classifies by its short
  * error name; with a status, only a 200 carrying the relay's own healthz JSON
- * (ok true + version string) is "ok", a 503 with ok false is "draining" and
+ * (ok true + version string) can bless the address: it is "ok" only when the
+ * body's protocol field is a positive integer equal to RELAY_WIRE_PROTOCOL,
+ * "protocol-mismatch" when it is a different positive integer, and
+ * "protocol-outdated" when the field is absent or not a positive integer (a
+ * relay that predates P2-331 keeps working — it is old, not broken); a 503
+ * with ok false is "draining" and
  * everything else — other statuses, redirects, non-JSON bodies, JSON without
  * a version — is "not-a-relay".
  */
@@ -187,7 +203,19 @@ export function relayProbeVerdict(p: RelayProbeInput): RelayProbeVerdict {
   }
   const body = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
   if (p.status === 200 && !p.redirected && body?.ok === true && typeof body.version === "string") {
-    return verdict("ok");
+    // P2-332: the /healthz protocol field (P2-331) splits the healthy-looking
+    // answer into three outcomes. ok only when the relay speaks the exact
+    // wire protocol this build was compiled with; a positive integer that
+    // differs is an incompatible relay (protocol-mismatch — the daemon would
+    // never join, so say so BEFORE saving); anything else — field absent, or
+    // not a positive integer — is an old relay that never published the
+    // field (protocol-outdated: it keeps working, it is just old). The value
+    // compared is the imported RELAY_WIRE_PROTOCOL constant, never a literal.
+    const proto = body.protocol;
+    if (typeof proto === "number" && Number.isInteger(proto) && proto > 0) {
+      return verdict(proto === RELAY_WIRE_PROTOCOL ? "ok" : "protocol-mismatch");
+    }
+    return verdict("protocol-outdated");
   }
   if (p.status === 503 && !p.redirected && body?.ok === false) return verdict("draining");
   return verdict("not-a-relay");
