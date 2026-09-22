@@ -314,6 +314,18 @@ degradado: o PairingView alcançado por "Parear outro dispositivo manualmente"
 é o botão primário verde e "Escanear QR code" a opção secundária nesse caminho
 também (o celular segue scan-first); o beat `P3-366` do desktop-flow prova a
 hierarquia de classes pós-clique em `.degraded-manual`;
+P3-441 compôs o ceremony manual pro desktop: em 1440px ele renderizava a
+coluna de celular (~420px) com ~70% da janela vazia e a lista "Antes de
+parear" cortada na dobra (Configurações raspando o fim) — o PairingView agora
+separa o conteúdo em duas colunas (`.pair-main` com intro + seções + erro e
+`.pair-side` com o mapa de panes) dentro de `.pair-columns`, que o media
+query `min-width: 1024px` (mesma fronteira do `isDesktop` do shell) transforma
+em grid — abaixo dela os wrappers são blocos transparentes e o fluxo de
+coluna única do celular segue idêntico; o header de marca continua filho
+direto de `.pair-screen` (fora da composição) para o sticky da P3-423
+preservar o scroll container como containing block, e o beat do desktop-flow
+provou a composição (largura ≥700, coluna de suporte à direita, mapa inteiro
+acima da dobra em 1440x900 e a coluna de celular ≤420 de volta em 390);
 use
 `OCR_DESKTOP_SESSION` próprio para não colidir
 com a sessão de outro processo. P1-081: com `OCR_DESKTOP_SESSION` setado o app
@@ -375,4 +387,21 @@ veredito puro de `sidecarwedge.ts` (observe/degraded/restart/give-up, teto de
 1 recuperação consecutiva, contador zerado na primeira sonda saudável) manda
 parar via `sidecarstop`/respawn existentes; o veredito viaja no campo aditivo
 `sidecarWedge` do `ocr:pairing-state` e no desktop.log (o hatch
-`OCR_DAEMON_WEDGE_PROBE_MS` encurta o intervalo em teste).
+`OCR_DAEMON_WEDGE_PROBE_MS` encurta o intervalo em teste). P2-335 fecha a
+cega equivalente no laço de reconexão do relay: um relay hospedado atualizado
+de forma incompatível (fio `RELAY_WIRE_PROTOCOL` diferente) era
+indistinguível de relay temporariamente fora do ar e deixava a máquina
+reconectando para sempre — agora o laço consulta o plano puro de
+`relayprotocol.ts` (sem rede/fs/timer; consulta só dentro do caminho de retry
+existente, zero timer/rota/ouvinte novo) e, depois de 3 ciclos de discagem
+falhos consecutivos, fora da janela de throttle de 10min e sem mismatch já
+conhecido, faz UMA requisição best-effort ao `/healthz` derivado do endereço
+ws/wss (5s de timeout, corpo limitado a 4KB, qualquer erro degrada para
+unknown) comparando o campo `protocol` da P2-331 com a constante importada de
+`@ocr/protocol`; o campo aditivo `relayProtocol` em `/api/health` (ao lado de
+`relayConnected`/`relayRetry`) carrega o conjunto fechado ok/mismatch/legacy/
+unknown com uma frase estática curta sem URL/host/IP/porta/número de versão,
+uma única linha de log por transição de estado — só mismatch é veredito duro,
+todo o resto preserva o comportamento de hoje byte a byte (um frame entregue
+pelo relay encerra o streak e suplanta um mismatch velho, então consertar o
+relay se auto-cura). A fatia de UI que consome o campo vem depois.

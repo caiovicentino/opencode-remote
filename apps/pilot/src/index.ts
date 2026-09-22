@@ -14,7 +14,8 @@ import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDif
 import { deploySkipReason } from "./deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
 import { digest } from "./push";
-import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type Task } from "./backlog";
+import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type AddTaskResult, type Task } from "./backlog";
+import { redteamFinding } from "./findingline";
 import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
 import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
@@ -944,28 +945,39 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
   saveState(st);
   log("info", r.ok ? "nightly redteam finished" : "nightly redteam failed", { ok: r.ok, timedOut: r.timedOut });
   if (r.output.includes("REDTEAM: FINDING")) {
-    const summary = r.output.split("REDTEAM: FINDING")[1]?.slice(0, 600) ?? "finding";
+    // P2-336: the raw agent text never reaches the backlog directly — the
+    // pure finding module flattens it into exactly one valid task line
+    // (title from the Title field, one-line spec, exactly one known area).
+    const summary = r.output.split("REDTEAM: FINDING")[1] ?? "";
+    const finding = redteamFinding(summary, today);
     // P1-076: the finding lands via the pilot/meta PR, guarded to BACKLOG.md.
     // The id derives INSIDE the apply callback — from the freshly re-based
     // BACKLOG.md — so a concurrent meta landing that added task lines since
     // our last sync can't produce a duplicate-id insert (same fix as the
     // explorer flow), and every retry re-derives instead of reusing a stale id.
     let landedId = "";
+    // P2-336: the three-state addTask result is read AFTER the landing — the
+    // apply callback may run once per retry, so it is captured in a holder.
+    const addResult = { value: null as AddTaskResult | null };
     const landed = await landMetaCommit(cfg.workspace, metaIo(cfg.workspace), {
       files: ["BACKLOG.md"],
       message: "pilot(redteam): add finding",
       guardFile: "BACKLOG.md",
       apply: () => {
         landedId = nextId(cfg.workspace, "RT");
-        addTask(cfg.workspace, landedId, "P0", `Redteam finding ${today}`, summary);
-        return { action: "apply", message: `pilot(redteam): add ${landedId}` };
+        addResult.value = addTask(cfg.workspace, landedId, "P0", finding.title, `${finding.spec} (area: ${finding.area})`);
+        return addResult.value === "applied"
+          ? { action: "apply", message: `pilot(redteam): add ${landedId}` }
+          : { action: "abort" };
       },
     });
-    if (landed === "refused") {
+    if (addResult.value !== "applied") {
+      log("warn", "redteam finding dropped — task line failed validation", { id: landedId, result: addResult.value });
+    } else if (landed === "refused") {
       log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id: landedId });
     }
     log("info", "redteam finding committed", { id: landedId, landed: landed === "pushed" });
-    await digest("🚨 Pilot redteam: achado", summary.slice(0, 120), "#/");
+    await digest("🚨 Pilot redteam: achado", finding.spec.slice(0, 120), "#/");
   }
 }
 

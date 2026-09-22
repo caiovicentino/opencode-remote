@@ -4,7 +4,7 @@ import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
 import { routineHistoryRows } from "../lib/routinehistoryview";
-import { IconArrowLeft, IconChevronDown } from "./icons";
+import { IconArrowLeft, IconChevronDown, IconX } from "./icons";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
@@ -977,7 +977,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                 </span>
               </div>
               <button className="danger" aria-label={t("remove")} onClick={() => void saveMcp(s.name, undefined, true)}>
-                ✕
+                <IconX size={14} />
               </button>
             </div>
           ))}

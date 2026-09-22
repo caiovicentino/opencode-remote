@@ -30,6 +30,9 @@ const AREA_RE = /\(area:\s*([A-Za-z][A-Za-z0-9_-]*)\)\s*$/;
 /** P1-060 trailing size tag: `... (size: L)`. Unknown values never match. */
 const SIZE_RE = /\(size:\s*([SML])\)\s*$/i;
 
+/** The exact parseBacklog task-line shape (no /g flag — exec is stateless). */
+const TASK_LINE_RE = /^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/;
+
 /** P1-006: documented area vocabulary; unknown tags fall back to serial "". */
 export const KNOWN_AREAS = new Set(["ui", "daemon", "desktop", "infra", "relay"]);
 
@@ -59,7 +62,7 @@ export function parseBacklog(md: string): Task[] {
       }
       break;
     }
-    const m = /^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/.exec(body);
+    const m = TASK_LINE_RE.exec(body);
     if (m && m[1] && m[2] && m[3])
       tasks.push({ id: m[1], priority: m[2], title: m[3], spec: m[4] ?? "", area, size: size ?? "S", line: trimmed });
   }
@@ -192,12 +195,42 @@ export function blockTask(repoDir: string, id: string, findings: string): Backlo
 }
 
 /** Add a task at the top of ## Ready (used by redteam findings). */
-export function addTask(repoDir: string, id: string, priority: string, title: string, spec: string) {
+export type AddTaskResult = "applied" | "invalid" | "missing";
+
+/**
+ * P2-336: the one validator for a proposed task line — shared by
+ * parseAuxTaskLines (aux proposals, batch) and addTask (the line it itself
+ * produces). Extracted so the two call sites can never drift apart. A line
+ * is valid when it carries no shell metacharacter/banned verb, has a
+ * well-formed P/RT id, ends in a trailing KNOWN area tag and matches the
+ * parseBacklog task-line shape (after stripping an optional size tag).
+ */
+export function isValidTaskLine(line: string): boolean {
+  if (!line) return false;
+  if (AUX_LINE_BANNED_RE.test(line)) return false;
+  if (!AUX_ID_RE.test(/\(([^)]+)\)/.exec(line)?.[1] ?? "")) return false;
+  const am = AREA_RE.exec(line);
+  if (!am || !KNOWN_AREAS.has(am[1] ?? "")) return false;
+  const withoutArea = line.slice(0, am.index).trimEnd();
+  const sm = SIZE_RE.exec(withoutArea);
+  const withoutSize = sm ? withoutArea.slice(0, sm.index).trimEnd() : withoutArea;
+  return TASK_LINE_RE.exec(withoutSize) !== null;
+}
+
+/**
+ * Outcome of addTask: "applied" wrote the validated line, "invalid" means
+ * the produced line failed isValidTaskLine and NOTHING was written (the
+ * caller must log a warning — fail-closed for every caller), "missing"
+ * means the file has no ## Ready section and nothing was written.
+ */
+export function addTask(repoDir: string, id: string, priority: string, title: string, spec: string): AddTaskResult {
   const p = join(repoDir, BACKLOG);
   const md = readFileSync(p, "utf8");
   const entry = `- [ ] (${id}) [${priority}] ${title} — spec: ${spec}`;
-  const updated = md.replace(/^## Ready$/m, `## Ready\n${entry}`);
-  writeFileSync(p, updated);
+  if (!isValidTaskLine(entry)) return "invalid";
+  if (!/^## Ready$/m.test(md)) return "missing";
+  writeFileSync(p, md.replace(/^## Ready$/m, `## Ready\n${entry}`));
+  return "applied";
 }
 
 // ── Foreign mission: seed the pilot's BACKLOG.md format when absent ─────────
@@ -295,14 +328,7 @@ export function parseAuxTaskLines(output: string, max = 5): string[] {
     const line = raw.trim();
     if (!line) continue;
     if (lines.length >= max) break;
-    if (AUX_LINE_BANNED_RE.test(line)) continue;
-    if (!AUX_ID_RE.test(/\(([^)]+)\)/.exec(line)?.[1] ?? "")) continue;
-    const am = AREA_RE.exec(line);
-    if (!am || !KNOWN_AREAS.has(am[1] ?? "")) continue;
-    const withoutArea = line.slice(0, am.index).trimEnd();
-    const sm = SIZE_RE.exec(withoutArea);
-    const withoutSize = sm ? withoutArea.slice(0, sm.index).trimEnd() : withoutArea;
-    if (!/^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/.exec(withoutSize)) continue;
+    if (!isValidTaskLine(line)) continue;
     if (!lines.includes(line)) lines.push(line);
   }
   return lines;

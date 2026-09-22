@@ -194,11 +194,14 @@ textarea {
 /* P3-452: pane header actions carry the rail's SVG language — no bare text
    glyphs beside the drawn icon set. Icon-only buttons flex-center the stroke
    like .chat-btn (P2-107), so the mark sits true in the bordered box at every
-   hit-target size. */
+   hit-target size. P3-437: the last text-glyph controls (composer chip ×,
+   screen-flash ×) join the same list instead of one-off rules. */
 .screen > header button,
 .browser-header button,
 .browser-bar button,
-.pane-close {
+.pane-close,
+.composer-att-x,
+.screen-flash-x {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1634,6 +1637,14 @@ button.desk-new:disabled {
 .welcome-qr-retry:hover,
 .welcome-qr-manual:hover {
   border-color: var(--fg);
+}
+/* P3-443: the agent-down block self-heals in place — the reconnect wears the
+   shared accent identity (P3-450: one primary dialect per journey) beside the
+   quiet manual escape, and its trying state borrows the degraded card's
+   disabled treatment (same feedback grammar, no second dialect). */
+.welcome-qr-reconnect:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .welcome-step {
@@ -3136,6 +3147,48 @@ button.desk-new:disabled {
   flex: none;
 }
 
+/* ── P3-441: the manual ceremony composes on desktop ─────────────────────────
+   At 1440px the ceremony rendered the phone column (~420px) with ~70% of the
+   window empty and the five-row pane map clipped mid-row at the fold — the
+   mobile layout reused on desktop (explorer shot scratch-manual-pair-empty).
+   From the shell breakpoint (1024px, the same verdict App uses for the desk
+   skeleton) the ceremony becomes a desktop-composed two-column layout: the
+   brand header keeps its centered full-width stage, the pairing directions
+   and the error block stay in the action column, and the pane map moves
+   beside them as the support column — one screen of content, nothing
+   clipped. Mobile (<1024px) keeps the exact single-column flow: the wrappers
+   only re-declare the .screen gap the wrapped children inherited before
+   (P3-414 lesson — adapt the fill mechanism, never copy it verbatim). The
+   header stays a direct child of .pair-screen, OUTSIDE the composition, so
+   its sticky block (P3-423) keeps the scroll container as its containing
+   block and the screen's overflow-safe centering keeps governing the stack.
+   The side column always renders (PaneMap has no empty branch), so no
+   divider is painted beside a dead half-pane (P3-444 lesson). */
+.pair-columns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+}
+.pair-main,
+.pair-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .pair-wrap .pair-screen {
+    max-width: 960px;
+  }
+  .pair-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
+    column-gap: var(--space-6);
+    row-gap: var(--space-3);
+  }
+}
+
 /* ── P2-112: first-boot degraded journey ─────────────────────────────────────
    Desktop shell, daemon unreachable: one calm status card (never a dead-end
    pairing wall), visible auto-retry, reconnect with real feedback, the
@@ -3345,22 +3398,39 @@ button.desk-new:disabled {
 }
 /* P3-368: language and theme side by side — the copy promises both, so both
    controls share one row on the flat surface, wrapping at phone widths.
+   P3-429: each select gains a visible micro-label — the aria-labels alone
+   left a first-boot user guessing which field was which — riding the same
+   quiet-caps grammar as the pane map rendered right below on this screen.
    P3-445: the selects wear the same control skin as the card's buttons —
    surface fill, firm resting border and the small type step, radius flowing
    from the global select rule — with appearance:none dropping the native
-   macOS chrome that leaked system styling into the otherwise flat card. The
-   chevron is drawn by the shared icon set on the wrapper (a <select> is a
-   replaced element: ::after never renders), so the affordance follows the
-   theme tokens instead of baked-in system art. */
+   macOS chrome that leaked system styling into the otherwise flat card.
+   The chevron is drawn by the shared icon set on the field wrapper (a
+   <select> is a replaced element: ::after never renders), so the affordance
+   follows the theme tokens instead of baked-in system art. */
 .degraded-local-prefs {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 .degraded-select {
-  position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* The field's micro-label — same quiet-caps furniture as .pane-map-title,
+   one type step smaller: field furniture, never a second heading. */
+.degraded-select-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.degraded-select-field {
+  position: relative;
 }
 .degraded-local-prefs select {
   appearance: none;
@@ -3377,6 +3447,12 @@ button.desk-new:disabled {
 }
 .degraded-local-prefs select:hover {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border-color: var(--fg);
+}
+/* P3-429: focus matches the queue field's active-field grammar (P3-386) —
+   the firm resting border escalates to the fg edge while the control holds
+   the caret, same as .degraded-queue-input:focus-visible. */
+.degraded-local-prefs select:focus-visible {
   border-color: var(--fg);
 }
 .degraded-select svg {

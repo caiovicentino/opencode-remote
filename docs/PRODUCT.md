@@ -57,7 +57,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
    também um caption visível logo sob o botão (o tooltip não aparece em shot
    estático e a única explicação vivia no rodapé da página) e o estado
    desabilitado escurece só o rótulo sobre a borda firme — em repouso o CTA
-   lê como esperando de propósito, não como botão quebrado. Janela
+   lê como esperando de propósito, não como botão quebrado. P3-430: o slot
+   Conversas do próprio rail também perde a pill de selecionado enquanto
+   estiver travado — o fallback do topo ("chat") pintava o item desabilitado
+   como o painel aberto, contradizendo o próprio tooltip. Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
    clássica centrada. Os panes abertos no portão mostram mundos vazios
    esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control
@@ -168,6 +171,17 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   mostra dois dialetos de ícone. O nome acessível segue no aria-label (o
   glifo nunca foi o rótulo), e glifo de texto em header de pane é dialeto
   proibido, pinado no gate (scripts/pane-icons.test.ts)
+- Os últimos glifos de texto saem do chrome (P3-437): o visualizador
+  fullscreen de arquivo no chat troca o "← Chat" pelo mesmo botão de voltar
+  SVG do visualizador de artifacts (`.pane-close` + ícone compartilhado),
+  o "⧉" de copiar caminho vira o ícone de copiar das bolhas (com o mesmo
+  estado ✓ de confirmado), e os descartes "✕"/"×" (pré-visualização de
+  arquivos, remover servidor MCP, fechar o flash de captura de tela,
+  remover anexo do composer) desenham o ícone de fechar compartilhado, e o
+  separador do recorte de vídeo troca o "→" solto pela seta compartilhada —
+  a expansão do pin (pane-icons.test.ts) cobre FileCard, ChatView e
+  ScreenFlash além dos panes, então o dialecto de texto não volta em nenhum
+  canto do chrome
 - Glifo da marca em todas as telas de primeiro contato (P3-373): o glifo de
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas

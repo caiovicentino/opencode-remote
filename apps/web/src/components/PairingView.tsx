@@ -240,64 +240,79 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           </button>
         )}
       </header>
-      {/* EVAL4-F1: the phone (no host section, scan-first) must not read the
-          desktop's "pairs with the daemon on this machine" promise. */}
-      <p className="muted pair-intro">{!preferPaste && !onPairRemote ? t("pairIntroPhone") : t("pairIntro")}</p>
-      {autoState && (
-        <div className="pair-auto" role="status" aria-live="polite">
-          <span className="pair-auto-dot" aria-hidden="true" />
-          <div className="pair-auto-copy">
-            <h2 className="pair-auto-title">{busy ? t("localConnecting") : t("autoConnectLooking")}</h2>
-            <p className="muted pair-auto-hint">
-              {busy ? t("autoConnectBusyHint") : t("autoConnectIdleHint")}
-            </p>
-            {!busy && (
-              <button className="pair-auto-retry" onClick={onRetry}>
-                {t("retry")}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      {hostSection}
-      {ceremony && (
-        <section className="pair-section">
-          <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>
-          {preferPaste ? (
-            <>
-              {pasteForm}
-              <p className="muted pair-or">{t("orScan")}</p>
-              {scanButton}
-            </>
-          ) : (
-            <>
-              {scanButton}
-              <p className="muted pair-or">{t("orPaste")}</p>
-              {pasteForm}
-            </>
+      {/* P3-441: the ceremony composes — from the shell breakpoint the
+          action column (intro, pairing directions, error) sits beside the
+          pane map instead of stacking above it, so a 1440px window stops
+          rendering the phone column with ~70% of the viewport empty and the
+          map stops clipping at the fold. Below 1024px the wrappers are
+          transparent blocks and the single-column flow is byte-identical.
+          The header stays a direct child of .pair-screen so the sticky
+          brand block (P3-423) keeps the scroll container as its containing
+          block. */}
+      <div className="pair-columns">
+        <div className="pair-main">
+          {/* EVAL4-F1: the phone (no host section, scan-first) must not read the
+              desktop's "pairs with the daemon on this machine" promise. */}
+          <p className="muted pair-intro">{!preferPaste && !onPairRemote ? t("pairIntroPhone") : t("pairIntro")}</p>
+          {autoState && (
+            <div className="pair-auto" role="status" aria-live="polite">
+              <span className="pair-auto-dot" aria-hidden="true" />
+              <div className="pair-auto-copy">
+                <h2 className="pair-auto-title">{busy ? t("localConnecting") : t("autoConnectLooking")}</h2>
+                <p className="muted pair-auto-hint">
+                  {busy ? t("autoConnectBusyHint") : t("autoConnectIdleHint")}
+                </p>
+                {!busy && (
+                  <button className="pair-auto-retry" onClick={onRetry}>
+                    {t("retry")}
+                  </button>
+                )}
+              </div>
+            </div>
           )}
-        </section>
-      )}
-      {/* P3-410: the form's own invalid-code verdict wins over the App-level
-          block — the freshest submit is the relevant feedback, and one error
-          per screen (P2-108). Editing the field dissolves it and the parent
-          block (timeout, rejection…) shows again. */}
-      {phase === "error" && !codeError && (
-        <div className="pair-error" role="alert" aria-live="assertive">
-          <p className="pair-error-msg">{error}</p>
-          {error === t("invalidCode") && (
-            <p className="pair-error-hint">{t("invalidCodeHint")}</p>
+          {hostSection}
+          {ceremony && (
+            <section className="pair-section">
+              <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>
+              {preferPaste ? (
+                <>
+                  {pasteForm}
+                  <p className="muted pair-or">{t("orScan")}</p>
+                  {scanButton}
+                </>
+              ) : (
+                <>
+                  {scanButton}
+                  <p className="muted pair-or">{t("orPaste")}</p>
+                  {pasteForm}
+                </>
+              )}
+            </section>
           )}
-          {hint && error !== t("invalidCode") && <p className="pair-error-hint">{hint}</p>}
-          {autoRetryMs !== undefined && <PairRetry ms={autoRetryMs} onRetry={onRetry} />}
-          <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
+          {/* P3-410: the form's own invalid-code verdict wins over the App-level
+              block — the freshest submit is the relevant feedback, and one error
+              per screen (P2-108). Editing the field dissolves it and the parent
+              block (timeout, rejection…) shows again. */}
+          {phase === "error" && !codeError && (
+            <div className="pair-error" role="alert" aria-live="assertive">
+              <p className="pair-error-msg">{error}</p>
+              {error === t("invalidCode") && (
+                <p className="pair-error-hint">{t("invalidCodeHint")}</p>
+              )}
+              {hint && error !== t("invalidCode") && <p className="pair-error-hint">{hint}</p>}
+              {autoRetryMs !== undefined && <PairRetry ms={autoRetryMs} onRetry={onRetry} />}
+              <button className="pair-error-retry" onClick={onRetry}>{t("retry")}</button>
+            </div>
+          )}
         </div>
-      )}
-      {/* P3-364: the standing answer to "why pair at all?" — the panes the
-          gate hides, listed where the gate toast (P3-328) is only a flash.
-          P3-413: inside the desktop shell only the chat carries the lock —
-          the other four panes open pre-pairing from the gate rail. */}
-      <PaneMap offlinePanes={offlinePanes} />
+        <aside className="pair-side">
+          {/* P3-364: the standing answer to "why pair at all?" — the panes the
+              gate hides, listed where the gate toast (P3-328) is only a flash.
+              P3-413: inside the desktop shell only the chat carries the lock —
+              the other four panes open pre-pairing from the gate rail. */}
+          <PaneMap offlinePanes={offlinePanes} />
+        </aside>
+      </div>
     </div>
   );
 }

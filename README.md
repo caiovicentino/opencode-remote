@@ -277,10 +277,10 @@ private. That is the product: **local power, remote control, zero trust**.
   drawer and new-chat buttons), matching the wizard's step indicator instead
   of a full-size page title
 - **Back lands on the board (P3-374)** — on the phone layout, leaving a
-  conversation with the ← button always shows the conversations list (even
+  conversation with the back arrow always shows the conversations list (even
   when the chat was opened by a deep link, which replaces the navigation
-  history); the home stays the app's default surface and one more ← from the
-  list returns to it
+  history); the home stays the app's default surface and one more back arrow
+  from the list returns to it
 - **Session filters** — chips above the search (All / With badge / No badge)
   narrow the board to sessions with or without an unread badge
 - **Fast session switching (P1-064)** — opening a conversation fetches only
@@ -449,17 +449,17 @@ private. That is the product: **local power, remote control, zero trust**.
   `nodeIntegration` off, popups off), with an editable URL bar, reload and a maximize toggle
   (~80% width). The webview guest always fills the whole pane — including after the maximize
   toggle or a window resize — instead of painting in a top strip (P2-092). The pane's first
-   paint is a designed new-tab empty state (P3-379): nothing loads until you type an address
-   or a preview event arrives — it never auto-navigates to a host service (the old default URL
-   silently reached the machine's daemon dashboard from unpaired boots). Behind the unpaired
-   gate the empty hint defers the chat path (P3-446): "After pairing, you can also open a
-   preview from the chat" instead of pointing at Conversas — the pane that needs pairing.
-   The URL bar's action
-   button reads the moment (P3-416): before any page exists it is a **→ Go** affordance that
-   navigates to the typed address (inert while the bar is empty), swapping to **↻ reload** only
-   once a page is loaded — the old bar showed a reload that did nothing on the empty pane. While empty the
-   bar shows only a generic `https://…` placeholder (P3-448) — never a concrete URL that reads as already
-   typed. A typed URL that
+  paint is a designed new-tab empty state (P3-379): nothing loads until you type an address
+  or a preview event arrives — it never auto-navigates to a host service (the old default URL
+  silently reached the machine's daemon dashboard from unpaired boots). Behind the unpaired
+  gate the empty hint defers the chat path (P3-446): "After pairing, you can also open a
+  preview from the chat" instead of pointing at Conversas — the pane that needs pairing. The
+  URL bar's action button reads the moment (P3-416): before any page exists it draws the
+  shared SVG Go arrow (P3-452) — navigating to the typed address, inert while the bar is
+  empty — and swaps to the shared SVG reload icon only once a page is loaded (the old bar
+  showed a reload that did nothing on the empty pane). While empty the bar shows only a
+  generic `https://…` placeholder (P3-448) — never a concrete URL that reads as already
+  typed. A typed URL that
   parses but isn't http(s) — `file://`, `data:`, … — is rejected with named feedback (P3-378):
   the address bar flags red and a specific sentence explains the sandbox's http(s)-only rule
   and the way out (serve the folder over HTTP and open its localhost URL) instead of leaving
@@ -521,7 +521,9 @@ private. That is the product: **local power, remote control, zero trust**.
   silently swallowing the first click (P3-380); since P3-442 the hint also shows as a
   visible caption directly under the CTA (a tooltip is invisible in a static view) and the
   disabled state dims only the label over the firm border, so the resting button reads as
-  deliberately waiting rather than broken
+  deliberately waiting rather than broken; since P3-430 the locked Conversations slot itself
+  also drops the selected pill — the gate used to paint the home screen's chat fallback on
+  the one disabled item, so it read as the open pane while its own tooltip said otherwise
 - **Offline panes stay calm at the gate (P3-327)** — behind the first-boot gate shell the
   reachable panes read as expected empty worlds, not errors: Mission Control opens on the
   forensic view with its "no sessions recorded yet" copy (the dashboard and live-shot
@@ -1670,7 +1672,10 @@ on the card and apply instantly (P3-368: the theme control shares the same
 stored choice and apply path as the Settings appearance card, so the copy and
 the card never disagree; P3-445: the selects wear the card's own control skin
 — surface fill, firm resting border and a drawn chevron — so no native OS
-select chrome leaks into the flat card). "Reconnect now" gives
+select chrome leaks into the flat card; P3-429: each select sits under its own
+quiet micro-label (Language / Theme), so the two controls tell themselves
+apart without guessing, and focus escalates to the same fg border the queue
+composer uses). "Reconnect now" gives
 real feedback (spinner + trying state + result toast), and manual pairing
 stays one click away. The gate sits on the same brand axis as the welcome
 wizard it follows (P3-330): the serif "OpenCode Remote" wordmark is centered
@@ -1685,10 +1690,11 @@ never as loose body-size text. That header can never shear against the viewport 
 short window — the degraded screen becomes a real scroll container with
 overflow-safe centering, so the stack top-anchors with a scrollbar instead of
 clipping the glyph and wordmark at the top edge. The pairing gate itself
-(P3-423) got the same treatment and then some: with intro, host section, paste
-form and the 5-row pane map on screen, the manual ceremony outgrows a 900px
-window and the wordmark used to shear half-clipped at the viewport top exactly
-on the screen that establishes the brand. The gate column now scrolls
+(P3-423) got the same treatment and then some: in the single-column phone flow
+(below the shell breakpoint, P3-441) the stacked intro, host section, paste
+form and 5-row pane map can outgrow a short window and the wordmark used to
+shear half-clipped at the viewport top exactly on the screen that establishes
+the brand. The gate column now scrolls
 internally with the same overflow-safe centering, and its brand header is
 sticky — an opaque page-color strip that keeps glyph and wordmark pinned at
 the top while the cards slide beneath, so the brand never leaves the screen
@@ -1810,6 +1816,10 @@ agent is out, the QR step fails fast instead of holding the skeleton for the
 full window (P3-412): the error block names the agent as the cause — the same
 signal that card renders — while the auto-connect is still in flight the QR
 can land any moment, so only the settled non-healthy states skip the wait.
+That branch also self-heals in place (P3-443): when the shell carries the
+restart bridge, the bare retry is replaced by the accent "Reconnect now" —
+the action that actually fixes the cause, wearing the same identity as the
+step-2 card — while a boot without the bridge keeps the retry.
 The step
 indicator reads as part of the brand block — centered under the wordmark — and
 progress is three quiet dots rather than a caps caption: the active step is an
@@ -1839,15 +1849,24 @@ opens that help section straight from the first-boot card. The daemon's own
 reason/hint strings render as secondary text only; no tokens or secrets are
 ever part of the displayed copy.
 
-**Benchmark pairing journey (P2-106)**: the manual pairing screen is a narrow
-(~420px), vertically centered column with a one-sentence intro and two titled
+**Benchmark pairing journey (P2-106)**: below the shell breakpoint (P3-441)
+the manual pairing screen is a narrow (~420px), vertically centered column
+with a one-sentence intro and two titled
 sections — **On this computer** (host entry, P3-435: the caps label names the
 direction; the card below keeps the action name, "Pair a phone (remote
 device)") first and
 **Connect to another machine** (scan/paste, this device as client) second
 (P3-334): on the desktop, pairing a phone is the primary story, so the host
 entry leads and the client ceremony reads as the secondary option (the phone's
-own screen is unchanged — it never renders the host entry). The submit inside
+own screen is unchanged — it never renders the host entry). From the shell
+breakpoint (1024px) the same ceremony composes for the desktop (P3-441): the
+intro, the two sections and the error block stay in the action column while
+the 5-row pane map moves beside them as a support column — a ~960px
+two-column composition, vertically centered, so a 1440px window no longer
+renders the phone column with ~70% of it empty and the map's last row
+(Configurações) no longer clips at the fold. The brand header stays a direct
+child of the scroll container, outside the composition, so its sticky block
+(P3-423) keeps the full-height containing block. The submit inside
 the client ceremony wears the shared accent primary identity (P3-433): the
 demotion P3-415 gave it (a quiet recessed chip) was tuned for a gate whose
 first contact has since moved to the degraded card (P3-365) — every desktop
@@ -1896,9 +1915,10 @@ adding a machine explicitly never gets swallowed by local mode.
 vite, a dev server…) and mentions `http://localhost:<port>` in its reply, the
 Browser pane opens by itself next to the chat, pointed at that URL, rendered
 as a real sandboxed webview — scroll, click and form edits are live. The URL
-bar is editable, `↻` reloads, `⤢` toggles the pane to ~80% width and back, and
-`←` returns to the chat. A load failure shows an error and the reload button
-instead of a blank pane.
+bar is editable and its header/bar actions draw the shared SVG icon set
+(P3-452): the refresh icon reloads, the maximize icon toggles the pane to ~80%
+width and back, and the back arrow returns to the chat. A load failure shows
+an error and the reload button instead of a blank pane.
 
 **Mission Control** (Cmd+6) is a navigable post-mortem of the pilot's
 autonomous runs: one card per agent task (goal, progress, wall-clock effort,

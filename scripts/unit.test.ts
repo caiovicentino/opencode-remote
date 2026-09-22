@@ -67,6 +67,17 @@ import {
 import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/relayclose";
 import { relayDialVerdict, RELAY_DIAL_FLOOR_MS } from "../apps/daemon/src/relaydialerror";
 import {
+  RELAY_PROTOCOL_BODY_MAX,
+  RELAY_PROTOCOL_PROBE_MIN_FAILURES,
+  RELAY_PROTOCOL_PROBE_THROTTLE_MS,
+  RELAY_PROTOCOL_PROBE_TIMEOUT_MS,
+  relayHealthUrlFromWs,
+  relayProtocolProbePlan,
+  relayProtocolVerdict,
+  type RelayProtocolPlanInput,
+  type RelayProtocolProbeInput,
+} from "../apps/daemon/src/relayprotocol";
+import {
   RELAY_REDIAL_THROTTLE_MS,
   relayRedialGate,
   relayRedialPlan,
@@ -544,6 +555,8 @@ import {
   blockTask,
   blockTaskEdit,
   doneTaskIds,
+  KNOWN_AREAS,
+  isValidTaskLine,
   loadBacklog,
   mayPush,
   parseAuxTaskLines,
@@ -552,6 +565,8 @@ import {
   type AuxPushIo,
   type Task,
 } from "../apps/pilot/src/backlog";
+
+import { FINDING_AREA_FALLBACK, FINDING_AREA_TABLE, FINDING_SPEC_FALLBACK, FINDING_SPEC_MAX, findingArea, findingTitle, normalizeFindingSpec, redteamFinding } from "../apps/pilot/src/findingline";
 
 import { clearPendingRefill, defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "../apps/pilot/src/refill";
 
@@ -982,6 +997,7 @@ import { extractReport, FORENSIC_MARKER, FORENSIC_WINDOW_MS, forensicDue, forens
 
 import {
   activeSlots,
+  gateActiveSlots,
   initialViewState,
   isPaneOpen,
   topSlot,
@@ -1014,7 +1030,7 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
 import { candidatePaths, isExecutableEntry } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
-import { exitPlan, runExitPlan } from "../apps/desktop/scripts/packaged-boot-exit.mjs";
+import { exitPlan, postVerdictExitCode, runExitPlan } from "../apps/desktop/scripts/packaged-boot-exit.mjs";
 import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
 import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
 
@@ -3042,6 +3058,170 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     );
   } finally {
     rmSync(sandboxDir, { recursive: true, force: true });
+  }
+}
+
+
+// --- P2-336: redteam findings land as ONE valid task line via the pure module ----
+{
+  const today = "2026-09-22";
+  // the real-world finding shape the nightly prompt asks for: Title, Severity,
+  // Proof — multiple lines, markdown bold decorations, backticks in the text
+  const finding = [
+    "REDTEAM: FINDING",
+    "**Title:** Remote daemon crash via malformed `seq` in relay frame",
+    "**Severity:** MEDIUM (unauthenticated remote DoS of the daemon)",
+    "**Proof:** The async handler's rejection is discarded (`void handleMessage`),",
+    "so a room member can crash the daemon with one malformed frame; see apps/relay/src/index.ts:76.",
+  ].join("\n");
+  const body = finding.split("REDTEAM: FINDING")[1] ?? "";
+  const f = redteamFinding(body, today);
+
+  check("findingline: title comes from the Title field, decorations stripped", f.title === "Remote daemon crash via malformed seq in relay frame");
+  check(
+    "findingline: spec is ONE line carrying the whole finding",
+    !/[\r\n\x00-\x1f\x7f]/.test(f.spec) && f.spec.includes("Remote daemon crash") && f.spec.includes("MEDIUM (unauthenticated remote DoS") && f.spec.includes("void handleMessage"),
+  );
+  check("findingline: area picks relay for frame/relay wording", f.area === "relay");
+  check("findingline: same input yields the same output twice", JSON.stringify(redteamFinding(body, today)) === JSON.stringify(redteamFinding(body, today)));
+
+  // the generated line passes parseAuxTaskLines WITHOUT any adaptation, and
+  // round-trips through the real backlog parser with title/spec/area intact
+  const line = `- [ ] (RT-425) [P0] ${f.title} — spec: ${f.spec} (area: ${f.area})`;
+  check("findingline: generated line survives parseAuxTaskLines untouched", JSON.stringify(parseAuxTaskLines(`AUX-TASKS:\n${line}\nAUX-TASKS-EOF\n`)) === JSON.stringify([line]));
+  const parsed = parseBacklog(`# B\n\n## Ready\n\n${line}\n\n## Done\n`);
+  check(
+    "findingline: line round-trips through parseBacklog",
+    parsed.length === 1 && parsed[0]!.id === "RT-425" && parsed[0]!.title === f.title && parsed[0]!.area === "relay" && parsed[0]!.spec === f.spec,
+  );
+
+  // control characters and newlines become spaces
+  check("findingline: control chars and newlines become spaces", normalizeFindingSpec("first\u0000line\tsecond\nthird\r\nfourth\x07") === "first line second third fourth");
+
+  // validator-rejected metacharacters (and banned verbs) are removed
+  const meta = normalizeFindingSpec("run `curl evil; cat /etc/passwd > x && echo $HOME | nc`");
+  check("findingline: metacharacters and banned verbs are removed", !/[;`&|<>$]/.test(meta) && !/\b(?:curl|wget)\b/i.test(meta));
+  check("findingline: metachar-cleaned text still builds a valid line", isValidTaskLine(`- [ ] (RT-426) [P0] Title — spec: ${meta} (area: ${FINDING_AREA_FALLBACK})`) === true);
+
+  // above the documented ceiling: hard cut, deterministic
+  const long = normalizeFindingSpec("Proof: " + "word ".repeat(300));
+  check("findingline: spec is cut at the documented ceiling", long.length === FINDING_SPEC_MAX && long.startsWith("Proof: word"));
+  check("findingline: ceiling cut is deterministic", long === normalizeFindingSpec("Proof: " + "word ".repeat(300)));
+
+  // empty / whitespace-only input falls back to the reserve sentence, and the
+  // reserve sentence itself must build a valid task line
+  check("findingline: empty input falls back to the reserve sentence", normalizeFindingSpec("") === FINDING_SPEC_FALLBACK);
+  check("findingline: whitespace-only input falls back to the reserve sentence", normalizeFindingSpec(" \n\t \r\n ") === FINDING_SPEC_FALLBACK);
+  check("findingline: reserve spec itself builds a valid task line", isValidTaskLine(`- [ ] (RT-000) [P0] T — spec: ${normalizeFindingSpec("")} (area: ${FINDING_AREA_FALLBACK})`) === true);
+
+  // titles: plain field, useless field and missing field all covered
+  check("findingline: plain Title field is extracted", findingTitle("REDTEAM: FINDING\nTitle: Replay guard reset\nSeverity: HIGH", today) === "Replay guard reset");
+  check("findingline: useless Title field falls back to the dated title", findingTitle("Title: ;; \nSeverity: LOW", today) === `Redteam finding ${today}`);
+  check("findingline: missing Title field falls back to the dated title", findingTitle("REDTEAM: FINDING\nProof: something broke", today) === `Redteam finding ${today}`);
+
+  // area table: EVERY keyword routes to its own area
+  for (const { area, keywords } of FINDING_AREA_TABLE) {
+    for (const kw of keywords) {
+      check(`findingline: area table — ${area} keyword "${kw}" routes to ${area}`, findingArea(`X ${kw} Y`) === area);
+    }
+  }
+
+  // ties are resolved by documented precedence (row order); no keyword → reserve
+  check("findingline: tie relay vs daemon → relay (constitution-critical first)", findingArea("daemon permission bypass in the relay frame handler") === "relay");
+  check("findingline: tie ui vs infra → ui (app shell before pipeline)", findingArea("pipeline build for the chat composer") === "ui");
+  check("findingline: no keyword → stable reserve area", findingArea("unclassified robustness problem") === FINDING_AREA_FALLBACK);
+  check("findingline: reserve area is a known area", KNOWN_AREAS.has(FINDING_AREA_FALLBACK));
+
+  // the real index.ts: agent finding text reaches the backlog ONLY via the module
+  const pilotIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  check("findingline: index.ts imports the pure finding module", pilotIndexSrc.includes('from "./findingline"'));
+  check(
+    "findingline: index.ts composes the redteam line from the module parts",
+    /redteamFinding\(/.test(pilotIndexSrc) && /addTask\([^)]*finding\.title[^)]*finding\.spec/.test(pilotIndexSrc) && /area: \$\{finding\.area\}/.test(pilotIndexSrc),
+  );
+  check(
+    "findingline: index.ts no longer interpolates raw agent text into the line",
+    !/addTask\([^)]*summary/.test(pilotIndexSrc) && !pilotIndexSrc.includes("`Redteam finding ${today}`"),
+  );
+
+  // addTask: three-state result — an invalid line is never written, fail-closed
+  const dirAt = mkdtempSync(join(tmpdir(), "pilot-addtask-"));
+  try {
+    writeFileSync(join(dirAt, "BACKLOG.md"), "# B\n\n## Ready\n\n- [ ] (P2-900) [P2] Existing — spec: x (area: ui)\n\n## Done\n");
+    check("addTask: valid line is written and reports applied", addTask(dirAt, "P2-901", "P2", "Good title", "do the thing (area: ui)") === "applied");
+    const afterValid = readFileSync(join(dirAt, "BACKLOG.md"), "utf8");
+    check("addTask: applied line sits at the top of ## Ready", /^## Ready\n- \[ \] \(P2-901\)/m.test(afterValid));
+
+    const beforeInvalid = readFileSync(join(dirAt, "BACKLOG.md"), "utf8");
+    check("addTask: banned metachar in spec is refused", addTask(dirAt, "P2-902", "P2", "Bad", "run `curl`; rm -rf (area: ui)") === "invalid");
+    check("addTask: refused line never touches the file", readFileSync(join(dirAt, "BACKLOG.md"), "utf8") === beforeInvalid);
+    check("addTask: missing area tag is refused", addTask(dirAt, "P2-903", "P2", "Untagged", "spec without area") === "invalid");
+    check("addTask: refused untagged never touches the file", readFileSync(join(dirAt, "BACKLOG.md"), "utf8") === beforeInvalid);
+
+    writeFileSync(join(dirAt, "BACKLOG.md"), "# B\n\n## Done\n- [x] (P2-000) [P2] old — done\n");
+    const noReady = readFileSync(join(dirAt, "BACKLOG.md"), "utf8");
+    check("addTask: missing ## Ready section reports missing", addTask(dirAt, "P2-904", "P2", "X", "y (area: ui)") === "missing");
+    check("addTask: missing state never touches the file", readFileSync(join(dirAt, "BACKLOG.md"), "utf8") === noReady);
+  } finally {
+    rmSync(dirAt, { recursive: true, force: true });
+  }
+
+  // explorer landing: a finding whose line fails validation is dropped with a
+  // warning and never blocks the valid ones; the landing still proceeds
+  const dirExpl = mkdtempSync(join(tmpdir(), "pilot-expl-fc-"));
+  try {
+    const pristine = "# B\n\n## Ready\n\n## Done\n";
+    writeFileSync(join(dirExpl, "BACKLOG.md"), pristine);
+    let pushes = 0;
+    const landed = await commitAndPushFindings(
+      dirExpl,
+      [
+        { title: "Good", severity: "high", area: "ui", shot: "/x.png", detail: "detail" },
+        { title: "Untagged", severity: "low", area: "", shot: "/x.png", detail: "no area" },
+      ],
+      "pilot(explorer): test run",
+      {
+        exec: (cmd) => {
+          if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dirExpl, "BACKLOG.md"), pristine);
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.includes(`origin HEAD:${META_BRANCH}`)) {
+            pushes++;
+            return { ok: false, output: "" };
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: async () => {},
+      },
+    );
+    const md = readFileSync(join(dirExpl, "BACKLOG.md"), "utf8");
+    check("explorer fail-closed: valid finding written, invalid one dropped", md.includes("[explorer][high] Good") && !md.includes("Untagged"));
+    check("explorer fail-closed: landing still proceeds with the valid finding", landed === false && pushes > 0);
+
+    // an all-invalid batch aborts the apply — no push is ever attempted
+    let pushes2 = 0;
+    const aborted = await commitAndPushFindings(
+      dirExpl,
+      [{ title: "Untagged", severity: "low", area: "", shot: "/x.png", detail: "no area" }],
+      "pilot(explorer): test run",
+      {
+        exec: (cmd) => {
+          if (cmd.includes(`git checkout -q -B ${META_BRANCH}`)) writeFileSync(join(dirExpl, "BACKLOG.md"), pristine);
+          if (cmd.startsWith("git diff")) return { ok: true, output: "BACKLOG.md\n" };
+          if (cmd.includes(`origin HEAD:${META_BRANCH}`)) {
+            pushes2++;
+            return { ok: false, output: "" };
+          }
+          return { ok: true, output: "" };
+        },
+        sleep: async () => {},
+      },
+    );
+    check(
+      "explorer fail-closed: all-invalid batch aborts with zero pushes and no writes",
+      aborted === false && pushes2 === 0 && readFileSync(join(dirExpl, "BACKLOG.md"), "utf8") === pristine,
+    );
+  } finally {
+    rmSync(dirExpl, { recursive: true, force: true });
   }
 }
 
@@ -10646,6 +10826,22 @@ check(
     "p1-046 topSlot falls back to chat on the home screen",
     topSlot(base) === "chat" && activeSlots(base).has("chat"),
   );
+  // P3-430: the gate renders the chat rail button disabled until pairing
+  // succeeds — the selected pill must not paint on it (the home screen's
+  // topSlot fallback made the one dead click read as the open pane).
+  check(
+    "p3-430 gateActiveSlots suppresses the pill on the locked chat slot",
+    gateActiveSlots(base, ["chat"]).size === 0 && activeSlots(base).has("chat"),
+  );
+  const gateArtifacts = viewReducer(base, { type: "open", slot: "artifacts" });
+  check(
+    "p3-430 gateActiveSlots keeps the pill on a pane the gate really opens",
+    gateActiveSlots(gateArtifacts, ["chat"]).size === 1 && gateActiveSlots(gateArtifacts, ["chat"]).has("artifacts"),
+  );
+  check(
+    "p3-430 gateActiveSlots is a no-op when nothing is locked",
+    gateActiveSlots(gateArtifacts, []).has("artifacts") && gateActiveSlots(base, ["settings"]).has("chat"),
+  );
   const share = viewReducer(chat, { type: "open", slot: "share" });
   const shareClosed = viewReducer(share, { type: "back" });
   check(
@@ -11130,6 +11326,26 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P3-377: the raw error string no longer prints on the desktop load failure",
     missionSrc.includes("error && !phone && !loadFailed"),
   );
+}
+
+// --- P3-436: the "nothing is lost" promise lives once, in the queue card -----
+{
+  // The degraded hero used to promise "nothing is lost" twice ~200px apart:
+  // the status card body (firstContactHint) ended with it and the queue-card
+  // hint (degradedQueueHint) carried it again. The promise belongs where the
+  // user acts — the status card now states only what happens next. This pins
+  // the DEDUP (not a deletion): the status hint drops the promise in BOTH
+  // locales while the queue card keeps it, so a regression restoring the
+  // duplicate promise fails here (rule 5's eval coverage for the copy change).
+  for (const [lang, promise, next] of [
+    ["en", "nothing is lost", "keeps trying on its own"],
+    ["pt", "nada se perde", "segue tentando sozinha"],
+  ] as const) {
+    const statusHint = translate(lang, "firstContactHint");
+    check(`P3-436: ${lang} status card no longer repeats the queue card's promise`, !statusHint.toLowerCase().includes(promise));
+    check(`P3-436: ${lang} the queue card keeps the promise (dedup, not deletion)`, translate(lang, "degradedQueueHint").toLowerCase().includes(promise));
+    check(`P3-436: ${lang} the status card still says what happens next`, statusHint.includes(next));
+  }
 }
 
 
@@ -12699,6 +12915,37 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-429: the offline card's prefs selects carry visible micro-labels -------
+// The two selects relied on aria-labels alone (invisible) — a first-boot user
+// had to guess which was language and which was theme. P3-448's lesson: pin
+// the new pattern present AND the old unlabeled markup absent.
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "DegradedView.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  const localAt = src.indexOf('className="degraded-local"');
+  const controls = src.slice(localAt, src.indexOf('className="degraded-manual"', localAt));
+  check(
+    "P3-429: each prefs select sits under a visible micro-label (2 labeled groups)",
+    (controls.match(/<label className="degraded-select">/g) ?? []).length === 2 &&
+      (controls.match(/className="degraded-select-label"/g) ?? []).length === 2 &&
+      controls.includes('{t("language")}') &&
+      controls.includes('{t("themeLabel")}'),
+  );
+  check(
+    "P3-429: the unlabeled direct-child markup is gone (paired pin, P3-448)",
+    !/className="degraded-select">\s*<select/.test(controls) &&
+      /className="degraded-select">\s*<span className="degraded-select-label"/.test(controls),
+  );
+  const labelRule = css.match(/\.degraded-select-label\s*\{[^}]*\}/);
+  const focusRule = css.match(/\.degraded-local-prefs select:focus-visible\s*\{[^}]*\}/);
+  check(
+    "P3-429: the micro-label rides the quiet-caps grammar and focus matches the queue field",
+    !!labelRule && /color:\s*var\(--muted\)/.test(labelRule[0]) &&
+      /text-transform:\s*uppercase/.test(labelRule[0]) &&
+      !!focusRule && /border-color:\s*var\(--fg\)/.test(focusRule[0]),
+  );
+}
+
 // --- P3-364: the gate carries a persistent map of the panes pairing unlocks ----
 // The P3-328 toast is a 4s flash; Artifacts/Browser/Mission Control were
 // invisible until connection, leaving a first-time user no answer to "why
@@ -12963,6 +13210,74 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-411: .pair-back is pinned top-left inside the positioned header, off the scroll flow",
     rule.includes("position: absolute") && rule.includes("left: 0") && rule.includes("var(--muted)"),
+  );
+}
+
+// --- P3-441: the manual ceremony composes on desktop instead of reusing the phone column ---
+// At 1440px the ceremony rendered the ~420px phone column with ~70% of the
+// window empty and the five-row pane map clipped mid-row at the fold
+// (explorer shot scratch-manual-pair-empty). The action column (intro,
+// directions, error) and the pane-map support column are separate wrappers
+// the ≥1024px media query turns into a grid; below the breakpoint the
+// wrappers are transparent blocks and the single-column flow is unchanged.
+{
+  const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  check(
+    "P3-441: PairingView splits the ceremony into an action column and a map support column",
+    src.includes('<div className="pair-columns">') &&
+      src.includes('<div className="pair-main">') &&
+      src.includes('<aside className="pair-side">'),
+  );
+  // The header stays OUTSIDE the composition (direct child of .pair-screen)
+  // so the P3-423 sticky brand block keeps the scroll container as its
+  // containing block; the map alone rides the support column.
+  const columnsAt = src.indexOf('<div className="pair-columns">');
+  const sideAt = src.indexOf('<aside className="pair-side">', columnsAt);
+  const mapAt = src.indexOf("<PaneMap offlinePanes={offlinePanes} />", sideAt);
+  const asideEnd = src.indexOf("</aside>", sideAt);
+  check(
+    "P3-441: the pane map is the support column's only content, inside the composition",
+    columnsAt !== -1 && sideAt > columnsAt && mapAt > sideAt && asideEnd > mapAt,
+  );
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  // Mobile keeps the .screen rhythm: the wrappers re-declare the gap the
+  // wrapped children inherited before (12px on .screen), not a copied rule.
+  const baseAt = css.indexOf(".pair-columns {");
+  const base = baseAt === -1 ? "" : css.slice(baseAt, css.indexOf("}", baseAt));
+  check(
+    "P3-441: the wrappers keep the .screen rhythm below the breakpoint (flex column + gap)",
+    base.includes("display: flex") && base.includes("flex-direction: column") && /gap:\s*var\(--space-3\)/.test(base),
+  );
+  // The ≥1024px block (the shell breakpoint App itself uses) turns the
+  // composition into a grid: flexible action column + capped support column,
+  // and the ceremony container widens past the phone column. Anchored to the
+  // block's own P3-441 comment header (the way baseAt anchors the base rule
+  // above), with the media open as the inner anchor — a future 1024px block
+  // appended later in this 5,600-line file cannot hijack the matches, since
+  // the slice starts at this block's own comment.
+  const deskBlockAt = css.indexOf("/* ── P3-441: the manual ceremony composes on desktop");
+  const deskSlice = deskBlockAt === -1 ? "" : css.slice(deskBlockAt);
+  const deskMediaAt = deskSlice.indexOf("@media (min-width: 1024px) {");
+  const deskMedia = deskMediaAt === -1 ? "" : deskSlice.slice(deskMediaAt);
+  const deskRule = deskMedia.match(/\.pair-columns\s*\{([^}]*)\}/);
+  check(
+    "P3-441: ≥1024px composes the ceremony as a two-column grid (action + map)",
+    !!deskRule &&
+      deskRule[1].includes("display: grid") &&
+      /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*\d+px\)/.test(deskRule[1]),
+  );
+  const deskScreen = deskMedia.match(/\.pair-wrap \.pair-screen\s*\{([^}]*)\}/);
+  const maxWidth = deskScreen ? Number(deskScreen[1].match(/max-width:\s*(\d+)px/)?.[1] ?? 0) : 0;
+  check(
+    "P3-441: the ceremony container widens past the phone column on desktop",
+    maxWidth >= 900,
+  );
+  // The pinned P3-423 safe-center contract survives on the base rule (the
+  // desktop block only widens the container).
+  const pairRule = css.match(/\.pair-wrap \.pair-screen\s*\{[^}]*\}/);
+  check(
+    "P3-441: the base pair-screen rule keeps overflow-safe centering and the phone cap",
+    !!pairRule && pairRule[0].includes("justify-content: safe center") && /max-width:\s*420px/.test(pairRule[0]),
   );
 }
 
@@ -22558,6 +22873,222 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P2-335: relay wire-protocol verdict in the reconnect loop (relayprotocol.ts) ---
+
+{
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const protocolSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "relayprotocol.ts"), "utf8");
+
+  // 1. the verdict table — the full closed set over one shared body shape
+  type RelayProtocolVerdictState = ReturnType<typeof relayProtocolVerdict>["state"];
+  const okBody = (proto: unknown) =>
+    JSON.stringify({ ok: true, version: "0.2.0", protocol: proto, uptimeS: 3, rooms: 1, roomsRejected: 0 });
+  const verdictOf = (status: number | null, bodyText: string | null, expected = RELAY_WIRE_PROTOCOL): RelayProtocolVerdictState =>
+    relayProtocolVerdict({ status, body: bodyText === null ? null : JSON.parse(bodyText), expected }).state;
+
+  check("P2-335: protocol equal to the expected constant → ok", verdictOf(200, okBody(RELAY_WIRE_PROTOCOL)) === "ok");
+  check("P2-335: protocol greater than expected → mismatch", verdictOf(200, okBody(RELAY_WIRE_PROTOCOL + 7)) === "mismatch");
+  check("P2-335: protocol lesser but positive → mismatch", verdictOf(200, okBody(RELAY_WIRE_PROTOCOL - 1)) === "mismatch");
+  check("P2-335: protocol zero → legacy (an old relay keeps working)", verdictOf(200, okBody(0)) === "legacy");
+  check("P2-335: protocol negative → legacy", verdictOf(200, okBody(-2)) === "legacy");
+  check("P2-335: protocol fractional → legacy", verdictOf(200, okBody(2.5)) === "legacy");
+  check("P2-335: protocol string → legacy", verdictOf(200, okBody("2")) === "legacy");
+  check("P2-335: protocol absent → legacy", verdictOf(200, JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 })) === "legacy");
+  check("P2-335: protocol null → legacy", verdictOf(200, okBody(null)) === "legacy");
+  check("P2-335: status 500 → unknown", verdictOf(500, okBody(RELAY_WIRE_PROTOCOL)) === "unknown");
+  check(
+    "P2-335: non-JSON body → unknown",
+    verdictOf(200, null) === "unknown" &&
+      relayProtocolVerdict({ status: 200, body: "<html>nginx</html>", expected: RELAY_WIRE_PROTOCOL }).state === "unknown",
+  );
+  check(
+    "P2-335: body without version → unknown",
+    verdictOf(200, JSON.stringify({ ok: true, protocol: RELAY_WIRE_PROTOCOL + 1 })) === "unknown",
+  );
+  check(
+    "P2-335: non-string version → unknown (fail-closed, never a hard verdict)",
+    verdictOf(200, JSON.stringify({ ok: true, version: 42, protocol: RELAY_WIRE_PROTOCOL + 1 })) === "unknown",
+  );
+  check("P2-335: a failed attempt (status null) → unknown", verdictOf(null, okBody(RELAY_WIRE_PROTOCOL + 3)) === "unknown");
+  check(
+    "P2-335: a body identified by version alone is still classified — an incompatible relay may drop any other field",
+    verdictOf(200, JSON.stringify({ version: "9.9.9", protocol: RELAY_WIRE_PROTOCOL + 1 })) === "mismatch" &&
+      verdictOf(200, JSON.stringify({ version: "9.9.9", protocol: RELAY_WIRE_PROTOCOL })) === "ok",
+  );
+  check(
+    "P2-335: only mismatch is a hard verdict — every other answer preserves the reconnect behavior",
+    [verdictOf(200, okBody(RELAY_WIRE_PROTOCOL)), verdictOf(200, okBody(0)), verdictOf(500, okBody(RELAY_WIRE_PROTOCOL)), verdictOf(null, null)].every(
+      (s) => s !== "mismatch",
+    ),
+  );
+  const everyProtocolVerdict = [
+    relayProtocolVerdict({ status: 200, body: JSON.parse(okBody(RELAY_WIRE_PROTOCOL)), expected: RELAY_WIRE_PROTOCOL }), // ok
+    relayProtocolVerdict({ status: 200, body: JSON.parse(okBody(RELAY_WIRE_PROTOCOL + 1)), expected: RELAY_WIRE_PROTOCOL }), // mismatch
+    relayProtocolVerdict({ status: 200, body: JSON.parse(okBody(undefined)), expected: RELAY_WIRE_PROTOCOL }), // legacy
+    relayProtocolVerdict({ status: 404, body: null, expected: RELAY_WIRE_PROTOCOL }), // unknown
+  ];
+  check(
+    "P2-335: the classifier answers exactly the four documented states",
+    everyProtocolVerdict.map((v) => v.state).join(",") === "ok,mismatch,legacy,unknown",
+  );
+  check(
+    "P2-335: every verdict carries a static pt phrase with no URL, scheme, digit or raw error",
+    everyProtocolVerdict.every(
+      (v) =>
+        v.message.length > 0 &&
+        !v.message.includes("/") &&
+        !v.message.includes("http") &&
+        !v.message.includes("127.0.0.1") &&
+        !/\d/.test(v.message),
+    ),
+  );
+
+  // 2. the probe plan — every rule, consulted in the documented order
+  const basePlan: RelayProtocolPlanInput = {
+    relayDisabled: false,
+    connected: false,
+    dialFailures: RELAY_PROTOCOL_PROBE_MIN_FAILURES,
+    msSinceLastProbe: null,
+    mismatchKnown: false,
+  };
+  const plan = (over: Partial<RelayProtocolPlanInput>) => relayProtocolProbePlan({ ...basePlan, ...over });
+  const planRows: [string, Partial<RelayProtocolPlanInput>, string, string][] = [
+    // rule 1 — a disabled relay beats everything (connectRelay refuses anyway)
+    ["disabled wins over connected", { relayDisabled: true, connected: true, dialFailures: 99 }, "skip", "disabled"],
+    ["disabled wins over a stale throttle", { relayDisabled: true, dialFailures: 99, msSinceLastProbe: 0 }, "skip", "disabled"],
+    // rule 2 — connected: frames are flowing, nothing to diagnose
+    ["connected wins over failures", { connected: true, dialFailures: 9 }, "skip", "connected"],
+    // rule 3 — fewer than three consecutive failed dial cycles are a blip
+    ["one failed dial cycle is a blip", { dialFailures: 1 }, "skip", "few-dial-failures"],
+    ["two failed dial cycles are a blip", { dialFailures: RELAY_PROTOCOL_PROBE_MIN_FAILURES - 1 }, "skip", "few-dial-failures"],
+    // rule 4 — a known mismatch skips until the relay speaks again
+    ["mismatch already known wins over the throttle", { dialFailures: 9, mismatchKnown: true, msSinceLastProbe: 0 }, "skip", "mismatch-known"],
+    // rule 5 — inside the documented 10-minute throttle window
+    ["throttled inside the 10-minute window", { dialFailures: 9, msSinceLastProbe: RELAY_PROTOCOL_PROBE_THROTTLE_MS - 1 }, "skip", "throttled"],
+    // rule 6 — only then a probe
+    ["the first probe ever is not throttled", { dialFailures: 9, msSinceLastProbe: null }, "probe", "probe-due"],
+  ];
+  for (const [name, over, action, reason] of planRows) {
+    const v = plan(over);
+    check(`P2-335: ${name}`, v.action === action && v.reason === reason);
+  }
+  check(
+    "P2-335: the throttle window boundary is exact (10 minutes), probed on both sides",
+    plan({ dialFailures: 9, msSinceLastProbe: RELAY_PROTOCOL_PROBE_THROTTLE_MS }).action === "probe" &&
+      plan({ dialFailures: 9, msSinceLastProbe: RELAY_PROTOCOL_PROBE_THROTTLE_MS - 1 }).reason === "throttled" &&
+      RELAY_PROTOCOL_PROBE_THROTTLE_MS === 600_000,
+  );
+  check(
+    "P2-335: the probe fires at exactly three consecutive failed dial cycles",
+    plan({ dialFailures: 3 }).action === "probe" && RELAY_PROTOCOL_PROBE_MIN_FAILURES === 3,
+  );
+
+  // 3. URL derivation parity — the same host table the P2-328 desktop probe pins
+  const healthUrlTable = [
+    "wss://relay.example.com:8788",
+    "ws://127.0.0.1:8787",
+    "wss://relay.example.com",
+    "ws://127.0.0.1",
+    "wss://u:p@relay.example.com/some/path?q=1#frag",
+    "wss://relay.example.com:443/room/deep?x=1",
+    "ws://192.168.1.10:8787/",
+    "ws://[::1]:8787",
+    "wss://Relay.Example.COM",
+  ];
+  check(
+    "P2-335: relayHealthUrlFromWs matches the desktop relayHealthUrl derivation on every host in the table",
+    healthUrlTable.every((raw) => relayHealthUrlFromWs(raw) === relayHealthUrl(raw)),
+  );
+  check(
+    "P2-335: relayHealthUrlFromWs refuses non-ws schemes, garbage and non-strings, like the desktop probe",
+    relayHealthUrlFromWs("https://relay.example.com") === null &&
+      relayHealthUrlFromWs("not a url") === null &&
+      relayHealthUrlFromWs(42) === null &&
+      relayHealthUrlFromWs(null) === null,
+  );
+
+  // 4. purity: no I/O of any kind in the module (index.ts boots a daemon on import)
+  check(
+    "P2-335: relayprotocol.ts is I/O-free (no imports, no clock, no timers, no fetch)",
+    !/from\s+["']/.test(protocolSrc) &&
+      !protocolSrc.includes("Date.now(") &&
+      !protocolSrc.includes("setTimeout(") &&
+      !protocolSrc.includes("setInterval(") &&
+      !protocolSrc.includes("fetch(") &&
+      !protocolSrc.includes("process.env"),
+  );
+
+  // 5. the wired daemon: the compared constant comes from @ocr/protocol,
+  //    the plan is consulted exactly once (the existing retry path) and no
+  //    timer, route or listener is created
+  const protoImportEnd = daemonSrc.indexOf('from "@ocr/protocol"');
+  const protoImport = daemonSrc.slice(daemonSrc.lastIndexOf("import {", protoImportEnd), protoImportEnd);
+  check(
+    "P2-335: the compared value comes from the RELAY_WIRE_PROTOCOL constant imported from @ocr/protocol, never a literal",
+    protoImport.includes("RELAY_WIRE_PROTOCOL") &&
+      (daemonSrc.match(/expected: RELAY_WIRE_PROTOCOL/g) ?? []).length >= 2 &&
+      !/expected:\s*\d/.test(daemonSrc) &&
+      !/\bexpected\s*===?\s*\d/.test(protocolSrc) &&
+      !/RELAY_WIRE_PROTOCOL\s*=/.test(protocolSrc),
+  );
+  const consultCount = (daemonSrc.match(/relayProtocolProbePlan\(\{/g) ?? []).length;
+  check("P2-335: the plan is consulted exactly once — inside the existing reconnect loop", consultCount === 1);
+  const connectStart = daemonSrc.indexOf("function connectRelay(");
+  const connectFn = daemonSrc.slice(connectStart, daemonSrc.indexOf("\nfunction applyRelayProtocolState", connectStart));
+  check(
+    "P2-335: the consultation sits in the relay close handler (the existing retry path), after the failure streak",
+    connectFn.includes('ws.on("close"') &&
+      /relayDialFailures\+\+;[\s\S]*?relayProtocolProbePlan\(\{/.test(connectFn) &&
+      /relayProtocolProbePlan\(\{[\s\S]*?action === "probe"/.test(connectFn),
+  );
+  check("P2-335: the relay socket keeps exactly its four existing listeners (no new listener)", (connectFn.match(/ws\.on\(/g) ?? []).length === 4);
+  const consultBlock = connectFn.slice(
+    connectFn.indexOf("relayDialFailures++;"),
+    connectFn.indexOf("relayRetryTimer = setTimeout("),
+  );
+  check(
+    "P2-335: the consultation block creates no timer — the retry scheduling after it is the pre-existing one",
+    consultBlock.includes("relayProtocolProbePlan({") && !consultBlock.includes("setTimeout("),
+  );
+  const probeStart = daemonSrc.indexOf("async function probeRelayProtocol");
+  const probeFn = daemonSrc.slice(probeStart, daemonSrc.indexOf("// local direct mode (P1-061)", probeStart));
+  check(
+    "P2-335: the probe is one best-effort GET with the documented 5s timeout and the 4KB body cap",
+    probeFn.includes("AbortSignal.timeout(RELAY_PROTOCOL_PROBE_TIMEOUT_MS)") &&
+      probeFn.includes("readRelayBodyPrefix(res, RELAY_PROTOCOL_BODY_MAX)") &&
+      probeFn.includes('redirect: "manual"') &&
+      RELAY_PROTOCOL_PROBE_TIMEOUT_MS === 5_000 &&
+      RELAY_PROTOCOL_BODY_MAX === 4_096,
+  );
+  check(
+    "P2-335: the probe creates no timer, no route and no listener — any failure degrades to unknown",
+    !probeFn.includes("setTimeout(") &&
+      !probeFn.includes("setInterval(") &&
+      !probeFn.includes("createServer") &&
+      !probeFn.includes(".on(") &&
+      !/url\.pathname[^\n]*relayProtocol/.test(daemonSrc),
+  );
+  const onSocketStart = daemonSrc.indexOf("function onSocketMessage(");
+  const onSocketFn = daemonSrc.slice(onSocketStart, onSocketStart + 1200);
+  check(
+    "P2-335: an inbound relay frame ends the failure streak and supersedes a stale mismatch verdict",
+    onSocketFn.includes("if (ws === relaySocket)") &&
+      onSocketFn.includes("relayDialFailures = 0;") &&
+      onSocketFn.includes('applyRelayProtocolState("unknown")'),
+  );
+  check(
+    "P2-335: the health payload gains the additive relayProtocol field next to relayConnected and relayRetry",
+    /relayConnected,\n\s*\/\/ P2-335[\s\S]*?relayProtocol: \{ state: relayProtocolState, message: RELAY_PROTOCOL_PHRASES\[relayProtocolState\] \},[\s\S]*?relayRetry: relayConnected/.test(
+      daemonSrc,
+    ),
+  );
+  check(
+    "P2-335: exactly one log line records each state transition, with the static line table",
+    (daemonSrc.match(/applyRelayProtocolState\(/g) ?? []).length === 4 &&
+      daemonSrc.includes("log(next === \"mismatch\" ? \"warn\" : \"info\", RELAY_PROTOCOL_LOG[next]"),
+  );
+}
+
 // --- P2-199: daemon↔relay link verdict (relaylink.ts) -------------------------
 
 {
@@ -23714,6 +24245,29 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P3-348: the ci win boot step ceiling is 4 minutes; the mac step keeps 10",
     winBootSlice.includes("timeout-minutes: 4") && macBootSlice.includes("timeout-minutes: 10"),
+  );
+
+  // --- P3-437: a post-verdict teardown wedge keeps the verdict's code -------
+
+  check(
+    "P3-437: postVerdictExitCode preserves the printed verdict (OK stays 0, FAIL stays 1)",
+    postVerdictExitCode(true, 0) === 0 && postVerdictExitCode(true, 1) === 1,
+  );
+  check(
+    "P3-437: a non-integer verdict code still fails closed",
+    postVerdictExitCode(true, undefined) === 1 && postVerdictExitCode(true, Number.NaN) === 1,
+  );
+  check(
+    "P3-437: before the verdict the watchdog timeout is always a failure",
+    postVerdictExitCode(false, 0) === 1 && postVerdictExitCode(undefined, 0) === 1,
+  );
+  check(
+    "P3-437: the watchdog exits through postVerdictExitCode (never a bare exit(1) after the verdict)",
+    bootSrc.includes("process.exit(postVerdictExitCode(verdictPrinted, process.exitCode))"),
+  );
+  check(
+    "P3-437: closeApp races the wedged close() against a hard ceiling so the finally always reaches the exit plan",
+    bootSrc.includes("Promise.race") && bootSrc.includes("CLOSE_DEADLINE_MS + 1_000"),
   );
 }
 
@@ -35980,6 +36534,59 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   );
 }
 
+// --- P3-443: the agent-down error block self-heals in place ------------------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const welcome = read(join("components", "WelcomeView.tsx"));
+  const app = read("App.tsx");
+  const css = read("index.css");
+
+  // P3-450: the reconnect in the wizard wears the SHARED accent identity —
+  // parallel primary actions in the same first-boot journey keep one dialect
+  const reconnectAt = welcome.indexOf('className="primary welcome-qr-reconnect"');
+  check("P3-443: the agent-down reconnect wears the shared accent primary", reconnectAt !== -1);
+  check(
+    "P3-443: no bespoke hover/one-off paint on the reconnect",
+    !css.includes(".welcome-qr-reconnect:hover") &&
+      css.includes(".welcome-qr-reconnect:disabled {"),
+  );
+
+  // the reconnect replaces the retry ONLY when the shell restart bridge exists
+  // (the plain-browser boot has no IPC to restart the daemon, so the retry
+  // stays there) — and the retry string survives for that path
+  const branchAt = welcome.indexOf("agentDown && reconnect ? (");
+  const reconnectBtnAt = welcome.indexOf("<ReconnectButton", branchAt);
+  const retryAt = welcome.indexOf('className="welcome-qr-retry"');
+  check(
+    "P3-443: the reconnect replaces the bare retry only on the bridged agent-down branch",
+    branchAt !== -1 && reconnectBtnAt > branchAt && reconnectBtnAt < retryAt,
+  );
+  check("P3-443: the bridge is passed into InlinePair from the wizard", welcome.includes("reconnect={reconnect}"));
+
+  // App already builds the reconnect closure only when the shell bridge
+  // exists (app:reconnectDaemon) — the wizard never renders a dead button
+  const bridgeAt = app.indexOf("desktopBridge()?.reconnectDaemon");
+  const welcomeAt = app.indexOf("<WelcomeView");
+  const reconnectPropAt = app.indexOf("reconnect={reconnectBtn}", welcomeAt);
+  check(
+    "P3-443: App hands the wizard the bridge-gated reconnect closure",
+    bridgeAt !== -1 && welcomeAt > bridgeAt && reconnectPropAt > welcomeAt,
+  );
+
+  // the manual escape survives in both branches — the self-heal never trades
+  // away the labeled escape to the paste-code ceremony (P3-329 rule)
+  const manualAt = welcome.indexOf('className="welcome-qr-manual"');
+  check("P3-443: the manual escape stays beside the reconnect", manualAt > reconnectBtnAt && manualAt < welcome.indexOf('t("welcomeQrWaitHint")'));
+
+  // copy-independent hook: the reconnect is selectable by class, not by
+  // locale-pinned words (P3-421 lesson); the retry copy survives for the
+  // non-bridged path, so no rendered key goes orphaned
+  check(
+    "P3-443: the reconnect hook is the welcome-qr-reconnect class, retry copy survives",
+    welcome.includes('className="primary welcome-qr-reconnect"') &&
+      welcome.includes('t("welcomeQrRetry")'),
+  );
+}
 
 // ── eval r3: doctorDist + mergeReadiness (operator landing P1-060) ──────
 // --- eval r3: merge readiness — GitHub's verdict is read BEFORE the merge is armed --
