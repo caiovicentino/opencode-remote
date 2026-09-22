@@ -2994,6 +2994,17 @@ button.desk-new:disabled {
   opacity: 0.6;
   cursor: default;
 }
+/* P3-431: a rejected submit must not read as valid — while the inline error
+   block stands the field carries the danger border and the global accent
+   focus ring reads danger too, so the field stops signaling "focused/valid"
+   above the red verdict. Editing the field clears the state (and the ring). */
+.pair-code[aria-invalid="true"],
+.pair-code[aria-invalid="true"]:focus {
+  border-color: var(--danger);
+}
+.pair-code[aria-invalid="true"]:focus-visible {
+  outline-color: var(--danger);
+}
 /* ── P3-332: live auto-connect state (local mode) ───────────────────────────
    The intro promises the shell connects itself, so the local-mode screen shows
    the attempt in flight: pulsing status dot + phase copy + retry. Same flat

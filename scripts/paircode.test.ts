@@ -29,6 +29,15 @@ check(".pair-code uses the mono token", !!rule && /font-family:\s*var\(--font-mo
 check(".pair-code is compact (8px vertical padding)", !!rule && /padding:\s*8px/.test(rule[0]));
 check("pairing textarea renders rows=2", /className="pair-code"\s*\n\s*rows=\{2\}/.test(view));
 
+// P3-431: a rejected submit flags the field itself — aria-invalid follows
+// codeError, the field carries the danger border and the global accent
+// focus-visible ring reads danger while the inline error block stands.
+check("invalid code sets aria-invalid on the paste box", /aria-invalid=\{codeError \? true : undefined\}/.test(view));
+const invalidRule = css.match(/\.pair-code\[aria-invalid="true"\][^{]*\{[^}]*\}/);
+check("index.css styles the invalid paste box with the danger border", !!invalidRule && /border-color:\s*var\(--danger\)/.test(invalidRule[0]));
+const ringRule = css.match(/\.pair-code\[aria-invalid="true"\]:focus-visible\s*\{[^}]*\}/);
+check("invalid paste box suppresses the accent ring in favor of danger", !!ringRule && /outline-color:\s*var\(--danger\)/.test(ringRule[0]) && !/var\(--accent\)/.test(ringRule[0]));
+
 if (failures) {
   console.error(`\n${failures} failure(s)`);
   process.exit(1);

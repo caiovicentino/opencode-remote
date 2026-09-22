@@ -1870,7 +1870,11 @@ screen's state; a code from a different protocol version says exactly that
 line, where the submit used to fail silently. An empty
 paste box is answered the same way instead of dead-ending (P3-361): "Pair"
 stays live, the form shows an inline "paste the code first" hint with focus
-moving to the field, and the hint clears as soon as typing starts. On the
+moving to the field, and the hint clears as soon as typing starts. A rejected
+submit also flags the field itself (P3-431): while the invalid-code error
+stands, the paste box carries the danger border and its keyboard focus ring
+reads danger instead of the global accent — the field no longer signals
+"valid/focused" sitting right above the red verdict; typing dissolves both. On the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
 primary element on that screen. The paste field reads as the same care
 (P3-369): a compact two-row mono box with the resize grip removed, spellcheck
