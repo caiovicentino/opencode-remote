@@ -297,9 +297,12 @@ export const dict = {
     // degraded first-boot journey (desktop, P2-112): a dead daemon on first
     // boot is never a dead end — calm status, visible auto-retry, minimal
     // local data, and the manual pairing screen one click away.
+    // P3-436: the status card says what happens next only — the "nothing is
+    // lost" promise lives once, in the queue card where the user acts, so two
+    // adjacent cards never repeat the same promise.
     firstContactTitle: "Connecting for the first time…",
     firstContactHint:
-      "Conversations, files and artifacts sync as soon as the local daemon answers. Nothing is lost — this screen keeps trying on its own.",
+      "Conversations, files and artifacts sync as soon as the local daemon answers — this screen keeps trying on its own.",
     degradedRetrying: "Retrying automatically…",
     // P3-372: live segment of the auto-retry line — "12s · attempt 3".
     retryElapsed: "{s}s",
@@ -604,6 +607,9 @@ export const dict = {
     missionLabel: "Mission",
     missionActive: "Active mission",
     missionActiveNone: "No mission set. Define one in the chat: describe what you want and, optionally, paste a GitHub repo link.",
+    // P3-446: behind the unpaired gate the chat is the pane that needs pairing —
+    // the empty card points past the gate instead of at a dead end.
+    missionActiveNonePrePairing: "No mission yet. After pairing, set one from the chat: describe what you want and, optionally, paste a GitHub repo link.",
     missionSource: "source",
     missionSourcePrompt: "prompt",
     missionSourceRepo: "repo",
@@ -928,6 +934,9 @@ export const dict = {
     browserNoPage: "No page loaded.",
     // P3-379: the pane's first paint is a new-tab empty state, not a host URL
     browserEmptyHint: "Type an address above, or open a preview from the chat.",
+    // P3-446: pre-pairing the chat is locked — the hint defers that path
+    // instead of sending the first-boot user to an unreachable surface.
+    browserEmptyHintPrePairing: "Type an address above. After pairing, you can also open a preview from the chat.",
     browserShotAlt: "Host browser screenshot",
     browserInvalidUrl: "Invalid URL — use http(s)://…",
     // P3-378: a typed URL that parses but isn't http(s) (file://, data:…) is a
@@ -1157,9 +1166,12 @@ export const dict = {
     // jornada degradada no primeiro boot (desktop, P2-112): daemon morto no
     // primeiro contato nunca vira beco sem saída — status calmo, retry
     // automático visível, dados locais mínimos e o pareamento a um clique.
+    // P3-436: o card de status diz só o que acontece a seguir — a promessa
+    // "nada se perde" vive uma vez, no card da fila onde o usuário age, para
+    // dois cards vizinhos nunca repetirem a mesma promessa.
     firstContactTitle: "Conectando pela primeira vez…",
     firstContactHint:
-      "Conversas, arquivos e artifacts sincronizam assim que o daemon local responder. Nada se perde — esta tela segue tentando sozinha.",
+      "Conversas, arquivos e artifacts sincronizam assim que o daemon local responder — esta tela segue tentando sozinha.",
     degradedRetrying: "Tentando sozinho…",
     // P3-372: segmento vivo da linha de retry — "há 12s · tentativa 3".
     retryElapsed: "há {s}s",
@@ -1455,6 +1467,9 @@ export const dict = {
     missionLabel: "Missão",
     missionActive: "Missão ativa",
     missionActiveNone: "Nenhuma missão definida. Defina no chat: descreva o que você quer e, se quiser, cole o link de um repo do GitHub.",
+    // P3-446: atrás do portão sem parear o chat é o painel que pede pareamento —
+    // o card vazio aponta pro depois do portão em vez do beco sem saída.
+    missionActiveNonePrePairing: "Nenhuma missão definida. Depois de parear, defina no chat: descreva o que você quer e, se quiser, cole o link de um repo do GitHub.",
     missionSource: "origem",
     missionSourcePrompt: "prompt",
     missionSourceRepo: "repo",
@@ -1771,6 +1786,9 @@ export const dict = {
     browserNoPage: "Nenhuma página carregada.",
     // P3-379: a primeira pintura do pane é um estado vazio de nova aba, não uma URL do host
     browserEmptyHint: "Digite um endereço acima ou abra uma prévia pelo chat.",
+    // P3-446: antes do parear o chat está travado — a dica adia esse caminho
+    // em vez de mandar o usuário do primeiro boot pra uma superfície inalcançável.
+    browserEmptyHintPrePairing: "Digite um endereço acima. Depois de parear, também dá pra abrir uma prévia pelo chat.",
     browserShotAlt: "Captura do navegador da máquina",
     browserInvalidUrl: "URL inválida — use http(s)://…",
     // P3-378: URL digitada que parseia mas não é http(s) (file://, data:…) é

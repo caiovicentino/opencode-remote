@@ -72,7 +72,10 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   campo ativo que convida a digitar, não como campo desabilitado. P3-420: o
   botão "Salvar mensagem" habilitado segue o mesmo tratamento de campo ativo
   (superfície pintada + borda firme, hover que acentua) — deixa de parecer um
-  fantasma apagado ao lado do "Reconectar agora".
+  fantasma apagado ao lado do "Reconectar agora". P3-449: o estado
+  desabilitado mantém a borda firme e escurece só o rótulo até existir texto
+  (nunca opacity no botão inteiro) — lê como "pronto quando você digita", não
+  como botão quebrado.
   próprio painel, fila sobrevive a restart do app)
 - Uma identidade primária na jornada de primeiro boot (P3-450): o "Reconectar
   agora" do card calmo deixa de ser o único botão sólido invertido

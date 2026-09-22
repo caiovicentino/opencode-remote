@@ -442,7 +442,12 @@ export default function MissionControlView({
           </div>
         </>
       ) : (
-        <p className="mission-active-note">{mission === null ? t("missionActiveNone") : "…"}</p>
+        /* P3-446: behind the gate the chat is the pane that needs
+            pairing — the empty card points at the after-pairing world
+            instead of the unreachable "define it in the chat". */
+        <p className="mission-active-note">
+          {mission === null ? t(prePairing ? "missionActiveNonePrePairing" : "missionActiveNone") : "…"}
+        </p>
       )}
       {clearStatus && <p className="mission-active-status">{clearStatus}</p>}
     </div>
