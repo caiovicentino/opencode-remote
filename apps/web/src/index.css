@@ -191,6 +191,19 @@ textarea {
   font-weight: 600;
 }
 
+/* P3-452: pane header actions carry the rail's SVG language — no bare text
+   glyphs beside the drawn icon set. Icon-only buttons flex-center the stroke
+   like .chat-btn (P2-107), so the mark sits true in the bordered box at every
+   hit-target size. */
+.screen > header button,
+.browser-header button,
+.browser-bar button,
+.pane-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .muted {
   color: var(--muted);
   font-size: 0.85rem;

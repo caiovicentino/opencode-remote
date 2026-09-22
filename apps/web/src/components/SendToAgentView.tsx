@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import type { OcrRequest } from "../lib/files";
+// P3-452: header actions speak the shared SVG icon language (like the rail);
+// the icon-only back button needs its accessible name from the dict.
+import { useT } from "../lib/i18n";
+import { IconArrowLeft } from "./icons";
 
 interface Payload {
   title?: string;
@@ -27,6 +31,7 @@ export default function SendToAgentView({
   onBack: () => void;
   onOpenSession: (id: string) => void;
 }) {
+  const t = useT();
   const [sessions, setSessions] = useState<{ id: string; title?: string }[]>([]);
   const [extra, setExtra] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -74,7 +79,7 @@ export default function SendToAgentView({
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack}>←</button>
+        <button onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>
         <h1 className="pane-title">Send to agent</h1>
       </header>
       <div className="list">

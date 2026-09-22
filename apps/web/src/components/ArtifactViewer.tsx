@@ -4,6 +4,7 @@ import { parseMarkdown, type Inline, type MdBlock } from "../lib/md";
 import { parseCsv } from "../lib/csv";
 import type { OcrRequest } from "../lib/files";
 import { useT } from "../lib/i18n";
+import { IconArrowLeft } from "./icons";
 
 interface ViewState {
   loading: boolean;
@@ -202,7 +203,7 @@ export default function ArtifactViewer({
       }}
     >
       <button className="pane-close" onClick={onClose} aria-label={t("back")}>
-        ←
+        <IconArrowLeft />
       </button>
       <span
         style={{

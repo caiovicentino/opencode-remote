@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizeHttpUrl } from "../lib/preview";
 import { useT } from "../lib/i18n";
-import { IconGlobe } from "./icons";
+// P3-452: pane header/bar actions reuse the shared SVG set — one icon
+// language with the rail, no bare text glyphs beside it.
+import { IconArrowLeft, IconArrowRight, IconGlobe, IconMaximize, IconMinimize, IconRefresh, IconText } from "./icons";
 
 /**
  * Browser pane (P2-011, P1-072): in the desktop shell it renders a real,
@@ -259,7 +261,7 @@ function WebViewPane({
   return (
     <div className="browser-pane">
       <header className="browser-header">
-        <button className="pane-back" onClick={onBack} aria-label={t("browserBack")}>←</button>
+        <button className="pane-back" onClick={onBack} aria-label={t("browserBack")}><IconArrowLeft /></button>
         <h1 className="pane-title">{t("navBrowser")}</h1>
         {onToggleMaximize && (
           <button
@@ -267,7 +269,7 @@ function WebViewPane({
             aria-label={maximized ? t("browserRestore") : t("browserMaximize")}
             title={maximized ? t("browserRestore") : t("browserMaximize")}
           >
-            {maximized ? "⤡" : "⤢"}
+            {maximized ? <IconMinimize /> : <IconMaximize />}
           </button>
         )}
       </header>
@@ -284,7 +286,7 @@ function WebViewPane({
         {/* P3-416: before any page exists the bar's action is Go (reload would
             be a no-op on the empty guest); it swaps to reload once one is. */}
         {started ? (
-          <button onClick={reload} aria-label={t("browserReload")} title={t("browserReload")}>↻</button>
+          <button onClick={reload} aria-label={t("browserReload")} title={t("browserReload")}><IconRefresh /></button>
         ) : (
           <button
             onClick={() => go(input)}
@@ -292,7 +294,7 @@ function WebViewPane({
             aria-label={t("browserGo")}
             title={t("browserGo")}
           >
-            →
+            <IconArrowRight />
           </button>
         )}
       </div>
@@ -441,13 +443,13 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
   return (
     <div className="screen">
       <header>
-        <button className="pane-back" onClick={onBack} aria-label={t("back")}>←</button>
+        <button className="pane-back" onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>
         <h1 className="pane-title">{t("navBrowser")}</h1>
         <button onClick={() => setShowText((v) => !v)} aria-label={t("browserToggleText")}>
-          ≡
+          <IconText />
         </button>
         <button onClick={() => void refresh()} aria-label={t("browserRefreshShot")}>
-          ↻
+          <IconRefresh />
         </button>
       </header>
       <div style={{ display: "flex", gap: 6, padding: "8px 10px" }}>

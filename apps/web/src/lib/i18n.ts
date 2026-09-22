@@ -650,6 +650,8 @@ export const dict = {
     noChanges: "no file changes yet for this request",
     close: "Close",
     back: "Back",
+    // P3-452: generic refresh label for pane header actions (Files pane).
+    refresh: "Refresh",
     queuedTitle: "queued — will send when back online",
     connTitle: "connection: {status}",
     sessionFallback: "session",
@@ -1509,6 +1511,7 @@ export const dict = {
     noChanges: "sem mudanças de arquivos neste pedido",
     close: "Fechar",
     back: "Voltar",
+    refresh: "Atualizar",
     queuedTitle: "na fila — envia quando voltar a conexão",
     connTitle: "conexão: {status}",
     sessionFallback: "sessão",

@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import { downloadFile, mimeFor, saveFile, type OcrRequest } from "../lib/files";
+// P3-452: header actions speak the shared SVG icon language (like the rail);
+// the icon-only back button needs its accessible name from the dict.
+import { useT } from "../lib/i18n";
+import { IconArrowLeft, IconRefresh } from "./icons";
 
 interface RemoteFile {
   path: string;
@@ -44,6 +48,7 @@ export default function FilesView({
   request: OcrRequest;
   onBack: () => void;
 }) {
+  const t = useT();
   const [files, setFiles] = useState<RemoteFile[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -121,10 +126,10 @@ export default function FilesView({
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack}>←</button>
+        <button onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>
         <h1 className="pane-title">Files on {""}this machine</h1>
-        <button onClick={load} aria-label="Refresh">
-          ↻
+        <button onClick={load} aria-label={t("refresh")}>
+          <IconRefresh />
         </button>
       </header>
       <div className="list">

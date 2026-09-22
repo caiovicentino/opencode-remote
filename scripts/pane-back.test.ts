@@ -30,15 +30,20 @@ function check(name: string, ok: boolean, detail = "") {
 
 const web = join(import.meta.dirname, "..", "apps", "web", "src");
 
-// every back-arrow button in the three panes carries .pane-back — an unmarked
-// "←" would lead the header again in the rail-navigated desktop shell
+// every back affordance in the three panes carries .pane-back — an unmarked
+// one would lead the header again in the rail-navigated desktop shell.
+// P3-452: the arrow itself now renders as the shared SVG (IconArrowLeft,
+// same language as the rail) instead of the bare "←" text glyph, so the
+// source pin filters on the icon component instead of the character.
 const panes = ["ArtifactsView.tsx", "BrowserView.tsx", "MissionControlView.tsx"];
 for (const pane of panes) {
   const src = readFileSync(join(web, "components", pane), "utf8");
-  const arrows = src.split("\n").filter((l) => l.includes("←"));
+  const arrows = src
+    .split("\n")
+    .filter((l) => l.includes("IconArrowLeft") && !l.trim().startsWith("import"));
   const unmarked = arrows.filter((l) => !l.includes("pane-back"));
   check(
-    `${pane}: back arrow(s) carry .pane-back`,
+    `${pane}: back button(s) carry .pane-back`,
     arrows.length > 0 && unmarked.length === 0,
     `${unmarked.length} of ${arrows.length} unmarked`,
   );

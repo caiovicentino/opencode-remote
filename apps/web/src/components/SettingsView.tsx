@@ -4,7 +4,7 @@ import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 import { timeAgo } from "../lib/time";
 import { routineHistoryRows } from "../lib/routinehistoryview";
-import { IconChevronDown } from "./icons";
+import { IconArrowLeft, IconChevronDown } from "./icons";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
@@ -580,7 +580,7 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   return (
     <div className="screen">
       <header>
-        <button onClick={onBack}>←</button>
+        <button onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>
         <h1 className="pane-title">{t("navSettings")}</h1>
       </header>
 

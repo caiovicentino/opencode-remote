@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { humanizeError } from "../lib/errors";
 import { useT } from "../lib/i18n";
-import { IconRadar } from "./icons";
+import { IconArrowLeft, IconRadar } from "./icons";
 
 /**
  * Mission Control (P2-048): navigable post-mortem for the pilot's autonomous
@@ -386,7 +386,7 @@ export default function MissionControlView({
     return (
       <div className="screen">
         <header>
-          {onBack && <button className="pane-back" onClick={onBack}>←</button>}
+          {onBack && <button className="pane-back" onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>}
           <h1 className="pane-title">Mission Control</h1>
         </header>
         <div className="list">
@@ -401,7 +401,7 @@ export default function MissionControlView({
   return (
     <div className="screen mission">
       <header>
-        {onBack && <button className="pane-back" onClick={onBack}>←</button>}
+        {onBack && <button className="pane-back" onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>}
         <h1 className="pane-title">
           <IconRadar size={16} /> Mission Control
         </h1>

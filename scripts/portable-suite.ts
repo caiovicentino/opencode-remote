@@ -70,6 +70,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "opencodebin.test.ts",
   "paircode.test.ts",
   "pane-back.test.ts",
+  "pane-icons.test.ts",
   "pairempty.test.ts",
   "permission-cards.test.ts",
   "proxyplan.test.ts",
