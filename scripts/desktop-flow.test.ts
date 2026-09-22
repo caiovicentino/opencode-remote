@@ -543,7 +543,7 @@ try {
   if (gateNewDisabled.ok)
     check(
       "P3-442: .desk-new disabled, label-dimmed, hinted inline at the gate",
-      /disabled:true\|hint:yes\|opacity:1\|dim:true\|border:1px\|cursor:not-allowed\|gap:(\d|1[0-9])$/.test(gateNewDisabled.stdout),
+      /disabled:true\|hint:yes\|opacity:1\|dim:true\|border:1px\|cursor:not-allowed\|gap:(1[0-9]|\d)"/.test(gateNewDisabled.stdout),
       gateNewDisabled.stdout,
     );
   run("P3-365: open Mission Control from the rail", ["click", 'button[data-pane="mission"]'], 15_000);
