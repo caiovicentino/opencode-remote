@@ -12935,16 +12935,23 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   // The ≥1024px block (the shell breakpoint App itself uses) turns the
   // composition into a grid: flexible action column + capped support column,
-  // and the ceremony container widens past the phone column.
-  const deskBlock = css.split(/@media \(min-width: 1024px\) \{/).pop() ?? "";
-  const deskRule = deskBlock.match(/\.pair-columns\s*\{([^}]*)\}/);
+  // and the ceremony container widens past the phone column. Anchored to the
+  // block's own P3-441 comment header (the way baseAt anchors the base rule
+  // above), with the media open as the inner anchor — a future 1024px block
+  // appended later in this 5,600-line file cannot hijack the matches, since
+  // the slice starts at this block's own comment.
+  const deskBlockAt = css.indexOf("/* ── P3-441: the manual ceremony composes on desktop");
+  const deskSlice = deskBlockAt === -1 ? "" : css.slice(deskBlockAt);
+  const deskMediaAt = deskSlice.indexOf("@media (min-width: 1024px) {");
+  const deskMedia = deskMediaAt === -1 ? "" : deskSlice.slice(deskMediaAt);
+  const deskRule = deskMedia.match(/\.pair-columns\s*\{([^}]*)\}/);
   check(
     "P3-441: ≥1024px composes the ceremony as a two-column grid (action + map)",
     !!deskRule &&
       deskRule[1].includes("display: grid") &&
       /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*\d+px\)/.test(deskRule[1]),
   );
-  const deskScreen = deskBlock.match(/\.pair-wrap \.pair-screen\s*\{([^}]*)\}/);
+  const deskScreen = deskMedia.match(/\.pair-wrap \.pair-screen\s*\{([^}]*)\}/);
   const maxWidth = deskScreen ? Number(deskScreen[1].match(/max-width:\s*(\d+)px/)?.[1] ?? 0) : 0;
   check(
     "P3-441: the ceremony container widens past the phone column on desktop",
