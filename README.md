@@ -449,9 +449,12 @@ private. That is the product: **local power, remote control, zero trust**.
   `nodeIntegration` off, popups off), with an editable URL bar, reload and a maximize toggle
   (~80% width). The webview guest always fills the whole pane — including after the maximize
   toggle or a window resize — instead of painting in a top strip (P2-092). The pane's first
-  paint is a designed new-tab empty state (P3-379): nothing loads until you type an address
+   paint is a designed new-tab empty state (P3-379): nothing loads until you type an address
    or a preview event arrives — it never auto-navigates to a host service (the old default URL
-   silently reached the machine's daemon dashboard from unpaired boots). The URL bar's action
+   silently reached the machine's daemon dashboard from unpaired boots). Behind the unpaired
+   gate the empty hint defers the chat path (P3-446): "After pairing, you can also open a
+   preview from the chat" instead of pointing at Conversas — the pane that needs pairing.
+   The URL bar's action
    button reads the moment (P3-416): before any page exists it is a **→ Go** affordance that
    navigates to the typed address (inert while the bar is empty), swapping to **↻ reload** only
    once a page is loaded — the old bar showed a reload that did nothing on the empty pane. A typed URL that
@@ -1876,6 +1879,9 @@ The self-serve mission card at the top reads coherently in every state (P3-418):
 with no mission defined the heading is the neutral "Mission" (not "Active
 mission") above conversational body copy in the interface font — the mono
 code-block treatment stays reserved for real meta lines like the repo URL.
+Behind the unpaired gate the same empty card defers its guidance (P3-446):
+"After pairing, set one from the chat…" instead of the paired-world "define it
+in the chat", which would point at Conversas — the pane that needs pairing.
 
 **Unread badge (P3-053/P2-150)**: when a message lands in the open conversation
 while the window is in the background — or while you are scrolled away from
