@@ -367,7 +367,8 @@ remoto, zero confiança**.
    mas não é http(s) — `file://`, `data:`, … — é rejeitada com feedback nomeado (P3-378): a
    barra de endereço fica vermelha e uma frase específica explica a regra http(s)-only da
    sandbox e a saída (sirva a pasta via HTTP e abra a URL localhost), em vez do silêncio
-   anterior. Um download iniciado no
+   anterior. Enquanto vazia a barra mostra só um placeholder genérico `https://…` (P3-448) —
+   nunca uma URL concreta que pareça já digitada. Um download iniciado no
    pane segue a
   política única de downloads do shell — nenhum diálogo nativo, nome saneado,
   salvo na pasta Downloads do sistema ou recusado com uma linha de log (P2-241). O modo
