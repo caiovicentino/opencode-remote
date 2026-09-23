@@ -192,7 +192,7 @@ import {
   type RelayProbeInput,
 } from "../apps/desktop/src/relayprobe";
 import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
-import { linkVerdict, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
+import { linkVerdict, sanitizeRelayProtocolState, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
 import { TRAY_TIP_MAX_CHARS, trayStatus } from "../apps/desktop/src/traystatus";
 import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
 import { loginItemMessage, loginItemPlan } from "../apps/desktop/src/loginitem";
@@ -23246,6 +23246,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     attempt: 0,
     nextDelayMs: 0,
     lastCloseKind: null,
+    relayProtocolState: null,
     localMode: false,
     ...over,
   });
@@ -23351,6 +23352,158 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         typeof (dict.en as Record<string, string>)[k] === "string" &&
         typeof (dict.pt as Record<string, string>)[k] === "string",
     ),
+  );
+}
+
+
+// --- P2-338: the desktop reads the daemon's relayProtocol verdict (relaylink.ts) --
+
+{
+  const relaylinkSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "relaylink.ts"), "utf8");
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "daemon.ts"), "utf8");
+  const daemonProtoSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "relayprotocol.ts"), "utf8");
+  const trayStatusSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "traystatus.ts"), "utf8");
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const overlaySrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"), "utf8");
+
+  // 1. the sanitizer — every documented degradation path, fail-closed to null
+  check("P2-338: relayProtocol absent → null (a legacy daemon keeps today's verdict byte a byte)", sanitizeRelayProtocolState(undefined) === null);
+  check("P2-338: relayProtocol null → null", sanitizeRelayProtocolState(null) === null);
+  check(
+    "P2-338: a string outside the closed set → null (fail-closed, never guessed)",
+    sanitizeRelayProtocolState("hotfix") === null &&
+      sanitizeRelayProtocolState("OK") === null &&
+      sanitizeRelayProtocolState("") === null,
+  );
+  check(
+    "P2-338: an object without state and non-string junk → null (the raw shape is never trusted)",
+    sanitizeRelayProtocolState({}) === null && sanitizeRelayProtocolState(2) === null && sanitizeRelayProtocolState(true) === null,
+  );
+  const sanitized = (["ok", "mismatch", "legacy", "unknown"] as const).map((s) => sanitizeRelayProtocolState(s));
+  check("P2-338: every state of the closed set survives the sanitizer untouched", JSON.stringify(sanitized) === JSON.stringify(["ok", "mismatch", "legacy", "unknown"]));
+
+  // Parity pin (P2-332 lesson): the desktop's closed set is a deliberate
+  // duplicate of apps/daemon/src/relayprotocol.ts's RelayProtocolState — the
+  // source-reading assertion below fails the moment either side drifts.
+  const statesOf = (src: string): string[] => {
+    const m = /export type RelayProtocolState = ([^;]+);/.exec(src);
+    return m
+      ? m[1]
+          .split("|")
+          .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+          .sort()
+      : [];
+  };
+  check(
+    "P2-338: the desktop's closed set is exactly the daemon's RelayProtocolState (parity pin)",
+    JSON.stringify(statesOf(relaylinkSrc)) === JSON.stringify(statesOf(daemonProtoSrc)) &&
+      statesOf(relaylinkSrc).join(",") === "legacy,mismatch,ok,unknown",
+  );
+
+  // 2. the full linkVerdict precedence table, top to bottom, with the new field
+  const facts = (over: Partial<RelayLinkFacts> = {}): RelayLinkFacts => ({
+    relayConnected: false,
+    relayOk: true,
+    relayReason: null,
+    attempt: 0,
+    nextDelayMs: 0,
+    lastCloseKind: null,
+    relayProtocolState: null,
+    localMode: false,
+    ...over,
+  });
+  check("P2-338: local mode wins over a mismatch too (local beats everything)", linkVerdict(facts({ localMode: true, relayProtocolState: "mismatch" })).state === "local");
+  check(
+    "P2-338: a legacy payload (no relayConnected) stays unknown even with a mismatch on record",
+    linkVerdict(
+      facts({ relayConnected: null, relayOk: null, attempt: null, nextDelayMs: null, lastCloseKind: null, relayProtocolState: "mismatch" }),
+    ).state === "unknown",
+  );
+  check("P2-338: misconfigured (relayOk false) still wins over a mismatch", linkVerdict(facts({ relayOk: false, relayConnected: false, relayProtocolState: "mismatch" })).state === "misconfigured");
+  check("P2-338: a live link beats a stale mismatch — the daemon self-heals once frames flow again", linkVerdict(facts({ relayConnected: true, relayProtocolState: "mismatch" })).state === "connected");
+  const incompatible = linkVerdict(facts({ relayConnected: false, relayProtocolState: "mismatch" }));
+  check("P2-338: a recorded mismatch while disconnected mints incompatible", incompatible.state === "incompatible" && incompatible.message.length > 0);
+  check("P2-338: mismatch outranks a refusal close (incompatible before refused)", linkVerdict(facts({ relayConnected: false, lastCloseKind: "capacity", relayProtocolState: "mismatch" })).state === "incompatible");
+  check(
+    "P2-338: mismatch outranks the dialing states (incompatible before dialing, attempt in flight or not)",
+    linkVerdict(facts({ relayConnected: false, attempt: 2, nextDelayMs: 4_000, lastCloseKind: "transient", relayProtocolState: "mismatch" })).state === "incompatible" &&
+      linkVerdict(facts({ relayConnected: false, relayProtocolState: "mismatch" })).state === "incompatible",
+  );
+  // ok / legacy / unknown / null keep the behavior this module had before the
+  // field existed — byte for byte.
+  check("P2-338: ok keeps today's behavior (a dialing relay still reads dialing)", linkVerdict(facts({ relayConnected: false, attempt: 1, relayProtocolState: "ok" })).state === "dialing");
+  check("P2-338: legacy keeps today's behavior (a refusal close still reads refused)", linkVerdict(facts({ relayConnected: false, lastCloseKind: "rate-limited", relayProtocolState: "legacy" })).state === "refused");
+  check("P2-338: unknown keeps today's behavior (a first dial still reads dialing)", linkVerdict(facts({ relayConnected: false, relayProtocolState: "unknown" })).state === "dialing");
+  check("P2-338: a sanitized-null state never mints a verdict of its own", linkVerdict(facts({ relayConnected: false, attempt: 3, relayProtocolState: null })).state === "dialing");
+
+  // 3. the incompatible phrase — static, short, digit-free, no URL colon, and
+  //    never the daemon's own message
+  check(
+    "P2-338: the incompatible phrase carries no digits and no URL colon (no version number, no address)",
+    incompatible.message.length > 0 &&
+      !/\d/.test(incompatible.message) &&
+      !incompatible.message.includes("://") &&
+      !incompatible.message.includes("http") &&
+      !incompatible.message.includes("/") &&
+      !incompatible.message.includes("\\"),
+  );
+  check("P2-338: the incompatible phrase mandates updating the app or the hosted relay", incompatible.message.includes("atualize o app ou o relay hospedado"));
+  check(
+    "P2-338: the incompatible phrase is deterministic — the same facts mint the same static copy twice",
+    incompatible.message === linkVerdict(facts({ relayConnected: false, relayProtocolState: "mismatch" })).message,
+  );
+
+  // 4. the tray: incompatible is a warning state exactly like refused — its own
+  //    phrase, no new menu item, same hygiene bar as every other tray phrase.
+  const incompatibleTray = trayStatus(true, "incompatible", 2);
+  check(
+    "P2-338: the tray speaks the incompatible state with its own phrase (a warning like refused)",
+    incompatibleTray.tooltip.includes("protocolo de fio diferente") &&
+      incompatibleTray.menuLine.includes("atualize o app ou o relay") &&
+      incompatibleTray.tooltip !== trayStatus(true, "refused", 2).tooltip &&
+      incompatibleTray.tooltip !== trayStatus(true, "misconfigured", 2).tooltip,
+  );
+  check(
+    "P2-338: the tray's incompatible phrases are digit-free, scheme-free and fit the tooltip budget",
+    !/\d/.test(incompatibleTray.tooltip) &&
+      !/\d/.test(incompatibleTray.menuLine) &&
+      !incompatibleTray.tooltip.includes("http") &&
+      !incompatibleTray.menuLine.includes("http") &&
+      incompatibleTray.tooltip.length > 0 &&
+      incompatibleTray.tooltip.length <= TRAY_TIP_MAX_CHARS,
+  );
+  const incompatibleTrayEn = trayStatus(true, "incompatible", 2, shellLabels("en"));
+  check(
+    "P2-338: the en tray table carries the incompatible phrase too (exact key parity held)",
+    incompatibleTrayEn.tooltip.includes("wire protocol") &&
+      incompatibleTrayEn.menuLine.includes("update the app") &&
+      incompatibleTrayEn.tooltip.length <= TRAY_TIP_MAX_CHARS,
+  );
+
+  // 5. real-source assertions
+  check(
+    "P2-338: toRelayFacts reads body.relayProtocol through the fail-closed sanitizer (real daemon.ts)",
+    /relayProtocol\?: unknown;/.test(daemonSrc) &&
+      /const protocol = \(typeof body\.relayProtocol === "object" && body\.relayProtocol !== null \? body\.relayProtocol : \{\}\) as \{/.test(daemonSrc) &&
+      /relayProtocolState: sanitizeRelayProtocolState\(protocol\.state\),/.test(daemonSrc),
+  );
+  check(
+    "P2-338: the real traystatus.ts knows incompatible — the known set and its own warn case",
+    trayStatusSrc.includes('"incompatible"') &&
+      /case "incompatible":/.test(trayStatusSrc) &&
+      trayStatusSrc.includes("labels.tray.incompatible.tooltip") &&
+      trayStatusSrc.includes("labels.tray.incompatible.menuLine"),
+  );
+  const trayMenuAt = mainSrc.indexOf("function trayMenuItems");
+  const trayMenuBlock = trayMenuAt >= 0 ? mainSrc.slice(trayMenuAt, mainSrc.indexOf("return items;", trayMenuAt)) : "";
+  check(
+    "P2-338: no new tray menu item — the menu block in main.ts never mentions the mismatch, only the status line changes",
+    trayMenuBlock.length > 0 && !/protocolo de fio|wire protocol/.test(trayMenuBlock),
+  );
+  check(
+    "P2-338: the overlay renders incompatible through the same warn class — the calm trio is unchanged",
+    /relayLink\.state === "connected" \|\| relayLink\.state === "local" \|\| relayLink\.state === "unknown"/.test(overlaySrc) &&
+      overlaySrc.includes("pair-relaylink-warn"),
   );
 }
 

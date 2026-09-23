@@ -705,7 +705,11 @@ different positive integer is a hard verdict (`mismatch`); a relay that
 predates the field reads as `legacy` and keeps working, and every network
 failure, timeout or unrecognizable body stays `unknown` — so publishing an
 incompatible `protocol` here is the one change that turns "reconnecting
-forever" into a named, actionable state for the machine's owner.
+forever" into a named, actionable state for the machine's owner. Since
+P2-338 the desktop shell reads the same verdict: the pairing QR's relay-link
+line and the tray say "o relay hospedado fala um protocolo de fio diferente
+deste app — atualize o app ou o relay hospedado e aguarde a reconexão"
+instead of an endless "reconnecting" wait.
 
 ### Why a room was refused: the rejection breakdown (P2-293)
 

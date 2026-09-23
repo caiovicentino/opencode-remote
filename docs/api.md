@@ -131,8 +131,13 @@ Only `mismatch` is a hard verdict: every other state — and the probe itself �
 preserves byte for byte the reconnect behavior the daemon had before. Each
 state transition logs exactly one static line (`relay wire protocol
 mismatch — update the app or the hosted relay` for the mismatch case, warn
-level; the others are info). The next slice (the UI) consumes this field;
-the reconnect loop itself is untouched.
+level; the others are info). Since P2-338 the desktop shell is the consumer:
+`relayProtocol.state` arrives sanitized to the same closed set (anything
+absent or out-of-set degrades to `null`), and `linkVerdict` maps a recorded
+`mismatch` on a disconnected link to the additive `incompatible` state — the
+pairing QR's relay-link line and the tray name the real problem instead of
+the endless "reconnecting" wait; a live link still outranks a stale mismatch
+(the fix self-heals), and the reconnect loop itself is untouched.
 
 ### `/api/health` — upstream agent state (P2-135)
 

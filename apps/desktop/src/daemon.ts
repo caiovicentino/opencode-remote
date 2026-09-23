@@ -12,7 +12,7 @@ import { teeSidecarChunk } from "./sidecar-log";
 import { classifySidecarExit, type SidecarExitVerdict } from "./sidecarexit";
 import { planSidecarStop, type SidecarStopStep } from "./sidecarstop";
 import { planSidecarWedge, type SidecarWedgeVerdict } from "./sidecarwedge";
-import type { RelayLinkFacts } from "./relaylink";
+import { sanitizeRelayProtocolState, type RelayLinkFacts } from "./relaylink";
 import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
 import { DEFAULT_RELAY_URL } from "./relaysetting";
 
@@ -344,11 +344,16 @@ function toUpstreamDetail(raw: unknown): DaemonUpstreamDetail | null {
  * /api/health body the tick already fetches — no new request, no new timeout.
  * Fields degrade independently: anything absent or malformed becomes null,
  * which linkVerdict maps to "unknown". relay.url is deliberately ignored (the
- * verdict never needs the address and it must not travel to the renderer). */
+ * verdict never needs the address and it must not travel to the renderer).
+ * P2-338: the daemon's additive relayProtocol verdict rides along, sanitized
+ * to the closed set (ok/mismatch/legacy/unknown) — anything absent, null,
+ * out-of-set or non-string degrades to null (fail-closed), so a legacy or
+ * lying daemon can never mint a protocol verdict of its own. */
 function toRelayFacts(body: {
   relay?: unknown;
   relayConnected?: unknown;
   relayRetry?: unknown;
+  relayProtocol?: unknown;
 }): Omit<RelayLinkFacts, "localMode"> {
   const retry = (typeof body.relayRetry === "object" && body.relayRetry !== null ? body.relayRetry : {}) as {
     attempt?: unknown;
@@ -362,6 +367,9 @@ function toRelayFacts(body: {
   const lastClose = (typeof retry.lastClose === "object" && retry.lastClose !== null ? retry.lastClose : {}) as {
     kind?: unknown;
   };
+  const protocol = (typeof body.relayProtocol === "object" && body.relayProtocol !== null ? body.relayProtocol : {}) as {
+    state?: unknown;
+  };
   return {
     relayConnected: typeof body.relayConnected === "boolean" ? body.relayConnected : null,
     relayOk: typeof relay.ok === "boolean" ? relay.ok : null,
@@ -369,6 +377,7 @@ function toRelayFacts(body: {
     attempt: typeof retry.attempt === "number" ? retry.attempt : null,
     nextDelayMs: typeof retry.nextDelayMs === "number" ? retry.nextDelayMs : null,
     lastCloseKind: typeof lastClose.kind === "string" ? lastClose.kind : null,
+    relayProtocolState: sanitizeRelayProtocolState(protocol.state),
   };
 }
 
@@ -393,7 +402,15 @@ export async function fetchDaemonHealth(token: string | null): Promise<DaemonHea
     });
     if (res.status !== 200) return down;
     const body = (await res.json().catch(() => null)) as
-      | { version?: unknown; opencode?: unknown; relay?: unknown; relayConnected?: unknown; relayRetry?: unknown }
+      | {
+          version?: unknown;
+          opencode?: unknown;
+          relay?: unknown;
+          relayConnected?: unknown;
+          relayRetry?: unknown;
+          // P2-338: additive wire-protocol verdict published by the P2-335 daemon.
+          relayProtocol?: unknown;
+        }
       | null;
     if (body === null || typeof body !== "object") return down;
     return {
