@@ -233,6 +233,48 @@ export function addTask(repoDir: string, id: string, priority: string, title: st
   return "applied";
 }
 
+// ── P2-341: orphan prose blocks under ## Ready (doctor diagnostic) ──────────
+
+/** Report of the doctor's orphan-block scan: count + where each block starts. */
+export interface ReadyOrphanReport {
+  /** Number of orphan blocks found inside the ## Ready section. */
+  count: number;
+  /** 1-based line numbers (within the whole markdown) where each block starts. */
+  starts: number[];
+}
+
+/**
+ * P2-341: red-team findings once landed as free-form prose (`**Title:** …`)
+ * under `## Ready`; parseBacklog only ever schedules `- [ ]` task lines, so
+ * that text rots in place forever and the scheduler never sees it. Pure
+ * scanner: markdown in, report out — no node:fs, no process. A block is a
+ * maximal run of contiguous non-blank lines inside the `## Ready` section
+ * (blank lines separate blocks; the header itself is ignored) and counts as
+ * orphan when its FIRST line is not a valid task line by the SAME
+ * isValidTaskLine the landing path enforces. A backlog without a `## Ready`
+ * section is tolerated (empty report). Report only — this never edits the
+ * file: the operator cleans the blocks by hand or rewrites them as task
+ * lines (docs/PILOT.md).
+ */
+export function readyOrphanBlocks(md: string): ReadyOrphanReport {
+  const ready = sectionsOf(md).find((s) => s.name === "Ready");
+  if (!ready) return { count: 0, starts: [] };
+  const starts: number[] = [];
+  let lineNo = md.slice(0, ready.bodyStart).split("\n").length; // 1-based line of the first body line
+  let inBlock = false;
+  for (const raw of md.slice(ready.bodyStart, ready.end).split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      inBlock = false; // a blank line closes the current block
+    } else if (!inBlock) {
+      inBlock = true;
+      if (!isValidTaskLine(line)) starts.push(lineNo); // a block is classified by its start line
+    }
+    lineNo++;
+  }
+  return { count: starts.length, starts };
+}
+
 // ── Foreign mission: seed the pilot's BACKLOG.md format when absent ─────────
 
 /** The sections every backlog edit in this module relies on. */

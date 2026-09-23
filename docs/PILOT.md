@@ -1169,6 +1169,15 @@ e logados em `apps/pilot/src/doctor.ts`:
   (exit 1) com a cauda do erro no detail. Sem tier-B configurado a sonda é
   pulada (máquina tier-A-only fica verde).
 
+**Blocos soltos sob `## Ready`** (P2-341): o pass de doctor também denuncia as
+rodadas contíguas de prosa cuja primeira linha não é uma task line válida
+(`readyOrphanBlocks` — achados antigos de red team que `parseBacklog` nunca
+agenda) com uma linha no log (`doctor: ready orphan blocks`) e um evento
+`alert` com a contagem e as linhas iniciais (deduplicado por contagem igual
+entre passes; o texto do bloco nunca é logado). É somente relatório — o
+operador limpa esses blocos à mão ou os reescreve como linha de tarefa; o
+pilot nunca edita o arquivo sozinho.
+
 O boot do pilot roda o pass completo (refs/state/backlog/branches em cada slot,
 log `doctor: <cmd>` no JSONL) — falha do doctor nunca impede o pipeline de subir.
 Desde o P2-114 o pass também roda a sonda `tierb`: binário vermelho loga
