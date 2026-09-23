@@ -78,7 +78,7 @@ import CommandPalette from "./components/CommandPalette";
 import DegradedView from "./components/DegradedView";
 import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
-import { autoConnectAllowed, degradedKind, nextShellLocal, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, type SidecarExitHealth, type UpstreamHealth } from "./lib/degraded";
+import { autoConnectAllowed, degradedKind, nextShellLocal, sanitizeStorageVerdict, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, type SidecarExitHealth, type StorageVerdictNotice, type UpstreamHealth } from "./lib/degraded";
 import { WELCOME_DONE, WELCOME_KEY, shouldShowWelcome } from "./lib/welcome";
 import {
   INSTALL_HINT_DISMISSED_KEY,
@@ -133,6 +133,10 @@ interface PairingState {
   /** P2-324: wedged-daemon probe verdict (desktop shell only, additive) —
    * absent while the daemon answers; observe renders nothing. */
   sidecarWedge?: { state: string; message: string };
+  /** P2-346: the ONE storage-write probe verdict of the app's data folder
+   * (desktop shell only, additive) — absent means unknown, which renders
+   * nothing. Never blocks pairing. */
+  storage?: { state: string; message: string };
   /** P2-189: step one — the address the phone opens (desktop shell only). */
   webApp?: WebAppInfo;
   /** P2-193: the combined pair link — app address + credential in the
@@ -1377,6 +1381,11 @@ export default function App() {
   // P2-324: the daemon wedged alive — null unless the shell attached a wedge
   // verdict. Same calm card, below the exit notice in precedence (exit wins).
   const sidecarWedge = sidecarWedgeNotice(pairingState?.sidecarWedge);
+  // P2-346: the app's own data folder refused a write — null unless the shell
+  // attached a sanitized closed-set verdict. Rendered ONLY inside the degraded
+  // calm card, in the retry line's place, while the state is non-ok (P2-108
+  // rule: never a second banner).
+  const storage = sanitizeStorageVerdict(pairingState?.storage);
   // P1-071: the Settings help section is reachable from the first-boot calm
   // card too — the stub request no-ops every fetch while no client exists.
   const [helpOpen, setHelpOpen] = useState(false);
@@ -1749,6 +1758,10 @@ export default function App() {
               onOpenHelp={() => setHelpOpen(true)}
               sidecarExit={sidecarExit}
               sidecarWedge={sidecarWedge}
+              // P2-346: the storage verdict replaces the retry line while the
+              // data folder refuses writes — the calm card names the real
+              // blocker instead of promising a retry that cannot succeed.
+              storage={storage}
               // P3-394: the same shell verdict the install hint uses — it
               // picks the escalation detail (in-app diagnostics vs phone).
               desktopShell={!!desktopBridge()}
@@ -1898,6 +1911,10 @@ export default function App() {
               onOpenHelp={() => setHelpOpen(true)}
               sidecarExit={sidecarExit}
               sidecarWedge={sidecarWedge}
+              // P2-346: the storage verdict replaces the retry line while the
+              // data folder refuses writes — the calm card names the real
+              // blocker instead of promising a retry that cannot succeed.
+              storage={storage}
               // P3-394: the same shell verdict the install hint uses — it
               // picks the escalation detail (in-app diagnostics vs phone).
               desktopShell={!!desktopBridge()}

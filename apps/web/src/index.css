@@ -3362,6 +3362,18 @@ button.desk-new:disabled {
   color: var(--status-wait);
   text-align: left;
 }
+/* P2-346: the storage verdict's phrase, seated exactly where the auto-retry
+   line renders while the retry is suppressed — same slot, same rhythm, so the
+   card never grows a second status line. The warn tone keeps P3-371's
+   separation (state speaks in warn, the CTA stays the accent fill); the
+   verdict is a diagnosis, not an accusation, so it stays plain prose. */
+.degraded-storage {
+  margin: -4px 0 0;
+  padding-left: 22px;
+  font-size: var(--font-size-sm);
+  color: var(--warn);
+  text-align: left;
+}
 /* P3-372: live segment of the auto-retry line ("há 12s · tentativa 3") —
    tabular numerals keep the per-second tick from jittering, slightly dimmed
    under the base copy so the emphasis stays on the action, not the clock. */

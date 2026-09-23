@@ -447,3 +447,23 @@ um instante depois do mount), rola o bloco até a área visível respeitando
 prefers-reduced-motion (helper `scrollBehavior` compartilhado em
 lib/motion.ts) e põe o caret no campo do endereço uma única vez, avisando o
 consumo por callback — o App zera o tick, então remount nunca repete o bump.
+P2-346 deu nome ao primeiro boot numa pasta de dados sem escrita: uma
+instalação nova com userData sem permissão (ou volume read-only ou disco
+cheio) deixava o sidecar falhando em silêncio e o cartão calmo prometendo
+"Tentando sozinho…" para sempre — o módulo puro novo
+`apps/desktop/src/storageprobe.ts` (sem node:fs, sem timer, sem import)
+classifica o resultado de UMA sonda injetada (grava e apaga um arquivo
+temporário pequeno dentro do userData, em `onReady` ANTES de iniciar o
+sidecar) no conjunto fechado ok/no-permission/read-only/disk-full/unknown com
+frase estática curta em pt-BR (sem caminho, sem nome de usuário, sem errno
+crua); o main.ts grava uma única linha `storage probe:` no desktop.log e o
+veredito viaja no campo aditivo `storage` do `ocr:pairing-state` (as quatro
+variantes de payload: daemon-down, reconnecting, tick saudável e fallback do
+wedge); no apps/web, `sanitizeStorageVerdict` em `lib/degraded.ts`
+(fail-closed ao padrão P2-338: ausente/nulo/fora do conjunto/objeto
+malformado/mensagem vazia → nulo e o comportamento de hoje byte a byte) e o
+cartão degradado troca a linha de retry pela frase do veredito SOMENTE com
+estado não-ok (`.degraded-storage`, tom warn — P3-371: estado fala warn, a
+ação fica no accent); a paridade do conjunto fechado entre desktop e web é
+pinada por teste que lê as duas fontes reais, e a asserção de fonte prova uma
+sonda só no boot e nenhum setInterval novo.

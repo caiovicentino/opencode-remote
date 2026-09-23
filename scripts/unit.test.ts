@@ -413,7 +413,9 @@ import { dict, translate } from "../apps/web/src/lib/i18n";
 
 import { authCommandFor, modelHintKey, MODEL_DOCS_URL, MODEL_RECHECK_TIMEOUT_MS } from "../apps/web/src/lib/modelstatus";
 
-import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, upstreamNotice, shouldEscalateRetry, escalationMinutes, escalateDetailKey, installCommandFor, INSTALL_DOCS_URL, UPSTREAM_RECHECK_TIMEOUT_MS, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+import { degradedKind, nextShellLocal, autoConnectAllowed, sawHealthyDaemon, sidecarExitNotice, sidecarWedgeNotice, sanitizeStorageVerdict, upstreamNotice, shouldEscalateRetry, escalationMinutes, escalateDetailKey, installCommandFor, INSTALL_DOCS_URL, UPSTREAM_RECHECK_TIMEOUT_MS, RETRY_ESCALATE_AFTER_SEC, type SidecarExitHealth, type SidecarWedgeHealth, type StorageHealth, type UpstreamHealth } from "../apps/web/src/lib/degraded";
+
+import { STORAGE_VERDICT_STATES, storageProbeVerdict, type StorageProbeResult } from "../apps/desktop/src/storageprobe";
 import {
   MACHINE_ROW_ORDER,
   MACHINE_SEVERITY_DOT,
@@ -40583,6 +40585,212 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
         doc.includes("relay_rooms_single_peer / relay_rooms_active > 0.5"),
     );
   }
+}
+
+// --- P2-346: the ONE storage-write probe verdict (storageprobe.ts) -----------
+
+{
+  const storageSrc = readFileSync(new URL("../apps/desktop/src/storageprobe.ts", import.meta.url), "utf8");
+  const webDegradedSrc = readFileSync(new URL("../apps/web/src/lib/degraded.ts", import.meta.url), "utf8");
+  const mainSrc = readFileSync(new URL("../apps/desktop/src/main.ts", import.meta.url), "utf8");
+  const pairingSrc = readFileSync(new URL("../apps/desktop/src/pairing.ts", import.meta.url), "utf8");
+  const preloadSrc = readFileSync(new URL("../apps/desktop/src/preload.ts", import.meta.url), "utf8");
+  const appSrc = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const viewSrc = readFileSync(new URL("../apps/web/src/components/DegradedView.tsx", import.meta.url), "utf8");
+  const cssSrc = readFileSync(new URL("../apps/web/src/index.css", import.meta.url), "utf8");
+
+  // 1. the verdict table — every documented errno code, the ok result, the
+  //    unknown code and every malformed shape. Nothing ever throws; the same
+  //    input always yields the same verdict.
+  const verdictCases: Array<[string, StorageProbeResult | null | undefined, string, string]> = [
+    ["ok:true mints ok (the only evidence that matters)", { ok: true }, "ok", "a pasta de dados do app está gravável"],
+    ["ok:true wins even with a stale code attached", { ok: true, code: "EACCES" }, "ok", "a pasta de dados do app está gravável"],
+    ["EACCES mints no-permission", { ok: false, code: "EACCES" }, "no-permission", "o app não tem permissão para gravar na pasta de dados dele"],
+    ["EPERM mints no-permission (same story: the folder refuses writes)", { ok: false, code: "EPERM" }, "no-permission", "o app não tem permissão para gravar na pasta de dados dele"],
+    ["EROFS mints read-only", { ok: false, code: "EROFS" }, "read-only", "a pasta de dados do app está somente leitura"],
+    ["ENOSPC mints disk-full", { ok: false, code: "ENOSPC" }, "disk-full", "o disco deste computador está cheio"],
+    ["an unknown code degrades to unknown, never a guess", { ok: false, code: "EXDEV" }, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["another unknown code (EIO) degrades to unknown", { ok: false, code: "EIO" }, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["a failure without a code degrades to unknown", { ok: false }, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["an empty code degrades to unknown", { ok: false, code: "" }, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["a non-string code degrades to unknown", { ok: false, code: 7 as unknown as string }, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["a lowercase code is not a documented spelling (fail-closed)", { ok: false, code: "eacces" }, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["a null probe degrades to unknown", null, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["an undefined probe degrades to unknown", undefined, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["a non-object probe degrades to unknown", 42 as unknown as StorageProbeResult, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["a boolean probe degrades to unknown", true as unknown as StorageProbeResult, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["a non-boolean ok degrades to unknown", { ok: "yes" } as unknown as StorageProbeResult, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+    ["an array probe degrades to unknown", [] as unknown as StorageProbeResult, "unknown", "o app não conseguiu gravar na pasta de dados dele"],
+  ];
+  for (const [name, input, state, message] of verdictCases) {
+    check(`P2-346: ${name}`, (() => {
+      const v = storageProbeVerdict(input);
+      return v.state === state && v.message === message;
+    })());
+  }
+  check(
+    "P2-346: the verdict is deterministic — the same input mints the same verdict twice",
+    storageProbeVerdict({ ok: false, code: "ENOSPC" }).message === storageProbeVerdict({ ok: false, code: "ENOSPC" }).message,
+  );
+  check(
+    "P2-346: the closed set is exactly the five documented states",
+    JSON.stringify([...STORAGE_VERDICT_STATES]) === JSON.stringify(["ok", "no-permission", "read-only", "disk-full", "unknown"]),
+  );
+
+  // 2. the phrases — static pt-BR, short, and never carrying a path, a user
+  //    name, the raw errno text or an address (desktop.log lives on disk
+  //    unencrypted and the phrase also rides the pairing payload).
+  const allMessages = STORAGE_VERDICT_STATES.map((s) => storageProbeVerdict(s === "ok" ? { ok: true } : { ok: false, code: s === "no-permission" ? "EACCES" : s === "read-only" ? "EROFS" : s === "disk-full" ? "ENOSPC" : undefined }).message);
+  check(
+    "P2-346: every phrase is non-empty and carries no path, no errno text, no URL and no markup",
+    allMessages.every(
+      (m) =>
+        m.length > 0 &&
+        m.length < 120 &&
+        !m.includes("/") &&
+        !m.includes("\\") &&
+        !m.includes("EACCES") &&
+        !m.includes("EPERM") &&
+        !m.includes("EROFS") &&
+        !m.includes("ENOSPC") &&
+        !m.includes("ENOENT") &&
+        !m.includes("http") &&
+        !m.includes(":") &&
+        !m.includes("<") &&
+        !m.includes(">") &&
+        !m.includes("{") &&
+        !m.includes("}") &&
+        !/\p{Extended_Pictographic}/u.test(m),
+    ),
+  );
+  check(
+    "P2-346: every phrase maps one-to-one to its state (no shared sentence across states)",
+    new Set(allMessages).size === STORAGE_VERDICT_STATES.length,
+  );
+
+  // 3. module hygiene: the classification is pure — no import statements, no
+  //    node:fs, no timers, no I/O of any kind (the probe result is injected).
+  check(
+    "P2-346: storageprobe.ts stays pure (no import, no fs, no electron, no timer, no I/O)",
+    !/(^|\n)\s*import[^\n]*(electron|node:fs|node:|fetch)/.test(storageSrc) &&
+      !/^import\b/m.test(storageSrc) &&
+      !storageSrc.includes("node:fs") &&
+      !storageSrc.includes("require(") &&
+      !/setInterval\s*\(/.test(storageSrc) &&
+      !/setTimeout\s*\(/.test(storageSrc) &&
+      !storageSrc.includes("writeFile") &&
+      !storageSrc.includes("rmSync") &&
+      !storageSrc.includes("mkdir") &&
+      !storageSrc.includes("fetch("),
+  );
+
+  // 4. the web-side sanitizer — only a well-shaped object whose state is in
+  //    the closed set and whose message is a non-empty string survives;
+  //    everything else degrades to null and keeps today's byte-for-byte
+  //    behavior (P2-338 lesson).
+  const storageNotice = (state: string, message = "frase estática do classificador"): StorageHealth => ({ state, message });
+  const sanitizerCases: Array<[string, StorageHealth | null | undefined, string | null, string | null]> = [
+    ["ok survives the sanitizer (the card just renders nothing)", storageNotice("ok"), "ok", "frase estática do classificador"],
+    ["no-permission survives", storageNotice("no-permission"), "no-permission", "frase estática do classificador"],
+    ["read-only survives", storageNotice("read-only"), "read-only", "frase estática do classificador"],
+    ["disk-full survives", storageNotice("disk-full"), "disk-full", "frase estática do classificador"],
+    ["unknown survives", storageNotice("unknown"), "unknown", "frase estática do classificador"],
+    ["an out-of-set state is discarded", storageNotice("writable"), null, null],
+    ["an empty state is discarded", storageNotice(""), null, null],
+    ["an empty message is discarded", { state: "disk-full", message: "" }, null, null],
+    ["a non-textual message is discarded", { state: "disk-full", message: 42 }, null, null],
+    ["a missing message field is discarded", { state: "disk-full" }, null, null],
+  ];
+  for (const [name, input, state, message] of sanitizerCases) {
+    check(`P2-346 web: ${name}`, (() => {
+      const n = sanitizeStorageVerdict(input);
+      if (state === null || message === null) return n === null;
+      return !!n && n.state === state && n.message === message;
+    })());
+  }
+  check("P2-346 web: absent input never warns", sanitizeStorageVerdict(null) === null && sanitizeStorageVerdict(undefined) === null);
+  check("P2-346 web: non-object values never warn", sanitizeStorageVerdict(42) === null && sanitizeStorageVerdict("ok") === null && sanitizeStorageVerdict(["ok"]) === null);
+  check("P2-346 web: same input yields the exact same notice on every call (pure)", (() => {
+    const a = sanitizeStorageVerdict(storageNotice("disk-full"));
+    const b = sanitizeStorageVerdict(storageNotice("disk-full"));
+    return a !== null && b !== null && a.state === b.state && a.message === b.message;
+  })());
+
+  // Parity pin (P2-338/P2-344 lesson): the web's closed set is a deliberate
+  // duplicate of the desktop's STORAGE_VERDICT_STATES — the source-reading
+  // assertion below fails the moment either side drifts.
+  {
+    const statesOf = (src: string): string[] => {
+      const m = /export type StorageVerdictState = ([^;]+);/.exec(src);
+      return m ? m[1].split("|").map((s) => s.trim().replace(/^["']|["']$/g, "")).sort() : [];
+    };
+    const desktopStates = statesOf(storageSrc);
+    const webStates = statesOf(webDegradedSrc);
+    check(
+      "P2-346: the web's closed set is exactly the desktop's StorageVerdictState (parity pin)",
+      JSON.stringify(desktopStates) === JSON.stringify(webStates) && desktopStates.join(",") === "disk-full,no-permission,ok,read-only,unknown",
+    );
+    const webSetLiteral = /STORAGE_VERDICT_STATES = new Set<StorageVerdictState>\(\[([^\]]+)\]\)/.exec(webDegradedSrc);
+    check(
+      "P2-346: the web's runtime set carries every desktop state (parity pin, runtime side)",
+      !!webSetLiteral &&
+        desktopStates.every((s) => webSetLiteral![1].includes(`"${s}"`)) &&
+        webSetLiteral![1].split(",").length === desktopStates.length,
+    );
+  }
+
+  // 5. the real main.ts wiring — ONE probe at boot, BEFORE the sidecar, one
+  //    log line, and the verdict riding every pairing payload.
+  check("P2-346 source: main.ts imports the storage module", mainSrc.includes('from "./storageprobe"'));
+  {
+    // The probe block is bounded by two known anchors so the assertions stay
+    // scoped to this feature's lines (no drift as other features move code).
+    const blockStart = mainSrc.indexOf("P2-346: ONE storage-write probe at boot");
+    const blockEnd = mainSrc.indexOf("P2-187: resolve the phone relay address");
+    check("P2-346 source: the probe block exists in onReady", blockStart !== -1 && blockEnd > blockStart);
+    const block = mainSrc.slice(blockStart, blockEnd);
+    check("P2-346 source: the boot calls the probe exactly once, before the sidecar", (block.match(/probeUserDataStorage\(/g) ?? []).length === 1);
+    check(
+      "P2-346 source: the probe block contains no timer of any kind (one probe, no interval)",
+      !block.includes("setInterval") && !block.includes("setTimeout") && !block.includes("setImmediate") && !block.includes("queueMicrotask"),
+    );
+    check("P2-346 source: the probe block writes exactly one desktop.log line", (block.match(/storage probe:/g) ?? []).length === 1);
+    check("P2-346 source: the boot runs before the sidecar starts", mainSrc.indexOf("bootStorage = storageProbeVerdict(probeUserDataStorage(") < mainSrc.indexOf("await startDaemonSidecar("));
+    // The probe runner itself: no timer either, and the failure path returns
+    // the injected result the classifier expects (ok:false + code).
+    const fnStart = mainSrc.indexOf("function probeUserDataStorage(");
+    const fnEnd = mainSrc.indexOf("async function onReady(): Promise<void> {");
+    check("P2-346 source: the probe runner exists once", fnStart !== -1 && fnEnd > fnStart);
+    const fn = mainSrc.slice(fnStart, fnEnd);
+    check(
+      "P2-346 source: the probe runner never schedules and never re-probes",
+      (fn.match(/probeUserDataStorage\(/g) ?? []).length === 1 &&
+        !fn.includes("setInterval") &&
+        !fn.includes("setTimeout"),
+    );
+    check("P2-346 source: the probe result carries the errno code on failure", fn.includes("(err as NodeJS.ErrnoException).code"));
+  }
+  check(
+    "P2-346 source: the verdict rides every pairing payload variant (down, reconnecting, healthy tick, wedge fallback)",
+    (mainSrc.match(/storage: bootStorage/g) ?? []).length === 4,
+  );
+  check("P2-346 source: the boot verdict is computed exactly once", (mainSrc.match(/bootStorage = storageProbeVerdict/g) ?? []).length === 1);
+  check("P2-346 source: pairing.ts declares the additive storage field", pairingSrc.includes("storage?: { state: string; message: string }"));
+  check("P2-346 source: preload.ts declares the additive storage field", preloadSrc.includes("storage?: { state: string; message: string }"));
+  check("P2-346 source: the web's PairingState mirror declares the additive field", appSrc.includes("storage?: { state: string; message: string }"));
+
+  // 6. the calm card renders the phrase in the retry line's place — only when
+  //    the verdict exists and is non-ok; the retry line keeps rendering
+  //    otherwise (byte for byte).
+  check(
+    "P2-346 view: the phrase replaces the retry line only for a non-ok sanitized verdict",
+    viewSrc.includes('autoRetry && storage && storage.state !== "ok"') &&
+      viewSrc.includes('className="degraded-storage"') &&
+      viewSrc.includes('<p className="degraded-retry" role="status">') &&
+      viewSrc.includes("{storage.message}"),
+  );
+  check("P2-346 view: App.tsx sanitizes the payload before rendering", appSrc.includes("sanitizeStorageVerdict(pairingState?.storage)") && (appSrc.match(/storage=\{storage\}/g) ?? []).length === 2);
+  check("P2-346 view: the phrase wears its own class with the warn tone (state vs action)", cssSrc.includes(".degraded-storage") && /degraded-storage \{[^}]*color: var\(--warn\)/.test(cssSrc));
 }
 
 if (failures > 0) {
