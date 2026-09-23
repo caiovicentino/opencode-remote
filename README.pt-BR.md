@@ -154,8 +154,11 @@ remoto, zero confiança**.
   fail-open da P2-215: só o anexo é barrado. No lado do daemon a P2-347
   acrescenta o contrapeso: com **crítico** um novo upload é recusado já no
   início, com HTTP 507 e a frase da própria máquina, em vez de a gravação
-  falhar no meio do arquivo com um erro cru do sistema de arquivos —
-  `ok`, `low` e veredito desconhecido mantêm todas as rotas como eram. O
+  falhar no meio do arquivo com um erro cru do sistema de arquivos — a frase
+  viaja no corpo do 507 e no `GET /api/health`, enquanto a própria mensagem
+  de erro de upload do celular segue genérica por enquanto (uma task
+  futura a expõe lá); `ok`, `low` e veredito desconhecido mantêm todas as
+  rotas como eram. O
   mesmo veredito viaja em
   `GET /api/health` (`diskState` / `diskMessage`, mais o instant aditivo
   `diskCheckedAt` da última leitura) e em `GET /__ocr/settings`

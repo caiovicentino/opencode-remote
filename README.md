@@ -218,7 +218,10 @@ private. That is the product: **local power, remote control, zero trust**.
   daemon side P2-347 adds the matching backstop: with **critical** a new
   upload is refused up front with HTTP 507 and the machine's own phrase
   instead of letting the write fail mid-file with a raw filesystem error —
-  `ok`, `low` and an unknown verdict keep every route exactly as before. The
+  the phrase rides the 507 body and `GET /api/health`, while the phone's own
+  upload-error line keeps its generic wording for now (a follow-up surfaces
+  the phrase there); `ok`, `low` and an unknown verdict keep every route
+  exactly as before. The
   same verdict rides `GET /api/health` (`diskState` / `diskMessage`, plus the
   additive `diskCheckedAt` instant of the last reading) and
   `GET /__ocr/settings` (`disk`). To free

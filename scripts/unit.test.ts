@@ -26053,6 +26053,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
   const diskspaceSrc = src(["apps", "daemon", "src", "diskspace.ts"]);
   const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+  const reconnectSrc = src(["scripts", "reconnect.test.ts"]);
 
   // --- the classifier's exact limits (diskguard.ts stays the ONE classifier —
   // P2-215 already pinned zero totals, null readings and non-finite values) --
@@ -26202,6 +26203,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-347: the lazy re-probe skips under either hatch — forced verdicts are never probed away",
     /process\.env\.OCR_DISK_FULL === "1" \|\| process\.env\.OCR_DISK_OK === "1"/.test(indexSrc),
+  );
+  check(
+    "P2-347: the refusal proof is executable — reconnect.test.ts runs a real OCR_DISK_FULL leg (507 + phrase + untouched uploads dir)",
+    (reconnectSrc.match(/res\.status !== 507/g) ?? []).length === 2 &&
+      reconnectSrc.includes('OCR_DISK_FULL: "1"') &&
+      reconnectSrc.includes("quase cheio") &&
+      reconnectSrc.includes("readdirSync(uploadsDir)"),
   );
   const chunkAt = indexSrc.indexOf('"/__ocr/upload/chunk" && req.method === "POST"');
   const chunkBlock = indexSrc.slice(chunkAt, chunkAt + 800);

@@ -234,8 +234,11 @@ the verdict was last taken. The reading targets the uploads directory
 and is re-read lazily at the upload surface itself — at most once per
 `OCR_READINESS_MIN_MS`, honoring `OCR_READINESS_DISABLE`, with no new timer.
 A stale healthy verdict is re-read too (free space only shrinks), a failed
-reading lands in the neutral `unknown`, and `OCR_DISK_FULL=1` forces
-`critical` for deterministic tests — including the upload refusal.
+reading lands in the neutral `unknown`, and the two documented hatches force
+their verdicts for deterministic tests: `OCR_DISK_FULL=1` forces `critical`
+(including the upload refusal) and the symmetric `OCR_DISK_OK=1` forces
+`ok`, so hermetic tests exercise the healthy upload paths on a genuinely
+full host.
 
 ### `/api/health` — browse-readiness verdict (P2-284)
 
@@ -539,9 +542,10 @@ directory (lazily, at most once per `OCR_READINESS_MIN_MS` — the shared
 readiness knobs, no new timer) and, when the verdict is **critical**, answer
 **507** with the disk verdict's own pt-BR phrase (the same one
 `GET /api/health` serves) BEFORE any byte is staged or written. `ok`, `low`
-and an unknown verdict keep every behavior above unchanged, and the
-documented `OCR_DISK_FULL=1` hatch forces the refusal for deterministic
-tests.
+and an unknown verdict keep every behavior above unchanged, and the two
+documented hatches force their verdicts for deterministic tests:
+`OCR_DISK_FULL=1` forces the refusal and the symmetric `OCR_DISK_OK=1`
+forces the healthy path (hermetic tests on a genuinely full host).
 
 ## Download start limits (P2-314)
 
