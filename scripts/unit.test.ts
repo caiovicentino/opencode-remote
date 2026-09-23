@@ -12790,6 +12790,28 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-426: the pre-pairing mission note names the offline path --------------
+// The deferral alone ("after pairing…") still left the gate's own queue box
+// unmentioned — the truthful offline route for exactly the user who sees this
+// card: the first-message box on the same screen accepts the mission text now
+// (P3-360), and the mission is set from the chat once pairing completes. The
+// storage promise stays owned by the queue card (P3-436: one promise, one card).
+{
+  const en = translate("en", "missionActiveNonePrePairing");
+  const pt = translate("pt", "missionActiveNonePrePairing");
+  check(
+    "P3-426: the pre-pairing mission note points at the same-screen first-message box",
+    en.includes("first-message box") && pt.includes("caixa de primeira mensagem"),
+  );
+  check(
+    "P3-426: the note keeps the after-pairing deferral and the mission guidance",
+    en.includes("After pairing") &&
+      pt.includes("Depois de parear") &&
+      en.includes("GitHub repo link") &&
+      pt.includes("repo do GitHub"),
+  );
+}
+
 // --- P3-414: the artifacts pane's empty state is composed, not a bare sentence
 // The flagship pane showed a top-left gray paragraph while the sibling browser
 // pane composes icon + title + hint centered — the inconsistency read as

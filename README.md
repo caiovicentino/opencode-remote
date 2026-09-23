@@ -1947,9 +1947,11 @@ The self-serve mission card at the top reads coherently in every state (P3-418):
 with no mission defined the heading is the neutral "Mission" (not "Active
 mission") above conversational body copy in the interface font — the mono
 code-block treatment stays reserved for real meta lines like the repo URL.
-Behind the unpaired gate the same empty card defers its guidance (P3-446):
-"After pairing, set one from the chat…" instead of the paired-world "define it
-in the chat", which would point at Conversas — the pane that needs pairing.
+Behind the unpaired gate the same empty card defers its guidance (P3-446) and
+names the truthful offline path (P3-426): the first-message box on this screen
+already accepts the mission text — it becomes the first chat message once the
+daemon connects — while the chat path stays deferred to after pairing, since
+Conversas is the one pane that needs it.
 
 **Unread badge (P3-053/P2-150)**: when a message lands in the open conversation
 while the window is in the background — or while you are scrolled away from

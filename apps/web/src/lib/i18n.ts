@@ -624,7 +624,10 @@ export const dict = {
     missionActiveNone: "No mission set. Define one in the chat: describe what you want and, optionally, paste a GitHub repo link.",
     // P3-446: behind the unpaired gate the chat is the pane that needs pairing —
     // the empty card points past the gate instead of at a dead end.
-    missionActiveNonePrePairing: "No mission yet. After pairing, set one from the chat: describe what you want and, optionally, paste a GitHub repo link.",
+    // P3-426: the truthful offline path is named too — the first-message box on
+    // this very screen accepts the mission text now (the queue card owns the
+    // storage promise; this card only says where the mission comes from).
+    missionActiveNonePrePairing: "No mission yet. You can already write yours in the first-message box on this screen — describe what you want and, optionally, paste a GitHub repo link. After pairing, the mission is set from the chat.",
     missionSource: "source",
     missionSourcePrompt: "prompt",
     missionSourceRepo: "repo",
@@ -1501,7 +1504,10 @@ export const dict = {
     missionActiveNone: "Nenhuma missão definida. Defina no chat: descreva o que você quer e, se quiser, cole o link de um repo do GitHub.",
     // P3-446: atrás do portão sem parear o chat é o painel que pede pareamento —
     // o card vazio aponta pro depois do portão em vez do beco sem saída.
-    missionActiveNonePrePairing: "Nenhuma missão definida. Depois de parear, defina no chat: descreva o que você quer e, se quiser, cole o link de um repo do GitHub.",
+    // P3-426: o caminho offline verdadeiro também tem nome — a caixa de
+    // primeira mensagem desta mesma tela aceita o texto da missão agora (a
+    // promessa de guardar é da caixa; este card só diz de onde a missão vem).
+    missionActiveNonePrePairing: "Nenhuma missão definida. Já pode escrever a sua na caixa de primeira mensagem desta tela — descreva o que você quer e, se quiser, cole o link de um repo do GitHub. Depois de parear, a missão se define a partir do chat.",
     missionSource: "origem",
     missionSourcePrompt: "prompt",
     missionSourceRepo: "repo",
