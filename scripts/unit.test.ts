@@ -10180,8 +10180,8 @@ check(
     });
     check("explorer claim: same-day re-claim is a no-op that never re-saves", reclaim === false && claimState.explorerLast === "2026-09-03" && claimSaves === 1);
 
-    // P3-440: the nightly journey reviews what origin/main merged — never a
-    // bundle outliving its checkout (the 2026-09-22 explorer filed the
+    // P3-052 hardening: the nightly journey reviews what origin/main merged —
+    // never a bundle outliving its checkout (the 2026-09-22 explorer filed the
     // pair-submit silence twice fixed since Sep 9/11 because the workspace's
     // dist predated the fixes and the runner only built when files were
     // missing). The rebuild is deterministic and injectable; a failed build
@@ -10201,7 +10201,7 @@ check(
     check("explorer prompt: never instructs the agent to build", !freshPrompt.includes("build them first") && !freshPrompt.includes("npm run build --workspace"));
     check("explorer prompt: names the pre-journey fresh-bundle guarantee", freshPrompt.includes("rebuilt both bundles") && freshPrompt.includes("NEVER run"));
 
-    // P3-440 review fix: the build exec is spawnSync — it blocks the loop for
+    // Rebuild review fix: the build exec is spawnSync — it blocks the loop for
     // minutes, so the 3min watchdog interval cannot fire mid-build, but its
     // queued callback runs the instant the loop unblocks and reads the stale
     // heartbeat: process.exit(1) AFTER a successful build, KeepAlive restarts,

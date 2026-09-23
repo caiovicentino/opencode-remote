@@ -1749,7 +1749,7 @@ diretório de evidência, somente a pass do fable.
   um `git add -A` de builder chegou a commitar a variante allow-all —
   rastreada, cada divergência virava sujeira rastreada pro tamper check do
   gate e pro dirty guard de deploy (o review r2 pegou).
-- **Bundles sempre frescos (P3-440)**: o dist é output de build ignorado pelo
+- **Bundles sempre frescos (hardening do P3-052)**: o dist é output de build ignorado pelo
   git e sobrevive a todo `git clean -qfd` e sync de workspace — um slot pode
   carregar um bundle dias mais velho que o próprio checkout (em 2026-09-22 o
   explorer registrou o silêncio do submit vazio/inválido do pareamento como
