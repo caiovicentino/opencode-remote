@@ -5,6 +5,7 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
+- [ ] (P3-454) [P3] [explorer][low] Wizard step 2 promises auto-retry but shows no retry feedback — spec: The step-2 agent card asserts "esta tela segue tentando sozinha", yet shows no spinner, counter, or attempt line — while the same state one screen later (gate card, journey-chat shot) shows a live "Tentando sozinho… há 9s" counter. Until the user advances past the wizard, the promised autonomous recovery is invisible, and the escalation/diagnostics path only exists after the wizard ends. (severity: low, evidence: /Users/caiovicentino/.opencode-remote/pilot/shots/explorer/journey-welcome-step2-20260923.png) (area: ui)
 
 **1. Daemon tunnel SSRF with credential exfiltration (`proxy()` passthrough accepts absolute URLs) — HIGH**
 `apps/daemon/src/index.ts:1877` builds the upstream URL with `new URL(req.path, OPENCODE_URL)` (base `http://127.0.0.1:4096`, line 224) where `req.path` is the free-form string inside the E2E-sealed op envelope (`packages/protocol/src/types.ts:90`), and every preceding check in `proxy()` is an exact `req.path === "…"` match or a `^/session/…` regex — there is no `startsWith("/")` or allowlist gate anywhere. A paired client (or local WS peer) seals `{"method":"GET","path":"http://evil
