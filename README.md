@@ -204,10 +204,16 @@ private. That is the product: **local power, remote control, zero trust**.
   volume free, **critical** below 500 MB free or 5% of the volume free. The
   indicator describes the machine hosting the daemon — never the phone — is
   read once at boot and then on the same cycle as the artifacts retention
-  janitor, and **never blocks anything**: sending, voice and every control
-  stay enabled even when the verdict is critical (ok/unknown verdicts stay
-  silent). The same verdict rides `GET /api/health`
-  (`diskState` / `diskMessage`) and `GET /__ocr/settings` (`disk`). To free
+  janitor. Since P3-462 the chat composer consults the same verdict from the
+  settings read it already performs (no new poll): with **critical** the
+  attach button is disabled beside one short line under the composer (the
+  machine's own phrase, verbatim, or the app's static line when the machine
+  sent none); with **low** only a discreet warning renders, nothing is
+  blocked; with **ok** or an unknown verdict the composer stays exactly what
+  it was. Everything else — sending, voice, camera, every other control —
+  keeps the P2-215 fail-open discipline: only attaching is gated. The same
+  verdict rides `GET /api/health` (`diskState` / `diskMessage`) and
+  `GET /__ocr/settings` (`disk`). To free
   space on that machine, remove or archive large files (old session
   artifacts under `~/.opencode-remote/artifacts/` are trimmed automatically
   by the retention janitor); `OCR_DISK_FULL=1` on the daemon is a test hatch
@@ -317,7 +323,10 @@ private. That is the product: **local power, remote control, zero trust**.
   model — and an unknown verdict keeps the mic usable, failing open on
   purpose), an inline **agent · model** dropdown replaces the old header
   select and the full-width model list, the textarea auto-grows up to ~6 lines
-  and then scrolls internally, Enter sends / Shift+Enter breaks the line
+  and then scrolls internally, Enter sends / Shift+Enter breaks the line.
+  Since P3-462 the "+" attach button also follows the machine's disk verdict
+  (disabled only while the volume hosting the daemon is critical — see the
+  Disk-space readiness bullet; every other state keeps it exactly as before)
 - **Routines** — real cron: daily, specific weekdays, or interval loop; a run
   stuck in flight (daemon restarted mid-execution, lost session event) is
   released automatically after a 2 h run lease (`OCR_RUN_LEASE_MS`, `off` to

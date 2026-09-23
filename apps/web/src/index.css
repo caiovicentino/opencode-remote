@@ -829,6 +829,11 @@ body.dragging-files::after {
   font-size: 0.72rem;
   margin: 4px 2px 0;
 }
+/* P3-462: the disk verdict that blocks attaching reads as a warning, not a
+   note — the amber stays subtle (one short line, no border, no card). */
+.composer-hint-warn {
+  color: var(--warn);
+}
 /* P2-107: chat header actions share the composer's ghost chrome — quiet
    icon buttons, no bordered boxes fighting the title (Linear/Raycast bar). */
 .chat-btn {
