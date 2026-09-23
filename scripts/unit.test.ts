@@ -563,6 +563,7 @@ import {
   mayPush,
   parseAuxTaskLines,
   parseBacklog,
+  readyOrphanBlocks,
   addTask,
   type AuxPushIo,
   type Task,
@@ -22391,6 +22392,115 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const mproto = buildMissionPrompt();
   check("mission protocol: discloses PR-based work (squash merges) with this machine's gh credentials", /PRs/.test(mproto) && /squash/.test(mproto) && /credenciais do gh/.test(mproto) && /nada é commitado direto em main/.test(mproto));
   check("mission protocol: points the chat at modelSubstitutions for \"which model is running\"", mproto.includes("modelSubstitutions") && mproto.includes("/api/pilot-mission"));
+}
+// --- P2-341: readyOrphanBlocks — loose prose under ## Ready flagged for the operator ---
+
+{
+  // empty ## Ready: nothing to flag
+  check("P2-341: empty ## Ready reports zero orphan blocks", JSON.stringify(readyOrphanBlocks("# B\n\n## Ready\n\n## Done\n")) === JSON.stringify({ count: 0, starts: [] }));
+
+  // only valid task lines: nothing to flag
+  const cleanMd = [
+    "# B",
+    "",
+    "## Ready",
+    "",
+    "- [ ] (P2-500) [P2] First — spec: do the thing (area: ui)",
+    "- [ ] (P2-501) [P1] Second — spec: more work (area: daemon)",
+    "",
+    "## Done",
+    "- [x] (P2-499) [P2] Old — done",
+  ].join("\n");
+  check("P2-341: only valid task lines under ## Ready report zero orphan blocks", JSON.stringify(readyOrphanBlocks(cleanMd)) === JSON.stringify({ count: 0, starts: [] }));
+
+  // one loose prose block: counted once, at its 1-based start line over the
+  // whole markdown (the ## Ready header and blank lines are not counted)
+  const oneOrphan = [
+    "# B",
+    "",
+    "## Ready",
+    "",
+    "**Title:** Remote daemon crash via malformed seq",
+    "",
+    "## Done",
+  ].join("\n");
+  check("P2-341: one loose prose block is counted once at its 1-based start line", JSON.stringify(readyOrphanBlocks(oneOrphan)) === JSON.stringify({ count: 1, starts: [5] }));
+  check("P2-341: the orphan start line fails the same isValidTaskLine the landing uses", !isValidTaskLine((oneOrphan.split("\n")[4] ?? "").trim()));
+
+  // the classic red-team shape: Title / Severity / Proof paragraphs separated
+  // by blank lines are counted as separate blocks (each with its own start)
+  const redteamShape = [
+    "# B",
+    "",
+    "## Ready",
+    "",
+    "**Title:** relay replay",
+    "",
+    "**Severity:** HIGH",
+    "",
+    "**Proof/attack sketch:** handshake has no freshness",
+    "",
+    "## Done",
+  ].join("\n");
+  const redteamScan = readyOrphanBlocks(redteamShape);
+  check("P2-341: blank-line-separated prose paragraphs count as separate blocks", redteamScan.count === 3 && JSON.stringify(redteamScan.starts) === JSON.stringify([5, 7, 9]));
+
+  // a block is classified by its start line: a valid task line followed by
+  // wrapped prose (no blank line) stays a task — the scanner never rewrites
+  const taskThenProse = [
+    "# B",
+    "",
+    "## Ready",
+    "",
+    "- [ ] (P2-502) [P2] Task — spec: fine (area: ui)",
+    "wrapped prose after the task line",
+    "",
+    "## Done",
+  ].join("\n");
+  check("P2-341: a block starting with a valid task line is never an orphan", readyOrphanBlocks(taskThenProse).count === 0);
+
+  // prose under ## Blocked is out of scope — only the Ready section is scanned
+  const blockedAfter = [
+    "# B",
+    "",
+    "## Ready",
+    "",
+    "**Title:** real orphan",
+    "",
+    "## Blocked",
+    "",
+    "**Title:** stale prose after Blocked",
+    "",
+    "## Done",
+  ].join("\n");
+  const blockedScan = readyOrphanBlocks(blockedAfter);
+  check("P2-341: prose under ## Blocked is not counted (Ready section only)", blockedScan.count === 1 && JSON.stringify(blockedScan.starts) === JSON.stringify([5]));
+
+  // a backlog without ## Ready is tolerated (empty report, no throw)
+  check("P2-341: a backlog without ## Ready is tolerated (empty report, no throw)", JSON.stringify(readyOrphanBlocks("# B\n\n## Done\n- [x] (P2-001) [P2] Old — done\n")) === JSON.stringify({ count: 0, starts: [] }));
+
+  // the REAL BACKLOG.md of this repo: the rot is real and gets flagged
+  const realBacklog = readFileSync(join(import.meta.dirname, "..", "BACKLOG.md"), "utf8");
+  const realScan = readyOrphanBlocks(realBacklog);
+  check(
+    "P2-341: the real BACKLOG.md of this repo reports orphan blocks",
+    realScan.count > 0 && realScan.starts.length === realScan.count && realScan.starts.every((n, i) => Number.isInteger(n) && n > 0 && (i === 0 || n > realScan.starts[i - 1]!)),
+  );
+  const realLines = realBacklog.split("\n");
+  check("P2-341: every reported orphan start line fails the same validator on the real file", realScan.starts.every((n) => !isValidTaskLine((realLines[n - 1] ?? "").trim())));
+
+  // index.ts wiring: runDoctorPass calls the scanner and the block TEXT never
+  // reaches the log — only the count and the start lines, deduped by count
+  const doctorIndexSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
+  const doctorBody = doctorIndexSrc.slice(doctorIndexSrc.indexOf("async function runDoctorPass"), doctorIndexSrc.indexOf("/** One pipeline run in a slot workspace"));
+  check("P2-341: runDoctorPass calls readyOrphanBlocks", doctorBody.includes("readyOrphanBlocks("));
+  check("P2-341: the doctor log line carries only the count and the start lines", doctorBody.includes('log("warn", "doctor: ready orphan blocks", { count: orphans.count, starts: orphans.starts })'));
+  check(
+    "P2-341: the alert event cites the count and the start lines, never block text",
+    /\$\{orphans\.count\}/.test(doctorBody) && /\$\{orphans\.starts\.join\(", "\)\}/.test(doctorBody),
+  );
+  check("P2-341: the raw backlog text is consumed only by the scanner — never logged", !doctorBody.slice(doctorBody.indexOf("if (orphans.count === 0)")).includes("backlogMd"));
+  check("P2-341: the alert is deduplicated by equal count between passes", doctorBody.includes("lastOrphanAlertCount"));
 }
 // --- P2-194: device labels + last-seen touch (devicetouch.ts) -----------------
 

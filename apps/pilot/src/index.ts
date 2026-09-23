@@ -14,7 +14,7 @@ import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDif
 import { deploySkipReason } from "./deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
 import { digest } from "./push";
-import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, type AddTaskResult, type Task } from "./backlog";
+import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, readyOrphanBlocks, type AddTaskResult, type Task } from "./backlog";
 import { redteamFinding } from "./findingline";
 import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
@@ -93,6 +93,16 @@ let foreignMission = false;
  * foreign mission. Set once at boot (a mission change restarts the process). */
 let stateRoot = join(homedir(), ".opencode-remote", "pilot");
 let activeMissionKey: string | null = null;
+/** P2-341: backlog source for the doctor pass — the boot-resolved repo and
+ * base branch (pinned in main() like stateRoot; a foreign mission points at
+ * the mission clone). Null until boot resolves them: the pass stays silent. */
+let doctorRepo: string | null = null;
+let doctorBaseBranch = "main";
+/** P2-341: orphan-block count the doctor already alerted about — the same
+ * count between passes stays silent (the alert must not repeat every hour);
+ * count 0 resets the memo, so a cleanup followed by regrowth alerts once more.
+ * In-memory like the other runtime counters: a restart re-alerts once. */
+let lastOrphanAlertCount: number | null = null;
 /** Shared runtime counters — mutated by the dispatcher and by slot workers.
  * The single-threaded event loop keeps mutations atomic; the dispatcher only
  * reloads from disk while no slot is running (so in-flight counters are never
@@ -143,6 +153,12 @@ async function main() {
   cfg.stateRoot = slotRoot;
   cfg.missionKey = missionKey ?? undefined;
   cfg.missionModels = activeMission?.models;
+  // P2-341: the doctor pass reads the queue backlog the scheduler trusts —
+  // the boot-resolved repo + base branch (git show origin/<base>:BACKLOG.md),
+  // never a slot worktree. Top-level runDoctorPass has no cfg in scope, so
+  // the pointers are pinned once at boot, like stateRoot.
+  doctorRepo = cfg.repo;
+  doctorBaseBranch = cfg.baseBranch ?? "main";
   // P3-101: the sha this process booted on — the loop's stale-process self-heal
   // exits whenever the production repo's HEAD moves past it (idle + no deploy).
   const bootHead = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim() || undefined;
@@ -582,6 +598,9 @@ async function main() {
  * entry and the infra-failure wake — API health probe plus the top failure
  * steps and top rejected tasks from the failure record. Also refreshes the
  * dashboard audit chip (P2-045) and persists the state.
+ * P2-341: also flags loose prose blocks under ## Ready that parseBacklog can
+ * never schedule — report only; the block text never reaches the log, only
+ * the count and the 1-based start lines.
  */
 async function runDoctorPass(st: PilotState): Promise<void> {
   const api = await apiHealthy();
@@ -594,6 +613,25 @@ async function runDoctorPass(st: PilotState): Promise<void> {
   log("warn", "audit diagnosis", { summary: formatDiagnosis(diag), ...diag });
   st.auditDiagnosis = formatDiagnosis(diag);
   saveState(st);
+  // P2-341: loose prose under ## Ready never becomes a task (parseBacklog
+  // only sees `- [ ]` lines) — flag it for the operator. Report only: the
+  // raw markdown is consumed by the pure scanner and nothing else; the log
+  // and the alert carry just the count and the start lines.
+  const backlogMd = doctorRepo
+    ? exec(`git show origin/${doctorBaseBranch}:BACKLOG.md`, { cwd: doctorRepo, allowFail: true })
+    : { ok: false, output: "" };
+  const orphans = readyOrphanBlocks(backlogMd.ok ? backlogMd.output : "");
+  if (orphans.count === 0) {
+    lastOrphanAlertCount = null; // cleaned — a future regrowth alerts once more
+  } else if (orphans.count !== lastOrphanAlertCount) {
+    lastOrphanAlertCount = orphans.count;
+    log("warn", "doctor: ready orphan blocks", { count: orphans.count, starts: orphans.starts });
+    emit("alert", {
+      task: "doctor",
+      ok: false,
+      detail: `backlog ## Ready carries ${orphans.count} non-task block(s) — clean them manually (start lines: ${orphans.starts.join(", ")})`,
+    });
+  }
 }
 
 /** One pipeline run in a slot workspace, with all result bookkeeping.
