@@ -1034,6 +1034,16 @@ the daemon reconnecting forever), and a relay that does not publish the field
 at all reports it is old — it still works and can be saved, but consider
 updating it.
 
+Since P3-453 the same card also carries one quiet **live status line** — the
+same daemon↔relay verdict the pairing QR's line speaks (connected, local
+mode, connecting/reconnecting, refused, misconfigured, incompatible — or the
+neutral unknown when the daemon predates the field). It describes the machine
+hosting the daemon right now, so whoever opens Settings to understand why the
+phone cannot connect sees immediately whether the link is up, redialing or
+refused, without opening the pairing screen. The phone and the pure browser
+never show it (they have no shell to report the verdict), and it never blocks
+or hides anything — it is a diagnosis, not a gate.
+
 ## Pointing the PWA at the hosted relay
 
 The PWA is relay-only and gets the relay URL from the pairing code — there is
