@@ -1687,9 +1687,13 @@ button.desk-new:disabled {
   margin-top: var(--space-1);
 }
 /* the agent step hosts the degraded-journey status card and upstream block —
-   stretch them edge to edge inside the step surface */
+   stretch them edge to edge inside the step surface. P3-454: the step now
+   also hosts the shared live retry line and the escalation block, same
+   stretch so the wizard card reads as one column like the gate card. */
 .welcome-agent .degraded-status,
-.welcome-agent .degraded-upstream {
+.welcome-agent .degraded-upstream,
+.welcome-agent .degraded-retry,
+.welcome-agent .degraded-escalate {
   width: 100%;
 }
 .welcome-agent .degraded-status h3 {

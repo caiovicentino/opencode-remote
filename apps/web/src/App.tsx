@@ -1548,8 +1548,21 @@ export default function App() {
         <WelcomeView
           kind={kind}
           busy={phase === "connecting"}
+          // P3-454: the agent step shows the same live retry feedback the gate
+          // card renders for this shell state — attempt counter, ticking
+          // seconds and the escalation with its diagnostics path, so the
+          // promised auto-recovery is visible before the wizard ends.
+          reconnectAttempts={pairingState?.reconnectAttempts}
           upstream={upstream}
           reconnect={reconnectBtn}
+          // P3-454: the escalated step's diagnostics escape stamps the welcome
+          // flag (leaving onboarding is the user's explicit choice) and opens
+          // the same Settings help section the calm card's button reaches.
+          onOpenHelp={() => {
+            finishWelcome();
+            setHelpOpen(true);
+          }}
+          desktopShell={!!desktopBridge()}
           qrDataUrl={pairingState?.qrDataUrl}
           phonePaired={pairingState?.phonePaired}
           onCancelPairRemote={() => void desktopBridge()?.setRemotePairing?.(false)}

@@ -1681,7 +1681,58 @@ try {
     const gateOpen = run("P3-406: open (forced-down gate instance)", ["open"], 45_000, gateEnv);
     gateBooted = gateOpen.ok;
     if (gateOpen.ok) {
-      run("P3-406: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, gateEnv);
+      // --- P3-454: the wizard's agent step shows the same live retry feedback
+      // The step-2 card promises "esta tela segue tentando sozinha" yet used
+      // to render no retry line at all — the same shell state one screen later
+      // (the gate card) shows a live "Tentando sozinho… há 9s". This forced-
+      // down boot walks to the agent step FIRST and proves the wizard now
+      // carries the shared RetryFeedback contract: live ticking line, the
+      // escalation block after the documented ESCALATE_HATCH_KEY hatch, and a
+      // diagnostics escape that leaves onboarding for the real help section.
+      // The hatch is removed before the escape so the P3-406 beats below meet
+      // the gate card in its plain (non-escalated) state.
+      run("P3-454: seed the escalate hatch and reload", ["ipc", "setTimeout(() => { localStorage.setItem('ocr.degraded.escalateHatch', '1'); location.reload(); }, 0); 'nav'"], 15_000, gateEnv);
+      run("P3-454: advance to the agent step", ["click", ".welcome-next"], 15_000, gateEnv);
+      await waitProbe(
+        "P3-454: the agent step renders the live retry line",
+        "(() => { const line = document.querySelector('.welcome-agent .degraded-retry'); return line ? line.textContent : 'MISS'; })()",
+        (v) => /Tentando sozinho|Retrying automatically/.test(v),
+        gateEnv,
+      );
+      const wizTick = run(
+        "P3-454: the wizard retry segment ticks",
+        ["ipc", "new Promise(r => { const el = () => document.querySelector('.welcome-agent .degraded-retry-meta')?.textContent ?? ''; const a = el(); setTimeout(() => r(a + '|' + el()), 2200); })"],
+        15_000,
+        gateEnv,
+      );
+      if (wizTick.ok) {
+        const [wFirst, wSecond] = wizTick.stdout.replace(/"/g, "").split("|");
+        check("P3-454: the wizard's retry clock ticks with the 1s interval", !!wSecond && wFirst !== wSecond, wizTick.stdout);
+      }
+      const wizEsc = run(
+        "P3-454: the escalated agent step carries the diagnostics path",
+        ["ipc", "!!document.querySelector('.welcome-agent .degraded-escalate') + '|' + !!document.querySelector('.welcome-agent .degraded-escalate .degraded-upstream-help')"],
+        15_000,
+        gateEnv,
+      );
+      if (wizEsc.ok) check("P3-454: the escalation block renders with its diagnostics button", /^true\|true$/.test(wizEsc.stdout.replace(/"/g, "").trim()), wizEsc.stdout);
+      run("P3-454: drop the hatch so the gate card mounts plain", ["ipc", "localStorage.removeItem('ocr.degraded.escalateHatch'); 'ok'"], 15_000, gateEnv);
+      run("P3-454: open diagnostics from the escalated step", ["click", ".welcome-agent .degraded-escalate .degraded-upstream-help"], 15_000, gateEnv);
+      await waitProbe(
+        "P3-454: the diagnostics escape leaves the wizard into the Settings surface",
+        "!!document.querySelector('.welcome') + '|' + !!document.querySelector('.pair-wrap .screen .pane-title')",
+        (v) => /^false\|true$/.test(v.replace(/"/g, "").trim()),
+        gateEnv,
+      );
+      // Back to the gate for the P3-406 beats (the wizard is done — the flag
+      // was stamped by the diagnostics escape itself).
+      run("P3-454: back from help to the gate", ["click", ".pair-wrap .screen > header > button:first-child"], 15_000, gateEnv);
+      // Safety net: if any beat above failed before the escape, leave the
+      // wizard the ordinary way so the P3-406 precondition can still hold.
+      const wizStill = probe(["ipc", "!!document.querySelector('.welcome')"], 15_000, gateEnv);
+      if (wizStill.ok && /true/.test(wizStill.stdout)) {
+        run("P3-454: leave the wizard via the skip (fallback)", ["click", ".welcome-skip"], 15_000, gateEnv);
+      }
       const gateAtGate = run("P3-406: the gate card is up with the queue composer", ["ipc", "!!document.querySelector('.degraded') + '|' + !!document.querySelector('.degraded-queue-input')"], 15_000, gateEnv);
       check("P3-406: deterministic gate precondition", /^true\|true$/.test(gateAtGate.stdout.replace(/"/g, "").trim()), gateAtGate.stdout);
       run("P3-406: go-quick-entry click at the gate", ["menu-click", "go-quick-entry"], 15_000, gateEnv);

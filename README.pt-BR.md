@@ -393,7 +393,13 @@ remoto, zero confiança**.
   bloco de diagnóstico respeita a superfície: no desktop aponta o botão "Abrir
   diagnósticos" do próprio app (o relatório é copiado de dentro dele) e no
   celular fala em conferir o próprio computador ou parear outro dispositivo —
-  nunca um comando de terminal
+  nunca um comando de terminal. Desde a P3-454 o passo do agente no wizard de
+  boas-vindas renderiza a mesma linha viva e a mesma escalada para o mesmo
+  estado do shell — a promessa "esta tela segue tentando sozinha" do passo 2
+  fica visível enquanto o usuário ainda está no onboarding (o "Abrir
+  diagnósticos" da escalada grava a flag de boas-vindas e abre a seção de
+  ajuda das Configurações — sair do onboarding assim é escolha explícita,
+  nunca um beco sem saída)
 - **Motor local travado vivo (P2-324)** — enquanto o shell observa um daemon que
   parou de responder e o reanima sozinho, o mesmo cartão calmo avisa o que está
   acontecendo ("reanimando automaticamente — nada para fazer por agora"; ou "reinício
@@ -420,7 +426,13 @@ remoto, zero confiança**.
 - **Boas-vindas de primeira execução (P2-148)** — o primeiro boot do app desktop
   percorre três passos: o que o app é (uma frase), o estado do agente local (reusando
   a copy calma da jornada degradada e o aviso de upstream da P2-138) e o convite a
-  parear um celular com a opção explícita de "fazer isso depois". O indicador de
+  parear um celular com a opção explícita de "fazer isso depois". O passo do agente
+  carrega o contrato completo de retry do card calmo (P3-454): enquanto promete
+  "esta tela segue tentando sozinha", renderiza a mesma linha viva
+  "Tentando sozinho… há 9s · tentativa 3" e, passado o limiar compartilhado de 60s,
+  a mesma escalada — cujo "Abrir diagnósticos" grava a flag de boas-vindas e abre
+  a seção de ajuda das Configurações, em vez de beco sem saída no meio do onboarding.
+  O indicador de
   passo fica centralizado sob a marca, e os dois primeiros passos têm o "Pular"
   discreto dentro da linha de ações do cartão, ao lado da ação principal — fuga e
   progresso leem-se como uma coisa só (P3-374); o passo final tem uma

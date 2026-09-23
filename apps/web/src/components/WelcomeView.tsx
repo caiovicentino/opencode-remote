@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import type { DegradedKind, UpstreamNotice } from "../lib/degraded";
+import { shouldEscalateRetry } from "../lib/degraded";
 import { qrWaitVerdict, QR_WAIT_TIMEOUT_MS } from "../lib/qrWait";
+// P3-454: the agent step carries the same live retry feedback the gate card
+// shows for the same shell state — line, clock and escalation block are the
+// shared RetryFeedback contract, never a second dialect.
+import { EscalationBlock, RetryLine, useRetryClock } from "./RetryFeedback";
 import ReconnectButton from "./ReconnectButton";
 import UpstreamMissingActions from "./UpstreamMissingActions";
 
@@ -9,10 +14,21 @@ interface Props {
   kind: DegradedKind;
   /** The shell is mid-`connect()` (auto-pair attempt in flight). */
   busy: boolean;
+  /** P3-454: the shell's reconnect attempt counter — the agent step's live
+   * retry line rides it exactly like the gate card one screen later. */
+  reconnectAttempts?: number;
   /** P2-138 upstream (opencode) notice, rendered inside the agent step. */
   upstream: UpstreamNotice | null;
   /** Shell bridge's app:reconnectDaemon — absent in the plain browser. */
   reconnect?: () => Promise<boolean>;
+  /** P3-454: the escalation's diagnostics path — App stamps the welcome flag
+   * and opens the Settings help section (leaving onboarding for diagnostics
+   * is the user's explicit choice, never a dead end mid-wizard). */
+  onOpenHelp?: () => void;
+  /** P3-454: the escalation detail follows the surface — the wizard only
+   * renders on the desktop shell, so App passes the same shell verdict it
+   * already computes for the install hint. */
+  desktopShell?: boolean;
   /** P1-070 explicit "pair a remote phone" action (app:setRemotePairing). */
   onPairRemote?: () => void;
   /** P1-056: live pairing ceremony state — inline QR instead of dumping the
@@ -173,7 +189,7 @@ function InlinePair({
  * banner per P2-108), step 3 invites pairing a phone with an explicit "do
  * this later". Zero emoji (P2-107), P3-083 tokens only, 150–300ms motion
  * that dies under prefers-reduced-motion (P3-087). */
-export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onPairManually, onDone, onRecheck }: Props) {
+export default function WelcomeView({ kind, busy, reconnectAttempts, upstream, reconnect, onOpenHelp, desktopShell, onPairRemote, onCancelPairRemote, qrDataUrl, phonePaired, onPairManually, onDone, onRecheck }: Props) {
   const t = useT();
   const [step, setStep] = useState(1);
 
@@ -193,6 +209,18 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
           ? t("welcomeAgentOk")
           : t("firstContactTitle");
   const agentHint = kind === "down" && !busy ? t("degradedDownHint") : t("firstContactHint");
+  // P3-454: the visible auto-retry feedback lives on the step that promises
+  // it. Same verdict as the gate card (P2-112): honest per state — the shell
+  // keeps probing every few seconds unless the respawn budget is exhausted,
+  // so kind "down" is excluded exactly like the gate card (DegradedView:
+  // kind !== "down" — its copy owns the "attempts stopped" story and keeps
+  // the bare reconnect button), and a busy connect has its own "connecting"
+  // copy. The healthy agent (kind "none") has nothing to retry either. The
+  // cumulative clock ticks only while the agent step itself is on screen, so
+  // dwelling on step 1 never escalates a card the user has not reached yet.
+  const stepAutoRetry = step === 2 && !busy && kind !== "none" && kind !== "down";
+  const retryTotal = useRetryClock(stepAutoRetry);
+  const escalated = stepAutoRetry && shouldEscalateRetry(retryTotal);
 
   return (
     <div className="welcome" data-welcome-step={step}>
@@ -265,7 +293,25 @@ export default function WelcomeView({ kind, busy, upstream, reconnect, onPairRem
                 {upstream.missingBinary && <UpstreamMissingActions onRecheck={onRecheck} />}
               </div>
             )}
-            <ReconnectButton className="welcome-retry" reconnect={reconnect} />
+            {/* P3-454: the promised autonomous recovery is visible while the
+                promise is on screen — the same live line the gate card renders
+                one screen later ("Tentando sozinho… há 9s · tentativa 3"),
+                aria-status so it announces without the aria-hidden clock. */}
+            {stepAutoRetry && (
+              <p className="degraded-retry" role="status">
+                <RetryLine attempts={reconnectAttempts} />
+              </p>
+            )}
+            {/* P3-385 in the wizard too: once escalated the escalation block
+                owns the recovery path — the standalone reconnect button folds
+                into it (demoted to a text link) so two same-weight CTAs never
+                stack in one column. P3-454: the diagnostics escape ends the
+                wizard on the user's explicit choice, never a dead end. */}
+            {escalated ? (
+              <EscalationBlock totalSec={retryTotal} onOpenHelp={onOpenHelp} reconnect={reconnect} desktopShell={desktopShell} />
+            ) : (
+              <ReconnectButton className="welcome-retry" reconnect={reconnect} />
+            )}
             <div className="welcome-actions">
               <button className="primary welcome-next" onClick={() => setStep(3)}>
                 {t("welcomeNext")}
