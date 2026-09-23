@@ -1,5 +1,5 @@
 import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, powerMonitor, powerSaveBlocker, screen, session, systemPreferences, Tray, shell } from "electron";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, sep } from "node:path";
@@ -1591,14 +1591,20 @@ function setLoginItemEnabled(enabled: boolean): void {
 // classification itself is the pure storageprobe.ts verdict; this runner
 // only performs the probe and returns its raw result. Never throws: every
 // failure becomes the injected result the classifier expects.
+// Round-3 review hardening: the probe file name is unpredictable
+// (randomUUID) AND the write is exclusive-create (flag "wx" = O_EXCL), so a
+// pre-planted symlink at a predictable name can never be followed and
+// truncated — an existing path (symlink included) fails the open instead,
+// degrading the verdict fail-closed. A name collision is otherwise
+// impossible; the failure path only ever reports a non-ok verdict.
 function probeUserDataStorage(dir: string): StorageProbeResult {
-  const file = join(dir, `.storage-probe-${process.pid}`);
+  const file = join(dir, `.storage-probe-${randomUUID()}`);
   try {
     // A fresh install may not have the folder yet — creating it is part of
     // the same probe (its failure mode, e.g. EACCES on the parent, is
     // exactly the diagnosis the card must name).
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, "opencode-remote storage probe", { encoding: "utf8", flag: "w" });
+    writeFileSync(file, "opencode-remote storage probe", { encoding: "utf8", flag: "wx" });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     return { ok: false, code: typeof code === "string" ? code : undefined };

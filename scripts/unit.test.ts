@@ -40769,6 +40769,18 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
         !fn.includes("setTimeout"),
     );
     check("P2-346 source: the probe result carries the errno code on failure", fn.includes("(err as NodeJS.ErrnoException).code"));
+    // Round-3 review hardening: the probe name must be unpredictable and the
+    // write must be exclusive-create — a pre-planted symlink at a predictable
+    // pid name could otherwise be followed and truncated by the flag-"w"
+    // write. With O_EXCL ("wx") the open fails instead, degrading the verdict
+    // fail-closed; the pid-based name must be gone for good.
+    check(
+      "P2-346 source: the probe file is unpredictably named and exclusive-create (no symlink following, no pid name)",
+      mainSrc.includes("`.storage-probe-${randomUUID()}`") &&
+        fn.includes('flag: "wx"') &&
+        !mainSrc.includes("storage-probe-${process.pid}") &&
+        (mainSrc.match(/flag: "w"/g) ?? []).length === 0,
+    );
   }
   check(
     "P2-346 source: the verdict rides every pairing payload variant (down, reconnecting, healthy tick, wedge fallback)",
