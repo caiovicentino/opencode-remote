@@ -1218,7 +1218,11 @@ the app or the hosted relay; a live link still outranks a stale mismatch, and
 the tray carries the same warning with no new menu item). The line describes
 the machine hosting the daemon — not the phone, not the camera. Like every warning on this screen it never blocks pairing and
 never hides the QR: the link can come back up before the phone finishes
-scanning.
+scanning. Since P3-453 the Settings relay card carries the same quiet status
+line — above the address field, describing the link as it is right now — so
+whoever opens Settings to debug the phone's connection sees the live verdict
+without opening the pairing screen (the phone and the pure browser never
+show it: they have no shell to report the verdict).
 
 **Clock skew (P2-214)**: a machine whose clock is far off has its own failure
 mode — the phone's browser refuses the hosted relay's certificate (the

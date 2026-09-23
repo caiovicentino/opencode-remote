@@ -38490,6 +38490,67 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
 }
 
+// --- P3-453: the Settings relay block speaks the live daemon↔relay link ---------
+// The pairing overlay has carried the relay-link verdict since P2-199; the
+// Settings relay block — the surface someone opens to understand why the phone
+// cannot connect — only showed the configured address. It now renders ONE
+// quiet status line when App hands the verdict it already holds, and stays
+// byte for byte on every surface that never receives the prop (the phone, the
+// pure browser): absence of the prop is absence of the line, and the neutral
+// unknown never paints the warning — absence of data is never an accusation.
+
+{
+  const settingsSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"),
+    "utf8",
+  );
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+
+  // 1. the prop is optional — every surface that never passes it keeps
+  //    today's card (the phone never has the pairing state, the pure browser
+  //    never has the shell bridge that renders the block at all)
+  check(
+    "P3-453: SettingsView takes the live relay-link verdict as an OPTIONAL prop",
+    settingsSrc.includes("relayLink?: { state: string; message: string } | null;") &&
+      settingsSrc.includes("onRelayFocusConsumed, relayLink }: Props"),
+  );
+
+  // 2. the line exists only under the prop gate, inside the relay block, with
+  //    the copy-independent state attribute the harness selects by (P3-421)
+  const relayCardAt = settingsSrc.indexOf("data-relay-setting");
+  const lineGateAt = settingsSrc.indexOf("{relayLink && (", relayCardAt);
+  const lineSlice = lineGateAt > -1 ? settingsSrc.slice(lineGateAt, lineGateAt + 800) : "";
+  check(
+    "P3-453: the status line renders ONLY when the verdict prop is passed, inside the relay block",
+    relayCardAt > -1 && lineGateAt > relayCardAt && lineSlice.includes("data-relay-link-state={relayLink.state}"),
+  );
+  check(
+    "P3-453: the line reuses the overlay's calm vocabulary — the two i18n keys for connected/local, the verdict's static message for the rest",
+    lineSlice.includes('t("pairRelayLinkOk")') &&
+      lineSlice.includes('t("pairRelayLinkLocal")') &&
+      lineSlice.includes(": relayLink.message}"),
+  );
+
+  // 3. same calm register as the overlay: unknown stays discreet (absence of
+  //    data is never an accusation), every other non-neutral state warns —
+  //    the warn class is the one the overlay already carries (P2-199)
+  check(
+    "P3-453: unknown never paints the warning — the discreet/warn predicate mirrors the overlay's trio",
+    lineSlice.includes(
+      'relayLink.state === "connected" || relayLink.state === "local" || relayLink.state === "unknown"',
+    ) &&
+      lineSlice.includes('"pair-relaylink pair-relaylink-warn"'),
+  );
+
+  // 4. paired assertion: App passes the verdict from the pairing state it
+  //    already holds — the pane-mounted instances (paired + gate shells) and
+  //    the help screen both mount the view with it
+  check(
+    "P3-453: App hands the verdict to Settings from the pairing state it already holds",
+    (appSrc.match(/relayLink=\{pairingState\?\.relayLink \?\? null\}/g) ?? []).length >= 2,
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

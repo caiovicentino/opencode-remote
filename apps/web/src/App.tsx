@@ -1470,6 +1470,12 @@ export default function App() {
         getProxySetting={desktopBridge()?.getProxySetting}
         setProxyChoice={desktopBridge()?.setProxyChoice}
         upstream={upstream}
+        // P3-453: the live daemon↔relay link verdict, straight from the
+        // pairing state the overlay already consumes — the relay block stops
+        // showing only the configured address and says whether the link is up
+        // right now. Absent on the phone and the pure browser (no bridge, no
+        // pairing state) — the prop is not passed and the line never renders.
+        relayLink={pairingState?.relayLink ?? null}
         // P2-337: the overlay escape's one-shot relay focus request — both
         // pane-mounted instances (paired + gate) carry it; the request is
         // consumed once and App resets the tick (no remount replay).
@@ -1680,6 +1686,10 @@ export default function App() {
         getProxySetting={desktopBridge()?.getProxySetting}
         setProxyChoice={desktopBridge()?.setProxyChoice}
         upstream={upstream}
+        // P3-453: same live verdict — the help screen shows the relay card too
+        // whenever the shell bridge is present, so its status line follows the
+        // pairing state like every other mount of this view.
+        relayLink={pairingState?.relayLink ?? null}
       />
     </div>
   );

@@ -2178,6 +2178,41 @@ try {
             24,
             500,
           );
+
+          // --- P3-453: the Settings relay block speaks the live relay link ---
+          // The overlay has said whether the daemon↔relay link is up since
+          // P2-199; the Settings relay card only showed the configured
+          // address. The P2-337 dismiss above ended the explicit remote
+          // request (the next tick goes quiet-local and drops the verdict), so
+          // the beat re-requests it via the shell bridge FIRST — the overlay
+          // stays dismissed (its gate needs pairingDismissed=false), the
+          // settings pane stays visible, and the next pairing tick computes
+          // the verdict again from the same /api/health answer. The harness
+          // selects by the copy-independent attribute (P3-421) — never by
+          // copy — and the hermetic daemon's dead loopback relay
+          // (ws://127.0.0.1:1) mints the dialing state — warn-toned exactly
+          // like the overlay's line, since only connected/local/unknown stay
+          // discreet (the P2-199 trio).
+          run("P3-453: re-request remote pairing (overlay stays dismissed)", ["ipc", "window.ocrDesktop.setRemotePairing(true)"], 15_000, localEnv);
+          const linkLine = await waitProbe(
+            "P3-453: relay block carries the copy-independent link-state attribute",
+            "(() => { const line = document.querySelector('[data-relay-link-state]'); return (line?.getAttribute('data-relay-link-state') ?? '') + '|' + (line?.className ?? ''); })()",
+            (v) => v.replace(/"/g, "").trim() === "dialing|pair-relaylink pair-relaylink-warn",
+            localEnv,
+            24,
+            500,
+          );
+          if (linkLine) {
+            check(
+              "P3-453: the Settings line names the live state by attribute — dialing, warn-toned",
+              linkLine.includes("dialing|pair-relaylink") && linkLine.includes("pair-relaylink-warn"),
+              linkLine,
+            );
+          }
+          const settingsLinkShot1440 = join(shotsDir, "P3-453-relay-link-1440.png");
+          const sl1 = run("P3-453: 1440x900 relay-link shot", ["shot", settingsLinkShot1440, "1440", "900"], 15_000, localEnv);
+          if (sl1.ok) check("P3-453: relay-link 1440x900 shot is a real PNG", pngSize(settingsLinkShot1440).join("x") === "1440x900");
+
           const focusShot1440 = join(shotsDir, "P2-337-relay-focus-1440.png");
           const pf1 = run("P2-337: 1440x900 focused relay shot", ["shot", focusShot1440, "1440", "900"], 15_000, localEnv);
           if (pf1.ok) check("P2-337: focused relay 1440x900 shot is a real PNG", pngSize(focusShot1440).join("x") === "1440x900");
@@ -2199,6 +2234,26 @@ try {
           run("P2-337: scroll the marked block into view (390 evidence)", ["ipc", "document.querySelector('[data-relay-setting]')?.scrollIntoView({ block: 'center' }) ?? 'gone'"], 15_000, localEnv);
           const pf2 = run("P2-337: 390 focused relay shot", ["shot", focusShot390, "390", "844"], 15_000, localEnv);
           if (pf2.ok) check("P2-337: focused relay 390 shot is a real PNG", pngSize(focusShot390)[0] === 390);
+          // P3-453: the live line survives the mobile remount — same verdict,
+          // same attribute, same warn register (prop flows with the state).
+          const linkAt390 = await waitProbe(
+            "P3-453: the link-state attribute survives the mobile remount",
+            "(() => { const line = document.querySelector('[data-relay-link-state]'); return (line?.getAttribute('data-relay-link-state') ?? '') + '|' + (line?.className ?? ''); })()",
+            (v) => v.replace(/"/g, "").trim() === "dialing|pair-relaylink pair-relaylink-warn",
+            localEnv,
+            24,
+            500,
+          );
+          if (linkAt390) {
+            check(
+              "P3-453: the live line keeps its state attribute after the 390 remount",
+              linkAt390.includes("dialing|pair-relaylink") && linkAt390.includes("pair-relaylink-warn"),
+              linkAt390,
+            );
+          }
+          const settingsLinkShot390 = join(shotsDir, "P3-453-relay-link-390.png");
+          const sl2 = run("P3-453: 390 relay-link shot", ["shot", settingsLinkShot390, "390", "844"], 15_000, localEnv);
+          if (sl2.ok) check("P3-453: relay-link 390 shot is a real PNG", pngSize(settingsLinkShot390)[0] === 390);
           // resize vehicle only — the settled 1440 evidence was already taken
           run("P2-337: resize back to desktop width", ["shot", join(shotsDir, "P2-337-resize-1440.png"), "1440", "900"], 15_000, localEnv);
           run("P2-337: re-open the overlay (Celular rail entry)", ["click", '[data-pane="phone"]'], 15_000, localEnv);

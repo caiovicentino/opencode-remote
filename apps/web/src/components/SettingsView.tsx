@@ -108,6 +108,12 @@ interface Props {
    * on screen (the desktop-only read resolves a beat after mount), so the
    * caret never lands before the block exists. */
   onRelayFocusConsumed?: (tick: number) => void;
+  /** P3-453: desktop shell only — the live daemon↔relay link verdict App
+   * hands from the pairing state it already holds (the P2-199 payload).
+   * Optional: the phone and the pure browser never pass it, and the status
+   * line in the relay block exists only when the prop is present — those
+   * surfaces keep today's card byte for byte. */
+  relayLink?: { state: string; message: string } | null;
 }
 
 interface Device {
@@ -223,7 +229,7 @@ function forcedAgentFound(): boolean | undefined {
   return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream, relayFocusTick, onRelayFocusConsumed }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream, relayFocusTick, onRelayFocusConsumed, relayLink }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -754,6 +760,35 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
             <p className="muted" style={{ margin: "0 0 6px" }}>
               {t("relayHint")}
             </p>
+            {/* P3-453: the live daemon↔relay link — the verdict the pairing
+                overlay's quiet line already speaks (P2-199), now inside the
+                relay block so whoever opens Settings to understand why the
+                phone cannot connect sees whether the link is up right now.
+                Renders ONLY when App passes the verdict: the phone and the
+                pure browser keep today's card byte for byte. Same calm
+                vocabulary as the overlay: the pairRelayLinkOk /
+                pairRelayLinkLocal keys for connected/local, the verdict's own
+                static message for the rest, and the overlay's warn class for
+                every non-neutral state — unknown stays discreet, because
+                absence of data is never an accusation. data-relay-link-state
+                is the copy-independent attribute the harness selects by
+                (P3-421), never by copy. */}
+            {relayLink && (
+              <p
+                className={
+                  relayLink.state === "connected" || relayLink.state === "local" || relayLink.state === "unknown"
+                    ? "pair-relaylink"
+                    : "pair-relaylink pair-relaylink-warn"
+                }
+                data-relay-link-state={relayLink.state}
+              >
+                {relayLink.state === "connected"
+                  ? t("pairRelayLinkOk")
+                  : relayLink.state === "local"
+                    ? t("pairRelayLinkLocal")
+                    : relayLink.message}
+              </p>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <input
                 ref={relayInputRef}
