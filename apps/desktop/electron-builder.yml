@@ -133,6 +133,18 @@ nsis:
   # on disk after the owner removed the app, and a phone pairing is worthless
   # once that machine's daemon ceases to exist. The custom autostart-entry
   # removal lives in build/installer.nsh (customUnInstall).
+  # P3-456: verified against the installed template (app-builder-lib 26.15.3)
+  # that this flag does NOT fire on the silent uninstall of an upgrade: the
+  # new installer's uninstallOldVersion always passes --updated to the old
+  # uninstaller when it passes no --delete-app-data (templates/nsis/include/
+  # installUtil.nsh:201-207), and the uninstaller wipes only when
+  # DELETE_APP_DATA_ON_UNINSTALL is defined AND ${isUpdated} is false
+  # (templates/nsis/uninstaller.nsh:216-234; ${isUpdated} is generated into
+  # the shared installer/uninstaller header from the --updated CLI flag by
+  # NsisScriptGenerator.flags — out/targets/nsis/nsisScriptGenerator.js:29-37,
+  # registered at out/targets/nsis/NsisTarget.js:579). A real uninstall runs
+  # with no --updated, so the wipe happens exactly there. scripts/unit.test.ts
+  # (block P3-456) pins all four template facts.
   deleteAppDataOnUninstall: true
   # P2-186: space-free (was "OpenCode Remote Setup ${version}.exe") — the
   # checksum manifest and mirrors want deterministic, space-free names.

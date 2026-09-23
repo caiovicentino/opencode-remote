@@ -1256,6 +1256,10 @@ login** autostart entry (no more boots trying to open a program that no
 longer exists) and the app's own data folder under your user profile — state
 files and logs included, since the install is per-user — and never touches
 Documents, Desktop, Downloads or anything outside the app's own data.
+**Upgrading (P3-456)** keeps everything: installing a new version over an old
+one runs the old uninstaller silently, and that path carries the `--updated`
+flag the uninstaller itself checks, so the data wipe only happens on a real
+uninstall — your pairing and machine identity survive every update.
 
 **macOS data wipe (P2-267)**: macOS has no uninstaller — dragging the app to
 the Trash leaves the machine identity (ECDH and VAPID keys), the paired-phone
