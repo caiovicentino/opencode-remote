@@ -151,3 +151,45 @@ export function linkVerdict(f: RelayLinkFacts): RelayLinkVerdict {
     message: "o daemon está conectando ao relay — aguarde um instante e rescaneie o código",
   };
 }
+
+/** P2-340: the closed set of redial outcomes the desktop understands. Derived
+ * from the daemon's POST /__ocr/relay/redial answer ({ action, reason } —
+ * apps/daemon/src/relayredial.ts documents every pair): a redial-now becomes
+ * `redialing`, a noop whose wait came from the relay's own backoff or the
+ * route throttle becomes `throttled`, a dial already in flight becomes
+ * `already-dialing`, every other documented noop reason is `not-needed`, and
+ * anything else — non-200 status, null/malformed body, unknown action,
+ * unknown reason — degrades to `unavailable`. Fail-closed by design: the
+ * renderer only ever receives one of these five words, never the token,
+ * never the URL, never the port, never the daemon's raw reason. */
+export type RelayRedialOutcome = "redialing" | "throttled" | "already-dialing" | "not-needed" | "unavailable";
+
+/** noop reasons that mean "nothing to anticipate right now" — the relay is
+ * fine, disabled, or has no retry scheduled to clear. */
+const REDIAL_NOT_NEEDED_REASONS = new Set(["disabled", "connected", "nothing-pending"]);
+
+/** noop reasons that mean "a wait is already in effect and this click cannot
+ * shorten it": the route's 10s throttle (relayredial.ts rule 6) and — more
+ * importantly — the relay's own backoff (1013 capacity / 4029 rate-limited,
+ * relayredial.ts rule 5: ALWAYS honored, no client may hammer the relay
+ * through this route). Both tell the operator the same thing: wait, try
+ * again shortly. */
+const REDIAL_THROTTLED_REASONS = new Set(["throttled", "relay-asked-backoff"]);
+
+/** P2-340: fail-closed read of the daemon's redial answer — only the exact
+ * (action, reason) pairs the route documents survive the sanitization; a
+ * non-200 status, a null/malformed body, an unknown action or an unknown
+ * reason degrades to `unavailable`. Pure: no I/O, no clock, no timers. */
+export function sanitizeRedialVerdict(status: number, body: unknown): RelayRedialOutcome {
+  if (status !== 200 || body === null || typeof body !== "object") return "unavailable";
+  const action = (body as { action?: unknown }).action;
+  const reason = (body as { reason?: unknown }).reason;
+  if (typeof action !== "string" || typeof reason !== "string") return "unavailable";
+  if (action === "redial-now") return "redialing";
+  if (action === "noop") {
+    if (REDIAL_THROTTLED_REASONS.has(reason)) return "throttled";
+    if (reason === "dialing") return "already-dialing";
+    if (REDIAL_NOT_NEEDED_REASONS.has(reason)) return "not-needed";
+  }
+  return "unavailable";
+}

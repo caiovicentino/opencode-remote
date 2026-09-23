@@ -194,7 +194,7 @@ import {
   type RelayProbeInput,
 } from "../apps/desktop/src/relayprobe";
 import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
-import { linkVerdict, sanitizeRelayProtocolState, type RelayLinkFacts } from "../apps/desktop/src/relaylink";
+import { linkVerdict, sanitizeRedialVerdict, sanitizeRelayProtocolState, type RelayLinkFacts, type RelayRedialOutcome } from "../apps/desktop/src/relaylink";
 import { TRAY_TIP_MAX_CHARS, trayStatus } from "../apps/desktop/src/traystatus";
 import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
 import { loginItemMessage, loginItemPlan } from "../apps/desktop/src/loginitem";
@@ -11234,6 +11234,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "daySun", "dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat",
     "dayLetter0", "dayLetter1", "dayLetter2", "dayLetter3", "dayLetter4", "dayLetter5", "dayLetter6",
     "deviceFallback", "revoke", "securityLog",
+    "relayRedialStarted", "relayRedialWaiting", "relayRedialAlreadyDialing", "relayRedialNotNeeded", "relayRedialFailed",
   ];
   check(
     "P2-275: every settings key resolves per locale (no raw-key fallback)",
@@ -38726,7 +38727,7 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check(
     "P3-453: SettingsView takes the live relay-link verdict as an OPTIONAL prop",
     settingsSrc.includes("relayLink?: { state: string; message: string } | null;") &&
-      settingsSrc.includes("onRelayFocusConsumed, relayLink }: Props"),
+      settingsSrc.includes("onRelayFocusConsumed, relayLink, redialRelay }: Props"),
   );
 
   // 2. the line exists only under the prop gate, inside the relay block, with
@@ -38762,6 +38763,162 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check(
     "P3-453: App hands the verdict to Settings from the pairing state it already holds",
     (appSrc.match(/relayLink=\{pairingState\?\.relayLink \?\? null\}/g) ?? []).length >= 2,
+  );
+}
+
+// --- P2-340: the relay card's "Reconnect now" (sanitizeRedialVerdict) ----------
+// The Settings relay block has said reconnecting / refused / incompatible
+// since P3-453 but offered no action, and the P2-327 wake redial only fired
+// when the machine woke. The card's button now reuses that exact one-shot
+// POST through the new app:redialRelay IPC — no timer, no route, no poll —
+// and the renderer only ever sees the sanitized closed-set verdict
+// (relaylink.ts), never the token, the URL, the port or the raw body.
+{
+  const desktopMain = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  const preloadSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "preload.ts"), "utf8");
+  const settingsSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"), "utf8");
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+
+  // 1. the sanitize table — every documented (action, reason) pair of the
+  //    daemon's route maps into the closed set; anything else fails closed
+  //    to `unavailable` (non-200, null/malformed body, unknown action or
+  //    unknown reason).
+  const redialRows: [string, number, unknown, RelayRedialOutcome][] = [
+    ["200 redial-now → redialing", 200, { action: "redial-now", reason: "retry-anticipated" }, "redialing"],
+    ["200 noop throttled → throttled", 200, { action: "noop", reason: "throttled" }, "throttled"],
+    ["200 noop relay-asked-backoff → throttled", 200, { action: "noop", reason: "relay-asked-backoff" }, "throttled"],
+    ["200 noop dialing → already-dialing", 200, { action: "noop", reason: "dialing" }, "already-dialing"],
+    ["200 noop disabled → not-needed", 200, { action: "noop", reason: "disabled" }, "not-needed"],
+    ["200 noop connected → not-needed", 200, { action: "noop", reason: "connected" }, "not-needed"],
+    ["200 noop nothing-pending → not-needed", 200, { action: "noop", reason: "nothing-pending" }, "not-needed"],
+    ["200 unknown action → unavailable", 200, { action: "super-redial", reason: "retry-anticipated" }, "unavailable"],
+    ["200 unknown reason → unavailable", 200, { action: "noop", reason: "maybe-later" }, "unavailable"],
+    ["200 null body → unavailable", 200, null, "unavailable"],
+    ["200 non-object body → unavailable", 200, "redial-now", "unavailable"],
+    ["200 missing reason → unavailable", 200, { action: "redial-now" }, "unavailable"],
+    ["200 non-string action → unavailable", 200, { action: 7, reason: "retry-anticipated" }, "unavailable"],
+    ["429 → unavailable", 429, { action: "redial-now", reason: "retry-anticipated" }, "unavailable"],
+    ["500 → unavailable", 500, { action: "noop", reason: "dialing" }, "unavailable"],
+    ["405 (method-not-allowed body) → unavailable", 405, { action: "noop", reason: "method-not-allowed" }, "unavailable"],
+  ];
+  for (const [name, status, body, want] of redialRows) {
+    check(`P2-340: sanitize table — ${name}`, sanitizeRedialVerdict(status, body) === want);
+  }
+  check(
+    "P2-340: the five words as an unknown ACTION still fail closed (closed set, not open vocabulary)",
+    (["redialing", "throttled", "already-dialing", "not-needed", "unavailable"] as const).every(
+      (v) => sanitizeRedialVerdict(200, { action: v, reason: "retry-anticipated" }) === "unavailable",
+    ),
+  );
+
+  // 2. the wake path keeps today's behavior byte for byte: same helper, same
+  //    fire-and-forget call, same log line, and no timer entered anywhere in
+  //    the redial path.
+  const wakeStart = desktopMain.indexOf("function handleWakeEvent(");
+  const wakeBlock = desktopMain.slice(wakeStart, desktopMain.indexOf("function registerWakeReaction(", wakeStart));
+  check(
+    "P2-340: handleWakeEvent keeps calling the same nudgeRelayRedial helper, still fire-and-forget",
+    wakeBlock.includes("void nudgeRelayRedial();") && wakeBlock.includes("void refreshPairingState();"),
+  );
+  check(
+    "P2-340: no setTimeout or setInterval entered the wake/redial block",
+    !wakeBlock.includes("setTimeout") && !wakeBlock.includes("setInterval"),
+  );
+  check(
+    "P2-340: nudgeRelayRedial returns the sanitized verdict and keeps the P2-327 log contract",
+    desktopMain.includes("return sanitizeRedialVerdict(res.status, body);") &&
+      /async function nudgeRelayRedial\(\): Promise<RelayRedialOutcome> \{/.test(desktopMain) &&
+      /\[desktop\] relay redial: \$\{body\.action\} \(\$\{body\.reason\}\)/.test(wakeBlock),
+  );
+
+  // 3. the IPC: app:redialRelay reuses the same function — no timer, no
+  //    route, no poll, and the handler slice carries nothing but the call.
+  const handlerAt = desktopMain.indexOf('ipcMain.handle("app:redialRelay"');
+  const handlerSlice = handlerAt > -1 ? desktopMain.slice(handlerAt, handlerAt + 240) : "";
+  check(
+    "P2-340: app:redialRelay exists exactly once and reuses nudgeRelayRedial",
+    handlerAt > -1 &&
+      (desktopMain.match(/ipcMain\.handle\("app:redialRelay"/g) ?? []).length === 1 &&
+      handlerSlice.includes("() => nudgeRelayRedial()") &&
+      !handlerSlice.includes("setTimeout") &&
+      !handlerSlice.includes("setInterval") &&
+      !handlerSlice.includes("fetch("),
+  );
+  check(
+    "P2-340: preload exposes redialRelay on the app:redialRelay channel",
+    preloadSrc.includes('redialRelay: (): Promise<RelayRedialOutcome> => ipcRenderer.invoke("app:redialRelay")'),
+  );
+
+  // 4. SettingsView: the button exists only under the prop gate AND the live
+  //    state gate (dialing/refused/incompatible), with copy-independent
+  //    attributes for the harness (P3-421) — never by copy.
+  check(
+    "P2-340: SettingsView takes the redial handler as an OPTIONAL prop (P3-443)",
+    settingsSrc.includes("redialRelay?: () => Promise<string>;") &&
+      settingsSrc.includes("relayLink, redialRelay }: Props"),
+  );
+  const relayCardAt340 = settingsSrc.indexOf("data-relay-setting");
+  const lineGateAt340 = settingsSrc.indexOf("{relayLink && (", relayCardAt340);
+  const btnGateAt = settingsSrc.indexOf("{redialRelay && relayLink && (", lineGateAt340);
+  const btnSlice = btnGateAt > -1 ? settingsSrc.slice(btnGateAt, btnGateAt + 1000) : "";
+  check(
+    "P2-340: the button renders ONLY when the prop exists and the live state is dialing, refused or incompatible",
+    relayCardAt340 > -1 &&
+      lineGateAt340 > relayCardAt340 &&
+      btnGateAt > lineGateAt340 &&
+      btnSlice.includes('relayLink.state === "dialing" || relayLink.state === "refused" || relayLink.state === "incompatible"') &&
+      !btnSlice.includes('relayLink.state === "connected"') &&
+      !btnSlice.includes('relayLink.state === "misconfigured"') &&
+      !btnSlice.includes('relayLink.state === "unknown"'),
+  );
+  check(
+    "P2-340: the button carries the copy-independent attribute and the spinner-while-waiting state",
+    btnSlice.includes("data-relay-redial") &&
+      btnSlice.includes('className="reconnect-spin"') &&
+      btnSlice.includes("disabled={redialPending}") &&
+      btnSlice.includes('redialPending ? t("reconnectTrying") : t("reconnectNow")'),
+  );
+  check(
+    "P2-340: the result is a terminal state tagged with the closed-set verdict",
+    btnSlice.includes("data-relay-redial-result={redialResult}") &&
+      btnSlice.includes("REDIAL_RESULT_KEYS[redialResult] ?? \"relayRedialFailed\""),
+  );
+  check(
+    "P2-340: every closed-set value maps to its own i18n key and the bridge rejection degrades to the failure phrase",
+    settingsSrc.includes('redialing: "relayRedialStarted"') &&
+      settingsSrc.includes('throttled: "relayRedialWaiting"') &&
+      settingsSrc.includes('"already-dialing": "relayRedialAlreadyDialing"') &&
+      settingsSrc.includes('"not-needed": "relayRedialNotNeeded"') &&
+      settingsSrc.includes('unavailable: "relayRedialFailed"') &&
+      settingsSrc.includes('setRedialResult(await redialRelay())') &&
+      settingsSrc.includes('setRedialResult("unavailable")'),
+  );
+
+  // 5. App hands the handler to every Settings mount that carries the relay
+  //    card (paired + gate shells via settingsView(), and the help screen).
+  check(
+    "P2-340: App hands the handler to the Settings mounts, bridge-optional",
+    appSrc.includes("redialRelay?: () => Promise<string>;") &&
+      (appSrc.match(/redialRelay=\{desktopBridge\(\)\?\.redialRelay\}/g) ?? []).length >= 2,
+  );
+
+  // 6. the verdict phrases: five keys in BOTH locales, short, no URL, port,
+  //    path, version number or raw error — the calm vocabulary (P2-140 bar).
+  const resultKeys = ["relayRedialStarted", "relayRedialWaiting", "relayRedialAlreadyDialing", "relayRedialNotNeeded", "relayRedialFailed"];
+  check(
+    "P2-340: the five verdict phrases exist in BOTH locales, short and secret-free",
+    resultKeys.every((k) => {
+      const en = String((dict.en as Record<string, string>)[k] ?? "");
+      const pt = String((dict.pt as Record<string, string>)[k] ?? "");
+      return (
+        en.length > 0 &&
+        pt.length > 0 &&
+        en.length <= 80 &&
+        pt.length <= 80 &&
+        !/https?:|wss?:|127\.0\.0\.1|\/|token|secret/i.test(en) &&
+        !/https?:|wss?:|127\.0\.0\.1|\/|token|secret/i.test(pt)
+      );
+    }) && resultKeys.every((k) => (i18nSource.match(new RegExp(`${k}:`, "g")) ?? []).length === 2),
   );
 }
 

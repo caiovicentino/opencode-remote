@@ -32,7 +32,7 @@ import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
 import { hasAppMarker, probeVerdict, rawDateHeader, type ReachProbeOutcome, type ReachVerdict } from "./webreach";
 import { clockSkewMessage, skewVerdict, type ClockSkewVerdict } from "./clockskew";
-import { linkVerdict, type RelayLinkVerdict } from "./relaylink";
+import { linkVerdict, sanitizeRedialVerdict, type RelayLinkVerdict, type RelayRedialOutcome } from "./relaylink";
 import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
 import { loginItemMessage, loginItemPlan, type LoginItemVerdict } from "./loginitem";
 import { readStartupDecided, startupSettingFile, writeStartupDecided } from "./startupstore";
@@ -1831,6 +1831,13 @@ async function onReady(): Promise<void> {
     });
     return relayProbeInFlight;
   });
+  // P2-340: the Settings relay card's "Reconnect now" — the SAME one-shot
+  // POST the wake path uses (nudgeRelayRedial), so a human click anticipates
+  // the daemon's relay backoff exactly like a wake does. No timer, no route,
+  // no poll added; the daemon's own state guard and 10s throttle protect the
+  // relay. The renderer only ever receives the sanitized closed-set verdict
+  // (relaylink.ts) — never the token, the URL, the port or the raw body.
+  ipcMain.handle("app:redialRelay", () => nudgeRelayRedial());
   // P2-189: the app address the phone opens (step one of the pairing journey)
   // — read + validated write beside the relay setting above, same trust
   // model: validation ALWAYS happens here in the main process and a hostile
@@ -3107,11 +3114,16 @@ function handleWakeEvent(eventType: string): void {
 // P2-327: one best-effort POST to the daemon's loopback redial endpoint — no
 // retry, no queue (the wake probe already covers liveness). Bearer apiToken
 // from the 0600 state file, same contract as POST /api/session; only the
-// verdict's action + reason reach the log, never the token.
-async function nudgeRelayRedial(): Promise<void> {
+// verdict's action + reason reach the log, never the token. P2-340: the
+// function now RETURNS the sanitized closed-set verdict (relaylink.ts) so
+// the Settings relay card's "Reconnect now" IPC reuses this exact path — no
+// timer, no route, no poll added. The wake path keeps today's behavior byte
+// for byte: fire-and-forget, same log line, the verdict only rides the
+// return value.
+async function nudgeRelayRedial(): Promise<RelayRedialOutcome> {
   try {
     const token = readApiToken();
-    if (!token) return;
+    if (!token) return "unavailable";
     const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}/__ocr/relay/redial`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
@@ -3121,8 +3133,14 @@ async function nudgeRelayRedial(): Promise<void> {
     if (res.status === 200 && body && typeof body.action === "string" && typeof body.reason === "string") {
       log(`[desktop] relay redial: ${body.action} (${body.reason})`);
     }
+    // P2-340: only the sanitized closed-set verdict ever leaves this function
+    // — a non-200 status, a malformed body, an unknown action/reason or a
+    // network error/timeout all degrade to "unavailable" (fail-closed), so
+    // the renderer never sees the raw answer.
+    return sanitizeRedialVerdict(res.status, body);
   } catch {
     // best-effort: an unreachable daemon is the probe path's problem
+    return "unavailable";
   }
 }
 

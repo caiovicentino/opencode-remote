@@ -1044,6 +1044,18 @@ refused, without opening the pairing screen. The phone and the pure browser
 never show it (they have no shell to report the verdict), and it never blocks
 or hides anything — it is a diagnosis, not a gate.
 
+Since P2-340 the same card offers one action under that line: a
+**Reconnect now** button, rendered only while the live state is
+connecting/reconnecting, refused or incompatible (the three states where a
+redial can actually help). One click asks the daemon to anticipate the
+current reconnect wait — the same one-shot, bearer-gated loopback POST the
+wake reaction uses, with the daemon's own guard and a 10 s throttle
+protecting the relay; a backoff the relay itself asked for (capacity or
+rate-limited close) is always honored. The click ends in a terminal verdict
+(reconnecting now / a wait already in effect / already reconnecting /
+nothing to anticipate / the machine did not answer), so the action never
+ends in a silent spinner. The phone and the pure browser never see it.
+
 ## Pointing the PWA at the hosted relay
 
 The PWA is relay-only and gets the relay URL from the pairing code — there is
