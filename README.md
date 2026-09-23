@@ -1165,6 +1165,20 @@ in silence. The value is the `RELAY_INSTANCE_ID` env value when it passes
 the closed grammar (1–64 characters of `A-Z a-z 0-9 -`) or a generated
 `relay-i-…` id per boot — never a secret, an address or a room id.
 
+The metrics endpoint also denounces that trap on its own (P3-461): the
+aggregate `relay_rooms_active` count now carries an occupancy split in both
+formats — `relay_rooms_single_peer` / `rooms_single_peer` (rooms with
+exactly one participant), `relay_rooms_paired` / `rooms_paired` (exactly
+two) and `relay_rooms_crowded` / `rooms_crowded` (more than two), appended
+right after `rooms_active`. A high, persistent fraction of one-participant
+rooms with a stable `relay_connections_active` is the symptom of divergent
+replicas behind one address (or clients stuck waiting for a peer that will
+never arrive); docs/RELAY-HOSTING.md suggests a starting alert rule and
+points at the `instanceId` test as the confirmation step. Computed per
+scrape from the live rooms map — no new timer, route or request, zero
+publishes as zero, every pre-existing series byte for byte unchanged, and
+no series ever carries a room id, address or IP.
+
 **Two-step pairing (P2-189)**: the phone needs an address before there is a
 pairing QR to scan, so the desktop pairing screen shows two labeled steps.
 Step one is the **app address** — `https://…` derived from the relay address

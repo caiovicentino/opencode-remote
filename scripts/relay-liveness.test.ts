@@ -188,6 +188,13 @@ const P2_294_EXISTING_LINES = [
 ];
 const P2_294_CERT_LINES = ["relay_cert_expiry_state", "relay_cert_expiry_seconds"];
 const P2_294_ALL = [...P2_294_EXISTING_LINES, ...P2_294_CERT_LINES];
+// P3-461: the additive room-occupancy split joined the documented set (the
+// rooms shape the aggregate relay_rooms_active count hides)
+const P3_461_ROOM_LINES = [
+  "relay_rooms_single_peer",
+  "relay_rooms_paired",
+  "relay_rooms_crowded",
+];
 // P2-313: the additive process gauges joined the documented set, appended
 // after every pre-existing series (plain mode included — the process is
 // observed whatever the TLS mode is)
@@ -198,7 +205,7 @@ const P2_313_PROC_LINES = [
   "relay_uptime_seconds",
   "relay_scheduling_delay_ms",
 ];
-const P2_313_ALL = [...P2_294_ALL, ...P2_313_PROC_LINES];
+const P2_313_ALL = [...P2_294_ALL, ...P3_461_ROOM_LINES, ...P2_313_PROC_LINES];
 check(
   "cert-metrics: plain-mode endpoint keeps every existing documented line with its TYPE header and a value",
   P2_294_EXISTING_LINES.every((name) =>

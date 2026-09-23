@@ -903,6 +903,38 @@ two more times after a healthy first read and reports
 `split-replicas` — more than one instance answers this address, pairing
 fails until only one remains — instead of blessing the address.
 
+### Rooms with one participant: the metric that denounces it (P3-461)
+
+The `instanceId` test above needs an operator who already suspects the trap.
+The `/metrics` endpoint denounces it on its own: the aggregate
+`relay_rooms_active` count hides the shape of the rooms, so the occupancy
+split — `relay_rooms_single_peer` (rooms with exactly one participant),
+`relay_rooms_paired` (exactly two) and `relay_rooms_crowded` (more than
+two) — rides next to it in both formats. Pairing conversations come in
+twos: a replica holding mostly one-participant rooms is serving only one
+side of each conversation.
+
+A **high and persistent** fraction of one-participant rooms — together with
+a stable `relay_connections_active` (the peers stay connected, they just
+never meet) — indicates either divergent replicas behind one address or
+clients stuck waiting for a peer that will never arrive. A suggested
+starting rule (a threshold, not policy — tune it to your instance; unlike
+the shipped set below, this one is a paste-in for your own rule files,
+nothing here regenerates it):
+
+    relay_rooms_single_peer / relay_rooms_active > 0.5
+      for: 10m
+      severity: warning
+
+On an idle relay the division is `0/0` (Prometheus evaluates it as `NaN`,
+which never fires) — the alert only speaks when there are rooms to judge.
+Confirm with the two-minute `instanceId` test above: alternating ids prove
+the replica split, identical ids point at clients stuck alone in their
+rooms (a daemon that left the conversation without the relay noticing).
+These gauges are observation only — nothing in the relay reads them, closes
+a socket or changes a limit because of them — and no series ever carries a
+room id, address or IP.
+
 ## Metrics endpoint
 
 `GET /metrics` (counters as JSON; add `?format=prom` for Prometheus text
@@ -962,6 +994,19 @@ route, no new request, no new dependency), and fail-closed like the
 certificate series: a component the relay cannot measure is omitted rather
 than published as an invented zero, and no series ever carries an address,
 port, room id, token or any identifiable material.
+
+The rooms behind the aggregate `relay_rooms_active` count are split by
+occupancy (P3-461): three additive gauges appended right after it in both
+formats — `relay_rooms_single_peer` (rooms holding exactly one participant),
+`relay_rooms_paired` (exactly two) and `relay_rooms_crowded` (more than
+two) — with the JSON body carrying the matching
+`rooms_single_peer`, `rooms_paired` and `rooms_crowded` next to the
+unchanged `rooms_active`.
+Like every series above they are computed per scrape from the live rooms
+map — no new timer, no new route, no new request — zero publishes as zero,
+never omitted, every pre-existing line stays byte for byte, and no series
+ever carries a room id, address or IP: the classification is by size alone.
+What the split is worth reading for is the pairing-trap section above.
 
 ### Alert rules for the hosted relay (P2-320)
 

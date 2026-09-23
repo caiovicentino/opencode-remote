@@ -70,6 +70,7 @@ import {
 } from "./joindeadline.js";
 import { certExpiryMetrics } from "./certmetrics.js";
 import { procMetrics, procMetricsJson } from "./procmetrics.js";
+import { roomOccupancyCounts } from "./roomoccupancy.js";
 
 /**
  * Relay: a blind router.
@@ -588,6 +589,12 @@ if (METRICS.port && METRICS.problems.length === 0) {
       const procUptimeS = Math.round((Date.now() - m.startedAt) / 1000);
       const procDelayMs = sweepDelayMaxMs;
       sweepDelayMaxMs = 0;
+      // P3-461: the occupancy buckets are computed per scrape from the SAME
+      // live rooms map the aggregate gauge above already reads — no new
+      // counter, no new timer, no new route, no new request. Only whole
+      // set sizes leave the map and reach the pure module; no room id, no
+      // address, no IP ever leaves the process.
+      const occupancy = roomOccupancyCounts([...rooms.values()].map((set) => set.size));
       if (req.url.includes("format=prom")) {
         const lines = [
           "# TYPE relay_connections_total counter",
@@ -632,6 +639,20 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_room_budget_terminated ${m.roomBudgetTerminated}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
+          // P3-461: additive occupancy split of the SAME rooms map, computed
+          // per scrape by roomoccupancy.ts — the shape the aggregate count
+          // hides: a replica holding mostly one-participant rooms is serving
+          // only one side of each conversation (the split-replica trap the
+          // /healthz instanceId confirms). Zero publishes as zero, never
+          // omitted, so an operator alert distinguishes a healthy relay from
+          // a missing series. Boundary: whole counts only — never a room id,
+          // address, IP, port, token or any identifiable material.
+          "# TYPE relay_rooms_single_peer gauge",
+          `relay_rooms_single_peer ${occupancy.single}`,
+          "# TYPE relay_rooms_paired gauge",
+          `relay_rooms_paired ${occupancy.paired}`,
+          "# TYPE relay_rooms_crowded gauge",
+          `relay_rooms_crowded ${occupancy.crowded}`,
           // P2-294: additive certificate-expiry series — the SAME verdict the
           // periodic revalidation below already maintains and the /healthz
           // getter publishes, now on the surface the operator's metric
@@ -682,6 +703,13 @@ if (METRICS.port && METRICS.problems.length === 0) {
             // material.
             room_budget_terminated: m.roomBudgetTerminated,
             rooms_active: rooms.size,
+            // P3-461: additive occupancy split — the SAME buckets the
+            // Prometheus text publishes above, next to rooms_active. Zero
+            // stays zero. Whole counts only: never a room id, address, IP,
+            // port, token or any identifiable material.
+            rooms_single_peer: occupancy.single,
+            rooms_paired: occupancy.paired,
+            rooms_crowded: occupancy.crowded,
             // P2-313: additive — the SAME process numbers the Prometheus
             // text publishes above, next to the uptime this body already
             // had. Observation only: no policy reads them.
