@@ -18904,29 +18904,42 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 
   // 3. wiring: the consult lives inside the EXISTING 60s upstream-probe interval
-  const consult = daemonSrc.indexOf("sleepGapVerdict(60_000");
+  const consult = daemonSrc.indexOf("sleepGapVerdict(UPSTREAM_PROBE_INTERVAL_MS");
   const intervalOpen = daemonSrc.lastIndexOf("setInterval(() => {", consult);
-  const intervalClose = daemonSrc.indexOf("}, 60_000);", consult);
+  const intervalClose = daemonSrc.indexOf("}, UPSTREAM_PROBE_INTERVAL_MS);", consult);
   check(
     "P2-349: the consult lives inside the existing 60s upstream-probe setInterval",
     consult > -1 &&
       intervalOpen > -1 &&
       intervalClose > -1 &&
-      // no `}, 60_000);` closes an interval between the open and the consult —
-      // the consult is genuinely INSIDE the interval callback body
-      daemonSrc.slice(intervalOpen, consult).includes("}, 60_000);") === false &&
+      // no `}, UPSTREAM_PROBE_INTERVAL_MS);` closes an interval between the
+      // open and the consult — the consult is genuinely INSIDE the interval
+      // callback body
+      daemonSrc.slice(intervalOpen, consult).includes("}, UPSTREAM_PROBE_INTERVAL_MS);") === false &&
       // and the same body is the upstream probe (probeUpstream runs after it)
       daemonSrc.slice(consult, intervalClose).includes("probeUpstream()"),
+  );
+  check(
+    "P2-349: the 60s period lives in ONE constant (the interval and the verdict cannot drift apart)",
+    (daemonSrc.match(/const UPSTREAM_PROBE_INTERVAL_MS = 60_000;/g) ?? []).length === 1 &&
+      !daemonSrc.includes("}, 60_000);") &&
+      !daemonSrc.includes("sleepGapVerdict(60_000"),
   );
   check(
     "P2-349: exactly one consult site (the tick, never the route or elsewhere)",
     (daemonSrc.match(/sleepGapVerdict\(/g) ?? []).length === 1,
   );
 
-  // 4. no new timer anywhere: index.ts keeps exactly the five setInterval it had
+  // 4. no new timer anywhere: index.ts keeps exactly the five setInterval it
+  // had — the P2-349 wake consult rides the existing 60s probe interval. The
+  // failure branch below names all five so a future legitimate timer knows
+  // exactly what this pin guards and what to do about it.
+  const timerCount = (daemonSrc.match(/setInterval\(/g) ?? []).length;
   check(
-    "P2-349: no new setInterval — index.ts keeps exactly the five it had",
-    (daemonSrc.match(/setInterval\(/g) ?? []).length === 5,
+    timerCount === 5
+      ? "P2-349: no new setInterval — index.ts keeps exactly the five it had"
+      : `P2-349: no new setInterval — index.ts now has ${timerCount} setInterval calls (the five pinned: checkRoutines sweep 30s, self-restart drift 30s, upstream probe 60s, stale-session sweep 5min, retention janitor) — a new timer must ride an existing interval or update this pin and the task spec together`,
+    timerCount === 5,
   );
 
   // 5. the wake reaction inside that interval: one counter, one log line, same gate

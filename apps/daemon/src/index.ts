@@ -2869,6 +2869,11 @@ async function probeUpstream(): Promise<UpstreamVerdict> {
   }
 }
 
+// P2-349: the probe's period lives in ONE constant — it feeds BOTH the
+// setInterval below and the sleep-gap verdict's expected interval, so the two
+// can never drift apart silently (round-2 review finding: a lone literal in
+// each spot desynchronizes the wake threshold from the real tick period).
+const UPSTREAM_PROBE_INTERVAL_MS = 60_000;
 // P2-349: instant of the previous upstream-probe tick — the sleep-gap
 // detector's only clock input. Ticks normally land ~60s apart; a gap far
 // above that means the process was suspended and the machine woke.
@@ -2882,7 +2887,7 @@ setInterval(() => {
   // through the exact P2-327 path (relay-close floor honored, 10s throttle),
   // one log line and one counter per wake detection.
   const tickAt = Date.now();
-  const gapVerdict = sleepGapVerdict(60_000, upstreamProbeLastTickAt, tickAt);
+  const gapVerdict = sleepGapVerdict(UPSTREAM_PROBE_INTERVAL_MS, upstreamProbeLastTickAt, tickAt);
   const wokeGapMs = tickAt - upstreamProbeLastTickAt;
   upstreamProbeLastTickAt = tickAt;
   if (gapVerdict === "woke") {
@@ -2905,7 +2910,7 @@ setInterval(() => {
       log("warn", "opencode health flipped", { healthy, state: verdict.state });
     }
   })();
-}, 60_000);
+}, UPSTREAM_PROBE_INTERVAL_MS);
 
 // stale client sessions (phone reloaded, new `from` id) get swept
 setInterval(() => {
