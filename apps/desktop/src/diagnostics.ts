@@ -14,6 +14,11 @@
 // builder cannot fully control — is scrubbed of pairing URIs, Bearer
 // credentials, long token-like runs, control characters and the home-folder
 // prefix, so a support attachment never carries the account name either.
+// Every verdict line follows the same rule: state/decision and a short
+// stable reason only. Since P2-345 the rollout verdict never carries the
+// installation id, the bucket or the percentage, the relay-link line never
+// carries the message, an address, a host, a port or a relay instance id,
+// and the wedge line never carries a path, an identifier or a probe count.
 
 /** Last desktop.log lines embedded in the bundle. */
 export const DIAG_LOG_TAIL = 40;
@@ -79,6 +84,23 @@ export interface DiagnosticsInput {
    * and its short reason only — never a path, an address or a secret
    * (privacy contract in this header). Optional/additive. */
   updateGuard?: { state: string; reason: string } | null;
+  /** P2-345: the gradual-rollout verdict of the last update check — the
+   * decision ("oferecer" | "adiar") and its stable reason id
+   * (harness | campo | freio | clique | balde) only, NEVER the installation
+   * id, the bucket or the percentage (privacy contract in this header).
+   * Optional/additive. */
+  rollout?: { decision: string; reason: string } | null;
+  /** P2-345: the relay-link verdict STATE of the last pairing tick — the
+   * closed set of relaylink.ts ("connected" | "local" | "dialing" |
+   * "refused" | "misconfigured" | "incompatible" | "unknown") only, NEVER
+   * the message, an address, a host, a port or a relay instance id
+   * (privacy contract in this header). Optional/additive. */
+  relayLink?: string | null;
+  /** P2-345: the wedged-daemon verdict in effect — the closed set of
+   * sidecarwedge.ts ("observe" | "degraded" | "restart" | "give-up") only,
+   * NEVER a path, an identifier or a probe count (privacy contract in this
+   * header). Optional/additive. */
+  sidecarWedge?: string | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -116,6 +138,19 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     // P2-291: one additive line — the guard's last verdict + short reason
     // only, never a path or an address (header privacy contract).
     `update guard: ${d.updateGuard?.state ?? "unknown"}${d.updateGuard?.reason ? ` (${d.updateGuard.reason})` : ""}`,
+    // P2-345: one additive line — the gradual-rollout verdict (decision +
+    // stable reason id) of the last update check, never the installation id,
+    // the bucket or the percentage (header privacy contract).
+    `update rollout: ${d.rollout?.decision ?? "unknown"}${d.rollout?.reason ? ` (${d.rollout.reason})` : ""}`,
+    // P2-345: one additive line — the relay-link verdict STATE of the last
+    // pairing tick, the closed set of relaylink.ts only; never the message,
+    // an address, a host, a port or a relay instance id (header privacy
+    // contract).
+    `relay link: ${d.relayLink ?? "unknown"}`,
+    // P2-345: one additive line — the wedged-daemon verdict in effect, the
+    // closed set of sidecarwedge.ts only; never a path, an identifier or a
+    // probe count (header privacy contract).
+    `sidecar wedge: ${d.sidecarWedge ?? "unknown"}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),

@@ -895,7 +895,7 @@ import { versionMismatch } from "../apps/desktop/src/versions";
 import { daemonTooltip, loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "../apps/desktop/src/tray";
 import { updateGuard, UPDATE_GUARD_RELEASE_LABEL } from "../apps/desktop/src/updateguard";
 import { readOwnerRelease, writeOwnerRelease, type StoredBootHealthRecord } from "../apps/desktop/src/boothealthstore";
-import { buildDiagnosticReport } from "../apps/desktop/src/diagnostics";
+import { buildDiagnosticReport, type DiagnosticsInput } from "../apps/desktop/src/diagnostics";
 
 import { menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
 import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLabels } from "../apps/desktop/src/shelllang";
@@ -8502,6 +8502,203 @@ check(
   check(
     "P2-291: main.ts mirrors the guard verdict and reason into the diagnostics input",
     mainTsSource.includes("updateGuard: updateGuardVerdict ? { state: updateGuardVerdict, reason: updateGuardReason ?? \"\" } : null"),
+  );
+}
+
+// --- P2-345: the diagnostics bundle carries the rollout verdict, the relay-link
+// state and the wedge verdict (apps/desktop/src/diagnostics.ts) --------------------
+{
+  // The fixed input that pins today's lines byte for byte. Every old field is
+  // populated so the parity assertion covers the whole shape, not just a happy
+  // path. The OLD literal below was captured from the PRE-P2-345 builder —
+  // the lines it contains are the report's contract and must not move a byte.
+  const base: DiagnosticsInput = {
+    appVersion: "0.2.0",
+    electronVersion: "44.1.1",
+    platform: "darwin arm64",
+    locale: "pt-BR",
+    packaged: true,
+    userData: "/u",
+    daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+    logTail: ["[1] boot ok"],
+    sidecarLogTail: ["[sidecar] ready"],
+    crashFiles: ["crash-2026-09-02T09-34-12-345-renderer.txt"],
+    updateStatus: "update-not-available",
+    installLocation: "ok",
+    clockSkew: { state: "ok", skewSeconds: 0 },
+    startup: { state: "registrar", reason: "primeira-abertura" },
+    quitConfirm: { state: "manter", reason: "sessao-ativa" },
+    lastHang: { durationMs: 1200, outcome: "responsive" },
+    proxy: { mode: "off", reason: "sem-proxy", origin: "owner" },
+    updateGuard: { state: "seguir", reason: "liberacao" },
+  };
+  const OLD = [
+    "OpenCode Remote — diagnostic report",
+    "app: 0.2.0 (electron 44.1.1)",
+    "platform: darwin arm64 / pt-BR / packaged",
+    "userData: /u",
+    "daemon: healthy — porta 8792",
+    "last update check: update-not-available",
+    "install location: ok",
+    "clock skew: ok (0s)",
+    "login item: registrar (primeira-abertura)",
+    "quit confirm: manter (sessao-ativa)",
+    "last hang: responsive after 1s",
+    "proxy: off — origem owner (sem-proxy)",
+    "update guard: seguir (liberacao)",
+    "crash files: crash-2026-09-02T09-34-12-345-renderer.txt",
+    "--- desktop.log (last lines) ---",
+    "[1] boot ok",
+    "--- daemon-sidecar.log (last lines) ---",
+    "[sidecar] ready",
+  ].join("\n");
+
+  // 1. Absent fields render unknown, one line each, and the insertion is
+  //    pure: the old lines keep their bytes and their order.
+  const bare = buildDiagnosticReport(base);
+  check(
+    "P2-345: absent rollout/relayLink/sidecarWedge render unknown, one line each",
+    (bare.match(/^update rollout: unknown$/gm) ?? []).length === 1 &&
+      (bare.match(/^relay link: unknown$/gm) ?? []).length === 1 &&
+      (bare.match(/^sidecar wedge: unknown$/gm) ?? []).length === 1,
+  );
+  const GUARD_LINE = "update guard: seguir (liberacao)";
+  const bareExpected = OLD.replace(
+    `${GUARD_LINE}\n`,
+    `${GUARD_LINE}\nupdate rollout: unknown\nrelay link: unknown\nsidecar wedge: unknown\n`,
+  );
+  check(
+    "P2-345: the three unknown lines land right after the guard line — every old byte intact",
+    bare === bareExpected,
+  );
+
+  // 2. Byte-for-byte equality of the old lines over the fixed input: with all
+  //    three new fields populated, removing exactly the three new lines
+  //    reproduces the OLD report byte for byte.
+  const full = buildDiagnosticReport({
+    ...base,
+    rollout: { decision: "adiar", reason: "freio" },
+    relayLink: "connected",
+    sidecarWedge: "degraded",
+  });
+  const NEW_LINE_PREFIXES = [/^update rollout: /, /^relay link: /, /^sidecar wedge: /];
+  const fullLines = full.split("\n");
+  const stripped = fullLines.filter((l) => !NEW_LINE_PREFIXES.some((re) => re.test(l)));
+  check(
+    "P2-345: byte-for-byte equality — stripping the three new lines reproduces the pre-P2-345 report",
+    stripped.join("\n") === OLD && fullLines.length === OLD.split("\n").length + 3,
+  );
+
+  // 3. Each valid relay-link state rides the report verbatim (the closed set
+  //    of relaylink.ts, regex-pinned so a drift in either side fails here).
+  const relaylinkSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "relaylink.ts"), "utf8");
+  const unionOf = (src: string): string[] => {
+    const m = /export type RelayLinkState\s*=\s*([^;]+);/.exec(src);
+    return m
+      ? m[1]
+          .split("|")
+          .map((s) => s.trim().replace(/^["']|["']$/g, ""))
+          .filter(Boolean)
+      : [];
+  };
+  const LINK_STATES = unionOf(relaylinkSrc);
+  check(
+    "P2-345: the closed link-state set is read from the real relaylink.ts union (no drift)",
+    LINK_STATES.length === 7 && JSON.stringify(LINK_STATES.slice().sort()) === JSON.stringify([
+      "connected",
+      "dialing",
+      "incompatible",
+      "local",
+      "misconfigured",
+      "refused",
+      "unknown",
+    ]),
+  );
+  check(
+    "P2-345: each valid relay-link state rides the report verbatim",
+    LINK_STATES.every((s) => buildDiagnosticReport({ ...base, relayLink: s }).includes(`relay link: ${s}`)),
+  );
+
+  // 4. The rollout verdict carries decision + stable reason (adiar and
+  //    oferecer, the documented reason ids of updaterollout.ts).
+  const ROLLOUT_REASONS = ["harness", "campo", "freio", "clique", "balde"];
+  check(
+    "P2-345: rollout adiar and oferecer ride decision + stable reason",
+    buildDiagnosticReport({ ...base, rollout: { decision: "adiar", reason: "freio" } }).includes("update rollout: adiar (freio)") &&
+      buildDiagnosticReport({ ...base, rollout: { decision: "oferecer", reason: "balde" } }).includes("update rollout: oferecer (balde)"),
+  );
+  check(
+    "P2-345: every documented rollout reason renders — the id travels, never a bucket number",
+    ROLLOUT_REASONS.every((r) =>
+      buildDiagnosticReport({ ...base, rollout: { decision: "adiar", reason: r } }).includes(`update rollout: adiar (${r})`),
+    ),
+  );
+
+  // 5. Every wedge verdict kind rides the report (the closed set of
+  //    sidecarwedge.ts).
+  const WEDGE_KINDS = ["observe", "degraded", "restart", "give-up"];
+  check(
+    "P2-345: each wedge verdict kind rides the report verbatim",
+    WEDGE_KINDS.every((k) => buildDiagnosticReport({ ...base, sidecarWedge: k }).includes(`sidecar wedge: ${k}`)),
+  );
+
+  // 6. The privacy contract holds for the new lines: over EVERY valid
+  //    combination of the three closed sets, no new line carries a port
+  //    digit, a URL colon or a UUID.
+  const newLines: string[] = [];
+  for (const decision of ["oferecer", "adiar"]) {
+    for (const reason of ROLLOUT_REASONS) {
+      for (const state of LINK_STATES) {
+        for (const wedge of WEDGE_KINDS) {
+          for (const l of buildDiagnosticReport({ ...base, rollout: { decision, reason }, relayLink: state, sidecarWedge: wedge }).split("\n")) {
+            if (NEW_LINE_PREFIXES.some((re) => re.test(l))) newLines.push(l);
+          }
+        }
+      }
+    }
+  }
+  check(
+    "P2-345: no new line carries a port digit, a URL colon or a UUID (privacy contract)",
+    newLines.length === 2 * ROLLOUT_REASONS.length * LINK_STATES.length * WEDGE_KINDS.length * 3 &&
+      newLines.every((l) => !/\d/.test(l)) &&
+      newLines.every((l) => !l.includes("://")) &&
+      newLines.every((l) => !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(l)),
+  );
+
+  // 7. The real main.ts: the three fields are passed at the points that
+  //    already exist — no new timer, IPC, route or request.
+  check(
+    "P2-345: main.ts mirrors the rollout decision + stable reason into the diagnostics input",
+    mainTsSource.includes("rollout: lastRolloutView ? { decision: lastRolloutView.decision, reason: lastRolloutView.reason } : null"),
+  );
+  check(
+    "P2-345: main.ts mirrors the relay-link state and the wedge kind into the diagnostics input",
+    mainTsSource.includes("relayLink: lastRelayLinkState ?? null") &&
+      mainTsSource.includes("sidecarWedge: sidecarWedgeState()?.state ?? null"),
+  );
+  const nrvAt = mainTsSource.indexOf("function noteRolloutVerdict");
+  const nrvEnd = nrvAt >= 0 ? mainTsSource.indexOf("\n}", nrvAt) : -1;
+  const nrvSlice = nrvAt >= 0 && nrvEnd > nrvAt ? mainTsSource.slice(nrvAt, nrvEnd) : "";
+  check(
+    "P2-345: noteRolloutVerdict stores the view at the same point — and adds no timer",
+    nrvAt >= 0 && nrvSlice.includes("lastRolloutView = view;") && !/setTimeout|setInterval/.test(nrvSlice),
+  );
+  const linkAt = mainTsSource.indexOf("relayLink = linkVerdict({ ...relay, localMode: quietLocal })");
+  const linkSlice = linkAt >= 0 ? mainTsSource.slice(linkAt, linkAt + 500) : "";
+  check(
+    "P2-345: the pairing tick mirrors the computed link state at the same point — and adds no timer",
+    linkAt >= 0 && linkSlice.includes("lastRelayLinkState = relayLink.state;") && !/setTimeout|setInterval/.test(linkSlice),
+  );
+  const buildFnAt = mainTsSource.indexOf("function buildDiagnostics(): string {");
+  const buildFnEnd = buildFnAt >= 0 ? mainTsSource.indexOf("installFatalErrorHandlers", buildFnAt) : -1;
+  const buildFnSlice = buildFnAt >= 0 && buildFnEnd > buildFnAt ? mainTsSource.slice(buildFnAt, buildFnEnd) : "";
+  check(
+    "P2-345: the diagnostics assembly passes the mirrors with no new setTimeout/setInterval",
+    buildFnAt >= 0 &&
+      buildFnSlice.includes("rollout: lastRolloutView ? { decision: lastRolloutView.decision, reason: lastRolloutView.reason } : null") &&
+      buildFnSlice.includes("relayLink: lastRelayLinkState ?? null") &&
+      buildFnSlice.includes("sidecarWedge: sidecarWedgeState()?.state ?? null") &&
+      !/setTimeout|setInterval/.test(buildFnSlice),
   );
 }
 

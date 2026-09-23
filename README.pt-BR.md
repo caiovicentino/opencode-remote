@@ -1575,8 +1575,17 @@ crashes do renderer viram arquivos com timestamp em
 Settings ganha o card **Diagnóstico → Copiar diagnóstico**, que põe no
 clipboard um bundle de suporte — versões app/electron, plataforma, estado do
 daemon, últimas linhas do desktop.log e do daemon-sidecar.log (20, P2-163) e
-nomes dos arquivos de crash. Sem segredos: apiToken, allowlist e URI de
-pareamento nunca são incluídos (o log do sidecar já é redigido em disco).
+nomes dos arquivos de crash. Desde o P2-345 o bundle também carrega os
+vereditos que explicam as duas perguntas mais comuns do suporte: `update
+rollout:` (a decisão de liberação gradual da última verificação de update —
+oferecido/adiado com o reason estável, nunca o id de instalação, o balde ou o
+percentual), `relay link:` (o estado do conjunto fechado do link
+daemon↔relay no último tick de pareamento — por que o celular não conecta) e
+`sidecar wedge:` (o veredito de daemon travado em efeito). Sem segredos:
+apiToken, allowlist e URI de pareamento nunca são incluídos (o log do sidecar
+já é redigido em disco), e as linhas novas seguem o mesmo contrato de
+privacidade — sem id de instalação, balde, URL, host, porta nem id de
+instância do relay.
 
 O shell desktop sobe o daemon como **sidecar**: ao abrir, ele faz spawn do
 daemon — em apps empacotados, um bundle CJS single-file embarcado em
