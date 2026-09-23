@@ -12543,10 +12543,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   // Honest per state: no line while the auto-connect is in flight (it has its
   // own "connecting" copy) and none in the "down" state (that copy says the
-  // automatic attempts stopped) — the exact gate-card verdict.
+  // automatic attempts stopped) — the exact gate-card verdict. P3-448's
+  // lesson: pin the fixed guard present AND the down-inclusive variant absent,
+  // so the honesty contract cannot silently regress back.
   check(
-    "P3-454: the retry line obeys the gate card's verdict (never while busy, never in 'down')",
-    welcome.includes("step === 2 && !busy && kind !== \"none\""),
+    "P3-454: the retry line obeys the gate card's verdict (never while busy, never in 'down', never while healthy)",
+    welcome.includes('const stepAutoRetry = step === 2 && !busy && kind !== "none" && kind !== "down";') &&
+      !welcome.includes('const stepAutoRetry = step === 2 && !busy && kind !== "none";'),
   );
   // The wizard's cumulative clock ticks only while the agent step is on
   // screen — dwelling on step 1 never escalates a card the user has not

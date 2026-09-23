@@ -211,11 +211,14 @@ export default function WelcomeView({ kind, busy, reconnectAttempts, upstream, r
   const agentHint = kind === "down" && !busy ? t("degradedDownHint") : t("firstContactHint");
   // P3-454: the visible auto-retry feedback lives on the step that promises
   // it. Same verdict as the gate card (P2-112): honest per state — the shell
-  // keeps probing every few seconds unless the respawn budget is exhausted
-  // (kind "down"), and a busy connect has its own "connecting" copy. The
+  // keeps probing every few seconds unless the respawn budget is exhausted,
+  // so kind "down" is excluded exactly like the gate card (DegradedView:
+  // kind !== "down" — its copy owns the "attempts stopped" story and keeps
+  // the bare reconnect button), and a busy connect has its own "connecting"
+  // copy. The healthy agent (kind "none") has nothing to retry either. The
   // cumulative clock ticks only while the agent step itself is on screen, so
   // dwelling on step 1 never escalates a card the user has not reached yet.
-  const stepAutoRetry = step === 2 && !busy && kind !== "none";
+  const stepAutoRetry = step === 2 && !busy && kind !== "none" && kind !== "down";
   const retryTotal = useRetryClock(stepAutoRetry);
   const escalated = stepAutoRetry && shouldEscalateRetry(retryTotal);
 

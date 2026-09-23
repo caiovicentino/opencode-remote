@@ -113,7 +113,7 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   o "Abrir diagnósticos" que grava a flag de boas-vindas e abre a seção de
   ajuda das Configurações — sair do onboarding para diagnóstico é escolha
   explícita, nunca beco sem saída; o relógio só corre com o passo do agente
-  na tela, então demorar no passo 1 nunca escalada um card não visto
+  na tela, então demorar no passo 1 nunca escala um card não visto
 - Escalada com um caminho só de recuperação (P3-385): quando o card calmo
   escala ("Sem resposta do daemon local há 1 min" + "Abrir diagnósticos"), o
   botão laranja "Reconectar agora" para de aparecer empilhado logo abaixo —
