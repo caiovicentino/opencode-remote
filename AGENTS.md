@@ -429,4 +429,21 @@ exposto como `relayRetry.floorSource` em `/api/health` sem chave nova
 (relay-close mantém prioridade sobre ele), e a rota de redial da P2-327 pode
 antecipar a espera protocol-mismatch — o clique humano de reconectar depois
 de atualizar app ou relay — respeitando o throttle de 10s, enquanto
-relay-close segue nunca antecipável.
+relay-close segue nunca antecipável. P2-337 deu saída ao aviso de
+indisponibilidade do overlay de pareamento: numa instalação nova o relay é
+loopback, `pairWebAppUnavailable` era só texto dentro do diálogo modal e o
+usuário de primeiro minuto tinha que fechar tudo e caçar Config → Relay do
+celular; o PairingOverlay agora carrega uma ação inline "Abrir Config"
+(`.pair-webapp-openconfig`, padrão P3-367) renderizada SOMENTE quando o App
+entrega o manipulador — o telefone e as superfícies sem pane (unpaired
+clássico, adicionar máquina) seguem só de texto; App.tsx é o único dono
+(lição P3-398): o clique dispensa o overlay (mesmo contrato do "Parear
+depois"), chama o `openPane("settings")` existente e registra um pedido de
+foco de seção de uso único (`relayFocusTick`/`onRelayFocusConsumed`, mesmo
+contrato do focusQueueTick da P3-406); o SettingsView marca o bloco de relay
+com `data-relay-setting` (atributo independente de copy, lição P3-421),
+segura o pedido pendente até o card existir (a leitura desktop-only resolve
+um instante depois do mount), rola o bloco até a área visível respeitando
+prefers-reduced-motion (helper `scrollBehavior` compartilhado em
+lib/motion.ts) e põe o caret no campo do endereço uma única vez, avisando o
+consumo por callback — o App zera o tick, então remount nunca repete o bump.

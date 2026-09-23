@@ -2267,6 +2267,29 @@ button.desk-new:disabled {
   color: var(--muted);
   max-width: 36ch;
 }
+/* P2-337: the unavailable notice's labeled escape — same quiet accent text
+   button register as the gate hint's pair-now action (P3-367) and the reach
+   probe retry. Existing tokens only; no new colors or radii. */
+.pair-webapp-openconfig {
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: var(--font-weight-medium);
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  margin-left: 6px;
+  white-space: nowrap;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+.pair-webapp-openconfig:hover {
+  text-decoration: underline;
+}
+.pair-webapp-openconfig:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
 /* P2-197: reach-probe status — one quiet line below the QR, same calm
    register as the P2-112 degraded card. Muted when ok, warn-toned (no red,
    no banner) with a quiet text button when the probe failed. Existing tokens
