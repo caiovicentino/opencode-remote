@@ -35,6 +35,7 @@ import { clockSkewMessage, skewVerdict, type ClockSkewVerdict } from "./clockske
 import { linkVerdict, sanitizeRedialVerdict, type RelayLinkVerdict, type RelayRedialOutcome } from "./relaylink";
 import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
 import { loginItemMessage, loginItemPlan, type LoginItemVerdict } from "./loginitem";
+import { LOGIN_LAUNCH_ARG, loginLaunchPlan } from "./loginlaunch";
 import { readStartupDecided, startupSettingFile, writeStartupDecided } from "./startupstore";
 import {
   QUIT_BUTTON_INDEX,
@@ -1574,9 +1575,17 @@ async function offerUpdateReminderDialog(version: string): Promise<void> {
 // back on. Best-effort: a failed apply/write is log-only and never takes the
 // shell down (the decision file may still record the intent, which is safe —
 // the OS setting itself is re-read from app.getLoginItemSettings each boot).
+// P2-348: on Windows the registration carries the dedicated LOGIN_LAUNCH_ARG
+// next to openAtLogin, so a login boot is distinguishable from a user launch
+// (loginlaunch.ts consults the argv); macOS keeps no argument — the OS itself
+// reports the login launch via wasOpenedAtLogin. The argument only matters
+// while the item is ON; a disabled item is removed from the registry either way.
 function setLoginItemEnabled(enabled: boolean): void {
   try {
-    app.setLoginItemSettings({ openAtLogin: enabled });
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      ...(process.platform === "win32" && enabled ? { args: [LOGIN_LAUNCH_ARG] } : {}),
+    });
   } catch (err) {
     logError("[desktop] login item apply failed:", err);
   }
@@ -2372,7 +2381,27 @@ async function onReady(): Promise<void> {
     }
   });
 
-  createWindow();
+  // P2-348: the login-launch verdict is computed EXACTLY ONCE, right before
+  // the first window creation — the cold-deep-link flag cannot race the
+  // renderer's late app:deepLink pull (that pull only exists after this
+  // window loads, and only consumes lastDeepLink afterwards). With "tray"
+  // the boot leaves the window ready and HIDDEN while the sidecar, the tray
+  // and every other boot step start normally — the owner's screen is not
+  // stolen by a restart they did not trigger — and every show path (tray
+  // click, second launch, activate, hotkey) keeps working through the
+  // existing showMainWindow(). wasOpenedAtLogin is the OS's own report on
+  // macOS (undefined elsewhere); on Windows the argv carries
+  // LOGIN_LAUNCH_ARG when this very registration launched the shell.
+  const launchVerdict = loginLaunchPlan({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    wasOpenedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin === true,
+    argv: process.argv,
+    coldDeepLink: lastDeepLink !== null,
+  });
+  log(`[desktop] login launch: ${launchVerdict.action} (${launchVerdict.reason})`);
+
+  createWindow({ bootHidden: launchVerdict.action === "tray" });
   startPairingWatcher();
   // P2-209: react to the machine's return from sleep / session unlock —
   // registered after the pairing watcher so the probe path already exists.
@@ -3388,7 +3417,13 @@ function applyOverlayBadge(plan: BadgePlan): void {
   }
 }
 
-function createWindow(): BrowserWindow {
+// P2-348: bootHidden is true only for the FIRST window creation of a boot
+// whose login-launch verdict was "tray" — the ready-to-show handler then
+// leaves the window ready and hidden (maximize() is skipped with it: Electron's
+// maximize() also SHOWS a hidden window). Every later creation — tray click,
+// activate, showMainWindow after a destroyed window — is a user action and
+// shows, so the parameter never applies there.
+function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   // P3-008: restore the last window bounds. loadWindowBounds degrades to the
   // 1280x820 default on a missing/corrupted file, and sanitizeWindowBounds
   // drops bounds that don't intersect any currently attached display (window
@@ -3431,6 +3466,9 @@ function createWindow(): BrowserWindow {
     // P1-081: under the hermetic e2e marker the window stays hidden — the
     // gate interacts via webContents and the operator's screen is left alone.
     if (HERMETIC_E2E) return;
+    // P2-348: a login boot (tray verdict) keeps the window ready and hidden —
+    // every later user action shows it through the existing paths.
+    if (opts.bootHidden) return;
     // P2-172: reopen maximized when the user quit maximized. maximize() must
     // run here, right before show(), and never in the hermetic path: Electron's
     // maximize() also SHOWS a hidden window (electron.d.ts), so calling it on
