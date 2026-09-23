@@ -3,6 +3,18 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # P3-458: an optional per-run rollout percentage for the update feeds. A
+  # tag push (the normal release) leaves it empty — every feed stays byte for
+  # byte as before. `gh workflow run release.yml --ref vX.Y.Z -f
+  # rollout_percent=20` publishes the release with the gradual rollout set;
+  # an integer 0..100 is validated by apps/desktop/scripts/rolloutpercent.mjs
+  # and anything else fails the feed build before a byte is written.
+  workflow_dispatch:
+    inputs:
+      rollout_percent:
+        description: "Gradual rollout percentage (integer 0-100) written into the update feeds; empty keeps the feeds unchanged"
+        required: false
+        default: ""
 
 jobs:
   release:
@@ -239,7 +251,13 @@ jobs:
       # update-mac.json the packaged shell auto-consumes on darwin. Exits 1
       # (all problems listed) when the zip is missing or the yml version
       # drifted from the tag, blocking the upload below.
+      # P3-458: the optional rollout_percent dispatch input rides along as
+      # ROLLOUT_PERCENT — empty (a plain tag push, or an unfilled input)
+      # writes no rollout field at all, a valid integer 0..100 publishes the
+      # gradual rollout, anything else fails the step before writing anything.
       - name: Build the Squirrel.Mac JSON feed
+        env:
+          ROLLOUT_PERCENT: ${{ inputs.rollout_percent }}
         run: node apps/desktop/scripts/update-feed.mjs
 
       # P2-126 lesson: shell: bash so the dist/*.dmg glob expands (pwsh would
@@ -416,6 +434,22 @@ jobs:
           [ -n "$EXE" ] || { echo "installer-smoke: no setup exe found under apps/desktop/dist — nothing to install"; exit 1; }
           echo "installer-smoke: smoke-installing $EXE"
           node apps/desktop/scripts/installer-smoke.mjs "$EXE"
+
+      # P3-458: the Windows half of the same dispatch input — the mac job's
+      # update-feed.mjs cannot see latest.yml (electron-builder writes that
+      # feed only on the windows runner), so this step runs the SAME script
+      # in --staging-yml mode to inject electron-builder's own
+      # stagingPercentage into the Windows feed before the upload below.
+      # Blank/absent ROLLOUT_PERCENT is a documented no-op: latest.yml stays
+      # byte a byte as electron-builder wrote it; an invalid value fails the
+      # step before writing anything. shell: bash (P2-126 lesson) and its own
+      # timeout (P2-245 lesson).
+      - name: Inject the staged-rollout percentage into the Windows feed
+        env:
+          ROLLOUT_PERCENT: ${{ inputs.rollout_percent }}
+        shell: bash
+        timeout-minutes: 5
+        run: node apps/desktop/scripts/update-feed.mjs --staging-yml
 
       - name: Attach setup exe + update metadata to the GitHub release
         env:
