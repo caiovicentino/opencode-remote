@@ -68,10 +68,12 @@ import { classifyRelayClose, effectiveRetryDelayMs } from "../apps/daemon/src/re
 import { relayDialVerdict, RELAY_DIAL_FLOOR_MS } from "../apps/daemon/src/relaydialerror";
 import {
   RELAY_PROTOCOL_BODY_MAX,
+  RELAY_PROTOCOL_MISMATCH_FLOOR_MS,
   RELAY_PROTOCOL_PROBE_MIN_FAILURES,
   RELAY_PROTOCOL_PROBE_THROTTLE_MS,
   RELAY_PROTOCOL_PROBE_TIMEOUT_MS,
   relayHealthUrlFromWs,
+  relayProtocolDialFloorMs,
   relayProtocolProbePlan,
   relayProtocolVerdict,
   type RelayProtocolPlanInput,
@@ -151,7 +153,7 @@ import {
   diskVerdict,
 } from "../apps/daemon/src/diskguard";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
-import { createRelayRetry } from "../apps/daemon/src/relayretry";
+import { createRelayRetry, RELAY_RETRY_CAP_MS } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
 import { appendAudit, readAuditTail, nodeAuditLogFs, AUDIT_CAP_BYTES, type AuditLogFs } from "../apps/daemon/src/auditlog";
 
@@ -17380,8 +17382,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     relayFn.includes("relayRetryTimer = setTimeout(") && relayFn.includes("relayRetryTimer = null;"),
   );
   check(
-    "P2-327: the close handler records which floor the scheduled wait carries",
-    relayFn.includes('verdict.floorMs > 0 ? "relay-close" : relayPendingDialFloorMs > 0 ? "dial-error" : "none"'),
+    "P2-327: the close handler records which floor the scheduled wait carries (P2-339 adds protocol-mismatch after relay-close)",
+    (() => {
+      const at = relayFn.indexOf("relayRetryFloorSource =");
+      const chain = relayFn
+        .slice(at, relayFn.indexOf(";", relayFn.indexOf('"none"', at)))
+        .replace(/\s+/g, " ")
+        .trim();
+      return (
+        chain ===
+        'relayRetryFloorSource = verdict.floorMs > 0 ? "relay-close" : protocolFloorMs > 0 ? "protocol-mismatch" : relayPendingDialFloorMs > 0 ? "dial-error" : "none"'
+      );
+    })(),
   );
   check(
     "P2-327: the route reads live state (connected gauge, flags, floor source)",
@@ -23233,6 +23245,171 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-335: exactly one log line records each state transition, with the static line table",
     (daemonSrc.match(/applyRelayProtocolState\(/g) ?? []).length === 4 &&
       daemonSrc.includes("log(next === \"mismatch\" ? \"warn\" : \"info\", RELAY_PROTOCOL_LOG[next]"),
+  );
+}
+
+// --- P2-339: dial floor for a recorded wire-protocol mismatch (relayprotocol.ts) ---
+
+{
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+  const protocolSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "relayprotocol.ts"), "utf8");
+
+  // 1. the floor table — the four closed-set states, then everything invalid
+  check(
+    "P2-339: mismatch is the only hard floor — the documented 5 minutes",
+    relayProtocolDialFloorMs("mismatch") === 300_000 && RELAY_PROTOCOL_MISMATCH_FLOOR_MS === 300_000,
+  );
+  check(
+    "P2-339: ok, legacy and unknown floor nothing (the pre-P2-339 dialing is preserved)",
+    relayProtocolDialFloorMs("ok") === 0 &&
+      relayProtocolDialFloorMs("legacy") === 0 &&
+      relayProtocolDialFloorMs("unknown") === 0,
+  );
+  const outsideSet: unknown[] = [
+    undefined,
+    null,
+    "",
+    "OK",
+    "Mismatch",
+    "mismatched",
+    "unknown",
+    "ok ",
+    0,
+    1,
+    -1,
+    2.5,
+    true,
+    false,
+    [],
+    {},
+    Symbol("mismatch"),
+  ];
+  check(
+    "P2-339: any value outside the closed set floors zero (fail-closed)",
+    outsideSet.every((v) => relayProtocolDialFloorMs(v) === 0),
+  );
+
+  // 2. the combination — the floor rides the SAME max the close handler already
+  //    applies (jittered backoff ∨ close floor ∨ dial floor ∨ protocol floor)
+  const transientClose = { kind: "transient" as const, floorMs: 0, hint: "" };
+  const rateLimitedClose = { kind: "rate-limited" as const, floorMs: 60_000, hint: "" };
+  check(
+    "P2-339: backoff smaller than the floor → the mismatch floor governs the wait",
+    Math.max(effectiveRetryDelayMs(2_000, transientClose), 0, relayProtocolDialFloorMs("mismatch")) === 300_000,
+  );
+  check(
+    "P2-339: a backoff greater than the floor still wins the same max",
+    Math.max(effectiveRetryDelayMs(400_000, transientClose), 0, relayProtocolDialFloorMs("mismatch")) === 400_000,
+  );
+  check(
+    "P2-339: the real full-cap backoff (30s) still loses to the 5-minute floor",
+    Math.max(effectiveRetryDelayMs(RELAY_RETRY_CAP_MS, transientClose), 0, relayProtocolDialFloorMs("mismatch")) ===
+      300_000,
+  );
+  check(
+    "P2-339: the dial-error (60s) and certificate (5min) floors never shorten the mismatch floor",
+    Math.max(effectiveRetryDelayMs(2_000, transientClose), RELAY_DIAL_FLOOR_MS["unresolved-name"], relayProtocolDialFloorMs("mismatch")) ===
+      300_000 &&
+      Math.max(effectiveRetryDelayMs(2_000, transientClose), RELAY_DIAL_FLOOR_MS["cert-expired"], relayProtocolDialFloorMs("mismatch")) ===
+        300_000,
+  );
+  check(
+    "P2-339: a relay-close floor below the mismatch floor never shortens the wait",
+    Math.max(effectiveRetryDelayMs(2_000, rateLimitedClose), 0, relayProtocolDialFloorMs("mismatch")) === 300_000,
+  );
+  check(
+    "P2-339: a non-mismatch verdict floors nothing even inside the same max",
+    Math.max(effectiveRetryDelayMs(2_000, transientClose), 0, relayProtocolDialFloorMs("ok")) === 2_000,
+  );
+
+  // 3. the wired close handler: the floor enters the SAME max that computes
+  //    retryInMs, and the floor-source chain keeps relay-close first
+  const connectStart = daemonSrc.indexOf("function connectRelay(");
+  const closeStart = daemonSrc.indexOf('ws.on("close"', connectStart);
+  const closeBlock = daemonSrc.slice(closeStart, daemonSrc.indexOf('ws.on("error"', closeStart));
+  check(
+    "P2-339: the mismatch floor enters the SAME max that computes retryInMs",
+    closeBlock.includes("const protocolFloorMs = relayProtocolDialFloorMs(relayProtocolState);") &&
+      (() => {
+        const at = closeBlock.indexOf("const retryInMs = Math.max(");
+        const maxExpr = closeBlock.slice(at, closeBlock.indexOf(");", at));
+        return (
+          maxExpr.includes("effectiveRetryDelayMs(") &&
+          maxExpr.includes("relayPendingDialFloorMs,") &&
+          maxExpr.includes("protocolFloorMs,")
+        );
+      })(),
+  );
+  const sourceAt = closeBlock.indexOf("relayRetryFloorSource =");
+  const sourceChain = closeBlock.slice(sourceAt, closeBlock.indexOf(";", closeBlock.indexOf('"none"', sourceAt)));
+  check(
+    "P2-339: relay-close keeps priority over protocol-mismatch in the source chain",
+    sourceChain.includes("verdict.floorMs > 0") &&
+      sourceChain.includes("protocolFloorMs > 0") &&
+      sourceChain.includes('"relay-close"') &&
+      sourceChain.includes('"protocol-mismatch"') &&
+      sourceChain.includes('"dial-error"') &&
+      sourceChain.includes('"none"') &&
+      sourceChain.indexOf('"relay-close"') < sourceChain.indexOf('"protocol-mismatch"') &&
+      sourceChain.indexOf('"protocol-mismatch"') < sourceChain.indexOf('"dial-error"'),
+  );
+
+  // 4. no new timer — the daemon keeps its pre-P2-339 timer count (the retry
+  //    timer at the end of the close handler is the pre-existing one)
+  check(
+    "P2-339: no new setTimeout or setInterval anywhere in the daemon",
+    (daemonSrc.match(/setTimeout\(/g) ?? []).length === 7 && (daemonSrc.match(/setInterval\(/g) ?? []).length === 5,
+  );
+
+  // 5. the redial planner: a protocol-mismatch floor is anticipatable, a
+  //    relay-close floor never is
+  const base339: RelayRedialInput = {
+    relayDisabled: false,
+    connected: false,
+    dialInFlight: false,
+    retryPending: true,
+    floorSource: "none",
+    msSinceLastRedial: null,
+  };
+  const redial = (over: Partial<RelayRedialInput>) => relayRedialPlan({ ...base339, ...over });
+  check(
+    "P2-339: the planner anticipates a protocol-mismatch wait (explicit human action after an update)",
+    redial({ floorSource: "protocol-mismatch" }).action === "redial-now" &&
+      redial({ floorSource: "protocol-mismatch" }).reason === "retry-anticipated",
+  );
+  check(
+    "P2-339: the 10s throttle still applies to a protocol-mismatch anticipation",
+    redial({ floorSource: "protocol-mismatch", msSinceLastRedial: RELAY_REDIAL_THROTTLE_MS - 1 }).reason === "throttled" &&
+      redial({ floorSource: "protocol-mismatch", msSinceLastRedial: RELAY_REDIAL_THROTTLE_MS }).action === "redial-now",
+  );
+  check(
+    "P2-339: relay-close stays never anticipatable (the relay's own backoff)",
+    redial({ floorSource: "relay-close" }).action === "noop" &&
+      redial({ floorSource: "relay-close" }).reason === "relay-asked-backoff",
+  );
+  check(
+    "P2-339: dial-error and none keep their pre-P2-339 planner behavior",
+    redial({ floorSource: "dial-error" }).action === "redial-now" &&
+      redial({ floorSource: "none" }).action === "redial-now",
+  );
+
+  // 6. purity: the new helper adds no import, clock or timer to the module
+  check(
+    "P2-339: the floor helper keeps relayprotocol.ts I/O-free (no imports, no clock, no timers)",
+    !/from\s+["']/.test(protocolSrc) &&
+      !protocolSrc.includes("Date.now(") &&
+      !protocolSrc.includes("setTimeout(") &&
+      !protocolSrc.includes("setInterval(") &&
+      !protocolSrc.includes("fetch("),
+  );
+
+  // 7. the health surface: floorSource rides INSIDE the existing relayRetry
+  //    object — no new top-level key in /api/health
+  check(
+    "P2-339: /api/health's relayRetry carries floorSource without a new key",
+    /relayRetry: relayConnected\s*\?\s*null\s*:\s*\{\s*\.\.\.relayRetry\.snapshot\(\),\s*lastClose: relayLastClose,\s*lastDial: relayLastDial,\s*floorSource: relayRetryFloorSource\s*\},/.test(
+      daemonSrc,
+    ),
   );
 }
 

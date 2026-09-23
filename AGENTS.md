@@ -420,3 +420,13 @@ app ou o relay hospedado e aguarde a reconexão" — antes de `refused` e
 linha do PairingOverlay e a bandeja (`traystatus.ts` trata `incompatible`
 como aviso igual a `refused`, sem item de menu novo) param de dizer
 "reconectando, aguarde e rescaneie" — a espera infinita tem nome.
+relay se auto-cura). A fatia de UI que consome o campo vem depois. P2-339 dá
+dente ao veredito: com mismatch gravado, um piso documentado de 5 minutos
+entra no MESMO max do `retryInMs` no close handler (`relayProtocolDialFloorMs`
+puro em relayprotocol.ts; ok/legacy/unknown/valor fora do conjunto = piso
+zero), `relayRetryFloorSource` ganha o valor aditivo `protocol-mismatch`
+exposto como `relayRetry.floorSource` em `/api/health` sem chave nova
+(relay-close mantém prioridade sobre ele), e a rota de redial da P2-327 pode
+antecipar a espera protocol-mismatch — o clique humano de reconectar depois
+de atualizar app ou relay — respeitando o throttle de 10s, enquanto
+relay-close segue nunca antecipável.

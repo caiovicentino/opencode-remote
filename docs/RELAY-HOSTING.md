@@ -164,6 +164,34 @@ reproduces the historical limits exactly. Nothing about the blind-router
 property changes with the configured values: the relay still never reads
 plaintext or key material.
 
+### Envelope shape validation: one frame cannot kill the process (RT-455)
+
+Every wire frame passes a shallow shape gate before anything else touches it
+(same position as the old room/payload type check): the parsed value must be
+a non-null, non-array object; `room` and `payload` must be strings; `from`
+must be absent, `null`, or a string of at most 128 characters (the same
+ceiling as room ids — the daemon uses a room id as its sender id); `seq`
+must be absent, `null`, or a non-negative safe integer, exactly the values
+the daemon's own replay guard accepts. A frame outside that shape is dropped
+silently — the same treatment an invalid JSON frame always got — and costs
+no rate-limit budget, since the gate runs before the token bucket like the
+check it replaces.
+
+The gate exists because `from` and `seq` are attacker-controlled metadata
+that used to pass unvalidated into `JSON.stringify`, whose recursion is
+unbounded: one deeply nested value (an 800 KB frame fits inside the 1 MB
+frame cap) threw `RangeError: Maximum call stack size exceeded` inside the
+message listener and killed the whole multi-tenant process — every room of
+every tenant, repeatable at will by any unauthenticated peer. With the gate,
+deeply nested values can never reach the recursive `JSON.stringify` again,
+because only shallow strings and safe integers are ever re-serialized. As
+defense in depth, the whole routing path also runs under a per-frame guard:
+an unexpected exception anywhere in it closes **only** the offending socket
+(close code `1011`) while every other room and tenant keeps serving — the
+process never dies because of one frame. Legitimate traffic is byte-for-byte
+unchanged: absent `seq` stays omitted, `null` stays `null`, and an absent or
+`null` `from` still falls back to the socket id.
+
 ### Backpressure: the relay closes who does not read (P2-217)
 
 Before P2-217 the only memory defense on the forwarding path was the
@@ -710,6 +738,16 @@ P2-338 the desktop shell reads the same verdict: the pairing QR's relay-link
 line and the tray say "o relay hospedado fala um protocolo de fio diferente
 deste app — atualize o app ou o relay hospedado e aguarde a reconexão"
 instead of an endless "reconnecting" wait.
+
+Since P2-339 a recorded `mismatch` also paces the daemon itself: its
+reconnect wait takes a documented 5-minute floor (surfaced as
+`relayRetry.floorSource: "protocol-mismatch"` on `GET /api/health`), so an
+app installed before the bump dials an incompatible relay at most once every
+5 minutes instead of at the pace of a transient drop. A relay that publishes
+an incompatible `protocol` therefore stops being hammered by the fleet while
+the operator updates the app or rolls the wire version back — and once the
+relay delivers a frame again the verdict clears itself and the normal
+backoff resumes.
 
 ### Why a room was refused: the rejection breakdown (P2-293)
 

@@ -72,6 +72,15 @@ address) or 5min (bad certificate); `transient` keeps the P2-129 curve. The
 raw Node error message, which embeds the relay host and port, is neither
 logged in free text nor exposed here.
 
+Since P2-339 the same object also carries an additive `floorSource`: which
+floor the currently scheduled reconnect wait carries — `none` (the plain
+jittered backoff), `dial-error` (a local dial-error floor from the last
+failed dial), `relay-close` (a floor the relay itself asked for via a 1013
+capacity or 4029 rate-limited close) or `protocol-mismatch` (a recorded
+wire-protocol mismatch, below — a documented 5-minute floor). Only a
+`relay-close` floor is never shortened by anything; the other floors may be
+anticipated by the wake redial route (P2-327, one anticipation per 10s).
+
 Since P2-303 the `relay` object also carries an additive machine-proxy
 verdict of the dial: `relayProxyState` is `direct` (today's path — no proxy
 variables, a loopback relay, a `NO_PROXY` match or a discarded address) or
@@ -138,6 +147,18 @@ absent or out-of-set degrades to `null`), and `linkVerdict` maps a recorded
 pairing QR's relay-link line and the tray name the real problem instead of
 the endless "reconnecting" wait; a live link still outranks a stale mismatch
 (the fix self-heals), and the reconnect loop itself is untouched.
+level; the others are info).
+
+Since P2-339 a recorded `mismatch` also paces the daemon's own dialing: the
+reconnect wait takes a documented 5-minute floor through the same
+`max(jittered, floor)` rule the close/dial floors use — surfaced as
+`relayRetry.floorSource: "protocol-mismatch"` (see above), with a
+`relay-close` floor keeping priority over it. Everything else (`ok`,
+`legacy`, `unknown`, any probe failure) still changes nothing about the
+dialing. The wake/redial route (P2-327) may still anticipate a
+`protocol-mismatch` wait on an explicit human click — the "reconnect now"
+after updating the app or the relay — one anticipation per 10s; the next
+slice (the UI) consumes the `relayProtocol` field.
 
 ### `/api/health` — upstream agent state (P2-135)
 

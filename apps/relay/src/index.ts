@@ -11,6 +11,7 @@ import { resolveInstanceId, INSTANCE_ID_ENV } from "./instanceid.js";
 import { TokenBucket } from "./ratelimit.js";
 import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
+import { envelopeVerdict } from "./envelope.js";
 import { createShutdown, refuseUpgrade, stopAccepting } from "./shutdown.js";
 import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
@@ -994,133 +995,164 @@ wss.on("connection", (socket: Socket, req) => {
   });
 
   socket.on("message", (data) => {
-    let frame: { room?: unknown; from?: unknown; seq?: unknown; payload?: unknown };
+    // RT-455: the whole routing path is wrapped so a single malformed frame
+    // can never kill the process. An unexpected exception anywhere below
+    // closes ONLY this socket (close code 1011) — every other room, tenant
+    // and socket keeps serving, and the close event releases the per-IP
+    // slot and rooms through the normal path. No error message, stack or
+    // frame content is ever logged here (constitution #1: the relay stays
+    // blind even in its failure path).
     try {
-      frame = JSON.parse(data.toString());
-    } catch {
-      return;
-    }
-    if (typeof frame.room !== "string" || typeof frame.payload !== "string") return;
-
-    // token bucket per connection (one device session). Applied to every
-    // frame, including joins (payload "") and self-declared room owners —
-    // envelope metadata is attacker-controllable and grants nothing.
-    if (RATE_PER_MIN > 0) {
-      socket.bucket ??= new TokenBucket(RATE_BURST, RATE_PER_MIN);
-      if (!socket.bucket.take()) {
-        m.rateLimited++;
-        // identity prefix for triage only — never any payload content
-        ev("warn", "rate limited, dropping device", {
-          id: socket.id,
-          from: String(frame.from).slice(0, 10),
-          close: RATE_LIMIT_CLOSE,
-        });
-        socket.close(RATE_LIMIT_CLOSE, "rate limited");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(data.toString());
+      } catch {
         return;
       }
-    }
+      // RT-455: shallow shape gate, at the exact point the old
+      // `typeof room/payload` check occupied. `from` and `seq` are
+      // attacker-controlled metadata that previously passed unvalidated into
+      // JSON.stringify — whose recursion is unbounded — so one deeply nested
+      // value threw RangeError and killed the whole relay. The verdict
+      // accepts only the shapes legitimate peers send and drops everything
+      // else silently, the same treatment an invalid JSON frame already got
+      // (and malformed envelopes still cost no rate-limit budget).
+      const v = envelopeVerdict(parsed);
+      if (!v.ok) return;
+      const frame = v.frame;
 
-    // room grammar + per-socket room cap (P2-019): room ids are the only
-    // envelope field that allocates relay state, so unvalidated ids let one
-    // socket grow the rooms map without bound. Both checks run after the
-    // rate limiter so abuse is budget-bounded; a bad frame is dropped —
-    // never close — with only a prefix logged, as everywhere else.
-    if (!isValidRoomId(frame.room)) {
-      m.roomsRejected++;
-      // P2-293: observation only — same refusal, re-labeled by reason
-      m.roomsRejectedByReason["invalid-room-id"]++;
-      ev("warn", "frame dropped: invalid room id", {
-        id: socket.id,
-        room: String(frame.room).slice(0, 8),
-      });
-      return;
-    }
-    if (!socket.rooms?.has(frame.room) && (socket.rooms?.size ?? 0) >= MAX_ROOMS_PER_SOCKET) {
-      m.roomsRejected++;
-      // P2-293: observation only — same refusal, re-labeled by reason
-      m.roomsRejectedByReason["socket-room-cap"]++;
-      ev("warn", "frame dropped: socket room cap exceeded", {
-        id: socket.id,
-        room: frame.room.slice(0, 8),
-        cap: MAX_ROOMS_PER_SOCKET,
-      });
-      return;
-    }
-
-    // P2-177: debug-only. Hosted, a line per routed message reconstructs
-    // who talked to whom and when out of provider-retained stdout — the
-    // same metadata leak class P2-174 closed for client addresses — and
-    // costs volume proportional to traffic. The default `info` level
-    // routes in silence; the routing itself is unchanged.
-    ev("debug", "frame in", {
-      room: frame.room.slice(0, 8),
-      from: String(frame.from).slice(0, 10),
-      targets: rooms.get(frame.room)?.size ?? -1,
-    });
-
-    // every frame's room is joined by its sender: both ends of a
-    // conversation converge on the same room naturally
-    join(socket, frame.room);
-    if ((rooms.get(frame.room)?.size ?? 0) > maxPerRoom) {
-      ev("warn", "room capacity exceeded", { room: frame.room.slice(0, 8) });
-      m.rejects++;
-      socket.close(1013, "room full");
-      return;
-    }
-
-    const targets = rooms.get(frame.room);
-    if (!targets) return;
-    const out = JSON.stringify({
-      room: frame.room,
-      from: frame.from ?? socket.id,
-      seq: frame.seq,
-      payload: frame.payload,
-    });
-    // P2-243: per-room accumulated-volume verdict, consulted at the SAME
-    // forwarding point as the token bucket above and the per-socket
-    // backpressure verdict in the loop below — no new timer, no sweep, boot
-    // unchanged. Only this frame's serialized byte count is counted: never
-    // its content, never an envelope field, never any identity. The state
-    // dies with the room (leaveAll), so the map cannot grow forever.
-    const budget = budgetVerdict(roomBudgets.get(frame.room), Date.now(), out.length, roomBudgetLimits);
-    roomBudgets.set(frame.room, budget.state);
-    if (budget.plan.action === "terminate") {
-      m.roomBudgetTerminated++;
-      ev("warn", "room closed: volume above the window budget", {
-        room: frame.room.slice(0, 8),
-        count: m.roomBudgetTerminated,
-        reason: ROOM_BUDGET_CLOSE_REASON,
-      });
-      // the same close path every policy close uses (room full, slow
-      // consumer): each socket of the room closes alone and runs the normal
-      // close path — per-IP slot release included
-      for (const t of [...targets]) t.close(ROOM_BUDGET_CLOSE_CODE, ROOM_BUDGET_CLOSE_REASON);
-      return;
-    }
-    if (budget.plan.action === "warn") {
-      // at most ONE line per room per window (budgetVerdict's warned flag)
-      ev("warn", "room nearing the window volume budget", {
-        room: frame.room.slice(0, 8),
-        reason: ROOM_BUDGET_WARN_REASON,
-      });
-    }
-    m.framesRouted++;
-    m.bytesRouted += frame.payload.length;
-    for (const t of targets) {
-      if (t === socket || t.readyState !== t.OPEN) continue;
-      // P2-217: backpressure gate — consult the target's own accumulated
-      // outgoing bytes BEFORE every send. Only two outcomes exist: queue the
-      // frame, or close the slow socket (never a silent drop — the relay is
-      // blind and could not re-send it). The close touches only this target;
-      // the sender and every other peer of the room keep routing.
-      const verdict = sendVerdict(t.bufferedAmount, out.length, bufferCapBytes);
-      if (verdict.action === "close-slow") {
-        m.slowConsumers++;
-        ev("warn", "slow consumer closed", { count: m.slowConsumers, reason: verdict.reason });
-        t.close(SLOW_CONSUMER_CLOSE_CODE, SLOW_CONSUMER_CLOSE_REASON);
-        continue;
+      // token bucket per connection (one device session). Applied to every
+      // frame, including joins (payload "") and self-declared room owners —
+      // envelope metadata is attacker-controllable and grants nothing.
+      if (RATE_PER_MIN > 0) {
+        socket.bucket ??= new TokenBucket(RATE_BURST, RATE_PER_MIN);
+        if (!socket.bucket.take()) {
+          m.rateLimited++;
+          // identity prefix for triage only — never any payload content
+          ev("warn", "rate limited, dropping device", {
+            id: socket.id,
+            from: String(frame.from).slice(0, 10),
+            close: RATE_LIMIT_CLOSE,
+          });
+          socket.close(RATE_LIMIT_CLOSE, "rate limited");
+          return;
+        }
       }
-      t.send(out);
+
+      // room grammar + per-socket room cap (P2-019): room ids are the only
+      // envelope field that allocates relay state, so unvalidated ids let one
+      // socket grow the rooms map without bound. Both checks run after the
+      // rate limiter so abuse is budget-bounded; a bad frame is dropped —
+      // never close — with only a prefix logged, as everywhere else.
+      if (!isValidRoomId(frame.room)) {
+        m.roomsRejected++;
+        // P2-293: observation only — same refusal, re-labeled by reason
+        m.roomsRejectedByReason["invalid-room-id"]++;
+        ev("warn", "frame dropped: invalid room id", {
+          id: socket.id,
+          room: String(frame.room).slice(0, 8),
+        });
+        return;
+      }
+      if (!socket.rooms?.has(frame.room) && (socket.rooms?.size ?? 0) >= MAX_ROOMS_PER_SOCKET) {
+        m.roomsRejected++;
+        // P2-293: observation only — same refusal, re-labeled by reason
+        m.roomsRejectedByReason["socket-room-cap"]++;
+        ev("warn", "frame dropped: socket room cap exceeded", {
+          id: socket.id,
+          room: frame.room.slice(0, 8),
+          cap: MAX_ROOMS_PER_SOCKET,
+        });
+        return;
+      }
+
+      // P2-177: debug-only. Hosted, a line per routed message reconstructs
+      // who talked to whom and when out of provider-retained stdout — the
+      // same metadata leak class P2-174 closed for client addresses — and
+      // costs volume proportional to traffic. The default `info` level
+      // routes in silence; the routing itself is unchanged.
+      ev("debug", "frame in", {
+        room: frame.room.slice(0, 8),
+        from: String(frame.from).slice(0, 10),
+        targets: rooms.get(frame.room)?.size ?? -1,
+      });
+
+      // every frame's room is joined by its sender: both ends of a
+      // conversation converge on the same room naturally
+      join(socket, frame.room);
+      if ((rooms.get(frame.room)?.size ?? 0) > maxPerRoom) {
+        ev("warn", "room capacity exceeded", { room: frame.room.slice(0, 8) });
+        m.rejects++;
+        socket.close(1013, "room full");
+        return;
+      }
+
+      const targets = rooms.get(frame.room);
+      if (!targets) return;
+      // RT-455: every field reaching this rebuild is now a shallow string or
+      // safe integer, so the recursive stringify can never walk an
+      // attacker-shaped structure again. Bytes are identical for every
+      // legitimate frame: absent `seq` stays omitted, `null` stays `null`,
+      // `from` falls back to the socket id exactly as before.
+      const out = JSON.stringify({
+        room: frame.room,
+        from: frame.from ?? socket.id,
+        seq: frame.seq,
+        payload: frame.payload,
+      });
+      // P2-243: per-room accumulated-volume verdict, consulted at the SAME
+      // forwarding point as the token bucket above and the per-socket
+      // backpressure verdict in the loop below — no new timer, no sweep, boot
+      // unchanged. Only this frame's serialized byte count is counted: never
+      // its content, never an envelope field, never any identity. The state
+      // dies with the room (leaveAll), so the map cannot grow forever.
+      const budget = budgetVerdict(roomBudgets.get(frame.room), Date.now(), out.length, roomBudgetLimits);
+      roomBudgets.set(frame.room, budget.state);
+      if (budget.plan.action === "terminate") {
+        m.roomBudgetTerminated++;
+        ev("warn", "room closed: volume above the window budget", {
+          room: frame.room.slice(0, 8),
+          count: m.roomBudgetTerminated,
+          reason: ROOM_BUDGET_CLOSE_REASON,
+        });
+        // the same close path every policy close uses (room full, slow
+        // consumer): each socket of the room closes alone and runs the normal
+        // close path — per-IP slot release included
+        for (const t of [...targets]) t.close(ROOM_BUDGET_CLOSE_CODE, ROOM_BUDGET_CLOSE_REASON);
+        return;
+      }
+      if (budget.plan.action === "warn") {
+        // at most ONE line per room per window (budgetVerdict's warned flag)
+        ev("warn", "room nearing the window volume budget", {
+          room: frame.room.slice(0, 8),
+          reason: ROOM_BUDGET_WARN_REASON,
+        });
+      }
+      m.framesRouted++;
+      m.bytesRouted += frame.payload.length;
+      for (const t of targets) {
+        if (t === socket || t.readyState !== t.OPEN) continue;
+        // P2-217: backpressure gate — consult the target's own accumulated
+        // outgoing bytes BEFORE every send. Only two outcomes exist: queue the
+        // frame, or close the slow socket (never a silent drop — the relay is
+        // blind and could not re-send it). The close touches only this target;
+        // the sender and every other peer of the room keep routing.
+        const verdict = sendVerdict(t.bufferedAmount, out.length, bufferCapBytes);
+        if (verdict.action === "close-slow") {
+          m.slowConsumers++;
+          ev("warn", "slow consumer closed", { count: m.slowConsumers, reason: verdict.reason });
+          t.close(SLOW_CONSUMER_CLOSE_CODE, SLOW_CONSUMER_CLOSE_REASON);
+          continue;
+        }
+        t.send(out);
+      }
+    } catch {
+      // RT-455: fail-safe for anything the shape gate cannot foresee — the
+      // process never dies because of one frame. One line, socket id only,
+      // then this socket alone closes with 1011 (internal error); its rooms
+      // and per-IP slot release through the normal close event below.
+      ev("warn", "frame dropped: handler error", { id: socket.id });
+      socket.close(1011, "internal error");
     }
   });
 

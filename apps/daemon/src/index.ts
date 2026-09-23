@@ -114,6 +114,7 @@ import {
   RELAY_PROTOCOL_PROBE_TIMEOUT_MS,
   RELAY_PROTOCOL_PHRASES,
   relayHealthUrlFromWs,
+  relayProtocolDialFloorMs,
   relayProtocolProbePlan,
   relayProtocolVerdict,
   type RelayProtocolState,
@@ -3773,8 +3774,10 @@ let relayRetryTimer: ReturnType<typeof setTimeout> | null = null;
 // guard that keeps the redial route from minting a second socket.
 let relayDialInFlight = false;
 // P2-327: which floor the CURRENTLY scheduled wait carries. A floor that came
-// from a relay close code (capacity / rate-limited) is always honored; only a
-// plain backoff wait or a local dial-error floor may be anticipated.
+// from a relay close code (capacity / rate-limited) is always honored — the
+// relay itself asked for backoff, and it keeps priority over the P2-339
+// protocol-mismatch floor; the mismatch floor, a local dial-error floor and a
+// plain backoff wait may all be anticipated by the redial route.
 let relayRetryFloorSource: RelayFloorSource = "none";
 // P2-327: instant of the last anticipation (redial-now), for the 10s throttle.
 let relayLastRedialAt: number | null = null;
@@ -3874,16 +3877,32 @@ function connectRelay() {
     // error is the generic 1006. The pending dial verdict floors the same
     // wait via the same max(jittered, floor) rule the close verdict uses; a
     // transient drop keeps the P2-129 jittered schedule untouched.
+    // P2-339: a recorded wire-protocol mismatch (P2-335) floors the SAME max —
+    // an app that KNOWS the hosted relay speaks an incompatible version stops
+    // opening sockets at the pace of a transient drop and paces itself at most
+    // once per 5 documented minutes until the app or the relay is updated. The
+    // redial route (P2-327) may still anticipate this floor on an explicit
+    // human click; a relay-close floor keeps priority over it below.
+    const protocolFloorMs = relayProtocolDialFloorMs(relayProtocolState);
     const retryInMs = Math.max(
       effectiveRetryDelayMs(relayRetry.schedule(), verdict),
       relayPendingDialFloorMs,
+      protocolFloorMs,
     );
     // P2-327: record which floor the freshly scheduled wait carries, BEFORE
     // the pending dial floor is consumed. A relay-close floor (capacity /
-    // rate-limited) is always honored — only a plain backoff wait or a local
-    // dial-error floor may be anticipated by the redial route.
+    // rate-limited) is always honored and keeps priority over the protocol
+    // floor; a protocol-mismatch floor governs whenever it is on record with
+    // no relay-close floor (5 documented minutes outrank every dial-error
+    // floor); otherwise the local dial-error floor, then the plain backoff.
     relayRetryFloorSource =
-      verdict.floorMs > 0 ? "relay-close" : relayPendingDialFloorMs > 0 ? "dial-error" : "none";
+      verdict.floorMs > 0
+        ? "relay-close"
+        : protocolFloorMs > 0
+          ? "protocol-mismatch"
+          : relayPendingDialFloorMs > 0
+            ? "dial-error"
+            : "none";
     relayPendingDialFloorMs = 0;
     relayDialInFlight = false;
     relayLastClose = { code: typeof code === "number" ? code : null, kind: verdict.kind };
@@ -4511,9 +4530,14 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // pt-BR hint of the most recent relay dial failure (null until the
         // first dial error), so the machine's owner can see WHY the relay is
         // unreachable; the raw Node message never reaches the payload.
+        // P2-339: additive floorSource in the same surface — which floor the
+        // scheduled wait carries (none / dial-error / relay-close /
+        // protocol-mismatch), so a 5-minute protocol-mismatch wait explains
+        // itself to the operator; the value rides the existing relayRetry
+        // object, no new key.
         relayRetry: relayConnected
           ? null
-          : { ...relayRetry.snapshot(), lastClose: relayLastClose, lastDial: relayLastDial },
+          : { ...relayRetry.snapshot(), lastClose: relayLastClose, lastDial: relayLastDial, floorSource: relayRetryFloorSource },
         // P2-139: additive boot-validation verdict of RELAY_URL; relayConnected
         // and relayRetry above keep their exact shape. Userinfo (if any) is
         // redacted before the URL reaches the API surface. P2-303 adds the
