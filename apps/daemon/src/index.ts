@@ -108,7 +108,10 @@ import {
   relayRedialGate,
   relayRedialPlan,
   type RelayFloorSource,
+  type RelayRedialVerdict,
 } from "./relayredial.js";
+// P2-349: pure sleep/wake detector consulted by the 60s upstream probe tick
+import { sleepGapVerdict } from "./sleepgap.js";
 // P2-335: pure wire-protocol verdict + probe planner for the reconnect loop
 import {
   RELAY_PROTOCOL_BODY_MAX,
@@ -2593,6 +2596,13 @@ metrics.describe(
   "counter",
 );
 
+// P2-349: sleep/wake detection counter help (counter self-registers on inc).
+metrics.describe(
+  "ocr_wake_detected_total",
+  "wake detections from the 60s probe tick gap (sleep-gap detector)",
+  "counter",
+);
+
 // P2-075: PWA origin watchdog — probes the static origin's /healthz and, on
 // flip, appends a dashboard event (`[pwa] origin`), lights the red chip and
 // pushes the phone. Only on hosts that actually serve the PWA.
@@ -2859,7 +2869,27 @@ async function probeUpstream(): Promise<UpstreamVerdict> {
   }
 }
 
+// P2-349: instant of the previous upstream-probe tick — the sleep-gap
+// detector's only clock input. Ticks normally land ~60s apart; a gap far
+// above that means the process was suspended and the machine woke.
+let upstreamProbeLastTickAt = Date.now();
+
 setInterval(() => {
+  // P2-349: wake detection without the desktop shell — the shell's
+  // powerMonitor has no equivalent here, so the probe's own tick gap is the
+  // wake signal. Consulted at the START of the tick, inside the SAME 60s
+  // setInterval (no new timer): on `woke` the reconnect wait is anticipated
+  // through the exact P2-327 path (relay-close floor honored, 10s throttle),
+  // one log line and one counter per wake detection.
+  const tickAt = Date.now();
+  const gapVerdict = sleepGapVerdict(60_000, upstreamProbeLastTickAt, tickAt);
+  const wokeGapMs = tickAt - upstreamProbeLastTickAt;
+  upstreamProbeLastTickAt = tickAt;
+  if (gapVerdict === "woke") {
+    metrics.inc("ocr_wake_detected_total");
+    log("info", "wake detected", { gapS: Math.round(wokeGapMs / 1000) });
+    anticipateRelayRedial();
+  }
   void (async () => {
     const verdict = await probeUpstream();
     const healthy = recordUpstream(verdict);
@@ -3912,6 +3942,31 @@ process.on("message", (raw: unknown) => {
   void shutdown("SIGTERM");
 });
 
+// P2-349: THE redial-anticipation path, shared by the P2-327 route and the
+// sleep-gap wake tick below. relayRedialPlan decides (relay-close floor
+// honored, 10s throttle) and an approved anticipation clears the pending
+// timer and dials exactly once — when the shell already anticipated via
+// powerMonitor, the throttle absorbs the second call without a second socket.
+function anticipateRelayRedial(): RelayRedialVerdict {
+  const plan = relayRedialPlan({
+    relayDisabled,
+    connected: metrics.get("ocr_relay_connected") === 1,
+    dialInFlight: relayDialInFlight,
+    retryPending: relayRetryTimer !== null,
+    floorSource: relayRetryFloorSource,
+    msSinceLastRedial: relayLastRedialAt === null ? null : Date.now() - relayLastRedialAt,
+  });
+  if (plan.action === "redial-now") {
+    // exactly one anticipation per approved call: drop the pending timer,
+    // record the throttle instant, dial once
+    if (relayRetryTimer) clearTimeout(relayRetryTimer);
+    relayRetryTimer = null;
+    relayLastRedialAt = Date.now();
+    connectRelay();
+  }
+  return plan;
+}
+
 function connectRelay() {
   // P2-139: an invalid RELAY_URL never opens a socket. The reason is logged
   // once at boot instead of repeating on every retry; nothing here schedules
@@ -4451,22 +4506,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       res.end(JSON.stringify({ action: "noop", reason: "method-not-allowed" }));
       return true;
     }
-    const plan = relayRedialPlan({
-      relayDisabled,
-      connected: metrics.get("ocr_relay_connected") === 1,
-      dialInFlight: relayDialInFlight,
-      retryPending: relayRetryTimer !== null,
-      floorSource: relayRetryFloorSource,
-      msSinceLastRedial: relayLastRedialAt === null ? null : Date.now() - relayLastRedialAt,
-    });
-    if (plan.action === "redial-now") {
-      // exactly one anticipation per approved call: drop the pending timer,
-      // record the throttle instant, dial once
-      if (relayRetryTimer) clearTimeout(relayRetryTimer);
-      relayRetryTimer = null;
-      relayLastRedialAt = Date.now();
-      connectRelay();
-    }
+    // P2-349: the plan + dial live in the shared anticipation helper above —
+    // the same gate (relay-close floor honored, 10s throttle) the wake tick
+    // consults, so the two paths can never diverge.
+    const plan = anticipateRelayRedial();
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify({ action: plan.action, reason: plan.reason }));
     return true;

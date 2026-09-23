@@ -2341,7 +2341,14 @@ window are dropped silently, so waking up never floods the log — and each
 handled event writes exactly one `[desktop] wake event (…)` line with the
 action and the reason. Platforms without the OS signal keep the previous
 behavior unchanged, no new periodic probe is introduced, and pairing is never
-touched by a wake: no re-pairing, no allowlist or state-file writes.
+touched by a wake: no re-pairing, no allowlist or state-file writes. Since
+P2-349 the daemon catches the wake on its own when no shell is there to
+report it (a CLI boot, or the shell that has not come up yet): the 60s
+upstream probe tick notices a clock gap above three of its own intervals,
+bumps `ocr_wake_detected_total`, logs one `wake detected` line with the gap
+in seconds and anticipates the relay reconnect through the exact same P2-327
+gate (a relay-close backoff is still honored and the 10s throttle absorbs a
+double call from shell + daemon without a second socket).
 
 **Keep awake while the agent works**: the other half of the sleep story — a
 long run requested from the phone no longer dies because the machine drifted

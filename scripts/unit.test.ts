@@ -109,6 +109,7 @@ import {
   recordRoutineTrigger,
   type RoutineHistoryRecord,
 } from "../apps/daemon/src/routinehistory";
+import { sleepGapVerdict } from "../apps/daemon/src/sleepgap";
 import { sttVerdict } from "../apps/daemon/src/voicecap";
 import {
   CONVERTER_PREFERENCE,
@@ -18782,9 +18783,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !redialRoute.includes("authorized(req)"),
   );
   check(
-    "P2-327: redial-now clears the pending timer and dials exactly once",
-    redialRoute.includes("clearTimeout(relayRetryTimer)") &&
-      (redialRoute.match(/connectRelay\(\)/g) ?? []).length === 1,
+    "P2-327: redial-now clears the pending timer and dials exactly once (shared anticipation helper)",
+    (() => {
+      const helperStart = daemonSrc.indexOf("function anticipateRelayRedial(");
+      const helper = daemonSrc.slice(helperStart, daemonSrc.indexOf("\nfunction ", helperStart));
+      return (
+        helper.includes("clearTimeout(relayRetryTimer)") &&
+        (helper.match(/connectRelay\(\)/g) ?? []).length === 1 &&
+        // P2-349: the route delegates to the same helper the wake tick calls
+        redialRoute.includes("const plan = anticipateRelayRedial()")
+      );
+    })(),
   );
   check(
     "P2-327: the route answers JSON with action + reason and 405 for other methods",
@@ -18819,10 +18828,16 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     })(),
   );
   check(
-    "P2-327: the route reads live state (connected gauge, flags, floor source)",
-    redialRoute.includes('metrics.get("ocr_relay_connected") === 1') &&
-      redialRoute.includes("relayDialInFlight") &&
-      redialRoute.includes("relayRetryFloorSource"),
+    "P2-327: the anticipation reads live state (connected gauge, flags, floor source)",
+    (() => {
+      const helperStart = daemonSrc.indexOf("function anticipateRelayRedial(");
+      const helper = daemonSrc.slice(helperStart, daemonSrc.indexOf("\nfunction ", helperStart));
+      return (
+        helper.includes('metrics.get("ocr_relay_connected") === 1') &&
+        helper.includes("relayDialInFlight") &&
+        helper.includes("relayRetryFloorSource")
+      );
+    })(),
   );
 
   // 7. the desktop wake path: one best-effort POST after the probe, verdict-only log
@@ -18844,6 +18859,109 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-327: only the verdict's action + reason reach the desktop log",
     /\[desktop\] relay redial: \$\{body\.action\} \(\$\{body\.reason\}\)/.test(wakeBlock),
+  );
+}
+
+
+// --- P2-349: sleep/wake detection from the probe tick gap (sleepgap.ts) ---------
+{
+  const gapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "sleepgap.ts"), "utf8");
+  const daemonSrc = readFileSync(join(import.meta.dirname, "..", "apps", "daemon", "src", "index.ts"), "utf8");
+
+  // 1. the verdict table — wake threshold, fail-closed inputs
+  const GAP = 60_000;
+  const rows: [string, number, number, number, string][] = [
+    ["normal tick (gap == one interval)", GAP, 0, GAP, "steady"],
+    ["small delay (1.5 intervals)", GAP, 0, GAP + GAP / 2, "steady"],
+    ["two missed ticks (2.5 intervals) is still steady", GAP, 0, GAP * 2.5, "steady"],
+    ["exactly three intervals is not ABOVE the threshold", GAP, 0, GAP * 3, "steady"],
+    ["just above three intervals is a wake", GAP, 0, GAP * 3 + 1, "woke"],
+    ["overnight sleep is a wake", GAP, 0, GAP * 103, "woke"],
+    ["clock going backwards is steady", GAP, GAP * 10, 0, "steady"],
+    ["clock going backwards past the threshold is steady", GAP, GAP * 10, GAP, "steady"],
+    ["NaN interval is fail-closed", Number.NaN, 0, GAP * 10, "steady"],
+    ["NaN last tick is fail-closed", GAP, Number.NaN, GAP * 10, "steady"],
+    ["NaN current instant is fail-closed", GAP, 0, Number.NaN, "steady"],
+    ["infinite interval is fail-closed", Number.POSITIVE_INFINITY, 0, GAP * 10, "steady"],
+    ["infinite last tick is fail-closed", GAP, Number.POSITIVE_INFINITY, GAP * 10, "steady"],
+    ["infinite current instant is fail-closed", GAP, 0, Number.POSITIVE_INFINITY, "steady"],
+    ["negative interval is invalid config, never a wake", -GAP, 0, GAP * 10, "steady"],
+    ["zero interval is invalid config, never a wake", 0, 0, GAP * 10, "steady"],
+  ];
+  for (const [name, interval, lastTick, current, verdict] of rows) {
+    check(`P2-349: sleepGapVerdict — ${name}`, sleepGapVerdict(interval, lastTick, current) === verdict);
+  }
+
+  // 2. purity: no I/O of any kind in the module (index.ts boots a daemon on import)
+  check(
+    "P2-349: sleepgap.ts is I/O-free (no imports, no clock, no timers)",
+    !/from\s+["']/.test(gapSrc) &&
+      !gapSrc.includes("node:") &&
+      !gapSrc.includes("Date.now(") &&
+      !gapSrc.includes("setTimeout(") &&
+      !gapSrc.includes("setInterval(") &&
+      !gapSrc.includes("fetch("),
+  );
+
+  // 3. wiring: the consult lives inside the EXISTING 60s upstream-probe interval
+  const consult = daemonSrc.indexOf("sleepGapVerdict(60_000");
+  const intervalOpen = daemonSrc.lastIndexOf("setInterval(() => {", consult);
+  const intervalClose = daemonSrc.indexOf("}, 60_000);", consult);
+  check(
+    "P2-349: the consult lives inside the existing 60s upstream-probe setInterval",
+    consult > -1 &&
+      intervalOpen > -1 &&
+      intervalClose > -1 &&
+      // no `}, 60_000);` closes an interval between the open and the consult —
+      // the consult is genuinely INSIDE the interval callback body
+      daemonSrc.slice(intervalOpen, consult).includes("}, 60_000);") === false &&
+      // and the same body is the upstream probe (probeUpstream runs after it)
+      daemonSrc.slice(consult, intervalClose).includes("probeUpstream()"),
+  );
+  check(
+    "P2-349: exactly one consult site (the tick, never the route or elsewhere)",
+    (daemonSrc.match(/sleepGapVerdict\(/g) ?? []).length === 1,
+  );
+
+  // 4. no new timer anywhere: index.ts keeps exactly the five setInterval it had
+  check(
+    "P2-349: no new setInterval — index.ts keeps exactly the five it had",
+    (daemonSrc.match(/setInterval\(/g) ?? []).length === 5,
+  );
+
+  // 5. the wake reaction inside that interval: one counter, one log line, same gate
+  const wakeBlock = daemonSrc.slice(intervalOpen, intervalClose);
+  check(
+    "P2-349: the wake tick bumps ocr_wake_detected_total once and logs one wake detected line",
+    (wakeBlock.match(/ocr_wake_detected_total/g) ?? []).length === 1 &&
+      wakeBlock.includes('log("info", "wake detected"') &&
+      (wakeBlock.match(/gapS:/g) ?? []).length === 1,
+  );
+  check(
+    "P2-349: the gap is rounded AFTER the verdict and BEFORE the last-tick update",
+    wakeBlock.indexOf("const wokeGapMs = tickAt - upstreamProbeLastTickAt;") <
+      wakeBlock.indexOf("upstreamProbeLastTickAt = tickAt;"),
+  );
+  check(
+    "P2-349: the wake tick anticipates through the same P2-327 gate (one shared helper, no direct dial)",
+    wakeBlock.includes("anticipateRelayRedial();") &&
+      (daemonSrc.match(/relayRedialPlan\(\{/g) ?? []).length === 1 &&
+      !wakeBlock.includes("connectRelay()"),
+  );
+  check(
+    "P2-349: the shared anticipation helper is consulted by exactly the route and the wake tick",
+    // 3 matches: the definition's return-type annotation + the two call sites
+    (daemonSrc.match(/anticipateRelayRedial\(\)/g) ?? []).length === 3 &&
+      daemonSrc
+        .slice(
+          daemonSrc.indexOf('url.pathname === "/__ocr/relay/redial"'),
+          daemonSrc.indexOf('url.pathname === "/__ocr/relay/redial"') + 4000,
+        )
+        .includes("const plan = anticipateRelayRedial()"),
+  );
+  check(
+    "P2-349: the wake counter is described for the metrics endpoint",
+    daemonSrc.includes('"wake detections from the 60s probe tick gap (sleep-gap detector)"'),
   );
 }
 
