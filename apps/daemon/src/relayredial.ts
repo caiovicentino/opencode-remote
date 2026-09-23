@@ -17,17 +17,33 @@
 //   4. with no retry scheduled there is no timer to clear — redialing would
 //      mint a duplicate socket;
 //   5. a floor that came from a relay CLOSE code (1013 capacity / 4029
-//      rate-limited — relayclose.ts) is ALWAYS honored: the relay itself asked
-//      for backoff, and no client may hammer it through this route;
+//      rate-limited — relayclose.ts) is ALWAYS honored: the relay itself
+//      asked for backoff, and no client may hammer it through this route;
+//      P2-339: it also keeps priority over a protocol-mismatch floor, so a
+//      relay that asked for backoff stays unhammerable even while the
+//      daemon records an incompatible wire version;
 //   6. the endpoint is throttled to one anticipation per
 //      RELAY_REDIAL_THROTTLE_MS;
-//   7. only then a pending plain-backoff wait or a LOCAL dial-error floor is
-//      anticipated (redial-now).
+//   7. only then a pending plain-backoff wait, a LOCAL dial-error floor or a
+//      P2-339 protocol-mismatch floor is anticipated (redial-now). The
+//      mismatch floor exists so an unattended daemon stops hammering an
+//      incompatible relay at transient-drop pace; the explicit
+//      "reconnect now" click after the operator updated the app or the relay
+//      is exactly the human action that may shorten it, still inside the
+//      throttle above.
 // Reasons are stable strings: they ride the HTTP response and the desktop
 // log verbatim (action + reason, nothing else).
 
-/** Which floor the currently scheduled reconnect wait carries. */
-export type RelayFloorSource = "none" | "dial-error" | "relay-close";
+/**
+ * Which floor the currently scheduled reconnect wait carries. Only
+ * "relay-close" is never anticipatable — the relay itself asked for backoff.
+ * P2-339 adds "protocol-mismatch": a recorded wire-protocol mismatch floors
+ * the wait (relayprotocol.ts, 5 minutes) precisely so an UNATTENDED daemon
+ * stops hammering an incompatible relay; the explicit "reconnect now" click
+ * after the operator updated the app or the relay is the human action that
+ * may anticipate it.
+ */
+export type RelayFloorSource = "none" | "dial-error" | "relay-close" | "protocol-mismatch";
 
 /** Documented throttle window between two anticipations (10s). */
 export const RELAY_REDIAL_THROTTLE_MS = 10_000;
@@ -41,7 +57,8 @@ export interface RelayRedialInput {
   dialInFlight: boolean;
   /** A reconnect timer is scheduled. */
   retryPending: boolean;
-  /** Which floor the scheduled wait carries (a relay-close floor is honored). */
+  /** Which floor the scheduled wait carries (a relay-close floor is honored,
+   *  a P2-339 protocol-mismatch floor may be anticipated). */
   floorSource: RelayFloorSource;
   /** ms since the last anticipation (null = never redialed in this boot). */
   msSinceLastRedial: number | null;
