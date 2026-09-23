@@ -802,7 +802,7 @@ try {
     if (es1.ok) check("P3-440: empty-submit 1440x900 shot is a real PNG", pngSize(shotEmptySubmit).join("x") === "1440x900");
     // The nudge is one-shot (P3-361): typing dissolves it — clear the field
     // so the P2-106 reference shots below stay clean.
-    run("P3-440: clear the empty-submit nudge", ["type", "textarea", ""], 15_000);
+    run("P3-440: clear the empty-submit nudge", ["type", ".pair-code", ""], 15_000);
   }
 
   // --- P2-106: benchmark pairing journey — 4 evidence states ------------------

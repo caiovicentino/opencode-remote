@@ -10200,6 +10200,34 @@ check(
     const freshPrompt = explorerPrompt("/abs/shots", "explorer-fresh-20260902");
     check("explorer prompt: never instructs the agent to build", !freshPrompt.includes("build them first") && !freshPrompt.includes("npm run build --workspace"));
     check("explorer prompt: names the pre-journey fresh-bundle guarantee", freshPrompt.includes("rebuilt both bundles") && freshPrompt.includes("NEVER run"));
+
+    // P3-440 review fix: the build exec is spawnSync — it blocks the loop for
+    // minutes, so the 3min watchdog interval cannot fire mid-build, but its
+    // queued callback runs the instant the loop unblocks and reads the stale
+    // heartbeat: process.exit(1) AFTER a successful build, KeepAlive restarts,
+    // and the already-stamped explorerLast silently skips the day's run. The
+    // runner feeds the heartbeat on BOTH sides of the build (deploy.ts soak
+    // precedent), tested against an injected touch.
+    const beats: string[] = [];
+    const fedOk = rebuildNightlyBundles(
+      "/tmp/p3-440-ws",
+      () => {
+        beats.push("build");
+        return { ok: true, output: "vite built" };
+      },
+      () => beats.push("touch"),
+    );
+    check("explorer rebuild: feeds the heartbeat before and after the blocking build", fedOk.ok && beats.join("|") === "touch|build|touch");
+    const retryBeats: string[] = [];
+    const fedRetry = rebuildNightlyBundles(
+      "/tmp/p3-440-ws",
+      () => {
+        retryBeats.push("build");
+        return { ok: false, output: `npm error (attempt ${retryBeats.filter((e) => e === "build").length})` };
+      },
+      () => retryBeats.push("touch"),
+    );
+    check("explorer rebuild: the watchdog stays fed across the flaky retry too", !fedRetry.ok && retryBeats.join("|") === "touch|build|build|touch");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

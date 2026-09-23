@@ -321,13 +321,23 @@ export const EXPLORER_BUNDLE_BUILD_CMD = "npm run build --workspace @ocr/web && 
  * streams through the shared exec (allowFail — the caller decides the
  * fail-closed policy). One retry covers the flaky-step precedent (P1-101
  * gate-flaky): a transient toolchain hiccup must not burn the day's only run.
+ * P3-440 review fix: exec is spawnSync — it blocks the loop for minutes, so
+ * the watchdog interval cannot fire mid-build but its queued callback runs the
+ * instant the loop unblocks and reads a stale heartbeat (exit 1 → KeepAlive
+ * restarts → the already-stamped explorerLast silently skips the day's run).
+ * Feed the heartbeat on BOTH sides of the build, exactly like the deploy
+ * soak's live-invariant exec (deploy.ts). Injectable touch keeps the battery
+ * hermetic.
  */
 export function rebuildNightlyBundles(
   ws: string,
   run: (cmd: string) => { ok: boolean; output: string } = (cmd) => exec(cmd, { cwd: ws, timeoutMin: 10, allowFail: true }),
+  touch: () => void = touchHeartbeat,
 ): { ok: boolean; output: string } {
+  touch(); // before: the exec below blocks the loop for minutes
   let last = run(EXPLORER_BUNDLE_BUILD_CMD);
   if (!last.ok) last = run(EXPLORER_BUNDLE_BUILD_CMD);
+  touch(); // after: the queued watchdog callback fires as soon as the loop unblocks
   return last;
 }
 
