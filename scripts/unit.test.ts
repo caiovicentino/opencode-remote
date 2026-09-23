@@ -38922,6 +38922,121 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
 }
 
+// --- P2-343: the pairing overlay's relay-link warning gains the redial -------
+// The overlay has described the daemon↔relay link since P2-199 but offered no
+// action, while the Settings relay card has carried "Reconnect now" since
+// P2-340. The warning now carries the SAME action inline (P3-367/P2-337
+// pattern): rendered ONLY when App hands the handler (the bridge exposes
+// app:redialRelay) AND the live state is dialing, refused or incompatible —
+// the phone and the pure browser never pass the handler, so the action never
+// renders there. Reuses the same IPC and the same sanitized closed set; no
+// new IPC, route or timer.
+{
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  const settingsSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"),
+    "utf8",
+  );
+  const cssSource = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+
+  // 1. the overlay takes the handler as an OPTIONAL prop (P3-443) and derives
+  //    the actionable predicate from exactly the trio of states — nothing
+  //    outside it renders the action.
+  check(
+    "P2-343: PairingOverlay takes the redial handler as an OPTIONAL prop (P3-443)",
+    overlaySrc.includes("onRedialRelay?: () => Promise<string>;") &&
+      overlaySrc.includes("onOpenSettings, onRedialRelay }: Props"),
+  );
+  const trioAt = overlaySrc.indexOf("const relayRedialable =");
+  const trioSlice = trioAt > -1 ? overlaySrc.slice(trioAt, trioAt + 260) : "";
+  check(
+    "P2-343: the actionable predicate is exactly the trio — dialing, refused, incompatible",
+    trioAt > -1 &&
+      trioSlice.includes('relayLink.state === "dialing" || relayLink.state === "refused" || relayLink.state === "incompatible"') &&
+      !trioSlice.includes('"connected"') &&
+      !trioSlice.includes('"local"') &&
+      !trioSlice.includes('"unknown"') &&
+      !trioSlice.includes('"misconfigured"'),
+  );
+
+  // 2. the action renders only under the handler AND state gates, carrying
+  //    the overlay's OWN copy-independent attribute (P3-421) — distinct from
+  //    the Settings card's data-relay-redial, which may be mounted in the
+  //    settings pane at the same time (no selector collision).
+  const relayLineAt = overlaySrc.indexOf("{relayLink && (");
+  const warnAt = overlaySrc.indexOf("pair-relaylink-warn", relayLineAt);
+  const actionGateAt = overlaySrc.indexOf("{onRedialRelay && relayRedialable && (", relayLineAt);
+  const actionSlice = actionGateAt > -1 ? overlaySrc.slice(actionGateAt, actionGateAt + 700) : "";
+  check(
+    "P2-343: the action renders ONLY when the handler exists and the state is in the trio",
+    relayLineAt > -1 &&
+      actionGateAt > relayLineAt &&
+      actionGateAt > warnAt &&
+      actionSlice.includes('data-pair-relay-redial') &&
+      actionSlice.includes("onClick={() => void redialNow()}") &&
+      !actionSlice.includes('relayLink.state === "connected"') &&
+      !actionSlice.includes('relayLink.state === "misconfigured"'),
+  );
+  check(
+    "P2-343: the overlay uses its OWN attribute — never the Settings card's data-relay-redial",
+    overlaySrc.includes("data-pair-relay-redial") && !overlaySrc.includes("data-relay-redial"),
+  );
+  check(
+    "P2-343: the action carries the spinner-while-waiting state and reuses the shared labels",
+    actionSlice.includes('className="reconnect-spin"') &&
+      actionSlice.includes("disabled={redialPending}") &&
+      actionSlice.includes("aria-busy={redialPending}") &&
+      actionSlice.includes('redialPending ? t("reconnectTrying") : t("reconnectNow")'),
+  );
+
+  // 3. the result is a terminal state tagged with the closed-set verdict and
+  //    rendered from the SAME phrase map the Settings card uses (exported
+  //    single source of truth) — unknown value degrades to the failure phrase.
+  const resultGateAt = overlaySrc.indexOf("{onRedialRelay && relayRedialable && redialResult !== null && (", actionGateAt);
+  const resultSlice = resultGateAt > -1 ? overlaySrc.slice(resultGateAt, resultGateAt + 400) : "";
+  check(
+    "P2-343: the result line renders only under the same gates and is tagged with the closed-set verdict",
+    resultGateAt > actionGateAt &&
+      resultSlice.includes("data-pair-relay-redial-result={redialResult}") &&
+      resultSlice.includes('REDIAL_RESULT_KEYS[redialResult] ?? "relayRedialFailed"'),
+  );
+  check(
+    "P2-343: the overlay imports the SAME phrase map from the Settings card (no phrase drift)",
+    overlaySrc.includes('import { REDIAL_RESULT_KEYS } from "./SettingsView";') &&
+      settingsSrc.includes("export const REDIAL_RESULT_KEYS: Record<string, string> = {"),
+  );
+  check(
+    "P2-343: the click mirrors the Settings card's contract — await the handler, rejection degrades to unavailable",
+    overlaySrc.includes("setRedialResult(await onRedialRelay());") &&
+      overlaySrc.includes('setRedialResult("unavailable")') &&
+      overlaySrc.includes("if (!onRedialRelay || redialPending) return;"),
+  );
+
+  // 4. App is the sole owner (P3-398): one handler hands the bridge method
+  //    straight to the overlay — absent on the phone and the pure browser
+  //    (no bridge), so the action never renders there. The Settings mounts
+  //    keep handing the same method (P2-340 pins still count them).
+  check(
+    "P2-343: App hands the bridge method to the overlay, bridge-optional (the phone stays without the action)",
+    (appSrc.match(/onRedialRelay=\{desktopBridge\(\)\?\.redialRelay\}/g) ?? []).length === 1 &&
+      (appSrc.match(/redialRelay=\{desktopBridge\(\)\?\.redialRelay\}/g) ?? []).length >= 2,
+  );
+
+  // 5. the action shares the quiet accent register of the P2-337 escape —
+  //    existing tokens only, no gradient, no glass, no new radius.
+  check(
+    "P2-343: the action is styled as a quiet accent text button (existing tokens)",
+    cssSource.includes(".pair-relaylink-redial") &&
+      cssSource.includes(".pair-relaylink-redial:hover") &&
+      cssSource.includes(".pair-relaylink-redial:focus-visible") &&
+      cssSource.includes(".pair-relaylink-redial-result"),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

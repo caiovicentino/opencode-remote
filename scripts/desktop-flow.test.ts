@@ -2394,6 +2394,46 @@ try {
           const rl2 = run("P2-199: 390 relay-link shot", ["shot", linkShot390, "390", "844"], 15_000, localEnv);
           if (rl2.ok) check("P2-199: relay-link 390 shot is a real PNG", pngSize(linkShot390)[0] === 390);
 
+          // --- P2-343: the relay-link warning gains the inline redial ---------
+          // The overlay's warn line has described the state since P2-199; the
+          // action now rides the SAME one-shot POST the Settings card and the
+          // wake path use (app:redialRelay → nudgeRelayRedial). In this
+          // hermetic boot the live state is dialing (the daemon dials the
+          // dead ws://127.0.0.1:1), one of the three states that render the
+          // action. Selected by the overlay's OWN copy-independent attribute
+          // (P3-421) — never by copy, and never the Settings card's
+          // data-relay-redial, which can be mounted in the settings pane at
+          // the same time. The click resolves to a terminal closed-set
+          // verdict rendered as one static phrase — spinner gone, button
+          // idle again.
+          const pairRedialUp = await waitProbe(
+            "P2-343: the overlay carries the redial action beside the warn line",
+            "(() => { const ov = document.querySelector('.pair-overlay'); const b = ov?.querySelector('[data-pair-relay-redial]'); const l = ov?.querySelector('.pair-relaylink'); return (ov ? 'ov' : 'no') + '|' + (b ? 'btn' : 'none') + '|' + (l ? l.className : 'none'); })()",
+            (v) => v.replace(/"/g, "").trim() === "ov|btn|pair-relaylink pair-relaylink-warn",
+            localEnv,
+            24,
+            500,
+          );
+          if (pairRedialUp) {
+            run("P2-343: click Reconnect now in the overlay (own attribute)", ["click", ".pair-overlay [data-pair-relay-redial]"], 15_000, localEnv);
+            const pairVerdict = await waitProbe(
+              "P2-343: the overlay redial lands a terminal closed-set verdict",
+              "(() => { const r = document.querySelector('.pair-overlay [data-pair-relay-redial-result]'); const b = document.querySelector('.pair-overlay [data-pair-relay-redial]'); return (r?.getAttribute('data-pair-relay-redial-result') ?? 'none') + '|' + (b?.disabled ? 'busy' : 'idle') + '|' + ((r?.textContent ?? '').length > 0); })()",
+              (v) => /^(redialing|throttled|already-dialing|not-needed|unavailable)\|idle\|true$/.test(v.replace(/"/g, "").trim()),
+              localEnv,
+              24,
+              500,
+            );
+            if (pairVerdict) {
+              const pairRedialShot1440 = join(shotsDir, "P2-343-pair-redial-1440.png");
+              const pr1 = run("P2-343: 1440x900 overlay redial shot", ["shot", pairRedialShot1440, "1440", "900"], 15_000, localEnv);
+              if (pr1.ok) check("P2-343: overlay redial 1440x900 shot is a real PNG", pngSize(pairRedialShot1440).join("x") === "1440x900");
+              const pairRedialShot390 = join(shotsDir, "P2-343-pair-redial-390.png");
+              const pr2 = run("P2-343: 390 overlay redial shot", ["shot", pairRedialShot390, "390", "844"], 15_000, localEnv);
+              if (pr2.ok) check("P2-343: overlay redial 390 shot is a real PNG", pngSize(pairRedialShot390)[0] === 390);
+            }
+          }
+
           run("P2-106: dismiss via the quiet link", ["click", ".pair-overlay-later"], 15_000, localEnv);
           await waitProbe(
             "P2-106: overlay dismissed",

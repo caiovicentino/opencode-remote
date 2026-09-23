@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { useT } from "../lib/i18n";
+// P2-343: the closed-set phrase map shared with the Settings relay card —
+// same-app import (no cross-app duplication, P2-338 does not apply), so the
+// overlay's terminal verdict IS the card's phrase by construction.
+import { REDIAL_RESULT_KEYS } from "./SettingsView";
 
 /** P2-189: step one of the pairing journey — the address the phone opens to
  * reach the app (additive field from the desktop shell's pairing state). */
@@ -62,6 +66,16 @@ interface Props {
    * sole owner of the action (P3-398): the handler dismisses the overlay,
    * opens the Settings pane and registers the one-shot relay focus request. */
   onOpenSettings?: () => void;
+  /** P2-343: optional inline "reconnect now" action beside the relay-link
+   * warning (same P3-367/P2-337 pattern) — rendered ONLY when the caller
+   * hands the handler AND the live state is dialing, refused or incompatible
+   * (the three states where a redial can help). App is the sole owner
+   * (P3-398) and hands the SAME bridge method the Settings relay card uses
+   * (P2-340, P3-443): absent on the phone and the pure browser, so the
+   * action never renders there. Resolves with the sanitized closed-set
+   * verdict ("redialing" | "throttled" | "already-dialing" | "not-needed" |
+   * "unavailable"). */
+  onRedialRelay?: () => Promise<string>;
 }
 
 /**
@@ -76,7 +90,7 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock, startup, onOpenSettings }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock, startup, onOpenSettings, onRedialRelay }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
@@ -99,6 +113,28 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
       setTimeout(() => setCopied(false), 2000);
     } catch {
       setCopied(false);
+    }
+  }
+  // P2-343: the relay-link warning's action — one click anticipates the
+  // daemon's relay backoff through the SAME one-shot POST the wake path and
+  // the Settings card use. The waiting state is the spinner; the result is
+  // ALWAYS terminal: one static phrase per closed-set verdict (an unknown
+  // value degrades to the failure phrase — fail-closed), never a spinner
+  // line. No new IPC, route or timer: the bridge call is the whole path.
+  const [redialPending, setRedialPending] = useState(false);
+  const [redialResult, setRedialResult] = useState<string | null>(null);
+  const relayRedialable =
+    relayLink != null &&
+    (relayLink.state === "dialing" || relayLink.state === "refused" || relayLink.state === "incompatible");
+  async function redialNow() {
+    if (!onRedialRelay || redialPending) return;
+    setRedialPending(true);
+    try {
+      setRedialResult(await onRedialRelay());
+    } catch {
+      setRedialResult("unavailable");
+    } finally {
+      setRedialPending(false);
     }
   }
   return (
@@ -217,21 +253,54 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
             same P2-112 vocabulary. The QR is NEVER hidden or dimmed when the
             link is down on purpose: the daemon↔relay link can come back up
             before the phone finishes pairing, and hiding the QR would kill
-            the journey mid-flight. */}
+            the journey mid-flight. P2-343: when the shell hands the redial
+            handler and the live state is one of the three states a redial
+            can help (dialing/refused/incompatible), a quiet accent action
+            sits inline beside the warning — the same labeled escape the
+            unavailable notice gained in P2-337. Selected by the overlay's
+            OWN copy-independent attribute (P3-421), never by copy, and
+            distinct from the Settings card's attribute (both panes can be
+            mounted at once). The phone and the pure browser never pass the
+            handler, so the action never renders there. */}
         {relayLink && (
-          <p
-            className={
-              relayLink.state === "connected" || relayLink.state === "local" || relayLink.state === "unknown"
-                ? "pair-relaylink"
-                : "pair-relaylink pair-relaylink-warn"
-            }
-          >
-            {relayLink.state === "connected"
-              ? t("pairRelayLinkOk")
-              : relayLink.state === "local"
-                ? t("pairRelayLinkLocal")
-                : relayLink.message}
-          </p>
+          <>
+            <p
+              className={
+                relayLink.state === "connected" || relayLink.state === "local" || relayLink.state === "unknown"
+                  ? "pair-relaylink"
+                  : "pair-relaylink pair-relaylink-warn"
+              }
+            >
+              {relayLink.state === "connected"
+                ? t("pairRelayLinkOk")
+                : relayLink.state === "local"
+                  ? t("pairRelayLinkLocal")
+                  : relayLink.message}
+              {onRedialRelay && relayRedialable && (
+                <button
+                  type="button"
+                  className="pair-relaylink-redial"
+                  data-pair-relay-redial
+                  onClick={() => void redialNow()}
+                  disabled={redialPending}
+                  aria-busy={redialPending}
+                >
+                  {redialPending && <span className="reconnect-spin" aria-hidden="true" />}
+                  {redialPending ? t("reconnectTrying") : t("reconnectNow")}
+                </button>
+              )}
+            </p>
+            {/* P2-343: the action always ends in a terminal verdict — one
+                static phrase per closed-set value (the SAME phrases the
+                Settings card renders, shared via REDIAL_RESULT_KEYS); an
+                unknown value or a rejected bridge call degrades to the
+                failure phrase. No token, URL or port ever appears. */}
+            {onRedialRelay && relayRedialable && redialResult !== null && (
+              <p className="pair-relaylink-redial-result" data-pair-relay-redial-result={redialResult}>
+                {t(REDIAL_RESULT_KEYS[redialResult] ?? "relayRedialFailed")}
+              </p>
+            )}
+          </>
         )}
 
         {/* P2-211: calm install-location line right below the relay-link line,

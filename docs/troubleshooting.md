@@ -406,7 +406,10 @@ that wait.
 
 Since P2-340 that human click has a surface: the Settings relay card renders
 a **Reconnect now** button under the live status line whenever the link is
-connecting/reconnecting, refused or incompatible. It reuses the exact same
+connecting/reconnecting, refused or incompatible — and, since P2-343, the
+pairing overlay's relay-link warning carries the same action beside the line,
+so whoever is looking at the QR can shorten the same wait without closing the
+dialog. It reuses the exact same
 wake POST (no timer, no new route, no poll), so the click behaves like a
 wake: the daemon's guard and the 10 s throttle protect the relay, a
 relay-asked backoff is always honored, and a protocol-mismatch floor (5

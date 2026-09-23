@@ -1337,6 +1337,11 @@ export default function App() {
         onOpenSettings={
           (phase === "paired" && !addingMachine) || gateShellUp ? () => openRelaySettings() : undefined
         }
+        // P2-343: the relay-link warning's inline redial — App is the sole
+        // owner (P3-398) and hands the SAME bridge method the Settings relay
+        // card uses (P2-340): absent on the phone and the pure browser (no
+        // bridge), so the action never renders there (P3-443).
+        onRedialRelay={desktopBridge()?.redialRelay}
         onDismiss={() => {
           setPairingDismissed(true);
           setPhonePairing(false);
