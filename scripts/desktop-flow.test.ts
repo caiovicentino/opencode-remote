@@ -761,7 +761,10 @@ try {
   run("P2-112: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000);
   // P3-366: the degraded journey's manual escape lands on the ceremony with
   // the desktop paste-first hierarchy intact — "Pair" is the primary button
-  // and the scan entry is the quiet option (P2-117's rule, locale-proof).
+  // (P2-117's rule, locale-proof). P3-427: with the local agent down the scan
+  // entry is GONE, not demoted — the QR it would scan is minted by the down
+  // agent (P3-412's derivation), so the offer cannot render here; the paste
+  // is now the section's only path, which keeps it the primary by definition.
   await waitProbe(
     "P3-366: ceremony rendered after the escape",
     "!!document.querySelector('.pair-submit')",
@@ -772,12 +775,31 @@ try {
   );
   const pasteFirst = run(
     "P3-366: paste-first classes on the escape path",
-    ["ipc", "[document.querySelector('.pair-submit')?.classList.contains('primary'), document.querySelector('.pair-scan-entry')?.classList.contains('primary')].join('|')"],
+    ["ipc", "[document.querySelector('.pair-submit')?.classList.contains('primary'), document.querySelector('.pair-scan-entry') === null].join('|')"],
     15_000,
   );
   if (pasteFirst.ok) {
-    check("P3-366: paste is primary, scan is secondary on the escape", /^true\|false$/.test(pasteFirst.stdout.replace(/"/g, "").trim()), pasteFirst.stdout);
+    check("P3-366: paste is primary, scan cannot exist with the agent down (P3-427)", /^true\|true$/.test(pasteFirst.stdout.replace(/"/g, "").trim()), pasteFirst.stdout);
   }
+  // P3-427: the agent-down verdict card replaces the daemon-assuming intro and
+  // carries the recovery IN the same block (P3-443) — the escape no longer
+  // lands on a screen whose only working action hides in the sticky header.
+  const agentCard = run(
+    "P3-427: agent-down verdict card renders on the escape",
+    ["ipc", "(() => { const card = document.querySelector('.pair-agent-down'); if (!card) return ''; const dot = !!card.querySelector('.degraded-dot.err'); const title = card.querySelector('h2')?.textContent ?? ''; const btn = !!card.querySelector('.pair-agent-down-reconnect'); return 'dot:' + dot + '|title:' + title + '|reconnect:' + btn; })()"],
+    15_000,
+  );
+  if (agentCard.ok) {
+    check(
+      "P3-427: card names the down agent and carries the reconnect action (en|pt)",
+      /dot:true/.test(agentCard.stdout) &&
+        /O agente local não está em execução|The local agent is not running/.test(agentCard.stdout) &&
+        /reconnect:true/.test(agentCard.stdout),
+      agentCard.stdout,
+    );
+  }
+  const introGone = run("P3-427: daemon-assuming intro gone with the agent down", ["ipc", "!!document.querySelector('.pair-intro')"], 15_000);
+  if (introGone.ok) check("P3-427: .pair-intro does not render in the agent-down state", /false/.test(introGone.stdout));
 
   // --- P3-440/P3-361: an empty "Parear" click is a validation event in the
   // REAL desktop too — the form answers with the inline alert hint (P3-361's
@@ -817,25 +839,29 @@ try {
   }
 
   // --- P2-106: benchmark pairing journey — 4 evidence states ------------------
-  // (1) two titled sections on the ceremony screen, (2) scanner route,
+  // (1) titled sections on the ceremony screen, (2) scanner route,
   // (3) styled invalid-code error with the inline format helper, and (4) the
   // QR overlay with the demoted "pair later" link (local-boot beat below).
-  // P3-334: the host section leads — pairing a phone is the primary story on
-  // the desktop — and the client ceremony follows as the secondary option.
-  // P3-435: the caps label names the direction ("On this computer"), the card
-  // below carries the action — no repeated "pair a phone" 40px apart.
+  // P3-334: the host section leads on the desktop when it CAN render — the
+  // source order is pinned statically (unit.test.ts reads PairingView).
+  // P3-427: on THIS boot the local agent is down, so the host section is
+  // suppressed here (its QR is minted by the down agent — P3-412's same
+  // verdict) and only the client ceremony section renders; the host-first
+  // hierarchy returns live on the add-machine ceremony (the scan boots
+  // below, where a second machine's QR genuinely exists).
   const sectionTitles = run("P3-334: section order host → client", ["ipc", "[...document.querySelectorAll('.pair-section-title')].map((el) => el.textContent).join('|')"], 15_000);
   if (sectionTitles.ok) {
     const titles = sectionTitles.stdout.replace(/"/g, "").trim();
     check(
-      "P3-334: host section first, client ceremony second (en|pt)",
-      titles === "On this computer|Connect to another machine" ||
-        titles === "Neste computador|Conectar a outra máquina",
+      "P3-427: agent-down ceremony renders only the client section (en|pt)",
+      titles === "Connect to another machine" || titles === "Conectar a outra máquina",
       sectionTitles.stdout,
     );
   }
   const sectionCount = run("P2-106: titled section count", ["ipc", "String(document.querySelectorAll('.pair-section').length)"], 15_000);
-  if (sectionCount.ok) check("P2-106: connect + host sections both render", sectionCount.stdout.replace(/"/g, "").trim() === "2", sectionCount.stdout);
+  if (sectionCount.ok) check("P3-427: host section suppressed while the agent is down (1 section)", sectionCount.stdout.replace(/"/g, "").trim() === "1", sectionCount.stdout);
+  const hostEntryGone = run("P3-427: host entry gone with the agent down", ["ipc", "!!document.querySelector('.pair-remote-entry')"], 15_000);
+  if (hostEntryGone.ok) check("P3-427: .pair-remote-entry does not render in the agent-down state", /false/.test(hostEntryGone.stdout));
   const shotSections1440 = join(shotsDir, "P2-106-pairing-sections.png");
   const shotSections390 = join(shotsDir, "P2-106-pairing-sections-390.png");
   const sec1 = run("P2-106: 1440x900 sections shot", ["shot", shotSections1440, "1440", "900"], 15_000);
@@ -889,32 +915,17 @@ try {
     );
   }
 
-  // (2) scanner route: open it, prove the screen swapped, come back. The
-  // hermetic shell has no camera — the scanner's own error fallback is a
-  // valid render of this state. P2-117: paste-first on the desktop made the
-  // section's primary button the paste form, so target the scan entry
-  // explicitly (same class on both orderings).
-  run("P2-106: open the QR scanner", ["click", ".pair-scan-entry"], 15_000);
-  await waitProbe(
-    "P2-106: scanner screen rendered",
-    "document.querySelector('.screen header h1')?.textContent ?? ''",
-    (v) => /Scan pairing code|Escanear código de pareamento/.test(v),
-    cliEnv,
-    10,
-    500,
-  );
-  const shotScanner = join(shotsDir, "P2-106-pairing-scanner.png");
-  const sc1 = run("P2-106: 1440x900 scanner shot", ["shot", shotScanner, "1440", "900"], 15_000);
-  if (sc1.ok) check("P2-106: scanner 1440x900 shot is a real PNG", pngSize(shotScanner).join("x") === "1440x900");
-  run("P2-106: back from the scanner", ["click", ".screen header button"], 15_000);
-  await waitProbe(
-    "P2-106: back on the ceremony screen",
-    "!!document.querySelector('.pair-submit')",
-    (v) => /true/.test(v),
-    cliEnv,
-    10,
-    500,
-  );
+  // (2) scanner route: P3-427 moved it off this surface — with the local
+  // agent down the scan entry cannot exist here (the QR it would scan is
+  // minted by that down agent), so the route below is the new pin: the entry
+  // is ABSENT in this state and the invalid-code error beat that follows
+  // runs against the paste form (the ceremony's only path now). The scanner
+  // states themselves (unavailable, preview, NO SIGNAL, paste CTA) keep
+  // their dedicated live coverage in the reworked add-machine boots below.
+  const scanAbsent = run("P3-427: scan entry absent with the agent down", ["ipc", "!!document.querySelector('.pair-scan-entry')"], 15_000);
+  if (scanAbsent.ok) check("P3-427: .pair-scan-entry does not render in the agent-down state", /false/.test(scanAbsent.stdout));
+  const orDividerGone = run("P3-427: the lone 'or scan' divider dies with its branch", ["ipc", "[document.querySelector('.pair-or') === null, document.querySelector('.pair-code') !== null].join('|')"], 15_000);
+  if (orDividerGone.ok) check("P3-427: no orphan divider, paste form intact (en|pt)", /^true\|true$/.test(orDividerGone.stdout.replace(/"/g, "").trim()), orDividerGone.stdout);
 
   run("type invalid pairing code", ["type", "textarea", "opencode-remote://not-a-valid-code"], 15_000);
   // P2-049: the pairing screen copy moved into the i18n dictionary — on a
@@ -1162,20 +1173,20 @@ try {
   // Reviewer gap (round 1): the new i18n copy must be exercised here, not only
   // in the local/paired phase — a fresh instance with no reachable daemon is
   // where the updated intro and the explicit remote-pairing entry show first.
-  const intro = run("P1-070: updated pairIntro rendered", ["ipc", "document.querySelector('.pair-intro')?.textContent ?? ''"], 15_000);
-  if (intro.ok) {
+  // P3-427 refined the state: with the agent down the manual ceremony no
+  // longer renders the daemon-assuming intro nor the remote-pairing entry —
+  // both promise a QR the down agent would mint. Their live copy pins move to
+  // the add-machine ceremony below (a live daemon + a real second-machine
+  // story); this boot still exercises the FIRST-CONTACT surface and now pins
+  // the honest verdict that replaced them.
+  const introGoneP1070 = run("P1-070: pairIntro absent while the agent is down", ["ipc", "!!document.querySelector('.pair-intro')"], 15_000);
+  if (introGoneP1070.ok) check("P1-070: the local-first intro yields to the agent-down verdict (P3-427)", /false/.test(introGoneP1070.stdout));
+  const agentCopy = run("P3-427: agent-down verdict copy is the state's copy", ["ipc", "[document.querySelector('.pair-agent-down h2')?.textContent ?? '', !!document.querySelector('.pair-intro'), !!document.querySelector('.pair-remote-entry')].join('|')"], 15_000);
+  if (agentCopy.ok) {
     check(
-      "P1-070: pairIntro is the new local-first copy (en|pt)",
-      /pairs with the daemon on this machine automatically|se conecta sozinho ao daemon desta máquina/.test(intro.stdout),
-      intro.stdout,
-    );
-  }
-  const remoteEntry = run("P1-070: .pair-remote-entry present", ["ipc", "document.querySelector('.pair-remote-entry')?.textContent ?? ''"], 15_000);
-  if (remoteEntry.ok) {
-    check(
-      "P1-070: pairRemoteTitle copy rendered on the unpaired screen",
-      /Pair a phone \(remote device\)|Parear um celular \(dispositivo remoto\)/.test(remoteEntry.stdout),
-      remoteEntry.stdout,
+      "P3-427: the agent-down title renders, intro and host entry stay absent (en|pt)",
+      /O agente local não está em execução|The local agent is not running/.test(agentCopy.stdout) && /false\|false/.test(agentCopy.stdout),
+      agentCopy.stdout,
     );
   }
 
@@ -1725,23 +1736,107 @@ try {
   const blockedShot1440 = join(shotsDir, "P2-319-scan-1440.png");
   const blockedShot390 = join(shotsDir, "P2-319-scan-390.png");
   const scannerState = "document.querySelector('.qr-scanner')?.dataset.state ?? ''";
+  // P3-427: the scanner's live states can no longer be reached from the
+  // first-boot manual ceremony — with the local agent down that surface stops
+  // offering the scan path (the QR it would scan is minted by the daemon that
+  // is out). Every hermetic `open` boots FORCE_DOWN, so both scanner boots
+  // now run a REAL hermetic local daemon (the P1-070 machinery), let the shell
+  // pair, and reach the ceremony through the add-machine flow — the surface
+  // where a second machine's QR genuinely exists. The scanner's own beats are
+  // byte-identical; only the approach path changed.
+  async function bootLocalDaemon(home: string): Promise<{ stateFile: string; port: number; kill: (signal?: NodeJS.Signals) => void }> {
+    const stateFile = join(home, ".opencode-remote", "daemon.json");
+    const port = await new Promise<number>((resolve, reject) => {
+      const srv = createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const { port } = srv.address() as AddressInfo;
+        srv.close(() => resolve(port));
+      });
+      srv.on("error", reject);
+    });
+    const daemon = spawn(daemonSpawn().command, daemonSpawn().args, {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HOME: home,
+        OCR_METRICS_PORT: String(port),
+        RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
+        OPENCODE_URL: "http://127.0.0.1:1",
+        OCR_LOG_LEVEL: "error",
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+      detached: true, // own process group — the kill below hits tsx's child too
+    });
+    const kill = (signal: NodeJS.Signals = "SIGKILL"): void => {
+      if (!daemon.pid) return;
+      try {
+        process.kill(-daemon.pid, signal);
+      } catch {
+        /* already gone */
+      }
+    };
+    process.on("exit", () => kill("SIGKILL"));
+    await waitForDaemonStateFile(stateFile, port);
+    return { stateFile, port, kill };
+  }
+  async function openAddMachineCeremony(env: Record<string, string | undefined>, label: string): Promise<boolean> {
+    // P2-148: fresh userData boots into the first-run welcome — skip it; the
+    // local auto-pair completes in the background either way.
+    run(`${label}: skip the first-run welcome`, ["click", ".welcome-skip"], 15_000, env);
+    await waitProbe(
+      `${label}: local auto-pair landed`,
+      "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+      (v) => v.includes("paired"),
+      env,
+      24,
+      500,
+    );
+    // The add-machine flow is the only remaining surface that renders the full
+    // client ceremony with a live daemon: the paired sidebar's account footer
+    // opens the machine picker, whose primary action opens PairingView.
+    run(`${label}: open the machine picker from the footer`, ["click", ".desk-account-btn"], 15_000, env);
+    const pickerUp = await waitProbe(`${label}: machine picker rendered`, "!!document.querySelector('.machine-picker')", (v) => /true/.test(v), env, 12, 500);
+    if (!pickerUp) return false;
+    run(`${label}: request a new machine`, ["click", ".machine-picker button.primary"], 15_000, env);
+    return await waitProbe(`${label}: add-machine ceremony rendered`, "!!document.querySelector('.pair-submit')", (v) => /true/.test(v), env, 12, 500);
+  }
   {
+    const scanHome = mkdtempSync(join(tmpdir(), "ocr-flow-scan-"));
+    const scanDaemon = await bootLocalDaemon(scanHome);
     const scanBlockEnv = {
       ...process.env,
       OCR_DESKTOP_SESSION: `${session}-scan`,
       OCR_DESKTOP_CAMERA_BLOCK: "1",
+      OCR_DESKTOP_LOCAL_STATE: scanDaemon.stateFile,
+      OCR_DAEMON_METRICS_PORT: String(scanDaemon.port),
     };
     let scanBooted = false;
     try {
       const open = run("scan: open (camera-blocked launch)", ["open"], 45_000, scanBlockEnv);
       scanBooted = open.ok;
       if (open.ok) {
-        // P2-148: fresh userData boots into the first-run welcome — skip it.
-        run("scan: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, scanBlockEnv);
-        // P2-112 integration: a hermetic fresh boot lands on the DegradedView
-        // first-contact card — the pairing form (and with it the scanner
-        // option) lives one deliberate click away.
-        run("scan: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000, scanBlockEnv);
+        const ceremonyUp = await openAddMachineCeremony(scanBlockEnv, "scan");
+        if (!ceremonyUp) check("scan: add-machine ceremony rendered", false, "machine picker or ceremony did not open");
+        // P1-070: the local-first intro and the explicit remote-pairing entry
+        // keep their live copy pins here — this is now the gate's only
+        // ceremony surface with a live daemon (the first-boot agent-down state
+        // suppresses both, P3-427).
+        const introLive = run("P1-070: pairIntro renders on the add-machine ceremony", ["ipc", "document.querySelector('.pair-intro')?.textContent ?? ''"], 15_000, scanBlockEnv);
+        if (introLive.ok) {
+          check(
+            "P1-070: pairIntro is the new local-first copy (en|pt)",
+            /pairs with the daemon on this machine automatically|se conecta sozinho ao daemon desta máquina/.test(introLive.stdout),
+            introLive.stdout,
+          );
+        }
+        const remoteEntry = run("P1-070: .pair-remote-entry present", ["ipc", "document.querySelector('.pair-remote-entry')?.textContent ?? ''"], 15_000, scanBlockEnv);
+        if (remoteEntry.ok) {
+          check(
+            "P1-070: pairRemoteTitle copy rendered on the add-machine ceremony",
+            /Pair a phone \(remote device\)|Parear um celular \(dispositivo remoto\)/.test(remoteEntry.stdout),
+            remoteEntry.stdout,
+          );
+        }
         // Desktop-first ordering: the paste form leads (P2-117 item 4), the
         // scanner is the option — a locale-independent class hooks the gate.
         run("scan: open the scanner (desktop option)", ["click", ".pair-scan-entry"], 15_000, scanBlockEnv);
@@ -1771,8 +1866,12 @@ try {
       }
     } finally {
       if (scanBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: scanBlockEnv });
+      scanDaemon.kill("SIGKILL");
+      rmSync(scanHome, { recursive: true, force: true });
     }
 
+    const scanHome2 = mkdtempSync(join(tmpdir(), "ocr-flow-scan2-"));
+    const scanDaemon2 = await bootLocalDaemon(scanHome2);
     const scanFakeEnv = {
       ...process.env,
       // P1-089 lesson: the keeper's unix socket lives at
@@ -1780,17 +1879,18 @@ try {
       // bind() paths at 104 chars — keep the session suffix SHORT.
       OCR_DESKTOP_SESSION: `${session}-scan2`,
       OCR_DESKTOP_MEDIA_FAKE: "1",
+      OCR_DESKTOP_LOCAL_STATE: scanDaemon2.stateFile,
+      OCR_DAEMON_METRICS_PORT: String(scanDaemon2.port),
     };
     let scanFakeBooted = false;
     try {
       const open = run("scan-live: open (fake-camera launch)", ["open"], 45_000, scanFakeEnv);
       scanFakeBooted = open.ok;
       if (open.ok) {
-        // P2-148: fresh userData boots into the first-run welcome — skip it.
-        run("scan-live: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, scanFakeEnv);
-        // P2-112 integration (same as the camera-blocked boot): the fresh
-        // hermetic instance shows the first-contact card first.
-        run("scan-live: manual pairing escape hatch", ["click", ".degraded-manual"], 15_000, scanFakeEnv);
+        // P3-427: same approach path as the camera-blocked boot — the paired
+        // shell's add-machine flow, where the scan offer genuinely exists.
+        const ceremonyUp2 = await openAddMachineCeremony(scanFakeEnv, "scan-live");
+        if (!ceremonyUp2) check("scan-live: add-machine ceremony rendered", false, "machine picker or ceremony did not open");
         run("scan-live: open the scanner", ["click", ".pair-scan-entry"], 15_000, scanFakeEnv);
         await waitProbe("scan-live: preview state reached", scannerState, (v) => v.includes("preview"), scanFakeEnv);
         const s1 = run("scan-live: 1440x900 evidence shot", ["shot", scanShot1440, "1440", "900"], 15_000, scanFakeEnv);
@@ -1839,6 +1939,8 @@ try {
       }
     } finally {
       if (scanFakeBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: scanFakeEnv });
+      scanDaemon2.kill("SIGKILL");
+      rmSync(scanHome2, { recursive: true, force: true });
     }
   }
 

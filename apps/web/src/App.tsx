@@ -1705,6 +1705,16 @@ export default function App() {
               // "pair manually", wizard escape) land here too — paste must lead
               // on desktop exactly like the "add machine" path (P2-117).
               preferPaste={!!desktopBridge()}
+              // P3-427: the manual ceremony reached from the wizard's agent-down
+              // QR error (or the degraded card's escape) carries the same
+              // settled kind verdict the gate card renders (P3-412) — the QR
+              // its scan/host entries promise is minted by the down local
+              // agent, so those entries cannot render here, and the verdict
+              // brings its own reconnect (P3-443). Deliberately NOT passed at
+              // the add-machine call site: adding a machine means a second
+              // machine with a live daemon exists — its QR is real.
+              agentDown={kind !== "none"}
+              reconnect={reconnectBtn}
               // EVAL4-F1b: stored pairing + unreachable machine → 20 s countdown
               // into the same onRetry (auto-pair), never a dead pairing wall
               autoRetryMs={phase === "error" && !!loadState() && (errorKind === "timeout" || errorKind === "closed") ? 20_000 : undefined}

@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import QrScanner, { type CameraAccessVerdict } from "./QrScanner";
 import PairRetry from "./PairRetry";
 import PaneMap from "./PaneMap";
+import ReconnectButton from "./ReconnectButton";
 import { parsePairingUri } from "../lib/client";
 import { useT } from "../lib/i18n";
 
@@ -35,9 +36,24 @@ interface Props {
    * so the map below the ceremony drops the four padlocks and reads "before
    * pairing". The phone passes nothing and keeps the fully locked map. */
   offlinePanes?: boolean;
+  /** P3-427: the settled non-healthy verdict of this machine's local agent —
+   * the SAME kind/busy signal the gate card renders (P3-412 lesson), passed
+   * only where the user escaped INTO this ceremony with the agent already
+   * known down (wizard's agent-down QR error, degraded card's escape). The
+   * QR both entries would promise is minted by that down agent, so the scan
+   * entry, the host entry and the daemon-assuming intro cannot render here;
+   * the paste path stays (it is the only one that can work — with a second
+   * machine already running the app). Absent everywhere else: the full
+   * ceremony renders byte-for-byte as before (P3-422: one branch per state,
+   * never a deletion). */
+  agentDown?: boolean;
+  /** P3-443: the shell restart bridge (app:reconnectDaemon) — when present the
+   * agent-down verdict carries the action that fixes its own cause in the
+   * same block, instead of leaving recovery behind the header's quiet Voltar. */
+  reconnect?: () => Promise<boolean>;
 }
 
-export default function PairingView({ phase, error, hint, autoRetryMs, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack, offlinePanes }: Props) {
+export default function PairingView({ phase, error, hint, autoRetryMs, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack, offlinePanes, agentDown, reconnect }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -182,7 +198,17 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
     </button>
   );
 
-  const hostSection = onPairRemote && (
+  // P3-334: on the desktop the host section leads — pairing a phone is the
+  // primary story on this machine, so the client ceremony reads as the
+  // secondary option. The phone never renders the host section (no
+  // onPairRemote), so its scan/paste flow is untouched.
+  // P3-427: with the local agent down the entry is suppressed too — the QR
+  // it promises is minted by that down agent (the wizard's own error block
+  // just said so), and clicking it while the daemon is out is a silent
+  // no-op: no state changes, no QR ever mints, the overlay never opens.
+  // The entry returns the moment the agent answers (agentDown recomputes
+  // from the same kind signal the gate card renders).
+  const hostSection = onPairRemote && !agentDown && (
     <section className="pair-section">
       <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
       <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
@@ -265,8 +291,31 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
       <div className="pair-columns">
         <div className="pair-main">
           {/* EVAL4-F1: the phone (no host section, scan-first) must not read the
-              desktop's "pairs with the daemon on this machine" promise. */}
-          <p className="muted pair-intro">{!preferPaste && !onPairRemote ? t("pairIntroPhone") : t("pairIntro")}</p>
+              desktop's "pairs with the daemon on this machine" promise.
+              P3-427: with the local agent down the intro is dropped entirely —
+              it promised the daemon's QR and the auto-connect; the agent-down
+              card below IS the honest framing now (same vocabulary the gate
+              card renders), so the screen never repeats itself. */}
+          {!agentDown && (
+            <p className="muted pair-intro">{!preferPaste && !onPairRemote ? t("pairIntroPhone") : t("pairIntro")}</p>
+          )}
+          {agentDown && phase !== "error" && (
+            <div className="degraded-status pair-agent-down" role="status" aria-live="polite">
+              {/* P3-412: the settled non-healthy verdict the gate card renders —
+                  same dot language, so the verdict can never contradict the
+                  card one screen back. */}
+              <span className="degraded-dot err" aria-hidden="true" />
+              <div>
+                <h2>{t("pairAgentDownTitle")}</h2>
+                <p className="muted">{t("pairAgentDownHint")}</p>
+                {/* P3-443: the recovery that actually recovers lives in the same
+                    block as the verdict — the header's quiet Voltar (to the gate
+                    card's own reconnect) stops being the only way out. The CTA
+                    wears the shared accent primary (P3-450: one dialect). */}
+                {reconnect && <ReconnectButton className="primary pair-agent-down-reconnect" reconnect={reconnect} />}
+              </div>
+            </div>
+          )}
           {autoState && (
             <div className="pair-auto" role="status" aria-live="polite">
               <span className="pair-auto-dot" aria-hidden="true" />
@@ -287,16 +336,27 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           {ceremony && (
             <section className="pair-section">
               <h2 className="pair-section-title">{t("pairConnectTitle")}</h2>
+              {/* P3-427: with the local agent down the scan entry is gone from
+                  this section — the QR a camera would scan is minted by the
+                  down agent, so the offer can never be honored on this first
+                  boot. The paste stays: it is the only path that can work (a
+                  code from another machine already running the app). The
+                  divider dies with its only branch — a lone "or" under a
+                  single option is nonsense. */}
               {preferPaste ? (
                 <>
                   {pasteForm}
-                  <p className="muted pair-or">{t("orScan")}</p>
-                  {scanButton}
+                  {!agentDown && (
+                    <>
+                      <p className="muted pair-or">{t("orScan")}</p>
+                      {scanButton}
+                    </>
+                  )}
                 </>
               ) : (
                 <>
-                  {scanButton}
-                  <p className="muted pair-or">{t("orPaste")}</p>
+                  {!agentDown && scanButton}
+                  {!agentDown && <p className="muted pair-or">{t("orPaste")}</p>}
                   {pasteForm}
                 </>
               )}

@@ -505,6 +505,13 @@ export const dict = {
     "scanErr_generic": "Camera unavailable.",
     orScan: "— or scan the QR —",
     pairBtn: "Pair",
+    // P3-427: the agent-down manual ceremony (wizard escape, degraded escape) —
+    // the verdict card that replaces the daemon-assuming intro and carries the
+    // recovery in the same block (P3-443). The title repeats the exact words
+    // the wizard's QR error used one click earlier — continuity, not a new fact.
+    pairAgentDownTitle: "The local agent is not running.",
+    pairAgentDownHint:
+      "Nothing can pair until it is back — reconnect the daemon, or paste the code of another machine already running the app.",
     // P3-331: quiet return link from the manual pairing escape hatch.
     pairBack: "Back",
     connecting: "Connecting…",
@@ -1383,6 +1390,13 @@ export const dict = {
     "scanErr_generic": "Câmera indisponível.",
     orScan: "— ou escaneie o QR —",
     pairBtn: "Parear",
+    // P3-427: o veredito do agente local fora do ar no ceremony manual — o
+    // card que substitui a intro que prometia o QR do daemon e carrega a
+    // recuperação no mesmo bloco (P3-443). O título repete as palavras exatas
+    // do erro do QR no wizard, um clique atrás — continuidade, não fato novo.
+    pairAgentDownTitle: "O agente local não está em execução.",
+    pairAgentDownHint:
+      "Nada pode parear até ele voltar — reconecte o daemon, ou cole o código de outra máquina que já esteja rodando o app.",
     // P3-331: link calmo de volta a partir do pareamento manual.
     pairBack: "Voltar",
     connecting: "Conectando…",

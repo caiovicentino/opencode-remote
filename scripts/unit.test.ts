@@ -13423,6 +13423,82 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-427: the agent-down manual ceremony cannot offer a QR that cannot exist ---
+// The wizard's own agent-down QR error (and the degraded card's escape) drops
+// the user on the manual paste ceremony, which still offered "Escanear QR
+// code" and an intro that promises "the daemon's QR" — but the QR is minted
+// by the down local agent, so every path the screen offered was unusable on a
+// daemon-less first boot while the only working recovery (the gate card's
+// reconnect) hid behind the header's quiet Voltar. The ceremony now derives
+// the doomed state from the SAME kind signal the gate card renders (P3-412),
+// drops the scan entry, the host entry and the intro in that state, and
+// carries the reconnect action in the verdict block (P3-443). The add-machine
+// call site deliberately keeps the full ceremony: adding a machine means a
+// second machine with a live daemon exists — its QR is real.
+{
+  const view = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
+  const app = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+  check(
+    "P3-427: PairingView accepts the agent-down verdict and the restart bridge",
+    view.includes("agentDown?: boolean") && view.includes("reconnect?: () => Promise<boolean>"),
+  );
+  check(
+    "P3-427: the scan entry is suppressed while the agent is down (both orderings)",
+    view.includes("{!agentDown && scanButton}") &&
+      view.includes('{!agentDown && <p className="muted pair-or">{t("orPaste")}</p>}') &&
+      /\{!agentDown && \(\s*<>/.test(view),
+  );
+  check(
+    "P3-427: the host entry is suppressed while the agent is down",
+    view.includes("const hostSection = onPairRemote && !agentDown && ("),
+  );
+  check(
+    "P3-427: the daemon-assuming intro yields to the agent-down verdict",
+    view.includes("{!agentDown && (\n            <p className=\"muted pair-intro\">"),
+  );
+  check(
+    "P3-427: the verdict card reuses the degraded status vocabulary and carries the reconnect",
+    view.includes('<div className="degraded-status pair-agent-down" role="status" aria-live="polite">') &&
+      view.includes('<span className="degraded-dot err" aria-hidden="true" />') &&
+      /t\("pairAgentDownTitle"\)/.test(view) &&
+      /t\("pairAgentDownHint"\)/.test(view) &&
+      view.includes('<ReconnectButton className="primary pair-agent-down-reconnect" reconnect={reconnect} />'),
+  );
+  check(
+    "P3-427: the verdict card yields to the App-level error block (one status per phase)",
+    /agentDown && phase !== "error" && \(/.test(view),
+  );
+  // App side: only the pairManual call site carries the verdict — the
+  // add-machine ceremony must keep the full rendering (P3-422 lesson).
+  const addingSite = app.indexOf('phase="unpaired"'); // addingMachine's only call site
+  const manualSite = app.indexOf("agentDown={kind !== \"none\"}");
+  const addingEnd = app.indexOf("/>", addingSite);
+  check(
+    "P3-427: only the pairManual call site passes the agent-down verdict",
+    addingSite !== -1 &&
+      manualSite !== -1 &&
+      addingSite < manualSite &&
+      addingEnd !== -1 &&
+      addingEnd < manualSite &&
+      app.slice(addingSite, addingEnd).includes("localMode={false}") &&
+      !app.slice(addingSite, addingEnd).includes("agentDown="),
+  );
+  check(
+    "P3-427: the verdict rides the same kind signal the gate card renders",
+    app.includes("agentDown={kind !== \"none\"}") && app.includes("const kind = degradedKind(pairingState, everSeen);"),
+  );
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    check(`p3-427 i18n ${lang}: agent-down title + hint present`, !!d.pairAgentDownTitle && !!d.pairAgentDownHint);
+    check(`p3-427 i18n ${lang}: title names the local agent, never the QR`, /agent/i.test(d.pairAgentDownTitle) && !/QR/i.test(d.pairAgentDownTitle));
+  }
+  check(
+    "P3-427: the recovery button keeps the disabled feedback grammar",
+    css.includes(".pair-agent-down-reconnect:disabled") && css.includes(".pair-agent-down-reconnect {"),
+  );
+}
+
 
 // --- P2-028 per-task token costs from opencode.db -----------------------------
 {
