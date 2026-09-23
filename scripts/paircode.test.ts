@@ -32,7 +32,9 @@ check("pairing textarea renders rows=2", /className="pair-code"\s*\n\s*rows=\{2\
 // P3-431: a rejected submit flags the field itself — aria-invalid follows
 // codeError, the field carries the danger border and the global accent
 // focus-visible ring reads danger while the inline error block stands.
-check("invalid code sets aria-invalid on the paste box", /aria-invalid=\{codeError \? true : undefined\}/.test(view));
+// P3-440: the empty submit joins the same state (codeError || emptyHint), so
+// both failing paths wear the flag instead of only the garbled-code one.
+check("invalid code sets aria-invalid on the paste box", /aria-invalid=\{codeError \|\| emptyHint \? true : undefined\}/.test(view));
 const invalidRule = css.match(/\.pair-code\[aria-invalid="true"\][^{]*\{[^}]*\}/);
 check("index.css styles the invalid paste box with the danger border", !!invalidRule && /border-color:\s*var\(--danger\)/.test(invalidRule[0]));
 const ringRule = css.match(/\.pair-code\[aria-invalid="true"\]:focus-visible\s*\{[^}]*\}/);

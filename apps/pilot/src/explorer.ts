@@ -285,6 +285,10 @@ export async function commitAndPushFableFindings(
  * injects a no-op save so the production state.json is never touched. */
 export interface ExplorerIo {
   save?: (st: PilotState) => void;
+  /** P3-052 hardening: the pre-journey bundle rebuild. The proof driver
+   * injects a recorder (the scratch already carries freshly copied dists);
+   * production defaults to rebuildNightlyBundles. Absent = default build. */
+  rebuild?: (ws: string) => { ok: boolean; output: string };
 }
 
 /**
@@ -301,6 +305,42 @@ export function claimExplorerRun(state: PilotState, today: string, save: (st: Pi
   return true;
 }
 
+/** P3-052 hardening: the workspace bundles the nightly journey drives. The dist is
+ * gitignored build output that survives every `git clean -qfd` and workspace
+ * sync, so a slot workspace can carry a bundle far older than its checkout —
+ * the 2026-09-22 explorer then filed the pairing ceremony's empty/invalid
+ * submit silence as a fresh finding even though P3-361/P3-410 had already
+ * fixed it, and a builder round burned on dead code. The runner now rebuilds
+ * the bundles before every journey: seconds of build against a 25-minute
+ * agent review of a binary nobody merged. */
+export const EXPLORER_BUNDLE_BUILD_CMD = "npm run build --workspace @ocr/web && npm run build --workspace @ocr/desktop";
+
+/**
+ * P3-052 hardening: rebuild the workspace's web + desktop bundles for tonight's
+ * journey. Injectable runner keeps the decision unit-testable; the production
+ * default streams through the shared exec (allowFail — the caller decides the
+ * fail-closed policy). One retry covers the flaky-step precedent (P1-101
+ * gate-flaky): a transient toolchain hiccup must not burn the day's only run.
+ * Review fix: exec is spawnSync — it blocks the loop for minutes, so
+ * the watchdog interval cannot fire mid-build but its queued callback runs the
+ * instant the loop unblocks and reads a stale heartbeat (exit 1 → KeepAlive
+ * restarts → the already-stamped explorerLast silently skips the day's run).
+ * Feed the heartbeat on BOTH sides of the build, exactly like the deploy
+ * soak's live-invariant exec (deploy.ts). Injectable touch keeps the battery
+ * hermetic.
+ */
+export function rebuildNightlyBundles(
+  ws: string,
+  run: (cmd: string) => { ok: boolean; output: string } = (cmd) => exec(cmd, { cwd: ws, timeoutMin: 10, allowFail: true }),
+  touch: () => void = touchHeartbeat,
+): { ok: boolean; output: string } {
+  touch(); // before: the exec below blocks the loop for minutes
+  let last = run(EXPLORER_BUNDLE_BUILD_CMD);
+  if (!last.ok) last = run(EXPLORER_BUNDLE_BUILD_CMD);
+  touch(); // after: the queued watchdog callback fires as soon as the loop unblocks
+  return last;
+}
+
 /**
  * One nightly run. Once-per-day guarded via state, budget-capped, and
  * non-blocking: any error is logged, never rethrown. P2-105: after the
@@ -310,6 +350,20 @@ export function claimExplorerRun(state: PilotState, today: string, save: (st: Pi
 export async function runExplorer(cfg: PilotConfig, state: PilotState, io: ExplorerIo = {}): Promise<void> {
   const today = nowLocalISO().slice(0, 10);
   if (!claimExplorerRun(state, today, io.save ?? saveState)) return;
+  // P3-052 hardening: the journey reviews what origin/main actually merged —
+  // never a bundle outliving its checkout. Fail-closed: a build that will not
+  // land skips the agent instead of letting it review dead code (and stamping
+  // the claim FIRST keeps the once-per-day guard from retry-building every
+  // cycle).
+  const built = (io.rebuild ?? rebuildNightlyBundles)(cfg.workspace);
+  if (!built.ok) {
+    emit("phase", { task: "explorer", phase: "failed", ok: false, detail: "bundle rebuild failed — stale-bundle review prevented" });
+    log("warn", "nightly explorer skipped — workspace bundle rebuild failed (a stale dist must never be reviewed)", {
+      tail: built.output.slice(-300),
+    });
+    return;
+  }
+  log("info", "nightly explorer: workspace bundles rebuilt fresh", { ws: cfg.workspace });
   const shotsDir = explorerShotsDir();
   try {
     mkdirSync(shotsDir, { recursive: true });
@@ -479,9 +533,11 @@ app with no production daemon — safe to poke). The run's session name and scre
 directory are listed in the SESSION PARAMETERS block at the end — the launch is a TRUE
 first boot: fresh temp userData, no leftover state.
 
-If apps/web/dist/index.html or apps/desktop/dist-electron/main.js is missing, build
-them first (does NOT count toward the harness budget):
-  npm run build --workspace @ocr/web && npm run build --workspace @ocr/desktop
+The runner rebuilt both bundles (web + desktop) from the current checkout right
+before this run — the journey always reviews what origin/main actually merged. NEVER run
+npm run build yourself: a silent build window trips the pipeline watchdog and burns the
+run. If the app fails to boot or renders a missing-UI screen, capture the shot and report
+it as a finding instead.
 
 HARD BUDGET: at most ${EXPLORER_MAX_STEPS} harness commands this run — count them and stop.
 Do not run any other commands against the app. Do not git commit or push anything.

@@ -779,6 +779,43 @@ try {
     check("P3-366: paste is primary, scan is secondary on the escape", /^true\|false$/.test(pasteFirst.stdout.replace(/"/g, "").trim()), pasteFirst.stdout);
   }
 
+  // --- P3-440/P3-361: an empty "Parear" click is a validation event in the
+  // REAL desktop too — the form answers with the inline alert hint (P3-361's
+  // recovery voice, so far only asserted statically by pairempty.test.ts)
+  // and hands focus back to the paste box, instead of the byte-identical
+  // silence a 2026-09-22 nightly explorer once filed as a finding (its
+  // workspace dist predated the fix; the runner now rebuilds before every
+  // journey, so the nightly agent can never review a stale dist again).
+  const emptyShot = run("P3-440: click Parear with an empty box", ["click", ".pair-submit"], 15_000);
+  if (emptyShot.ok) {
+    const emptyHint = run("P3-440: inline empty-submit hint", ["ipc", "document.querySelector('.pair-empty-hint')?.textContent ?? ''"], 15_000);
+    check(
+      "P3-440: empty submit answers with the pairEmptyCode copy (en|pt)",
+      /Paste the pairing code first|Cole o código de pareamento primeiro/.test(emptyHint.stdout.replace(/"/g, "")),
+      emptyHint.stdout,
+    );
+    const emptyRole = run("P3-440: empty hint announces to screen readers", ["ipc", "(() => { const el = document.querySelector('.pair-empty-hint'); return el ? el.getAttribute('role') : ''; })()"], 15_000);
+    if (emptyRole.ok) check("P3-440: .pair-empty-hint is role=alert", /alert/.test(emptyRole.stdout.replace(/"/g, "")), emptyRole.stdout);
+    const focused = run("P3-440: empty submit focuses the paste box", ["ipc", "document.activeElement?.classList.contains('pair-code') ?? false"], 15_000);
+    if (focused.ok) check("P3-440: .pair-code holds focus after the empty submit", /true/.test(focused.stdout.replace(/"/g, "")), focused.stdout);
+    const invalid = run("P3-440: empty submit flags the paste box aria-invalid", ["ipc", "(() => { const el = document.querySelector('.pair-code'); return el ? String(el.getAttribute('aria-invalid') ?? '') : ''; })()"], 15_000);
+    if (invalid.ok) check("P3-440: .pair-code carries aria-invalid after the empty submit", /true/.test(invalid.stdout.replace(/"/g, "")), invalid.stdout);
+    const shotEmptySubmit = join(shotsDir, "P3-440-pairing-empty-submit.png");
+    const es1 = run("P3-440: 1440x900 empty-submit shot", ["shot", shotEmptySubmit, "1440", "900"], 15_000);
+    if (es1.ok) check("P3-440: empty-submit 1440x900 shot is a real PNG", pngSize(shotEmptySubmit).join("x") === "1440x900");
+    // The nudge is one-shot (P3-361): typing dissolves it — clear the field
+    // so the P2-106 reference shots below stay clean. A bare fill("") on an
+    // already-empty controlled textarea is deduped by React's value tracker
+    // (no onChange, nudge survives), so bounce through a real keystroke first.
+    run("P3-440: type into the paste box", ["type", ".pair-code", "x"], 15_000);
+    run("P3-440: clear the empty-submit nudge", ["type", ".pair-code", ""], 15_000);
+    const cleared = run("P3-440: the nudge and its flag dissolve on typing", ["ipc", "[!!document.querySelector('.pair-empty-hint'), document.querySelector('.pair-code')?.getAttribute('aria-invalid') ?? ''].join('|')"], 15_000);
+    if (cleared.ok) {
+      const state = cleared.stdout.replace(/"/g, "").trim();
+      check("P3-440: typing dissolves the empty-submit hint and flag", state === "false|", cleared.stdout);
+    }
+  }
+
   // --- P2-106: benchmark pairing journey — 4 evidence states ------------------
   // (1) two titled sections on the ceremony screen, (2) scanner route,
   // (3) styled invalid-code error with the inline format helper, and (4) the

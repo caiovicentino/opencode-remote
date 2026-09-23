@@ -139,6 +139,11 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   `.degraded-upstream`: superfície neutra com filete vermelho fino à esquerda,
   vermelho só no título, e o botão "Tentar de novo" na mesma linguagem quieta
   dos outros controles; `role=alert` segue intacto (princípio 2)
+- Submit vazio no portão aponta o campo (P3-440): a caixa de colar veste a
+  mesma borda de perigo e o anel de foco vermelho que um código inválido já
+  veste — `aria-invalid` agora acompanha a dica inline ("Cole o código de
+  pareamento primeiro…") em vez de sinalizar "válido" acima dela, e digitar
+  dissolve dica e anel junto
 - Marca do produto com escala tipográfica própria (P3-336): o h1 "OpenCode
   Remote" das telas de primeiro contato (boas-vindas, pareamento, jornada
   degradada) usa a classe compartilhada `.brand-wordmark` — serifado no passo

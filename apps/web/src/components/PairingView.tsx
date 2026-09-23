@@ -124,7 +124,11 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
       <textarea
         className="pair-code"
         rows={2}
-        aria-invalid={codeError ? true : undefined}
+        /* P3-440: the field flags itself on BOTH failing paths — a rejected
+           submit must not read as valid (P3-431: aria-invalid rides the same
+           state that renders the inline message, so the empty path gets the
+           same visual verdict the garbled-code path has had since P3-410). */
+        aria-invalid={codeError || emptyHint ? true : undefined}
         placeholder="opencode-remote://pair?v=2&relay=…"
         value={code}
         onChange={(e) => {

@@ -55,7 +55,9 @@ the log and resumes after external intervention (`touch ~/.opencode-remote/pilot
 or 2h without a new failure. Once per day, alongside the red-team pass, a non-blocking
 nightly EXPLORER agent (P3-052) drives the real desktop app through the P1-051 harness
 in a fresh-state first-boot pass (clean userData) like a first-time user and files
-journey/UX/robustness findings (shot + severity) as backlog lines,
+journey/UX/robustness findings (shot + severity) as backlog lines, on freshly
+rebuilt workspace bundles (P3-052 hardening — the runner rebuilds before the journey, fail-closed
+on a failed build, so the agent never reviews a dist outliving its checkout),
 budget-capped per run. Builders must end
 their output with a final EVIDENCE block (real typecheck/test:unit outputs, plus 1440x900 and
 390px screenshot paths for UI tasks) — the gatekeeper re-executes the cited commands and rejects
