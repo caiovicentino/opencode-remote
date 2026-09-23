@@ -463,8 +463,8 @@ vanished.
   and hidden instead of stealing focus on every reboot — the tray icon
   appears and the machine keeps being reachable. Clicking the tray icon,
   reopening the app, a second launch, the global hotkey or a fresh pair
-  invite brings the window up. The decision rides the boot log
-  (`[desktop] login launch: …`).
+  invite brings the window up exactly as it was left (maximized included).
+  The decision rides the boot log (`[desktop] login launch: …`).
 - Dev builds (`npm start`) never touch the OS setting; platforms other than
   macOS/Windows keep the previous behavior (the tray item stays hidden).
 - The decision rides the boot log (`[desktop] login item: …`), the pairing

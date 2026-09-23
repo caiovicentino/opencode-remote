@@ -28535,8 +28535,15 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       !launchSrc.includes("setTimeout"),
   );
   check(
-    "P2-348: the dedicated argument is unique and unsimilar to any existing flag",
-    LOGIN_LAUNCH_ARG === "--ocr-login-launch",
+    "P2-348: the argument literal is declared exactly once — in the canonical pure module",
+    (launchSrc.match(/"--ocr-login-launch"/g) ?? []).length === 1,
+  );
+  check(
+    "P2-348: the plan never reports tray for a user-style argv (deep link, dev, user launch, no-arg, unknown args)",
+    plan("darwin", true, false, [], false).action === "show" &&
+      plan("darwin", false, true, [], false).action === "show" &&
+      plan("win32", true, false, [], false).action === "show" &&
+      plan("win32", true, false, ["--ocr-login-launcher", "--other-flag"], false).action === "show",
   );
 
   // --- real-source assertions over the REAL main.ts --------------------------
@@ -28574,6 +28581,25 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     mainSrc.includes("length === 0) createWindow();") &&
       mainSrc.includes("if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();"),
   );
+  // r2 (review round 1): the deferred maximize restore — the boot's pending
+  // owner choice is carried out of createWindow and applied by the first
+  // user-driven show, never dropped (a quiet boot must not turn a maximized
+  // owner preference into a windowed reopen).
+  const pendingSetAt = mainSrc.indexOf("bootPendingMaximize = !!opts.bootHidden && maximized === true;");
+  const showFnAt = mainSrc.indexOf("function showMainWindow(): void {");
+  const showFnBlock = showFnAt >= 0 ? mainSrc.slice(showFnAt, showFnAt + 1200) : "";
+  const pendingApplyAt = showFnBlock.indexOf("bootPendingMaximize = false;");
+  const showCallAt = showFnBlock.indexOf("mainWindow.show();");
+  check(
+    "P2-348 r2: the pending maximize is set only for the boot-hidden creation and applied by the first showMainWindow, before show",
+    pendingSetAt > -1 && showFnAt > -1 && pendingApplyAt > -1 && showCallAt > pendingApplyAt,
+  );
+  const closeSaveAt = mainSrc.indexOf("saveWindowBounds(stateFile, {");
+  const closeSaveBlock = closeSaveAt >= 0 ? mainSrc.slice(closeSaveAt, mainSrc.indexOf("});", closeSaveAt)) : "";
+  check(
+    "P2-348 r2: a never-shown boot window preserves the owner's stored maximized choice instead of overwriting it with false",
+    closeSaveBlock.includes("bootPendingMaximize ? true : win.isMaximized()"),
+  );
   // the Windows login argument rides the shared helper — the single call point
   const setItemAt = mainSrc.indexOf("function setLoginItemEnabled");
   const helperBlock = setItemAt >= 0 ? mainSrc.slice(setItemAt, setItemAt + 700) : "";
@@ -28581,6 +28607,12 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-348: the dedicated argument is registered inside setLoginItemEnabled, gated to win32 enable",
     helperBlock.includes("LOGIN_LAUNCH_ARG") &&
       helperBlock.includes('process.platform === "win32" && enabled'),
+  );
+  check(
+    "P2-348: registration and detection share the one constant — import + single use in main.ts, never a re-typed literal",
+    (mainSrc.match(/LOGIN_LAUNCH_ARG/g) ?? []).length === 2 &&
+      mainSrc.includes('from "./loginlaunch"') &&
+      !mainSrc.includes('"--ocr-login-launch"'),
   );
   check(
     "P2-348: app.setLoginItemSettings has exactly ONE caller — the shared helper (unchanged)",

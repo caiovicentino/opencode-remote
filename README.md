@@ -1316,10 +1316,14 @@ window ready and hidden: the tray icon appears, the daemon keeps this machine
 reachable, and one calm line in the boot log records the decision
 (`[desktop] login launch: …`). Opening the app the normal way, clicking the
 tray icon, a second launch, the global hotkey or a fresh pair invite all show
-the window; dev builds and platforms without login-item support always show.
-Installs that already had **Start at login** on before this update keep the
-old window-up-on-boot behavior until the toggle is applied again (turn it off
-and back on once in the tray menu).
+the window — exactly as it was left (maximized included, the owner's quit-time
+preference is restored on that first show); dev builds and platforms without
+login-item support always show. On Windows, installs that already had
+**Start at login** on before this update keep the old window-up-on-boot
+behavior until the toggle is applied again (turn it off and back on once in
+the tray menu); on macOS the OS reports the login launch itself, so existing
+installs go quiet on the very first boot after the update with nothing to
+re-apply.
 
 **Windows uninstall (P2-249)**: uninstalling the app removes the **Start at
 login** autostart entry (no more boots trying to open a program that no

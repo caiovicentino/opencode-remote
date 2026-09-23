@@ -1263,10 +1263,14 @@ deixa a janela pronta e escondida: o ícone da bandeja aparece, o daemon mantém
 a máquina alcançável e uma linha calma no log de partida registra a decisão
 (`[desktop] login launch: …`). Abrir o app do jeito normal, clicar no ícone da
 bandeja, um segundo lançamento, o atalho global ou um convite novo mostram a
-janela; builds de desenvolvimento e plataformas sem suporte a item de login
-sempre mostram. Instalações que já tinham o **Start at login** ligado antes
-desta atualização mantêm o comportamento antigo (janela abre no boot) até o
-ajuste ser aplicado de novo (desligue e religue uma vez no menu da bandeja).
+janela — exatamente como foi deixada (maximizada incluída, a preferência da
+despedida é restaurada nessa primeira abertura); builds de desenvolvimento e
+plataformas sem suporte a item de login sempre mostram. No Windows, instalações
+que já tinham o **Start at login** ligado antes desta atualização mantêm o
+comportamento antigo (janela abre no boot) até o ajuste ser aplicado de novo
+(desligue e religue uma vez no menu da bandeja); no macOS o próprio sistema
+informa a abertura no login, então instalações existentes ficam quietas já no
+primeiro boot após a atualização, sem nada a reaplicar.
 
 **Desinstalação no Windows (P2-249)**: desinstalar o app remove a entrada de
 abertura no login (nada de boot tentando abrir um programa que não existe
