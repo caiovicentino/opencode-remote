@@ -5,7 +5,7 @@ import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 // helpers (same ocr_theme key + applyTheme() path as the Settings card).
 import { applyTheme, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
 import { shouldEscalateRetry } from "../lib/degraded";
-import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
+import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, StorageVerdictNotice, UpstreamNotice } from "../lib/degraded";
 // P3-454: the live retry feedback (line + cumulative clock + escalation
 // block) is one contract shared with the welcome wizard's agent step —
 // extracted here so the same shell state never renders two retry dialects
@@ -51,6 +51,13 @@ interface Props {
    * when both verdicts exist at once the exit notice wins — a daemon that
    * actually died is the stronger story than one being revived. */
   sidecarWedge?: SidecarWedgeNotice | null;
+  /** P2-346: the app's data folder refused the boot write probe (storage
+   * verdict, sanitized to the closed set by lib/degraded). When the state is
+   * non-ok the verdict's phrase replaces the patient auto-retry line — a
+   * folder that cannot take a write dooms the daemon's own identity, so
+   * promising "retrying automatically" there would be a lie. Absent or "ok"
+   * keeps today's retry line byte for byte. */
+  storage?: StorageVerdictNotice | null;
   /** P3-365: the hero sits inside the first-boot shell skeleton whose rail
    * already opens Artifacts/Browser/Mission — the pane map then retitles to
    * "before pairing" and keeps the lock glyph only on Conversations. The
@@ -81,7 +88,7 @@ interface Props {
  * "daemon fell" for a daemon the machine never met), a visible auto-retry
  * line with the attempt counter, a reconnect action with real feedback, the
  * purely-local data that keeps working, and manual pairing one click away. */
-export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, panesReachable, desktopShell, onRecheck, focusQueueTick, onQueueFocusConsumed }: Props) {
+export default function DegradedView({ kind, busy, reconnectAttempts, reconnect, onPairManually, upstream, onOpenHelp, sidecarExit, sidecarWedge, storage, panesReachable, desktopShell, onRecheck, focusQueueTick, onQueueFocusConsumed }: Props) {
   const t = useT();
   const [lang, setLangState] = useState<Lang>(getLang());
   const [theme, setThemeState] = useState<ThemeChoice>(readTheme);
@@ -193,11 +200,20 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
           {upstream.missingBinary && <UpstreamMissingActions onRecheck={onRecheck} />}
         </div>
       )}
-      {autoRetry && (
+      {/* P2-346: the verdict's phrase owns the retry slot while the data
+          folder refuses writes — only when the auto-retry line would render
+          (busy and incident kinds keep their own copy; "ok" and absent keep
+          the retry line byte for byte). The phrase is the shell's static
+          pt-BR sentence, sanitized to the closed set before it renders. */}
+      {autoRetry && storage && storage.state !== "ok" ? (
+        <p className="degraded-storage" role="status">
+          {storage.message}
+        </p>
+      ) : autoRetry ? (
         <p className="degraded-retry" role="status">
           <RetryLine attempts={reconnectAttempts} />
         </p>
-      )}
+      ) : null}
       {/* P3-385: once escalated the escalation block owns the recovery path —
           the standalone orange reconnect button folds into it (demoted to a
           text link) so two same-weight CTAs never stack in one column. */}

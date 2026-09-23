@@ -293,3 +293,48 @@ export function sidecarWedgeNotice(wedge: SidecarWedgeHealth | null | undefined)
       return null;
   }
 }
+
+/** P2-346: tolerant view of the shell's `storage` field — the ONE
+ * storage-write probe verdict of the app's data folder
+ * (apps/desktop/src/storageprobe.ts), computed once at boot. Fields are
+ * validated, never trusted — absent on legacy shells. */
+export interface StorageHealth {
+  state?: unknown;
+  message?: unknown;
+}
+
+/** P2-346: the closed set of storage verdicts the desktop shell publishes in
+ * the pairing payload's `storage` field (apps/desktop/src/storageprobe.ts:
+ * ok / no-permission / read-only / disk-full / unknown). Duplicated on
+ * purpose — importing across apps would drag desktop sources into the web
+ * build; the parity is pinned by a source-reading test in
+ * scripts/unit.test.ts that fails when either side drifts (P2-338/P2-344
+ * lesson). */
+export type StorageVerdictState = "ok" | "no-permission" | "read-only" | "disk-full" | "unknown";
+
+const STORAGE_VERDICT_STATES = new Set<StorageVerdictState>(["ok", "no-permission", "read-only", "disk-full", "unknown"]);
+
+/** One sanitized storage verdict: the closed-set state plus the shell's
+ * static pt-BR phrase, rendered by React as text only. */
+export interface StorageVerdictNotice {
+  state: StorageVerdictState;
+  message: string;
+}
+
+/** P2-346: fail-closed read of the shell's `storage` verdict — only a
+ * well-shaped object whose state is in the closed set and whose message is a
+ * non-empty string survives; anything absent, null, out-of-set, non-object or
+ * textless degrades to null, which keeps today's behavior byte for byte (the
+ * field is additive — the calm card never invents a diagnosis of its own,
+ * lesson P2-338). The state itself is the card's only gate: "ok" renders
+ * nothing, the four non-ok states render the phrase in the retry line's
+ * place. Never throws. */
+export function sanitizeStorageVerdict(storage: StorageHealth | null | undefined): StorageVerdictNotice | null {
+  if (typeof storage !== "object" || storage === null || Array.isArray(storage)) return null;
+  const state = typeof storage.state === "string" && STORAGE_VERDICT_STATES.has(storage.state as StorageVerdictState)
+    ? (storage.state as StorageVerdictState)
+    : null;
+  const message = typeof storage.message === "string" && storage.message ? storage.message : null;
+  if (!state || !message) return null;
+  return { state, message };
+}

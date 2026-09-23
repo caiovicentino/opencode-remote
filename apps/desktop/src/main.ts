@@ -1,5 +1,5 @@
 import { app, autoUpdater, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, net, Notification, powerMonitor, powerSaveBlocker, screen, session, systemPreferences, Tray, shell } from "electron";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, sep } from "node:path";
@@ -111,6 +111,7 @@ import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
 import { permissionDecision, requestingScheme } from "./permissions";
 import { micAccessVerdict } from "./micaccess";
 import { camAccessVerdict } from "./camaccess";
+import { storageProbeVerdict, type StorageProbeResult, type StorageVerdict } from "./storageprobe";
 import { screenAccessVerdict, type ScreenAccessVerdict } from "./screenaccess";
 import { loginItemSupported, logsDirPath, openLogsFolder, trayIconSource, updateGuardReleaseLabel } from "./tray";
 import { trayStatus } from "./traystatus";
@@ -241,6 +242,15 @@ let bootInstallLocation: InstallLocationVerdict | null = null;
 // bundle. No periodic re-probe on purpose — the owner's decision is recorded
 // the moment it is made and never re-derived while the process runs.
 let bootStartup: LoginItemVerdict | null = null;
+
+// P2-346: the storage-write verdict of the app's own data folder, computed
+// EXACTLY ONCE at boot (in onReady, BEFORE the sidecar starts) and reused by
+// the pairing-state payload. No periodic re-probe on purpose — a folder that
+// refuses writes does not heal by asking again (permission changes, volume
+// remounts and free space all need an app restart to be picked up); the one
+// verdict keeps the payload stable for the whole session. null only before
+// the probe ran.
+let bootStorage: StorageVerdict | null = null;
 
 // P2-221: latest quit-confirmation verdict of the explicit quit path, for the
 // diagnostics bundle. null until the user asks to quit this session — the
@@ -1573,6 +1583,43 @@ function setLoginItemEnabled(enabled: boolean): void {
   writeStartupDecided(startupSettingFile(app.getPath("userData")), true);
 }
 
+// P2-346: the ONE storage-write probe of the boot — writes and deletes a
+// small temp file inside userData, so a folder the shell cannot write to is
+// named in desktop.log and in the pairing payload instead of failing
+// silently (the daemon then cannot write its own identity either, and the
+// first-boot card keeps promising a connect that can never happen). The
+// classification itself is the pure storageprobe.ts verdict; this runner
+// only performs the probe and returns its raw result. Never throws: every
+// failure becomes the injected result the classifier expects.
+// Round-3 review hardening: the probe file name is unpredictable
+// (randomUUID) AND the write is exclusive-create (flag "wx" = O_EXCL), so a
+// pre-planted symlink at a predictable name can never be followed and
+// truncated — an existing path (symlink included) fails the open instead,
+// degrading the verdict fail-closed. A name collision is otherwise
+// impossible; the failure path only ever reports a non-ok verdict.
+function probeUserDataStorage(dir: string): StorageProbeResult {
+  const file = join(dir, `.storage-probe-${randomUUID()}`);
+  try {
+    // A fresh install may not have the folder yet — creating it is part of
+    // the same probe (its failure mode, e.g. EACCES on the parent, is
+    // exactly the diagnosis the card must name).
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, "opencode-remote storage probe", { encoding: "utf8", flag: "wx" });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return { ok: false, code: typeof code === "string" ? code : undefined };
+  }
+  // The write already proved the folder takes a write — a failed cleanup is
+  // best-effort and must never flip the verdict (a stray probe file is
+  // harmless; `force` swallows the ENOENT of an already-gone file).
+  try {
+    rmSync(file, { force: true });
+  } catch {
+    /* cleanup best-effort — the verdict stays ok */
+  }
+  return { ok: true };
+}
+
 async function onReady(): Promise<void> {
   // P2-244: when the boot plan disabled the acceleration before ready, say so
   // now that the notification surface exists — the lay user's only visible
@@ -2076,6 +2123,15 @@ async function onReady(): Promise<void> {
     }
   });
 
+  // P2-346: ONE storage-write probe at boot, BEFORE the sidecar starts — a
+  // folder the app cannot write to dooms the daemon's own identity write too,
+  // so the verdict must exist before the first spawn and travel in every
+  // pairing payload below. The pure classifier (storageprobe.ts) turns the
+  // injected probe result into the closed verdict; exactly one desktop.log
+  // line records it, with no path, no user name and no raw errno text.
+  bootStorage = storageProbeVerdict(probeUserDataStorage(app.getPath("userData")));
+  log(`[desktop] storage probe: ${bootStorage.state} (${bootStorage.message})`);
+
   // P2-187: resolve the phone relay address (env > stored > default) BEFORE
   // the first spawn so even the initial sidecar (and every respawn) dials the
   // configured relay instead of assuming this machine's loopback.
@@ -2446,6 +2502,9 @@ function daemonDownState(): PairingState {
     daemonDown: true,
     sidecarExit: exit ? { kind: exit.kind, reason: exit.reason, hint: exit.hint } : undefined,
     sidecarWedge: wedge ?? undefined,
+    // P2-346: the boot storage verdict rides along so the first-boot card can
+    // name an unwritable data folder while the daemon is down for good.
+    storage: bootStorage ? { state: bootStorage.state, message: bootStorage.message } : undefined,
   };
 }
 
@@ -2465,6 +2524,9 @@ function reconnectingState(): PairingState {
     reconnecting: true,
     reconnectAttempts: attempts,
     sidecarWedge: wedge ?? undefined,
+    // P2-346: the boot storage verdict rides along so the degraded card can
+    // name an unwritable data folder during a lost-daemon retry too.
+    storage: bootStorage ? { state: bootStorage.state, message: bootStorage.message } : undefined,
   };
 }
 
@@ -3142,6 +3204,11 @@ async function refreshPairingState(): Promise<void> {
       // unless the shell's own child stopped answering while alive. The
       // renderer never renders it yet — the verdict's surface is desktop.log.
       sidecarWedge: sidecarWedgeState() ?? undefined,
+      // P2-346: additive storage-write verdict (storageprobe.ts), AFTER the
+      // P2-321 field so the real-source assertions keep matching; computed
+      // ONCE at boot before the sidecar started, so every payload carries it.
+      // The renderer renders the phrase only while the state is non-ok.
+      storage: bootStorage ? { state: bootStorage.state, message: bootStorage.message } : undefined,
     });
   } catch (err) {
     // Daemon down, token rotated or state file wiped: drop the cached state so
@@ -3164,7 +3231,18 @@ async function refreshPairingState(): Promise<void> {
       const wedge = sidecarWedgeState();
       setPairingState(
         wedge
-          ? { uri: null, qrDataUrl: null, devices: 0, phonePaired: false, sidecarWedge: wedge }
+          ? {
+              uri: null,
+              qrDataUrl: null,
+              devices: 0,
+              phonePaired: false,
+              sidecarWedge: wedge,
+              // P2-346: the boot storage verdict rides along for payload
+              // consistency — the degraded card reads it the same way.
+              storage: bootStorage
+                ? { state: bootStorage.state, message: bootStorage.message }
+                : undefined,
+            }
           : null,
       );
     }

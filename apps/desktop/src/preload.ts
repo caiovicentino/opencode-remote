@@ -72,6 +72,13 @@ export interface PairingState {
    * with no path, port, identifier or secret. Same tolerant shape as the
    * sidecarExit field above — no new channel, no new IPC. */
   sidecarWedge?: { state: string; message: string };
+  /** P2-346: the ONE storage-write probe verdict of the app's data folder
+   * (apps/desktop/src/storageprobe.ts), computed once at boot before the
+   * sidecar starts. Optional and additive: absent means legacy shell — the
+   * renderer treats it as unknown and renders nothing. state is one of ok |
+   * no-permission | read-only | disk-full | unknown; message is a static
+   * pt-BR phrase with no path, no user name and no raw errno text. */
+  storage?: { state: string; message: string };
   /** P2-189: step one of the pairing journey — the address the phone opens,
    * derived from the relay address unless stored. Optional and additive so a
    * legacy shell payload still renders every existing surface. qrDataUrl is

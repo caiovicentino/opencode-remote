@@ -1789,6 +1789,23 @@ link beside the diagnostics button, keeping its full feedback contract
 (spinner, trying state, result toast) — so the escalated column shows exactly
 one primary recovery path.
 
+**A data folder that refuses a write names itself (P2-346)**: on a first boot
+whose data folder cannot take a write — no permission on the folder, a
+read-only volume, a full disk — the old journey never said so: the local
+daemon silently failed to persist its identity and the calm card kept
+promising "Retrying automatically…" with no cause. The shell now runs ONE
+storage probe at boot (it writes and deletes a small temp file in the app's
+data folder, before the local daemon starts) and records the verdict in
+`desktop.log`; the verdict also rides the pairing state into the calm card,
+which replaces the auto-retry line with one short sentence naming the real
+blocker — "o app não tem permissão para gravar na pasta de dados dele" (no
+write permission), "a pasta de dados do app está somente leitura" (read-only
+volume) or "o disco deste computador está cheio" (disk full) — instead of
+promising a retry that can never succeed. The phrase never carries a path, a
+user name or the raw system error, and a folder that answers fine (or a
+payload without the verdict, e.g. an older shell build) keeps the card byte
+for byte as before.
+
 **Escalation that respects the surface (P3-394)**: the escalated card's detail
 copy never asks anyone to open a terminal. On the desktop shell it points at
 the in-app "Open diagnostics" button in the same block (the report is copied

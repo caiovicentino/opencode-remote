@@ -120,6 +120,16 @@ export interface PairingState {
    * pt-BR phrase with no path, port, identifier or secret.
    */
   sidecarWedge?: { state: string; message: string };
+  /**
+   * P2-346: verdict of the ONE storage-write probe of the app's own data
+   * folder (storageprobe.ts classifier), computed ONCE at boot BEFORE the
+   * sidecar starts. Additive; absent = unknown to the renderer (renders
+   * nothing). state is one of ok | no-permission | read-only | disk-full |
+   * unknown; message is a static pt-BR phrase with no path, no user name and
+   * no raw errno text. A non-ok verdict never blocks pairing — it explains
+   * why the daemon may never come back.
+   */
+  storage?: { state: string; message: string };
 }
 
 /**
