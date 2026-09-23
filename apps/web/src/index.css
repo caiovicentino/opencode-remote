@@ -2325,6 +2325,39 @@ button.desk-new:disabled {
 .pair-relaylink-warn {
   color: var(--warn);
 }
+/* P2-343: the relay-link warning's labeled escape — same quiet accent text
+   button register as the reach probe retry and the P2-337 open-settings
+   action; the spinner reuses the global .reconnect-spin. Existing tokens
+   only: no gradient, no glass, no new radius. The terminal verdict line
+   below is muted — one static phrase per closed-set verdict, never a
+   spinner line. */
+.pair-relaylink-redial {
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: var(--font-weight-medium);
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  margin-left: 6px;
+  white-space: nowrap;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+.pair-relaylink-redial:hover {
+  text-decoration: underline;
+}
+.pair-relaylink-redial:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.pair-relaylink-redial-result {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
 
 /* P2-340: the relay card's "Reconnect now" — the quiet action beside the live
    link line, same register as the card's other actions (plain bordered

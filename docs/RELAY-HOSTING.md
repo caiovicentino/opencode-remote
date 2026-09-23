@@ -1056,6 +1056,15 @@ rate-limited close) is always honored. The click ends in a terminal verdict
 nothing to anticipate / the machine did not answer), so the action never
 ends in a silent spinner. The phone and the pure browser never see it.
 
+Since P2-343 the pairing overlay's relay-link warning carries the same
+action inline — the same one-shot POST, the same guard and throttle, and
+the same terminal verdicts — so whoever is looking at the pairing QR after
+updating the app or the relay can anticipate the wait (including the
+protocol-mismatch floor) right there, without closing the dialog and
+hunting for the Settings card. The overlay's action renders only while the
+live state is connecting/reconnecting, refused or incompatible, and the
+phone never sees it (it has no shell to carry the request).
+
 ## Pointing the PWA at the hosted relay
 
 The PWA is relay-only and gets the relay URL from the pairing code — there is

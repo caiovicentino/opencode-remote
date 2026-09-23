@@ -1237,6 +1237,12 @@ resolves to a terminal verdict — reconnecting now, a wait already in
 effect, already reconnecting, nothing to anticipate, or the machine did
 not answer — so the action never ends in a silent spinner. The phone and
 the pure browser never show the button (no shell to carry the request).
+Since P2-343 the pairing overlay's warning line carries the same action
+inline — whoever is looking at the QR after updating the app or the hosted
+relay no longer has to close the dialog and hunt for Settings to shorten
+the wait (including the 5-minute protocol-mismatch floor), with the same
+terminal verdict and the same guard; the overlay carries its own stable
+attribute for the harness, and the phone never sees the action either.
 
 **Clock skew (P2-214)**: a machine whose clock is far off has its own failure
 mode — the phone's browser refuses the hosted relay's certificate (the

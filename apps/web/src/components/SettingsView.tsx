@@ -236,8 +236,9 @@ function forcedRelayOk(): boolean | undefined {
  * its own static i18n key (both locales carry the key); anything else (a
  * legacy or lying shell) degrades to the failure phrase. The renderer never
  * sees a raw action/reason from the daemon: only one of these five words
- * ever crosses the bridge. */
-const REDIAL_RESULT_KEYS: Record<string, string> = {
+ * ever crosses the bridge. P2-343: exported — the pairing overlay's inline
+ * redial renders the SAME phrases (same-app import, no drift). */
+export const REDIAL_RESULT_KEYS: Record<string, string> = {
   redialing: "relayRedialStarted",
   throttled: "relayRedialWaiting",
   "already-dialing": "relayRedialAlreadyDialing",
