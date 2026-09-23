@@ -2029,6 +2029,11 @@ try {
       RELAY_URL: "ws://127.0.0.1:1", // dead: relay must be irrelevant in local mode
       OPENCODE_URL: "http://127.0.0.1:1",
       OCR_LOG_LEVEL: "error",
+      // P2-347: the P3-086 attach beat uploads a real PNG through this daemon;
+      // on a genuinely full host the P2-347 gate would answer 507 and the chip
+      // would never appear. The documented OCR_DISK_OK hatch forces the ok
+      // verdict so the beat's premise holds on any machine.
+      OCR_DISK_OK: "1",
     },
     stdio: ["ignore", "ignore", "ignore"],
     detached: true, // own process group — the kill below hits tsx's child too
@@ -5269,6 +5274,10 @@ phase("P2-152: one-time close-to-tray hint");
       RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
       OPENCODE_URL: `http://127.0.0.1:${fakeSessionPort}`,
       OCR_LOG_LEVEL: "error",
+      // P2-347: this beat's whole premise is a delivered upload (drop → chip);
+      // the OCR_DISK_OK hatch keeps it deterministic on a full host, exactly
+      // like the P3-086 beat above.
+      OCR_DISK_OK: "1",
     },
     stdio: ["ignore", "ignore", "ignore"],
     detached: true,

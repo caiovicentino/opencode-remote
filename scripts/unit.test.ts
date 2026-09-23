@@ -26190,6 +26190,19 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-347: the gate composes diskStatus() so the OCR_DISK_FULL hatch forces the refusal too",
     (indexSrc.match(/uploadDiskGate\(diskStatus\(\)\)/g) ?? []).length === 2,
   );
+  check(
+    "P2-347: OCR_DISK_OK=1 is the documented mirror hatch forcing the ok verdict on a full host",
+    /process\.env\.OCR_DISK_OK === "1"/.test(indexSrc) &&
+      indexSrc.includes("diskStateFromReading(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES)") &&
+      diskVerdict(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES).state === "ok" &&
+      /OCR_DISK_OK/.test(src(["README.md"])) &&
+      /OCR_DISK_OK/.test(src(["README.pt-BR.md"])) &&
+      /OCR_DISK_OK/.test(src(["docs", "troubleshooting.md"])),
+  );
+  check(
+    "P2-347: the lazy re-probe skips under either hatch — forced verdicts are never probed away",
+    /process\.env\.OCR_DISK_FULL === "1" \|\| process\.env\.OCR_DISK_OK === "1"/.test(indexSrc),
+  );
   const chunkAt = indexSrc.indexOf('"/__ocr/upload/chunk" && req.method === "POST"');
   const chunkBlock = indexSrc.slice(chunkAt, chunkAt + 800);
   check(

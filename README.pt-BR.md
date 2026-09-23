@@ -163,7 +163,9 @@ remoto, zero confiança**.
   grandes (os artifacts de sessões antigas em
   `~/.opencode-remote/artifacts/` são aparados automaticamente pelo janitor
   de retenção); `OCR_DISK_FULL=1` no daemon é um hatch de teste que força o
-  veredito crítico para evidência visual determinística
+  veredito crítico para evidência visual determinística, e `OCR_DISK_OK=1` é
+  o hatch simétrico que força o veredito ok, para os testes herméticos
+  exercitarem os caminhos saudáveis de upload numa máquina de verdade cheia
 - **Painel Estado da máquina** — Configurações → **Estado da máquina** reúne
   numa lista calma todos os vereditos de prontidão que a própria máquina
   informa, em oito linhas: o elo remoto com o relay, o servidor do agente e a

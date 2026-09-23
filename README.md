@@ -225,7 +225,9 @@ private. That is the product: **local power, remote control, zero trust**.
   space on that machine, remove or archive large files (old session
   artifacts under `~/.opencode-remote/artifacts/` are trimmed automatically
   by the retention janitor); `OCR_DISK_FULL=1` on the daemon is a test hatch
-  that forces the critical verdict for deterministic screenshots
+  that forces the critical verdict for deterministic screenshots, and
+  `OCR_DISK_OK=1` is the symmetric hatch forcing the ok verdict so hermetic
+  tests exercise the healthy upload paths on a genuinely full host
 - **Machine state panel** — Settings → **Machine state** gathers in one calm
   list every readiness verdict the machine itself reports, in eight lines:
   the remote relay link, the agent server and its version, disk space,

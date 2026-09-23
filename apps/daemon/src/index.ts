@@ -92,6 +92,7 @@ import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type Retention
 import { parseUploadRetention, uploadRetentionPlan, type UploadEntry as UploadFile } from "./uploadretention.js";
 import { clipRetentionPlan, parseClipRetention, type ClipGroup } from "./clipretention.js";
 import type { DiskVerdict } from "./diskguard.js";
+import { DISK_WARN_FREE_BYTES } from "./diskguard.js";
 import { diskProbePlan, diskStateFromReading, uploadDiskGate } from "./diskspace.js";
 import { docConvertProbe, docConvertVerdict, type DocConvertVerdict } from "./doccap.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
@@ -3014,10 +3015,19 @@ function refreshDiskState(): void {
  * P2-215: disk verdict for /api/health and the settings mirror. OCR_DISK_FULL=1
  * is a documented test hatch (same spirit as OCR_OPENCODE_OLD/OCR_MODEL_BLOCK):
  * it forces the critical verdict so the Settings disk line can be evidenced
- * deterministically on hosts with plenty of free space.
+ * deterministically on hosts with plenty of free space. P2-347 adds the
+ * symmetric OCR_DISK_OK=1: it forces the ok verdict (a roomy 100GB-of-400GB
+ * reading, the same shape the P2-215 unit table calls ok) so hermetic tests on
+ * a genuinely full machine exercise the healthy paths — the reconnect and
+ * desktop-flow upload beats need a working upload surface regardless of the
+ * operator host's real volume. OCR_DISK_FULL wins if both are set; neither
+ * hatch ever reaches the lazy re-probe (forced verdicts are never probed away).
  */
 function diskStatus(): DiskVerdict {
   if (process.env.OCR_DISK_FULL === "1") return diskStateFromReading(0, 1);
+  if (process.env.OCR_DISK_OK === "1") {
+    return diskStateFromReading(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES);
+  }
   return diskSpace;
 }
 
@@ -3133,7 +3143,8 @@ function sweepUploadRetention(): void {
 // skips the re-read so the forced verdict is never probed away — the same
 // spirit as OCR_TTS_BLOCK=1.
 function maybeReprobeUploadsDisk(): void {
-  if (process.env.OCR_DISK_FULL === "1") return;
+  // the documented hatches keep their forced verdicts — never probed away
+  if (process.env.OCR_DISK_FULL === "1" || process.env.OCR_DISK_OK === "1") return;
   const plan = diskProbePlan(diskProbedAt, Date.now(), readinessKnobs);
   if (plan.action !== "redo") return;
   try {

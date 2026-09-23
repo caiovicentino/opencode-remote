@@ -60,6 +60,13 @@ function startDaemon(): ChildProcess {
         RELAY_URL,
         OCR_LOG_LEVEL: "error",
         OPENCODE_URL: "http://127.0.0.1:1",
+        // P2-347: the upload flow below needs a working upload surface on any
+        // host — the P2-347 gate refuses uploads when the disk verdict is
+        // critical, and this machine's volume can be genuinely full. The
+        // documented OCR_DISK_OK hatch forces the ok verdict (mirror of the
+        // P2-215 OCR_DISK_FULL hatch) so the E2E reconnect proof never
+        // depends on the operator host's free space.
+        OCR_DISK_OK: "1",
       },
       stdio: ["ignore", "ignore", "inherit"],
     },
