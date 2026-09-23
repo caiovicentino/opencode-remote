@@ -2045,6 +2045,14 @@ try {
     // harness hatch: adopt this state file (drops OCR_DAEMON_FORCE_DOWN)
     OCR_DESKTOP_LOCAL_STATE: localStateFile,
     OCR_DAEMON_METRICS_PORT: String(localPort),
+    // P2-337: pin the shell's relay to the SAME dead loopback address the
+    // hermetic daemon dials. Without it the shell inherits the operator's
+    // RELAY_URL (a reachable hosted relay), the app address resolves
+    // "derived" and the overlay would never render the fresh-install
+    // unavailable notice the P2-337 beat needs — the address is now
+    // unavailable on ANY machine, loopback ws:// being the documented
+    // fresh-install default.
+    RELAY_URL: "ws://127.0.0.1:1",
   };
   let localBooted = false;
   try {
@@ -2135,6 +2143,73 @@ try {
               laterClass.stdout,
             );
           }
+
+          // --- P2-337: the unavailable notice is not a dead end ----------------
+          // Fresh install: the default relay is loopback, so the app address
+          // resolves origin "unavailable" and THIS overlay (pre-P2-193)
+          // paints the pairWebAppUnavailable sentence — pure text inside the
+          // modal, sending a first-minute user to hunt for the Config →
+          // phone-relay card by hand. The inline action (rendered only
+          // because App hands the handler on this pane-bearing surface) must
+          // dismiss the overlay, open the Settings pane and drop the caret
+          // in the relay address field. Selected by the stable class, never
+          // by copy. The settings pane is closed first so the click really
+          // has to open it (the boot opened it for the remote-pairing entry
+          // above); the Celular rail entry restores the overlay afterwards
+          // so the P2-193 pair-link beat keeps its precondition.
+          const unavailableProbe = run(
+            "P2-337: overlay shows the unavailable notice with the open-settings action",
+            ["ipc", "[!!document.querySelector('.pair-webapp-unavailable'), !!document.querySelector('.pair-webapp-openconfig')].join('|')"],
+            15_000,
+            localEnv,
+          );
+          check(
+            "P2-337: unavailable notice renders with the inline open-settings action",
+            unavailableProbe.ok && /^true\|true$/.test(unavailableProbe.stdout.replace(/"/g, "").trim()),
+            unavailableProbe.stdout,
+          );
+          run("P2-337: close the settings pane (the click must open it)", ["menu-click", "go-pane-chat"], 15_000, localEnv);
+          run("P2-337: real click on the open-settings action", ["click", ".pair-webapp-openconfig"], 15_000, localEnv);
+          await waitProbe(
+            "P2-337: settings pane open, relay block marked, address field focused",
+            "(() => { const block = document.querySelector('[data-relay-setting]'); const input = block ? block.querySelector('input') : null; return [!!document.querySelector('.pair-overlay'), !!block, !!input && document.activeElement === input].join('|'); })()",
+            (v) => /^false\|true\|true$/.test(v.replace(/"/g, "").trim()),
+            localEnv,
+            24,
+            500,
+          );
+          const focusShot1440 = join(shotsDir, "P2-337-relay-focus-1440.png");
+          const pf1 = run("P2-337: 1440x900 focused relay shot", ["shot", focusShot1440, "1440", "900"], 15_000, localEnv);
+          if (pf1.ok) check("P2-337: focused relay 1440x900 shot is a real PNG", pngSize(focusShot1440).join("x") === "1440x900");
+          // The 390 width remounts the shell (mobile branch) and the focus
+          // request is already consumed — the one-shot contract must NOT
+          // re-fire. The block marker survives the remount; the harness
+          // scrolls it into view for the evidence shot only (the 1440 shot
+          // above already proves the app's own scroll + focus behavior).
+          const focusShot390 = join(shotsDir, "P2-337-relay-focus-390.png");
+          run("P2-337: resize to 390 (vehicle shot)", ["shot", join(shotsDir, "P2-337-resize-390.png"), "390", "844"], 15_000, localEnv);
+          await waitProbe(
+            "P2-337: relay block still marked after the mobile remount",
+            "!!document.querySelector('[data-relay-setting]')",
+            (v) => /true/.test(v),
+            localEnv,
+            12,
+            500,
+          );
+          run("P2-337: scroll the marked block into view (390 evidence)", ["ipc", "document.querySelector('[data-relay-setting]')?.scrollIntoView({ block: 'center' }) ?? 'gone'"], 15_000, localEnv);
+          const pf2 = run("P2-337: 390 focused relay shot", ["shot", focusShot390, "390", "844"], 15_000, localEnv);
+          if (pf2.ok) check("P2-337: focused relay 390 shot is a real PNG", pngSize(focusShot390)[0] === 390);
+          // resize vehicle only — the settled 1440 evidence was already taken
+          run("P2-337: resize back to desktop width", ["shot", join(shotsDir, "P2-337-resize-1440.png"), "1440", "900"], 15_000, localEnv);
+          run("P2-337: re-open the overlay (Celular rail entry)", ["click", '[data-pane="phone"]'], 15_000, localEnv);
+          await waitProbe(
+            "P2-337: overlay re-opened for the pair-link beats",
+            "!!document.querySelector('.pair-overlay')",
+            (v) => /true/.test(v),
+            localEnv,
+            24,
+            500,
+          );
 
           // --- P2-193: combined pair link (ONE QR, credential in fragment) ----
           // A stored, reachable app address turns the two-step journey into a

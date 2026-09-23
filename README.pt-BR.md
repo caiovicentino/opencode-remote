@@ -1159,7 +1159,12 @@ que o host que serve o relay também serve o app web na mesma origem; quando
 não serve, salve um endereço explícito em Config → **Endereço do app
 (celular)** — o valor salvo vence o derivado. Com o relay local loopback, o
 shell mostra uma explicação calma no lugar de um endereço que o celular nunca
-alcançaria.
+alcançaria — e essa explicação agora carrega uma ação inline **Abrir Config**
+(P2-337) que fecha o overlay, abre Config e rola até o card do relay do
+celular com o campo de endereço pronto, para que ninguém precise caçar à mão
+o ajuste que a frase nomeia. A ação só aparece onde um pane de Configurações
+pode de fato abrir; o celular e as superfícies estreitas de primeiro boot
+seguem com o aviso só de texto.
 
 **Pareamento com um QR só (P2-193)**: quando o endereço do app está utilizável,
 o shell funde os dois passos num único QR — a credencial de pareamento viaja no

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { copyText } from "../lib/clipboard";
 import { APP_VERSION } from "../version";
 import { useT, setLang, getLang, type Lang } from "../lib/i18n";
@@ -9,6 +9,7 @@ import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/v
 import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
 import { applyTheme, FONT_KEY, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
+import { scrollBehavior } from "../lib/motion";
 
 /** P2-187: phone relay resolution from the desktop shell (mirrors
  * apps/desktop/src/preload.ts). origin says where the effective address comes
@@ -97,6 +98,16 @@ interface Props {
   /** P2-138: upstream (opencode) notice — renders the help section the calm
    * card's secondary button links to; absent when the agent server is fine. */
   upstream?: UpstreamNotice | null;
+  /** P2-337: one-shot relay-section focus request — App bumps the counter
+   * when the pairing overlay's inline escape jumps here. The pane-mounted
+   * instances (paired + gate shell) carry it; the phone never does. */
+  relayFocusTick?: number;
+  /** P2-337: called with the consumed tick so App can reset it — a later
+   * remount never replays an old bump (same contract as DegradedView's
+   * queue focus). The request stays pending until the relay card is actually
+   * on screen (the desktop-only read resolves a beat after mount), so the
+   * caret never lands before the block exists. */
+  onRelayFocusConsumed?: (tick: number) => void;
 }
 
 interface Device {
@@ -212,7 +223,7 @@ function forcedAgentFound(): boolean | undefined {
   return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream, relayFocusTick, onRelayFocusConsumed }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -332,6 +343,24 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       })
       .catch(() => {});
   }, []);
+
+  // P2-337: the one-shot relay focus request. The card renders only after the
+  // desktop-only read resolves (`relay` state), so the request stays pending
+  // until the block is actually on screen — then scrolls it into view and
+  // puts the caret on the address field exactly once, reporting the consumed
+  // tick so App resets it (a remount never replays an old bump, and the
+  // per-tick ref guard means no re-render ever repeats the focus).
+  const relayCardRef = useRef<HTMLDivElement>(null);
+  const relayInputRef = useRef<HTMLInputElement>(null);
+  const lastRelayFocusTick = useRef(0);
+  useEffect(() => {
+    if (!relayFocusTick || relayFocusTick === lastRelayFocusTick.current) return;
+    if (!relayCardRef.current || !relayInputRef.current) return;
+    lastRelayFocusTick.current = relayFocusTick;
+    relayCardRef.current.scrollIntoView({ block: "center", behavior: scrollBehavior() });
+    relayInputRef.current.focus();
+    onRelayFocusConsumed?.(relayFocusTick);
+  }, [relayFocusTick, onRelayFocusConsumed, relay]);
 
   useEffect(() => {
     void (async () => {
@@ -717,14 +746,17 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
 
         {/* P2-187: phone relay address — desktop shell only (the PWA pairs */}
         {/* with the machine it is served by; the ceremony lives in the shell). */}
+        {/* P2-337: `data-relay-setting` is the copy-independent section marker */}
+        {/* the harness and the overlay escape's focus request select by. */}
         {getRelaySetting && setRelayUrl && relay && (
-          <div className="card relay-setting">
+          <div className="card relay-setting" data-relay-setting ref={relayCardRef}>
             <h3>{t("relayTitle")}</h3>
             <p className="muted" style={{ margin: "0 0 6px" }}>
               {t("relayHint")}
             </p>
             <div style={{ display: "flex", gap: 8 }}>
               <input
+                ref={relayInputRef}
                 style={{ flex: 1 }}
                 value={relayDraft}
                 readOnly={relay.origin === "env"}

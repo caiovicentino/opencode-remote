@@ -1008,6 +1008,20 @@ export default function App() {
     dispatchView({ type: "open", slot });
   }
 
+  // P2-337: the pairing overlay's inline "open settings" escape — App is the
+  // sole owner of the action (P3-398). One click dismisses the overlay (the
+  // same contract as "pair later"), opens the EXISTING Settings pane (the
+  // gate shell already opens it via the offline pane list) and registers the
+  // ONE-SHOT relay-section focus request that SettingsView consumes once.
+  function openRelaySettings() {
+    setPairingDismissed(true);
+    setPhonePairing(false);
+    void desktopBridge()?.setRemotePairing?.(false);
+    openPane("settings");
+    relayFocusBumped.current += 1;
+    setRelayFocusTick(relayFocusBumped.current);
+  }
+
   // P2-091: an artifact picked in the global Artifacts list opens beside the
   // chat (split-pane on wide viewports) instead of a full-screen detour.
   const [paneArtifact, setPaneArtifact] = useState<ArtifactMeta | null>(null);
@@ -1064,6 +1078,11 @@ export default function App() {
   const sessionEmptiness = useRef<Map<string, boolean>>(new Map());
   const [composerFocusTick, setComposerFocusTick] = useState(0);
   const [queueFocusTick, setQueueFocusTick] = useState(0);
+  // P2-337: the overlay escape's relay focus request — absolute bump counter,
+  // consumption resets the STATE to 0 (never an older bump clobbered by a
+  // newer consume, same r3 rule as the quick-entry ticks above).
+  const [relayFocusTick, setRelayFocusTick] = useState(0);
+  const relayFocusBumped = useRef(0);
   // Absolute bump counters: consumption resets the STATE to 0 while the
   // counter moves forward, so a newer bump is never clobbered by an older
   // consume/failure reset (r3).
@@ -1302,6 +1321,15 @@ export default function App() {
           // Optional chaining: in a plain browser there is no desktop bridge.
           void desktopBridge()?.recheckWebApp?.();
         }}
+        // P2-337: the unavailable notice's inline escape, offered ONLY where a
+        // Settings pane can actually open (the paired shell and the gate shell
+        // — the latter via the offline pane list). The paneless surfaces
+        // (classic unpaired pair-wrap, add-machine ceremony) and the phone
+        // keep today's text-only notice: a button that navigates nowhere is
+        // the dead-end class P3-367 retired.
+        onOpenSettings={
+          (phase === "paired" && !addingMachine) || gateShellUp ? () => openRelaySettings() : undefined
+        }
         onDismiss={() => {
           setPairingDismissed(true);
           setPhonePairing(false);
@@ -1442,6 +1470,11 @@ export default function App() {
         getProxySetting={desktopBridge()?.getProxySetting}
         setProxyChoice={desktopBridge()?.setProxyChoice}
         upstream={upstream}
+        // P2-337: the overlay escape's one-shot relay focus request — both
+        // pane-mounted instances (paired + gate) carry it; the request is
+        // consumed once and App resets the tick (no remount replay).
+        relayFocusTick={relayFocusTick}
+        onRelayFocusConsumed={(tick) => setRelayFocusTick((t) => (t === tick ? 0 : t))}
       />
     );
   }

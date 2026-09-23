@@ -261,6 +261,10 @@ export const dict = {
     pairWebAppCopied: "Copied",
     pairWebAppUnavailable:
       "The local relay only serves this machine, so there is no address the phone can reach yet. Point the app at a hosted relay in Settings → Phone relay, then come back here.",
+    // P2-337: inline escape beside the unavailable notice (P3-367 pattern) —
+    // short label, no path, no address, no secret; the sentence above keeps
+    // naming the destination.
+    pairWebAppOpenSettings: "Open Settings",
     // combined pair link (desktop, P2-193): one QR, credential in the fragment
     pairLinkTitle: "Scan with your phone's camera",
     pairLinkHint:
@@ -1153,6 +1157,10 @@ export const dict = {
     pairWebAppCopied: "Copiado",
     pairWebAppUnavailable:
       "O relay local só atende esta máquina, então ainda não existe endereço que o celular alcance. Aponte o app para um relay hospedado em Config → Relay do celular e volte aqui.",
+    // P2-337: ação inline ao lado do aviso indisponível (padrão P3-367) —
+    // rótulo curto, sem caminho, sem endereço e sem segredo; a frase acima
+    // continua nomeando o destino.
+    pairWebAppOpenSettings: "Abrir Config",
     // link de pareamento combinado (desktop, P2-193): um QR só, credencial no fragmento
     pairLinkTitle: "Escaneie com a câmera do celular",
     pairLinkHint:

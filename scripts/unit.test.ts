@@ -38389,6 +38389,107 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check("P2-334: CI_RED_CONCLUSIONS matches pipeline.ts CHECK_RED exactly", JSON.stringify([...CI_RED_CONCLUSIONS]) === JSON.stringify(conclusions));
 }
 
+// --- P2-337: the unavailable-app-address notice gains a labeled escape ---------
+// Fresh install: the default relay is loopback, so the app address resolves
+// origin "unavailable" and the pairing overlay paints the pairWebAppUnavailable
+// sentence — pure text inside a modal dialog, sending a first-minute user to
+// hunt for the Config → phone-relay card by hand. The notice now carries an
+// inline action (P3-367 pattern), rendered ONLY when App hands the handler, so
+// the phone and every paneless surface keep today's text-only notice.
+{
+  const overlaySrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingOverlay.tsx"),
+    "utf8",
+  );
+  const appSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "App.tsx"), "utf8");
+  const settingsSrc = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"),
+    "utf8",
+  );
+  const cssSource = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
+
+  // 1. the overlay: the action exists only under the handler gate
+  const unavailableAt = overlaySrc.indexOf('t("pairWebAppUnavailable")');
+  const actionGateAt = overlaySrc.indexOf("{onOpenSettings && (", unavailableAt);
+  const actionSlice = actionGateAt > -1 ? overlaySrc.slice(actionGateAt, actionGateAt + 300) : "";
+  check(
+    "P2-337: the overlay renders the open-settings action only when the handler is passed",
+    overlaySrc.includes("onOpenSettings?: () => void") &&
+      unavailableAt > -1 &&
+      actionGateAt > unavailableAt &&
+      actionSlice.includes('className="pair-webapp-openconfig"') &&
+      actionSlice.includes("onClick={onOpenSettings}") &&
+      actionSlice.includes('t("pairWebAppOpenSettings")'),
+  );
+  // 2. the label: short, no path, no address, no secret (the sentence above
+  // it keeps naming the destination)
+  const labelEn = String((dict.en as Record<string, string>).pairWebAppOpenSettings ?? "");
+  const labelPt = String((dict.pt as Record<string, string>).pairWebAppOpenSettings ?? "");
+  check(
+    "P2-337: pairWebAppOpenSettings exists in both locales, short and path/address/secret-free",
+    labelEn.length > 0 &&
+      labelPt.length > 0 &&
+      labelEn.length <= 24 &&
+      labelPt.length <= 24 &&
+      !labelEn.includes("/") &&
+      !labelPt.includes("/") &&
+      !labelEn.includes("→") &&
+      !labelPt.includes("→") &&
+      !/https?:|wss?:/.test(labelEn + labelPt),
+  );
+
+  // 3. App is the sole owner (P3-398): one handler dismisses the overlay,
+  // opens the existing Settings pane and bumps the one-shot focus request
+  const handlerAt = appSrc.indexOf("function openRelaySettings()");
+  const handlerSlice = handlerAt > -1 ? appSrc.slice(handlerAt, handlerAt + 460) : "";
+  check(
+    "P2-337: App owns the action — dismiss, openPane(settings) and the focus bump in one handler",
+    handlerAt > -1 &&
+      handlerSlice.includes("setPairingDismissed(true)") &&
+      handlerSlice.includes("setPhonePairing(false)") &&
+      handlerSlice.includes('openPane("settings")') &&
+      handlerSlice.includes("relayFocusBumped.current += 1") &&
+      handlerSlice.includes("setRelayFocusTick(relayFocusBumped.current)"),
+  );
+  // The action is offered ONLY where a Settings pane can actually open: the
+  // paired shell and the gate shell (offline pane list). The phone, the
+  // classic unpaired pair-wrap and the add-machine ceremony keep the
+  // text-only notice — a button that navigates nowhere is the dead-end class.
+  check(
+    "P2-337: the action is offered only on pane-bearing surfaces (paired shell, gate shell)",
+    /onOpenSettings=\{\s*\n?\s*\(phase === "paired" && !addingMachine\) \|\| gateShellUp \? \(\) => openRelaySettings\(\) : undefined/.test(appSrc),
+  );
+  check(
+    "P2-337: the focus request rides both pane-mounted settings instances and resets on consumption",
+    appSrc.includes("relayFocusTick={relayFocusTick}") &&
+      appSrc.includes("onRelayFocusConsumed={(tick) => setRelayFocusTick((t) => (t === tick ? 0 : t))}"),
+  );
+
+  // 4. SettingsView: copy-independent section marker + one-shot focus contract
+  check(
+    "P2-337: the relay block carries a copy-independent section attribute for the harness",
+    settingsSrc.includes("data-relay-setting"),
+  );
+  check(
+    "P2-337: the focus request is served once — scroll into view, caret on the address field, consumption reported",
+    settingsSrc.includes("const lastRelayFocusTick = useRef(0)") &&
+      settingsSrc.includes("if (!relayFocusTick || relayFocusTick === lastRelayFocusTick.current) return;") &&
+      settingsSrc.includes('relayCardRef.current.scrollIntoView({ block: "center", behavior: scrollBehavior() })') &&
+      settingsSrc.includes("relayInputRef.current.focus()") &&
+      settingsSrc.includes("onRelayFocusConsumed?.(relayFocusTick)") &&
+      settingsSrc.includes("ref={relayInputRef}") &&
+      /ref=\{relayCardRef\}/.test(settingsSrc),
+  );
+
+  // 5. the action shares the quiet accent register of the P3-367 toast action
+  check(
+    "P2-337: the action is styled as a quiet accent text button (existing tokens)",
+    cssSource.includes(".pair-webapp-openconfig") &&
+      cssSource.includes(".pair-webapp-openconfig:hover") &&
+      cssSource.includes(".pair-webapp-openconfig:focus-visible"),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

@@ -1174,7 +1174,13 @@ you already know. The deployment convention is that the host serving the
 relay also serves the web app on the same origin; when it does not, save an
 explicit address in Settings → **App address (phone)** — a stored value beats
 the derived one. With the loopback local relay the shell shows a calm
-explanation instead of an address the phone could never reach.
+explanation instead of an address the phone could never reach — and that
+explanation now carries an inline **Open Settings** action (P2-337) that
+closes the overlay, opens Settings and scrolls to the phone-relay card with
+the address field ready, so a first-minute user no longer has to hunt for the
+setting the sentence names. The action only renders where a Settings pane can
+actually open; the phone and the narrow first-boot surfaces keep the
+text-only notice.
 
 **One-QR pairing (P2-193)**: when the app address is usable, the shell fuses
 both steps into a single QR — the pairing credential travels in the URL

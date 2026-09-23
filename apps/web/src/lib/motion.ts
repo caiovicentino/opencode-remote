@@ -29,3 +29,16 @@ export function useExitAnimation(open: boolean, ms = 300): ExitPhase {
   }, [open, ms]);
   return phase;
 }
+
+/**
+ * P2-337: imperative scrolls honor prefers-reduced-motion — the global CSS
+ * media query already neutralizes animations/transitions, but scrollIntoView
+ * with an explicit behavior would override it (same rule as the ChatView
+ * helper, P3-083; shared here so new callers never re-derive it).
+ */
+export function scrollBehavior(): ScrollBehavior {
+  return typeof matchMedia !== "undefined" &&
+    matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "auto"
+    : "smooth";
+}

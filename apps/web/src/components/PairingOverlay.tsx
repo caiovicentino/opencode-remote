@@ -56,6 +56,12 @@ interface Props {
   /** P2-218: login-item verdict from the machine hosting the daemon
    * (null/absent = unknown → no line). */
   startup?: { state: string; message: string } | null;
+  /** P2-337: optional inline escape beside the unavailable notice (P3-367
+   * pattern) — rendered ONLY when the caller hands the handler, so the phone
+   * and every paneless surface keep today's text-only notice. App is the
+   * sole owner of the action (P3-398): the handler dismisses the overlay,
+   * opens the Settings pane and registers the one-shot relay focus request. */
+  onOpenSettings?: () => void;
 }
 
 /**
@@ -70,7 +76,7 @@ interface Props {
  * (open this address) — with the pairing QR demoted to step two. The two
  * steps carry visible labels so two QR codes never appear unlabeled.
  */
-export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock, startup }: Props) {
+export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webApp, pairLink, reach, onReachRetry, relayLink, installLocation, clock, startup, onOpenSettings }: Props) {
   const t = useT();
   // P2-189: copy feedback — brief, quiet, and never steals the QR's spotlight.
   const [copied, setCopied] = useState(false);
@@ -160,7 +166,16 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
                   </div>
                 </>
               ) : (
-                <p className="pair-webapp-unavailable">{t("pairWebAppUnavailable")}</p>
+                <p className="pair-webapp-unavailable">
+                  {t("pairWebAppUnavailable")}
+                  {/* P2-337: the labeled escape, only when the shell hands a
+                      handler — paneless surfaces keep the text-only notice. */}
+                  {onOpenSettings && (
+                    <button type="button" className="pair-webapp-openconfig" onClick={onOpenSettings}>
+                      {t("pairWebAppOpenSettings")}
+                    </button>
+                  )}
+                </p>
               )}
             </section>
 
