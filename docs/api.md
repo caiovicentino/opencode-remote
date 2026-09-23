@@ -221,6 +221,22 @@ Set `OCR_READINESS_DISABLE=off|0|false` to turn revalidation off entirely;
 Each actually re-done probe logs exactly one line with the capability name
 and the resulting state — never a path, a resolved binary or env content.
 
+### `/api/health` — uploads-volume verdict (P2-215, P2-347)
+
+`GET /api/health` carries the additive disk-space verdict of the volume
+hosting the uploads root — `diskState` (`ok` | `low` | `critical` | `unknown`
+— the more severe of a bytes rule and a fraction rule: warning below 2 GB
+free or 10% free, critical below 500 MB or 5%) and `diskMessage` (one static
+pt-BR phrase; never a path, URL or raw byte count). Since P2-347 it also
+carries `diskCheckedAt` (ISO instant, `null` before the first reading): when
+the verdict was last taken. The reading targets the uploads directory
+(`statfs`), fires once at boot, rides the retention janitor's existing cycle
+and is re-read lazily at the upload surface itself — at most once per
+`OCR_READINESS_MIN_MS`, honoring `OCR_READINESS_DISABLE`, with no new timer.
+A stale healthy verdict is re-read too (free space only shrinks), a failed
+reading lands in the neutral `unknown`, and `OCR_DISK_FULL=1` forces
+`critical` for deterministic tests — including the upload refusal.
+
 ### `/api/health` — browse-readiness verdict (P2-284)
 
 `GET /api/health` adds three additive fields for the browse capability (no
@@ -517,6 +533,15 @@ negative, zero, fractional or above the 2000 MB ceiling) is fail-closed at
 boot: one error line per problem, exit code 1, no listener. Refusal log lines
 carry only the route and the refused size — never chunk content, full ids,
 tokens or session ids.
+
+Since P2-347 both upload routes first re-read the volume hosting the uploads
+directory (lazily, at most once per `OCR_READINESS_MIN_MS` — the shared
+readiness knobs, no new timer) and, when the verdict is **critical**, answer
+**507** with the disk verdict's own pt-BR phrase (the same one
+`GET /api/health` serves) BEFORE any byte is staged or written. `ok`, `low`
+and an unknown verdict keep every behavior above unchanged, and the
+documented `OCR_DISK_FULL=1` hatch forces the refusal for deterministic
+tests.
 
 ## Download start limits (P2-314)
 

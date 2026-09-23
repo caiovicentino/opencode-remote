@@ -203,16 +203,24 @@ private. That is the product: **local power, remote control, zero trust**.
   whichever is more severe wins: **warning** below 2 GB free or 10% of the
   volume free, **critical** below 500 MB free or 5% of the volume free. The
   indicator describes the machine hosting the daemon — never the phone — is
-  read once at boot and then on the same cycle as the artifacts retention
-  janitor. Since P3-462 the chat composer consults the same verdict from the
+  read once at boot, then on the same cycle as the artifacts retention
+  janitor, and since P2-347 also lazily at the upload surface itself (at most
+  once per `OCR_READINESS_MIN_MS`, honoring the documented
+  `OCR_READINESS_DISABLE` kill switch, with no new timer). Since P3-462 the
+  chat composer consults the same verdict from the
   settings read it already performs (no new poll): with **critical** the
   attach button is disabled beside one short line under the composer (the
   machine's own phrase, verbatim, or the app's static line when the machine
   sent none); with **low** only a discreet warning renders, nothing is
   blocked; with **ok** or an unknown verdict the composer stays exactly what
   it was. Everything else — sending, voice, camera, every other control —
-  keeps the P2-215 fail-open discipline: only attaching is gated. The same
-  verdict rides `GET /api/health` (`diskState` / `diskMessage`) and
+  keeps the P2-215 fail-open discipline: only attaching is gated. On the
+  daemon side P2-347 adds the matching backstop: with **critical** a new
+  upload is refused up front with HTTP 507 and the machine's own phrase
+  instead of letting the write fail mid-file with a raw filesystem error —
+  `ok`, `low` and an unknown verdict keep every route exactly as before. The
+  same verdict rides `GET /api/health` (`diskState` / `diskMessage`, plus the
+  additive `diskCheckedAt` instant of the last reading) and
   `GET /__ocr/settings` (`disk`). To free
   space on that machine, remove or archive large files (old session
   artifacts under `~/.opencode-remote/artifacts/` are trimmed automatically

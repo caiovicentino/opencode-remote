@@ -139,8 +139,11 @@ remoto, zero confiança**.
   conversa. Dois limiares são acompanhados, e o mais severo vence: **aviso**
   abaixo de 2 GB livres ou 10% do volume livre, **crítico** abaixo de 500 MB
   livres ou 5% do volume livre. O indicador descreve a máquina que hospeda o
-  daemon — nunca o celular — é lido uma vez no boot e depois no mesmo ciclo
-  do janitor de retenção de artifacts. Desde a P3-462 o composer do chat
+  daemon — nunca o celular — é lido uma vez no boot, depois no mesmo ciclo
+  do janitor de retenção de artifacts e, desde a P2-347, também de forma
+  preguiçosa na própria superfície de upload (no máximo uma vez por
+  `OCR_READINESS_MIN_MS`, respeitando o kill switch documentado
+  `OCR_READINESS_DISABLE`, sem timer novo). Desde a P3-462 o composer do chat
   consulta o mesmo veredito na leitura de settings que ele já faz (nenhum
   poll novo): com **crítico** o botão de anexo fica desabilitado ao lado de
   uma linha curta sob o composer (a frase da própria máquina, literal, ou a
@@ -148,8 +151,14 @@ remoto, zero confiança**.
   aparece só um aviso discreto, nada é bloqueado; com **ok** ou veredito
   desconhecido o composer continua exatamente como era. Todo o resto —
   envio, voz, câmera, todos os outros controles — mantém a disciplina
-  fail-open da P2-215: só o anexo é barrado. O mesmo veredito viaja em
-  `GET /api/health` (`diskState` / `diskMessage`) e em `GET /__ocr/settings`
+  fail-open da P2-215: só o anexo é barrado. No lado do daemon a P2-347
+  acrescenta o contrapeso: com **crítico** um novo upload é recusado já no
+  início, com HTTP 507 e a frase da própria máquina, em vez de a gravação
+  falhar no meio do arquivo com um erro cru do sistema de arquivos —
+  `ok`, `low` e veredito desconhecido mantêm todas as rotas como eram. O
+  mesmo veredito viaja em
+  `GET /api/health` (`diskState` / `diskMessage`, mais o instant aditivo
+  `diskCheckedAt` da última leitura) e em `GET /__ocr/settings`
   (`disk`). Para liberar espaço nessa máquina, remova ou arquive arquivos
   grandes (os artifacts de sessões antigas em
   `~/.opencode-remote/artifacts/` são aparados automaticamente pelo janitor

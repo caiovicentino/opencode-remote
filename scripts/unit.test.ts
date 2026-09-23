@@ -152,6 +152,7 @@ import {
   DISK_WARN_FREE_FRACTION,
   diskVerdict,
 } from "../apps/daemon/src/diskguard";
+import { diskProbePlan, diskStateFromReading, uploadDiskGate } from "../apps/daemon/src/diskspace";
 import { rewriteFeedPort } from "../apps/daemon/src/feedport";
 import { createRelayRetry, RELAY_RETRY_CAP_MS } from "../apps/daemon/src/relayretry";
 import { nodeStateFileFs, writeStateAtomic, type StateFileFs } from "../apps/daemon/src/statefile";
@@ -26043,6 +26044,217 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       settingsSrc.includes("disk-hint") &&
       !/disabled=\{[^}]*disk/.test(settingsSrc) &&
       /deliberately fails open/i.test(settingsSrc),
+  );
+}
+
+// --- P2-347: uploads-volume lazy revalidation + upload gate (diskspace.ts) ----
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const diskspaceSrc = src(["apps", "daemon", "src", "diskspace.ts"]);
+  const indexSrc = src(["apps", "daemon", "src", "index.ts"]);
+
+  // --- the classifier's exact limits (diskguard.ts stays the ONE classifier —
+  // P2-215 already pinned zero totals, null readings and non-finite values) --
+  check(
+    "P2-347: exactly at the warn bytes is ok, one byte under is low (fraction stays ok on a 10x volume)",
+    diskVerdict(DISK_WARN_FREE_BYTES, 10 * DISK_WARN_FREE_BYTES).state === "ok" &&
+      diskVerdict(DISK_WARN_FREE_BYTES - 1, 10 * DISK_WARN_FREE_BYTES).state === "low",
+  );
+  check(
+    "P2-347: exactly at the alert bytes is low, one byte under is critical (fraction stays ok on a 10x volume)",
+    diskVerdict(DISK_ALERT_FREE_BYTES, 10 * DISK_ALERT_FREE_BYTES).state === "low" &&
+      diskVerdict(DISK_ALERT_FREE_BYTES - 1, 10 * DISK_ALERT_FREE_BYTES).state === "critical",
+  );
+  check(
+    "P2-347: exactly at the warn fraction is ok, one byte under is low (bytes stay roomy)",
+    diskVerdict(8 * DISK_WARN_FREE_BYTES, 80 * DISK_WARN_FREE_BYTES).state === "ok" &&
+      diskVerdict(8 * DISK_WARN_FREE_BYTES - 1, 80 * DISK_WARN_FREE_BYTES).state === "low",
+  );
+  check(
+    "P2-347: exactly at the alert fraction is low, one byte under is critical (bytes stay roomy)",
+    diskVerdict(4 * DISK_WARN_FREE_BYTES, 80 * DISK_WARN_FREE_BYTES).state === "low" &&
+      diskVerdict(4 * DISK_WARN_FREE_BYTES - 1, 80 * DISK_WARN_FREE_BYTES).state === "critical",
+  );
+  check(
+    "P2-347: zero total and a failed reading land in the neutral unknown",
+    diskVerdict(DISK_WARN_FREE_BYTES, 0).state === "unknown" && diskVerdict(null, null).state === "unknown",
+  );
+  check(
+    "P2-347: the reading surface delegates to the ONE classifier — identical verdicts at every boundary",
+    JSON.stringify(diskStateFromReading(DISK_WARN_FREE_BYTES, 10 * DISK_WARN_FREE_BYTES)) ===
+      JSON.stringify(diskVerdict(DISK_WARN_FREE_BYTES, 10 * DISK_WARN_FREE_BYTES)) &&
+      JSON.stringify(diskStateFromReading(DISK_ALERT_FREE_BYTES - 1, 10 * DISK_ALERT_FREE_BYTES)) ===
+        JSON.stringify(diskVerdict(DISK_ALERT_FREE_BYTES - 1, 10 * DISK_ALERT_FREE_BYTES)) &&
+      JSON.stringify(diskStateFromReading(null, null)) === JSON.stringify(diskVerdict(null, null)) &&
+      indexSrc.includes("diskStateFromReading("),
+  );
+
+  // --- the re-read throttle (pure, behavioral): the second read inside the
+  // window is held; a stale reading is re-read even when it said ok, because
+  // free space only ever shrinks — that asymmetry is the whole point --------
+  const MIN = 60_000;
+  const now = 1_700_000_000_000;
+  const plan = (probedAt: number, limits = { minIntervalMs: MIN, disabled: false }) =>
+    diskProbePlan(probedAt, now, limits);
+  check(
+    "P2-347: a fresh reading is reused — the second read inside the window is held",
+    plan(now - MIN + 1).action === "reuse" && plan(now - MIN + 1).reason === "fresh",
+  );
+  check(
+    "P2-347: exactly at the interval the reading is stale and re-read",
+    plan(now - MIN).action === "redo" && plan(now - MIN).reason === "stale",
+  );
+  check(
+    "P2-347: a stale healthy reading is re-read too (free space only shrinks)",
+    plan(now - MIN - 1).action === "redo" && plan(now - MIN - 1).reason === "stale",
+  );
+  check(
+    "P2-347: a route call before the boot reading landed re-reads immediately (probedAt=0)",
+    plan(0).action === "redo" && plan(0).reason === "stale",
+  );
+  check(
+    "P2-347: the documented kill switch freezes any reading (OCR_READINESS_DISABLE)",
+    plan(0, { minIntervalMs: MIN, disabled: true }).reason === "kill-switch" &&
+      plan(now - 10 * MIN, { minIntervalMs: MIN, disabled: true }).reason === "kill-switch",
+  );
+  check(
+    "P2-347: non-finite instants reuse the cached reading instead of guessing",
+    plan(NaN).reason === "invalid-instant" &&
+      plan(now, { minIntervalMs: NaN, disabled: false }).reason === "invalid-instant" &&
+      diskProbePlan(now, NaN, { minIntervalMs: MIN, disabled: false }).reason === "invalid-instant",
+  );
+  check(
+    "P2-347: a future probedAt clamps to age zero and is reused",
+    plan(now + 5_000).action === "reuse" && plan(now + 5_000).reason === "fresh",
+  );
+
+  // --- the upload gate (pure, behavioral): critical refuses with the verdict's
+  // OWN phrase (the same one /api/health serves) and HTTP 507; ok, low and
+  // unknown keep today's behavior; junk never invents a refusal -------------
+  const critical = diskVerdict(0, 1);
+  const refused = uploadDiskGate(critical);
+  check(
+    "P2-347: a critical verdict refuses with 507 carrying the same phrase /api/health serves",
+    refused !== null && refused.status === 507 && refused.error === critical.message,
+  );
+  check(
+    "P2-347: ok, low and unknown keep today's behavior — no refusal",
+    uploadDiskGate(diskVerdict(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES)) === null &&
+      uploadDiskGate(diskVerdict(8 * DISK_WARN_FREE_BYTES, 100 * DISK_WARN_FREE_BYTES)) === null &&
+      uploadDiskGate(diskVerdict(null, null)) === null,
+  );
+  check(
+    "P2-347: a malformed verdict never invents a refusal (fail-open, P2-215 posture)",
+    uploadDiskGate(null) === null &&
+      uploadDiskGate(undefined) === null &&
+      uploadDiskGate({ state: "junk", message: "x" }) === null &&
+      uploadDiskGate({ state: "critical", message: "" }) === null &&
+      uploadDiskGate({ state: "critical", message: 42 as unknown as string }) === null,
+  );
+  check(
+    "P2-347: the refusal phrase carries no path and no raw byte count",
+    refused !== null && !refused.error.includes("/") && !refused.error.includes("\\") && !/\d{6,}/.test(refused.error),
+  );
+
+  // --- module purity: importing it must never boot a daemon ------------------
+  const code = diskspaceSrc.replace(/\/\/.*$/gm, "");
+  check(
+    "P2-347: diskspace.ts is pure (no node:fs/child_process/http/os/path, no ws, no timers, no require)",
+    !/node:(fs|child_process|http|os|path)/.test(code) &&
+      !/"ws"/.test(code) &&
+      !code.includes("setInterval") &&
+      !code.includes("setTimeout") &&
+      !code.includes("require(") &&
+      !code.includes("await import("),
+  );
+
+  // --- real index.ts wiring ---------------------------------------------------
+  // the reading targets the uploads directory: the async boot/janitor probe
+  // AND the synchronous lazy re-read both statfs UPLOADS_ROOT
+  check(
+    "P2-347: the real reading is statfs on the uploads directory (boot probe and lazy re-read)",
+    indexSrc.includes("statfs(UPLOADS_ROOT,") && indexSrc.includes("statfsSync(UPLOADS_ROOT)"),
+  );
+  // the lazy re-read rides the shared readiness knobs — the same window and
+  // the same kill switch every other readiness uses (P2-250 pattern) — and
+  // adds no timer (the P2-215 assertions above already pin the count at 5)
+  check(
+    "P2-347: the lazy re-read uses the shared readiness knobs and no new timer",
+    /const plan = diskProbePlan\(diskProbedAt, Date\.now\(\), readinessKnobs\);/.test(indexSrc) &&
+      !indexSrc.split("\n").some((l) => l.includes("setInterval") && /disk|upload/i.test(l)),
+  );
+  // the upload gate composes the pure gate with the hatch-aware verdict —
+  // exactly two call sites (the two upload routes), never the transcribe one
+  check(
+    "P2-347: the gate composes diskStatus() so the OCR_DISK_FULL hatch forces the refusal too",
+    (indexSrc.match(/uploadDiskGate\(diskStatus\(\)\)/g) ?? []).length === 2,
+  );
+  const chunkAt = indexSrc.indexOf('"/__ocr/upload/chunk" && req.method === "POST"');
+  const chunkBlock = indexSrc.slice(chunkAt, chunkAt + 800);
+  check(
+    "P2-347: the chunk route re-probes and gates BEFORE any byte is staged or retained",
+    chunkBlock.indexOf("maybeReprobeUploadsDisk()") >= 0 &&
+      chunkBlock.indexOf("uploadDiskGate(diskStatus())") >= 0 &&
+      chunkBlock.indexOf("return stageChunk(") > chunkBlock.indexOf("uploadDiskGate(diskStatus())") &&
+      chunkBlock.includes("body: { error: gate.error }"),
+  );
+  const completeAt = indexSrc.indexOf('"/__ocr/upload/complete" && req.method === "POST"');
+  const completeBlock = indexSrc.slice(completeAt, completeAt + 2200);
+  const gateAt = completeBlock.indexOf("uploadDiskGate(diskStatus())");
+  const writeAt = completeBlock.indexOf("writeFileSync(path, buf)");
+  check(
+    "P2-347: the complete route gates BEFORE any byte is written",
+    completeBlock.indexOf("maybeReprobeUploadsDisk()") >= 0 && gateAt >= 0 && writeAt > gateAt,
+  );
+  check(
+    "P2-347: the transcribe staging route keeps today's behavior (out of scope, not gated)",
+    !indexSrc
+      .slice(indexSrc.indexOf('"/__ocr/transcribe/chunk" && req.method === "POST"'), indexSrc.indexOf('"/__ocr/transcribe/chunk" && req.method === "POST"') + 200)
+      .includes("maybeReprobeUploadsDisk") &&
+      indexSrc.includes('return stageChunk(req, "/__ocr/transcribe/chunk");'),
+  );
+
+  // /api/health keeps every previous key and gains exactly one: diskCheckedAt
+  const healthStart = indexSrc.indexOf("      send(200, {");
+  const healthEnd = indexSrc.indexOf("      });", indexSrc.indexOf("ttsCheckedAt", healthStart));
+  const healthKeys = [
+    ...indexSrc
+      .slice(healthStart, healthEnd)
+      .matchAll(/^        ([A-Za-z_][A-Za-z0-9_]*):/gm),
+  ].map((m) => m[1]!);
+  const PREVIOUS_KEYS = [
+    "healthy",
+    "version",
+    "machine",
+    "opencodeHealthy",
+    "opencode",
+    "relayProtocol",
+    "relayRetry",
+    "relay",
+    "pairingWindowOpen",
+    "diskState",
+    "diskMessage",
+    "docConvertState",
+    "docConvertMessage",
+    "docConvertExts",
+    "docConvertCheckedAt",
+    "browseState",
+    "browseMessage",
+    "browseCheckedAt",
+    "voiceState",
+    "voiceMessage",
+    "voiceCheckedAt",
+    "ttsState",
+    "ttsMessage",
+    "ttsCheckedAt",
+  ];
+  check(
+    "P2-347: /api/health keeps every previous key and gains exactly one (diskCheckedAt)",
+    PREVIOUS_KEYS.every((k) => healthKeys.includes(k)) &&
+      healthKeys.length === PREVIOUS_KEYS.length + 1 &&
+      healthKeys.includes("diskCheckedAt") &&
+      indexSrc.includes("diskCheckedAt: readinessCheckedAt(diskProbedAt)"),
   );
 }
 
