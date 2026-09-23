@@ -187,12 +187,17 @@ import { buildPairLink, PAIR_LINK_HASH_ROUTE, PAIR_LINK_MAX_LEN } from "../apps/
 import { hasAppMarker, probeVerdict, WEB_REACH_TIMEOUT_MS } from "../apps/desktop/src/webreach";
 import {
   RELAY_PROBE_BODY_MAX,
+  RELAY_PROBE_EXTRA_READS,
   RELAY_PROBE_TIMEOUT_MS,
   relayHealthUrl,
+  relayInstanceIdFromBody,
   relayProbeErrorName,
   relayProbeVerdict,
+  relayReplicaVerdict,
+  sanitizeInstanceId,
   type RelayProbeInput,
 } from "../apps/desktop/src/relayprobe";
+import { isValidInstanceId } from "../apps/relay/src/instanceid";
 import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
 import { linkVerdict, sanitizeRedialVerdict, sanitizeRelayProtocolState, type RelayLinkFacts, type RelayRedialOutcome } from "../apps/desktop/src/relaylink";
 import { TRAY_TIP_MAX_CHARS, trayStatus } from "../apps/desktop/src/traystatus";
@@ -23961,10 +23966,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     relayProbeVerdict(input({ errorName: "TimeoutError" })), // timeout
     relayProbeVerdict(input({ errorName: "net::ERR_SOMETHING_ELSE" })), // unreachable
     relayProbeVerdict(input({ raw: "" })), // invalid
+    // P2-344: the additive split-replicas state — produced by the replica
+    // sampler (relayReplicaVerdict), never by relayProbeVerdict itself.
+    relayReplicaVerdict(["replica-a", "replica-b"]), // split-replicas
   ];
-  const everyState = ["ok", "protocol-mismatch", "protocol-outdated", "draining", "not-a-relay", "dns", "refused", "tls", "timeout", "unreachable", "invalid"];
+  const everyState = ["ok", "protocol-mismatch", "protocol-outdated", "draining", "not-a-relay", "dns", "refused", "tls", "timeout", "unreachable", "invalid", "split-replicas"];
   check(
-    "P2-332: the classifier answers exactly the eleven documented states",
+    "P2-344: the relay states answer exactly the twelve documented values — the eleven probe states plus the additive split-replicas",
     allVerdicts.map((v) => v.state).join(",") === everyState.join(","),
   );
   check(
@@ -24818,6 +24826,194 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-338: the overlay renders incompatible through the same warn class — the calm trio is unchanged",
     /relayLink\.state === "connected" \|\| relayLink\.state === "local" \|\| relayLink\.state === "unknown"/.test(overlaySrc) &&
       overlaySrc.includes("pair-relaylink-warn"),
+  );
+}
+
+// --- P2-344: relay replica sampling — one address must not hide two relays -----
+
+{
+  // The relay publishes the opaque per-instance id on /healthz (P3-401). Two
+  // replicas behind one public address split every room in half and pairing
+  // breaks in silence while every individual probe looks green. The verdict
+  // table below is the full contract of relayReplicaVerdict: only a
+  // divergence between at least two SANITIZED values may answer
+  // split-replicas; every other input keeps today's verdict (ok) — the
+  // P2-338 fail-closed lesson applied to the identity sampler.
+  check(
+    "P2-344: two equal valid ids → ok (one stable instance answers)",
+    relayReplicaVerdict(["replica-a", "replica-a"]).state === "ok",
+  );
+  check(
+    "P2-344: two divergent valid ids → split-replicas (the silent two-replica trap made visible)",
+    relayReplicaVerdict(["replica-a", "replica-b"]).state === "split-replicas",
+  );
+  check(
+    "P2-344: three reads — equal, equal, divergent → split-replicas (sampling continues while equal)",
+    relayReplicaVerdict(["replica-a", "replica-a", "replica-b"]).state === "split-replicas" &&
+      relayReplicaVerdict(["replica-a", "replica-b", "replica-c"]).state === "split-replicas",
+  );
+  check(
+    "P2-344: a single valid id → ok (one read can never prove a split)",
+    relayReplicaVerdict(["replica-a"]).state === "ok",
+  );
+  check(
+    "P2-344: empty list, undefined and null input → ok, never a verdict invented from nothing",
+    relayReplicaVerdict([]).state === "ok" &&
+      relayReplicaVerdict(undefined).state === "ok" &&
+      relayReplicaVerdict(null).state === "ok" &&
+      relayReplicaVerdict("replica-a").state === "ok",
+  );
+  check(
+    "P2-344: absent and null values are dropped — a legacy replica beside a current one stays calm, two current ones split",
+    relayReplicaVerdict([undefined, undefined]).state === "ok" &&
+      relayReplicaVerdict([null, null]).state === "ok" &&
+      relayReplicaVerdict([undefined, null]).state === "ok" &&
+      relayReplicaVerdict(["replica-a", undefined, null]).state === "ok" &&
+      relayReplicaVerdict(["replica-a", undefined, "replica-b"]).state === "split-replicas",
+  );
+  check(
+    "P2-344: values outside the closed grammar are dropped — space, underscore, dot, empty, non-ASCII, non-string",
+    relayReplicaVerdict(["replica a", "replica_a", "replica.a", "", "replica-é", 42, {}, true]).state === "ok" &&
+      // an out-of-grammar neighbor cannot masquerade as a second replica
+      relayReplicaVerdict(["replica-a", "replica a"]).state === "ok",
+  );
+  check(
+    "P2-344: the length boundary is exact — 64 characters is inside the grammar, 65 is out",
+    relayReplicaVerdict(["x".repeat(64), "replica-a"]).state === "split-replicas" &&
+      relayReplicaVerdict(["x".repeat(65), "replica-a"]).state === "ok",
+  );
+
+  // the split verdict carries the sibling static pair; the ok path reuses the
+  // probe's own ok phrase so nothing new is invented for the calm path
+  const splitVerdict = relayReplicaVerdict(["replica-a", "replica-b"]);
+  const replicaOk = relayReplicaVerdict(["replica-a", "replica-a"]);
+  const okProbePhrase = relayProbeVerdict({
+    raw: "wss://relay.example.com:8788",
+    status: 200,
+    redirected: false,
+    body: JSON.stringify({ ok: true, version: "1.2.3", protocol: RELAY_WIRE_PROTOCOL }),
+    errorName: "",
+  });
+  check(
+    "P2-344: split-replicas says more than one instance answers and pairing fails until one remains — static pt + en, no URL, host, port, id or digits",
+    splitVerdict.message.includes("mais de uma instância") &&
+      splitVerdict.message.includes("o pareamento vai falhar") &&
+      splitVerdict.messageEn.includes("more than one relay instance answers") &&
+      splitVerdict.messageEn.includes("pairing will fail") &&
+      !splitVerdict.message.includes("/") &&
+      !splitVerdict.messageEn.includes("/") &&
+      !splitVerdict.message.includes("http") &&
+      !splitVerdict.messageEn.includes("http") &&
+      !splitVerdict.message.includes("127.0.0.1") &&
+      !splitVerdict.messageEn.includes("127.0.0.1") &&
+      !/\d/.test(splitVerdict.message) &&
+      !/\d/.test(splitVerdict.messageEn) &&
+      !splitVerdict.message.includes("replica-a") &&
+      !splitVerdict.messageEn.includes("replica-b"),
+  );
+  check(
+    "P2-344: the ok replica verdict is byte-for-byte the probe's ok phrase — the caller keeps the original verdict anyway",
+    replicaOk.message === okProbePhrase.message && replicaOk.messageEn === okProbePhrase.messageEn,
+  );
+
+  // PARITY (P2-338 lesson): the closed instance-id grammar is duplicated into
+  // the desktop on purpose (a cross-app import would drag server sources into
+  // the shell build). This test reads the REAL apps/relay/src/instanceid.ts
+  // and fails the moment the two definitions drift apart.
+  const instanceIdSrc = readFileSync(join(import.meta.dirname, "..", "apps", "relay", "src", "instanceid.ts"), "utf8");
+  const relayProbeSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "relayprobe.ts"), "utf8");
+  const relayMax = Number((instanceIdSrc.match(/export const INSTANCE_ID_MAX_LENGTH = (\d+)/) ?? [])[1]);
+  const relayPattern = (instanceIdSrc.match(/export const INSTANCE_ID_PATTERN = (\/\^[^;]+\/)/) ?? [])[1];
+  const probeMax = Number((relayProbeSrc.match(/const INSTANCE_ID_MAX_LENGTH = (\d+)/) ?? [])[1]);
+  const probePattern = (relayProbeSrc.match(/const INSTANCE_ID_PATTERN = (\/\^[^;]+\/)/) ?? [])[1];
+  check(
+    "P2-344: parity — the desktop sampler's grammar is read from the REAL instanceid.ts source (same length ceiling and same character set)",
+    relayMax === 64 && probeMax === relayMax && relayPattern === probePattern && probePattern === "/^[A-Za-z0-9-]+$/",
+  );
+  // behavior parity against the REAL module: for every value in the table the
+  // desktop sanitizer must agree with isValidInstanceId exactly.
+  const parityTable: unknown[] = [
+    "replica-a",
+    "fly-9f3c1b",
+    "relay-i-deadbeefdeadbeef",
+    "a",
+    "-",
+    "A1-b2",
+    "",
+    "  ",
+    "replica a",
+    "replica_a",
+    "replica.a",
+    "replica-é",
+    "x".repeat(64),
+    "x".repeat(65),
+    null,
+    undefined,
+    42,
+    true,
+    {},
+    ["replica-a"],
+  ];
+  for (const v of parityTable) {
+    check(
+      `P2-344: parity behavior — sanitizeInstanceId(${JSON.stringify(v)}) agrees with the real isValidInstanceId`,
+      sanitizeInstanceId(v) === (isValidInstanceId(v) ? (v as string) : null),
+    );
+  }
+
+  // real-source assertions over the REAL main.ts wiring: the sampling runs
+  // only after an ok FIRST read, spends at most two more sequential reads of
+  // the same healthz with the same ceilings, and can never mask a non-ok
+  // verdict or invent one on the ok path.
+  const mainSrc344 = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-344: the sampling runs only after an ok FIRST read — every other state returns before any extra read",
+    mainSrc344.includes('if (verdict.state !== "ok") return verdict;'),
+  );
+  check(
+    "P2-344: at most RELAY_PROBE_EXTRA_READS sequential extra reads, with early exit once divergence is proven",
+    /for \(let extra = 0; extra < RELAY_PROBE_EXTRA_READS && replica\.state !== "split-replicas"; extra\+\+\)/.test(mainSrc344) &&
+      mainSrc344.includes("ids.push(await relayInstanceIdSample(healthUrl))") &&
+      RELAY_PROBE_EXTRA_READS === 2,
+  );
+  check(
+    "P2-344: each sample dials the SAME healthz with the SAME 5s ceiling and 4KB body cap as the first read",
+    (mainSrc344.match(/net\.fetch\(healthUrl/g) ?? []).length === 2 &&
+      (mainSrc344.match(/AbortSignal\.timeout\(RELAY_PROBE_TIMEOUT_MS\)/g) ?? []).length === 2 &&
+      (mainSrc344.match(/readRelayBodyPrefix\(res, RELAY_PROBE_BODY_MAX\)/g) ?? []).length === 2 &&
+      mainSrc344.includes("async function relayInstanceIdSample(healthUrl: string): Promise<unknown>"),
+  );
+  check(
+    "P2-344: the first read's own instanceId enters the sample list before any extra read",
+    mainSrc344.includes("const ids: unknown[] = [relayInstanceIdFromBody(body)];"),
+  );
+  check(
+    "P2-344: divergence flips the verdict to split-replicas; the ok path returns the first verdict byte for byte",
+    mainSrc344.includes('return replica.state === "split-replicas" ? replica : verdict;'),
+  );
+  check(
+    "P2-344: the raw instanceId leaves the body shape alone — no trimming, no guessing, the closed grammar sanitizes",
+    relayInstanceIdFromBody(JSON.stringify({ ok: true, instanceId: "replica-a" })) === "replica-a" &&
+      relayInstanceIdFromBody(JSON.stringify({ ok: true })) === undefined &&
+      relayInstanceIdFromBody("") === undefined &&
+      relayInstanceIdFromBody("<html>nginx</html>") === undefined &&
+      relayInstanceIdFromBody('{"instanceId":42}') === 42,
+  );
+
+  // the closed set consumed by SettingsView accepts the additive state with
+  // no new branch: the existing phrase pick renders the verdict's own static
+  // phrase and the existing else-branch paints danger — every other state's
+  // behavior is byte for byte what it was.
+  const settingsSrc344 = readFileSync(
+    join(import.meta.dirname, "..", "apps", "web", "src", "components", "SettingsView.tsx"),
+    "utf8",
+  );
+  check(
+    "P2-344: the closed set consumed by SettingsView documents the additive split-replicas state — and needs no new branch (phrase pick + danger else-branch already cover it)",
+    settingsSrc344.includes("split-replicas state of P2-344") &&
+      settingsSrc344.includes("split-replicas renders the verdict's own static phrase") &&
+      settingsSrc344.includes("relayTestPhrase(relayTestResult.verdict)") &&
+      (settingsSrc344.match(/split-replicas/g) ?? []).length === 2,
   );
 }
 

@@ -26,10 +26,14 @@ export interface RelaySettingWriteResult extends RelaySetting {
 
 /** P2-328: verdict of the relay card's "Test connection" probe (mirrors
  * apps/desktop/src/preload.ts / apps/desktop/src/relayprobe.ts). state is one
- * of the documented relayprobe table values; message/messageEn are the static
+ * of the documented relayprobe table values — now including the additive
+ * split-replicas state of P2-344 (more than one relay replica answers the
+ * probed address); message/messageEn are the static
  * phrases the module ships — the view picks by language and renders verbatim,
  * except the two protocol states (P2-332), which speak through their own
- * i18n keys below so the copy is reviewed in the dict like every other line. */
+ * i18n keys below so the copy is reviewed in the dict like every other line.
+ * split-replicas renders the verdict's own static phrase and paints danger:
+ * pairing genuinely fails until one replica remains. */
 export interface RelayProbeResult {
   state: string;
   message: string;
