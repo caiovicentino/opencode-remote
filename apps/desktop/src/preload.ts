@@ -3,6 +3,7 @@ import type { MicAccessVerdict } from "./micaccess";
 import type { CameraAccessVerdict } from "./camaccess";
 import type { ScreenAccessVerdict } from "./screenaccess";
 import type { RelayProbeVerdict } from "./relayprobe";
+import type { RelayRedialOutcome } from "./relaylink";
 
 /** Result shape of the /api/browse proxy in apps/desktop/src/main.ts. */
 export interface DaemonBrowseResponse {
@@ -189,6 +190,11 @@ contextBridge.exposeInMainWorld("ocrDesktop", {
   // as typed (main decides; at most one probe in flight). No test-only hatch
   // under OCR_DESKTOP_SESSION: a hermetic session probes what it is given.
   testRelay: (url: string): Promise<RelayProbeVerdict> => ipcRenderer.invoke("app:relayTest", url),
+  // P2-340: Settings relay card "Reconnect now" — one best-effort anticipation
+  // of the daemon's relay redial, the SAME path the wake event uses
+  // (app:redialRelay → nudgeRelayRedial). Resolves with the sanitized
+  // closed-set verdict only; never a token, a URL or a port.
+  redialRelay: (): Promise<RelayRedialOutcome> => ipcRenderer.invoke("app:redialRelay"),
   // P2-189: the app address the phone opens — same read + validated write
   // shape as the relay setting (null clears the stored override; validation
   // happens in the main process).

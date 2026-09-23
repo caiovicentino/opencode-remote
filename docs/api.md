@@ -79,7 +79,11 @@ failed dial), `relay-close` (a floor the relay itself asked for via a 1013
 capacity or 4029 rate-limited close) or `protocol-mismatch` (a recorded
 wire-protocol mismatch, below — a documented 5-minute floor). Only a
 `relay-close` floor is never shortened by anything; the other floors may be
-anticipated by the wake redial route (P2-327, one anticipation per 10s).
+anticipated by the wake redial route (P2-327, one anticipation per 10s) —
+and since P2-340 also by the Settings relay card's **Reconnect now** button,
+which reuses the exact same wake POST and resolves with a sanitized
+closed-set verdict (redialing / throttled / already-dialing / not-needed /
+unavailable) instead of the raw answer.
 
 Since P2-303 the `relay` object also carries an additive machine-proxy
 verdict of the dial: `relayProxyState` is `direct` (today's path — no proxy

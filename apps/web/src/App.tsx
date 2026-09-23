@@ -201,6 +201,13 @@ interface DesktopBridge {
   /** P2-289: machine proxy — Settings card (desktop shell only). */
   getProxySetting?: () => Promise<ProxySetting>;
   setProxyChoice?: (choice: { mode: "system" | "direct" | "fixed"; address?: string }) => Promise<ProxySettingWriteResult>;
+  /** P2-340: Settings relay card "Reconnect now" — one best-effort redial of
+   * the daemon's relay link, the same path the wake event uses. The promise
+   * resolves with the sanitized closed-set verdict ("redialing" |
+   * "throttled" | "already-dialing" | "not-needed" | "unavailable"); absent
+   * on the phone and the pure browser (no bridge), so the button never
+   * renders there. */
+  redialRelay?: () => Promise<string>;
   /** P2-312: microphone-permission verdict (desktop shell only, mirrored in ChatView). */
   getMicAccess?: () => Promise<MicAccessVerdict | null>;
   /** P2-319: camera-permission verdict (desktop shell only, mirrored in QrScanner). */
@@ -1476,6 +1483,10 @@ export default function App() {
         // right now. Absent on the phone and the pure browser (no bridge, no
         // pairing state) — the prop is not passed and the line never renders.
         relayLink={pairingState?.relayLink ?? null}
+        // P2-340: the "Reconnect now" handler — same bridge-optional pattern
+        // as every desktop-only prop above; the phone and the pure browser
+        // never pass it, so the button never renders there.
+        redialRelay={desktopBridge()?.redialRelay}
         // P2-337: the overlay escape's one-shot relay focus request — both
         // pane-mounted instances (paired + gate) carry it; the request is
         // consumed once and App resets the tick (no remount replay).
@@ -1690,6 +1701,9 @@ export default function App() {
         // whenever the shell bridge is present, so its status line follows the
         // pairing state like every other mount of this view.
         relayLink={pairingState?.relayLink ?? null}
+        // P2-340: same handler — the help screen's relay card offers the same
+        // action when the live state asks for it.
+        redialRelay={desktopBridge()?.redialRelay}
       />
     </div>
   );

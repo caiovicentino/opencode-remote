@@ -2213,6 +2213,38 @@ try {
           const sl1 = run("P3-453: 1440x900 relay-link shot", ["shot", settingsLinkShot1440, "1440", "900"], 15_000, localEnv);
           if (sl1.ok) check("P3-453: relay-link 1440x900 shot is a real PNG", pngSize(settingsLinkShot1440).join("x") === "1440x900");
 
+          // --- P2-340: "Reconnect now" beside the live relay link ---------------
+          // The status line said the state; the action now rides the SAME
+          // one-shot POST the wake path uses (app:redialRelay →
+          // nudgeRelayRedial → the daemon's own state guard + 10s throttle).
+          // In this hermetic boot the relay is the dead loopback address, so
+          // the live state is dialing — one of the three states that render
+          // the button. Selected by the copy-independent attribute (P3-421);
+          // the click resolves to a terminal closed-set verdict rendered as a
+          // static phrase — spinner gone, button idle again.
+          const redialUp = await waitProbe(
+            "P2-340: the redial button renders beside the dialing link line",
+            "(() => { const b = document.querySelector('[data-relay-redial]'); const l = document.querySelector('[data-relay-link-state]'); return (b ? 'btn' : 'none') + '|' + (l?.getAttribute('data-relay-link-state') ?? 'none'); })()",
+            (v) => v.replace(/"/g, "").trim() === "btn|dialing",
+            localEnv,
+            24,
+            500,
+          );
+          if (redialUp) {
+            run("P2-340: click Reconnect now (attribute selector)", ["click", "[data-relay-redial]"], 15_000, localEnv);
+            await waitProbe(
+              "P2-340: the click lands a terminal closed-set verdict",
+              "(() => { const r = document.querySelector('[data-relay-redial-result]'); const b = document.querySelector('[data-relay-redial]'); return (r?.getAttribute('data-relay-redial-result') ?? 'none') + '|' + (b?.disabled ? 'busy' : 'idle') + '|' + ((r?.textContent ?? '').length > 0); })()",
+              (v) => /^(redialing|throttled|already-dialing|not-needed|unavailable)\|idle\|true$/.test(v.replace(/"/g, "").trim()),
+              localEnv,
+              24,
+              500,
+            );
+            const redialShot1440 = join(shotsDir, "P2-340-redial-1440.png");
+            const rd1 = run("P2-340: 1440x900 redial shot", ["shot", redialShot1440, "1440", "900"], 15_000, localEnv);
+            if (rd1.ok) check("P2-340: redial 1440x900 shot is a real PNG", pngSize(redialShot1440).join("x") === "1440x900");
+          }
+
           const focusShot1440 = join(shotsDir, "P2-337-relay-focus-1440.png");
           const pf1 = run("P2-337: 1440x900 focused relay shot", ["shot", focusShot1440, "1440", "900"], 15_000, localEnv);
           if (pf1.ok) check("P2-337: focused relay 1440x900 shot is a real PNG", pngSize(focusShot1440).join("x") === "1440x900");
@@ -2254,6 +2286,25 @@ try {
           const settingsLinkShot390 = join(shotsDir, "P3-453-relay-link-390.png");
           const sl2 = run("P3-453: 390 relay-link shot", ["shot", settingsLinkShot390, "390", "844"], 15_000, localEnv);
           if (sl2.ok) check("P3-453: relay-link 390 shot is a real PNG", pngSize(settingsLinkShot390)[0] === 390);
+          // P2-340: the action survives the mobile remount — the button (and
+          // its copy-independent attribute) is still there at 390; the
+          // terminal verdict line rides the component state, so after a
+          // remount it shows the idle label again (the closed-set result is
+          // re-provable with one more click, never asserted stale here).
+          const redialAt390 = await waitProbe(
+            "P2-340: the redial button survives the mobile remount",
+            "(() => { const b = document.querySelector('[data-relay-redial]'); return (b ? 'btn|' + (b.disabled ? 'busy' : 'idle') : 'none'); })()",
+            (v) => v.replace(/"/g, "").trim() === "btn|idle",
+            localEnv,
+            12,
+            500,
+          );
+          if (redialAt390) {
+            run("P2-340: scroll the relay block into view (390 evidence)", ["ipc", "document.querySelector('[data-relay-setting]')?.scrollIntoView({ block: 'center' }) ?? 'gone'"], 15_000, localEnv);
+            const redialShot390 = join(shotsDir, "P2-340-redial-390.png");
+            const rd2 = run("P2-340: 390 redial shot", ["shot", redialShot390, "390", "844"], 15_000, localEnv);
+            if (rd2.ok) check("P2-340: redial 390 shot is a real PNG", pngSize(redialShot390)[0] === 390);
+          }
           // resize vehicle only — the settled 1440 evidence was already taken
           run("P2-337: resize back to desktop width", ["shot", join(shotsDir, "P2-337-resize-1440.png"), "1440", "900"], 15_000, localEnv);
           run("P2-337: re-open the overlay (Celular rail entry)", ["click", '[data-pane="phone"]'], 15_000, localEnv);

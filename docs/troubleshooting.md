@@ -403,6 +403,19 @@ per 10 s. Since P2-339 the same route also anticipates a recorded
 updated the app or the relay is exactly the human action that may shorten
 that wait.
 
+Since P2-340 that human click has a surface: the Settings relay card renders
+a **Reconnect now** button under the live status line whenever the link is
+connecting/reconnecting, refused or incompatible. It reuses the exact same
+wake POST (no timer, no new route, no poll), so the click behaves like a
+wake: the daemon's guard and the 10 s throttle protect the relay, a
+relay-asked backoff is always honored, and a protocol-mismatch floor (5
+minutes) is the one wait the click may legitimately shorten after you
+updated the app or the relay. The click resolves to a terminal verdict
+(reconnecting now / wait already in effect / already reconnecting / nothing
+to anticipate / the machine did not answer) — never a silent spinner, and
+the daemon's raw `{ action, reason }` answer never leaves the desktop
+process: the renderer only receives the sanitized closed-set verdict.
+
 ## Reauthentication in a loop: clock out of sync (RT-390)
 
 Handshakes now carry an authenticated creation timestamp. The daemon refuses a

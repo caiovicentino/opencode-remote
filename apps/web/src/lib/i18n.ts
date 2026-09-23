@@ -246,6 +246,17 @@ export const dict = {
     relayTest: "Test connection",
     relayTesting: "Testing…",
     relayTestFailed: "Could not test the connection — try again.",
+    // P2-340: settled verdicts of the relay card's "Reconnect now" — one
+    // static phrase per closed-set value (the button label and the spinner
+    // reuse the daemon-down banner's reconnectNow/reconnectTrying keys).
+    // Short, path-free, no URL, port, version number or raw error: the
+    // renderer only ever receives the closed-set word, never the daemon's
+    // raw reason.
+    relayRedialStarted: "Reconnecting to the relay now.",
+    relayRedialWaiting: "A wait is already in effect — try again in a few seconds.",
+    relayRedialAlreadyDialing: "Already reconnecting — hold on a moment.",
+    relayRedialNotNeeded: "Nothing to anticipate right now — the relay is in order.",
+    relayRedialFailed: "The machine did not answer the reconnect request — try again.",
     // P2-332: the two protocol verdicts of the relay probe. The mismatch one
     // is a real incompatibility (the daemon would never join); the outdated
     // one is calm by design — a relay that predates the protocol field keeps
@@ -1142,6 +1153,17 @@ export const dict = {
     relayTest: "Testar conexão",
     relayTesting: "Testando…",
     relayTestFailed: "Não foi possível testar a conexão — tente de novo.",
+    // P2-340: vereditos finais do "Reconectar agora" do bloco de relay —
+    // uma frase estática por valor do conjunto fechado (o rótulo do botão e o
+    // spinner reutilizam as chaves reconnectNow/reconnectTrying do banner de
+    // daemon caído). Curtas, sem caminho, sem URL, porta, número de versão ou
+    // erro cru: o renderer só recebe a palavra do conjunto fechado, nunca a
+    // resposta crua do daemon.
+    relayRedialStarted: "Reconectando ao relay agora.",
+    relayRedialWaiting: "Uma espera já está em curso — tente de novo em instantes.",
+    relayRedialAlreadyDialing: "Já reconectando — aguarde um instante.",
+    relayRedialNotNeeded: "Nada a antecipar agora — o relay está em ordem.",
+    relayRedialFailed: "A máquina não respondeu ao pedido de reconexão — tente de novo.",
     // P2-332: os dois vereditos de protocolo da sonda do relay. O mismatch é
     // uma incompatibilidade real (o daemon nunca entraria); o outdated é
     // calmo de propósito — um relay anterior ao campo de protocolo continua

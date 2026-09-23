@@ -114,6 +114,13 @@ interface Props {
    * line in the relay block exists only when the prop is present — those
    * surfaces keep today's card byte for byte. */
   relayLink?: { state: string; message: string } | null;
+  /** P2-340: desktop shell only — one best-effort redial of the daemon's
+   * relay link, the SAME path the wake event uses (app:redialRelay →
+   * nudgeRelayRedial). The promise resolves with the sanitized closed-set
+   * verdict ("redialing" | "throttled" | "already-dialing" | "not-needed" |
+   * "unavailable"); the phone and the pure browser never pass it, so the
+   * button never renders there. */
+  redialRelay?: () => Promise<string>;
 }
 
 interface Device {
@@ -225,11 +232,24 @@ function forcedRelayOk(): boolean | undefined {
   return localStorage.getItem("ocr.relayStateOverride") === "down" ? false : undefined;
 }
 
+/** P2-340: the closed-set redial verdicts the view can phrase — each maps to
+ * its own static i18n key (both locales carry the key); anything else (a
+ * legacy or lying shell) degrades to the failure phrase. The renderer never
+ * sees a raw action/reason from the daemon: only one of these five words
+ * ever crosses the bridge. */
+const REDIAL_RESULT_KEYS: Record<string, string> = {
+  redialing: "relayRedialStarted",
+  throttled: "relayRedialWaiting",
+  "already-dialing": "relayRedialAlreadyDialing",
+  "not-needed": "relayRedialNotNeeded",
+  unavailable: "relayRedialFailed",
+};
+
 function forcedAgentFound(): boolean | undefined {
   return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream, relayFocusTick, onRelayFocusConsumed, relayLink }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream, relayFocusTick, onRelayFocusConsumed, relayLink, redialRelay }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -307,6 +327,13 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
   // about the address now showing (stale-verdict race, review round 3).
   const [relayTesting, setRelayTesting] = useState(false);
   const [relayTestResult, setRelayTestResult] = useState<{ url: string; verdict: RelayProbeResult } | null>(null);
+  // P2-340: the "Reconnect now" action beside the live relay-link line — one
+  // click anticipates the daemon's relay backoff exactly like a wake does.
+  // The waiting state is the spinner; the result is ALWAYS terminal: one
+  // static phrase per closed-set verdict (an unknown value degrades to the
+  // failure phrase — fail-closed), never a spinner line.
+  const [redialPending, setRedialPending] = useState(false);
+  const [redialResult, setRedialResult] = useState<string | null>(null);
   // P2-189: app address the phone opens (desktop shell only) — same
   // draft/resolution discipline as the relay setting above.
   const [webApp, setWebApp] = useState<WebAppSetting | null>(null);
@@ -477,6 +504,22 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
       });
     } finally {
       setRelayTesting(false);
+    }
+  }
+
+  /** P2-340: anticipate the daemon's relay redial — the SAME one-shot POST
+   * the wake path uses, no timer, no route, no poll. Every outcome is one
+   * static terminal phrase (per closed-set verdict, REDIAL_RESULT_KEYS); a
+   * rejection from the bridge degrades to the failure phrase. */
+  async function redialNow() {
+    if (!redialRelay || redialPending) return;
+    setRedialPending(true);
+    try {
+      setRedialResult(await redialRelay());
+    } catch {
+      setRedialResult("unavailable");
+    } finally {
+      setRedialPending(false);
     }
   }
 
@@ -788,6 +831,31 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
                     ? t("pairRelayLinkLocal")
                     : relayLink.message}
               </p>
+            )}
+            {/* P2-340: the action the status line lacked — one click anticipates
+                the daemon's relay backoff through the SAME one-shot POST the
+                wake path uses (app:redialRelay, then nudgeRelayRedial).
+                Renders ONLY when App hands the handler AND the live state is
+                one of the three actionable states (dialing/refused/
+                incompatible): connected and local have nothing to anticipate,
+                and unknown or misconfigured stay quiet (a boot-refused
+                address is fixed by editing it below, not by redialing).
+                Selected by the copy-independent attribute (P3-421); the click
+                resolves to a settled closed-set verdict rendered as one
+                static phrase — an unknown value degrades to the failure
+                phrase. The phone and the pure browser never see any of it. */}
+            {redialRelay && relayLink && (relayLink.state === "dialing" || relayLink.state === "refused" || relayLink.state === "incompatible") && (
+              <div className="relay-redial-row">
+                <button data-relay-redial onClick={() => void redialNow()} disabled={redialPending} aria-busy={redialPending}>
+                  {redialPending && <span className="reconnect-spin" aria-hidden="true" />}
+                  {redialPending ? t("reconnectTrying") : t("reconnectNow")}
+                </button>
+                {redialResult !== null && (
+                  <p className="muted relay-redial-result" data-relay-redial-result={redialResult}>
+                    {t(REDIAL_RESULT_KEYS[redialResult] ?? "relayRedialFailed")}
+                  </p>
+                )}
+              </div>
             )}
             <div style={{ display: "flex", gap: 8 }}>
               <input

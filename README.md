@@ -1224,6 +1224,20 @@ whoever opens Settings to debug the phone's connection sees the live verdict
 without opening the pairing screen (the phone and the pure browser never
 show it: they have no shell to report the verdict).
 
+**Reconnect now (P2-340)**: the status line used to describe the state
+without offering anything to do about it. Since P2-340 the desktop Settings
+relay card renders a **Reconnect now** button right below the status line
+whenever the live state is **connecting/reconnecting**, **refused** or
+**incompatible** — the three states where a redial can actually help. One
+click asks the daemon (the same one-shot, bearer-gated loopback POST the
+wake reaction uses) to anticipate the reconnect wait: the daemon's own
+guard and a 10 s throttle protect the relay, and a backoff the relay itself
+asked for (capacity or rate-limited close) is always honored. The click
+resolves to a terminal verdict — reconnecting now, a wait already in
+effect, already reconnecting, nothing to anticipate, or the machine did
+not answer — so the action never ends in a silent spinner. The phone and
+the pure browser never show the button (no shell to carry the request).
+
 **Clock skew (P2-214)**: a machine whose clock is far off has its own failure
 mode — the phone's browser refuses the hosted relay's certificate (the
 validity window no longer covers the phone's "now"), the pairing window closes

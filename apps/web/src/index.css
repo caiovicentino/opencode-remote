@@ -2326,6 +2326,26 @@ button.desk-new:disabled {
   color: var(--warn);
 }
 
+/* P2-340: the relay card's "Reconnect now" — the quiet action beside the live
+   link line, same register as the card's other actions (plain bordered
+   button, existing tokens only; the spinner reuses .reconnect-spin, P2-112).
+   The terminal verdict line below is muted — one static phrase per
+   closed-set verdict, never a spinner line. */
+.relay-redial-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 8px;
+}
+.relay-redial-result {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 40ch;
+}
+
 /* P2-211: install-location status — one quiet line right below the
    relay-link line, same calm register as the P2-112 degraded card. Only the
    wrong-location states render (ok and the neutral unknown stay invisible);
