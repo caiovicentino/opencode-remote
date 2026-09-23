@@ -2569,6 +2569,24 @@ fraction of the fleet from the CLI with:
 gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20
 ```
 
+**Suspending or advancing a published release (P3-460)**: a release already
+on GitHub can move its rollout without republishing anything. From the repo
+root (with `gh` authenticated), `node apps/desktop/scripts/rollout.mjs <tag>
+<percent>` validates the percentage through the same shared validator,
+downloads only the four update feeds (`update-mac.json`,
+`update-mac-arm64.json`, `update-mac-x64.json`, `latest.yml`) from the
+release, rewrites just the percentage field through the pure module
+(`apps/desktop/scripts/rolloutrewrite.mjs` — digests, file names, version
+and every other byte stay untouched, verified by a post-surgery re-parse)
+and re-uploads the four feeds with `gh release upload --clobber`.
+Installers (zip/DMG/exe) and blockmaps are never downloaded or uploaded. A
+percentage of `0` suspends the rollout (the release brake — no machine is
+offered the version, even through an explicit check) and `100` releases it
+to everyone. An invalid percentage, a tag without the complete feed set, a
+divergent `update-mac.json` alias or a `gh` failure exits 1 listing the
+problem and uploads nothing. The runbook lives in docs/PILOT.md (release
+section).
+
 Whenever a feed is configured, the tray menu also gains two items (P3-019): a
 status line reflecting the latest check ("Update available — check for
 updates", "Update available — open release page", "Up to date", or the failure

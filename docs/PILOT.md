@@ -569,6 +569,36 @@ mergeadas pelo workflow sem intervenção humana.
    no dashboard (o veredito mais recente vence; um deploy limpo posterior apaga)
    e notifica o supervisor — nunca mais silêncio pós-rollback.
 
+## Runbook de release: suspender ou avançar o rollout gradual (P3-460)
+
+Uma release já publicada carrega o percentual de rollout nos próprios feeds —
+`rolloutPercent` nos três `update-mac*.json` (Squirrel.Mac) e
+`stagingPercentage` no `latest.yml` (Windows, o campo que o electron-updater
+lê). Suspender a distribuição ou avançá-la NÃO exige republicar instaladores
+(nenhum runner novo, nenhuma assinatura, nenhuma notarização): reescrever
+somente o percentual dos quatro feeds na release, com
+
+    node apps/desktop/scripts/rollout.mjs <tag> <percentual>
+
+- `0` — **suspender**: o freio da P2-342; nenhuma máquina recebe a versão,
+  nem através de um "Verificar atualizações" explícito;
+- `100` — **liberar para todos**;
+- qualquer inteiro 0..100 — percentual gradual (o cliente só oferece a
+  versão às máquinas cujo balde está abaixo do percentual).
+
+Como funciona (fail closed em todo o caminho): o CLI valida o valor pelo
+mesmo validador único da P3-458 (`apps/desktop/scripts/rolloutpercent.mjs`)
+ANTES de chamar `gh`; baixa os quatro feeds com `gh release download` (nunca
+zip, DMG, exe nem blockmaps); reescreve só o campo do percentual pelo módulo
+puro `apps/desktop/scripts/rolloutrewrite.mjs` — digests, nomes de arquivo,
+versão e todo o resto do documento ficam byte a byte; e reenvia os quatro
+feeds com `gh release upload --clobber`. Valor inválido, tag sem o conjunto
+completo de feeds, alias `update-mac.json` divergente do
+`update-mac-arm64.json` ou falha do `gh` saem com exit 1 listando o
+problema, sem enviar nada. Rodar na raiz do checkout de produção (o `gh`
+resolve o repo pelo remote do diretório corrente) com o `gh` autenticado
+(`GH_TOKEN` ou `gh auth login`).
+
 ## Budgets e kill switch
 
 - `~/.opencode-remote/pilot.json` (opcional): `maxTasksPerDay` (6), `maxDeploysPerDay` (6),

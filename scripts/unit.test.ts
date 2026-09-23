@@ -581,7 +581,7 @@ import { noteTierBOutcome, resetTierBSpawnStreak, runAgent, runAgentForRole, API
 
 import { GUARD_ALERT_THRESHOLD, clearGuardRejections, guardAlertDetail, noteGuardRejection, raiseGuardAlert, resetGuardAlerts } from "../apps/pilot/src/guardalert";
 
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, statSync, symlinkSync, utimesSync, lutimesSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, statSync, symlinkSync, utimesSync, lutimesSync, copyFileSync, chmodSync } from "node:fs";
 
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 
@@ -1022,6 +1022,8 @@ import {
   STAGING_YML_MODE,
 } from "../apps/desktop/scripts/update-feed.mjs";
 import { parseRolloutPercent, ROLLOUT_JSON_FIELD, ROLLOUT_YML_FIELD } from "../apps/desktop/scripts/rolloutpercent.mjs";
+import { rewriteFeedPercent, rewriteJsonPercent, rewriteYmlPercent } from "../apps/desktop/scripts/rolloutrewrite.mjs";
+import { ALIAS_ASSET, ALIAS_OF_ASSET, ROLLOUT_FEED_ASSETS } from "../apps/desktop/scripts/rollout.mjs";
 
 import {
   avgDoneDuration,
@@ -16441,6 +16443,468 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       releaseText.indexOf("apps/desktop/dist/*.exe apps/desktop/dist/latest.yml", winStepIdx) > winStepIdx,
     winStep,
   );
+}
+
+
+// --- P3-460: rollout.mjs — suspend or advance a published release's rollout --
+{
+  const SLUG = "caiovicentino/opencode-remote";
+  const ARM64_ZIP = "OpenCode-Remote-0.3.0-arm64.zip";
+  const X64_ZIP = "OpenCode-Remote-0.3.0-x64.zip";
+  const repoRoot = join(import.meta.dirname, "..");
+  const cliScript = join(repoRoot, "apps", "desktop", "scripts", "rollout.mjs");
+  // A digest that passes feedhash's base64 shape check (same shape the
+  // P3-458 fixtures use).
+  const DIGEST = `${"abcd".repeat(21)}ab==`;
+
+  // The writer's exact JSON shape (update-feed.mjs: JSON.stringify(doc, null,
+  // 2) + "\n") — first without the rollout field (the plain tag-push release),
+  // then with it (what the rollout CLI itself publishes and later moves).
+  const jsonFeed = (zip: string, percent: number | null): string =>
+    `{\n` +
+    (percent !== null ? `  "${ROLLOUT_JSON_FIELD}": ${percent},\n` : "") +
+    `  "url": "https://github.com/${SLUG}/releases/download/v0.3.0/${encodeURIComponent(zip)}",\n` +
+    `  "name": "0.3.0",\n` +
+    `  "notes": "release notes",\n` +
+    `  "pub_date": "2026-09-01T12:00:00.000Z"\n` +
+    `}\n`;
+
+  // --- pure module: JSON rewrite ------------------------------------------
+  // With the field present ONLY the value token moves — every other byte is
+  // the same document (the byte-for-byte criterion over a fixture).
+  {
+    const before = jsonFeed(ARM64_ZIP, 40);
+    const out = rewriteJsonPercent(before, 90);
+    check(
+      "P3-460: JSON rewrite with the field present changes exactly the value token (byte-for-byte outside the field)",
+      out.text === jsonFeed(ARM64_ZIP, 90) &&
+        out.problems.length === 0 &&
+        before.split("\n").filter((l) => !l.includes(`"${ROLLOUT_JSON_FIELD}"`)).join("\n") ===
+          (out.text ?? "").split("\n").filter((l) => !l.includes(`"${ROLLOUT_JSON_FIELD}"`)).join("\n"),
+      JSON.stringify(out),
+    );
+    const again = rewriteJsonPercent(out.text ?? "", 90);
+    check(
+      "P3-460: JSON rewrite re-run at the same percentage is a byte-for-byte no-op (idempotent)",
+      again.text === out.text,
+      JSON.stringify(again),
+    );
+    const back = rewriteJsonPercent(out.text ?? "", 40);
+    check(
+      "P3-460: JSON rewrite moving the field back restores the original document byte-for-byte",
+      back.text === before,
+      JSON.stringify(back),
+    );
+  }
+  // Without the field the rewriter inserts one line right after the opening
+  // `{` (with its own trailing comma) — removing that line restores the
+  // original bytes exactly.
+  {
+    const before = jsonFeed(ARM64_ZIP, null);
+    const out = rewriteJsonPercent(before, 40);
+    check(
+      "P3-460: JSON rewrite without the field inserts one line after `{` and preserves every pre-existing byte",
+      out.problems.length === 0 &&
+        out.text === jsonFeed(ARM64_ZIP, 40) &&
+        (out.text ?? "").replace(`  "${ROLLOUT_JSON_FIELD}": 40,\n`, "") === before,
+      JSON.stringify(out),
+    );
+  check(
+    "P3-460: the inserted JSON field parses back as the number (the reader's real-number path)",
+    JSON.parse(out.text ?? "null")?.[ROLLOUT_JSON_FIELD] === 40,
+    out.text ?? "",
+  );
+  // A CRLF-edited document keeps consistent line endings on the inserted line
+  // (the comma precedes the \r).
+  {
+    const crlf = jsonFeed(ARM64_ZIP, null).replace(/\n/g, "\r\n");
+    const outCrlf = rewriteJsonPercent(crlf, 40);
+    check(
+      "P3-460: a CRLF field-less JSON feed gains the field with a comma before the CR (consistent endings)",
+      outCrlf.problems.length === 0 && (outCrlf.text ?? "").includes(`"rolloutPercent": 40,\r\n`) && JSON.parse(outCrlf.text ?? "null")?.[ROLLOUT_JSON_FIELD] === 40,
+      JSON.stringify(outCrlf),
+    );
+  }
+  }
+  check(
+    "P3-460: identical JSON inputs rewrite identically (deterministic — no timestamps, no randomness), so the alias contract survives the rewrite",
+    rewriteJsonPercent(jsonFeed(ARM64_ZIP, 40), 0).text === rewriteJsonPercent(jsonFeed(ARM64_ZIP, 40), 0).text,
+  );
+  // Compact single-line layout: the replacement is token-level, still exact.
+  {
+    const compact = `{"url":"https://github.com/${SLUG}/releases/download/v0.3.0/${ARM64_ZIP}","name":"0.3.0","rolloutPercent":40,"pub_date":"2026-09-01T12:00:00.000Z"}\n`;
+    const out = rewriteJsonPercent(compact, 100);
+    check(
+      "P3-460: a compact one-line JSON feed has its value token replaced in place (no re-serialization)",
+      out.problems.length === 0 &&
+        out.text === compact.replace(`"rolloutPercent":40`, `"rolloutPercent":100`) &&
+        JSON.parse(out.text ?? "null")?.[ROLLOUT_JSON_FIELD] === 100,
+      JSON.stringify(out),
+    );
+  }
+  // Non-number values the reader tolerates fail-open on the client side, but
+  // the rewriter normalizes them to the validated integer before publishing.
+  {
+    const stringed = jsonFeed(ARM64_ZIP, null).replace(`  "url"`, `  "${ROLLOUT_JSON_FIELD}": "40",\n  "url"`);
+    const out = rewriteJsonPercent(stringed, 10);
+    check(
+      "P3-460: a string-typed field value is rewritten to the bare integer (the client reads numbers)",
+      out.problems.length === 0 && (out.text ?? "").includes(`"${ROLLOUT_JSON_FIELD}": 10`) && !(out.text ?? "").includes(`"${ROLLOUT_JSON_FIELD}": "40"`),
+      JSON.stringify(out),
+    );
+    const nulled = jsonFeed(ARM64_ZIP, null).replace(`  "url"`, `  "${ROLLOUT_JSON_FIELD}": null,\n  "url"`);
+    const outNulled = rewriteJsonPercent(nulled, 10);
+    check(
+      "P3-460: a null field value is rewritten to the bare integer",
+      outNulled.problems.length === 0 && (outNulled.text ?? "").includes(`"${ROLLOUT_JSON_FIELD}": 10`),
+      JSON.stringify(outNulled),
+    );
+  }
+  for (const bad of [
+    { label: "corrupt JSON", text: `{\n  "url": oops\n}\n`, fragment: "not valid JSON" },
+    { label: "JSON array root", text: `[\n]\n`, fragment: "not a JSON object" },
+    { label: "JSON scalar root", text: `42\n`, fragment: "not a JSON object" },
+    {
+      label: "two field occurrences",
+      text: jsonFeed(ARM64_ZIP, 40).replace(`  "name"`, `  "${ROLLOUT_JSON_FIELD}": 5,\n  "name"`),
+      fragment: "refusing to guess",
+    },
+    {
+      label: "non-scalar field value",
+      text: jsonFeed(ARM64_ZIP, null).replace(`  "url"`, `  "${ROLLOUT_JSON_FIELD}": {"x":1},\n  "url"`),
+      fragment: "non-scalar",
+    },
+    { label: "empty text", text: "   ", fragment: "empty" },
+  ]) {
+    const out = rewriteJsonPercent(bad.text, 50);
+    check(
+      `P3-460: JSON rewrite refuses ${bad.label} (problem listed, nothing returned)`,
+      out.text === null && out.problems.length > 0 && out.problems.some((p) => p.includes(bad.fragment)),
+      JSON.stringify(out),
+    );
+  }
+  // Pretty-printed insertion is required: a compact field-less document
+  // cannot be surgically inserted — problem, never a risky splice.
+  {
+    const compact = `{"url":"x","name":"0.3.0"}\n`;
+    const out = rewriteJsonPercent(compact, 50);
+    check(
+      "P3-460: a compact field-less JSON feed is refused for insertion (no risky splice of other bytes)",
+      out.text === null && out.problems.length > 0 && out.problems.some((p) => p.includes("pretty-printed")),
+      JSON.stringify(out),
+    );
+  }
+
+  // --- pure module: yml rewrite (parity with the P3-458 writer) -----------
+  const YML_BASE =
+    `version: 0.3.0\nfiles:\n  - url: ${ARM64_ZIP}\n    sha512: ${DIGEST}\n    size: 3\npath: ${ARM64_ZIP}\nsha512: ${DIGEST}\nreleaseName: 0.3.0\nreleaseDate: '2026-09-01'\n`;
+  for (const percent of [0, 1, 40, 100]) {
+    check(
+      `P3-460: rewriteYmlPercent ≡ injectStagingPercentage (absent field, percent ${percent}) — P2-338 parity`,
+      JSON.stringify(rewriteYmlPercent(YML_BASE, percent)) === JSON.stringify(injectStagingPercentage(YML_BASE, percent)),
+    );
+    const withField = injectStagingPercentage(YML_BASE, 12).text ?? "";
+    check(
+      `P3-460: rewriteYmlPercent ≡ injectStagingPercentage (existing field, percent ${percent}) — P2-338 parity`,
+      JSON.stringify(rewriteYmlPercent(withField, percent)) === JSON.stringify(injectStagingPercentage(withField, percent)),
+    );
+  }
+  for (const weird of [
+    "",
+    "   ",
+    "something: else\n",
+    `version: 0.3.0\nstagingPercentage: 1\nstagingPercentage: 2\n`,
+    `version: 0.3.0\nfiles:\n  - url: x\n    stagingPercentage: 9\npath: x\n`,
+    `version: 0.3.0\r\nfiles:\r\n  - url: x\r\npath: x\r\n`,
+  ]) {
+    const a = rewriteYmlPercent(weird, 50);
+    const b = injectStagingPercentage(weird, 50);
+    check(
+      `P3-460: rewriteYmlPercent ≡ injectStagingPercentage over the edge fixture ${JSON.stringify(weird.slice(0, 24))} — text AND problems agree`,
+      JSON.stringify(a) === JSON.stringify(b),
+      JSON.stringify({ a, b }),
+    );
+  }
+  check(
+    "P3-460: the rewritten yml still parses its version (parseYmlVersion over the rewrite output)",
+    parseYmlVersion(rewriteYmlPercent(YML_BASE, 40).text ?? "") === "0.3.0" &&
+      parseYmlVersion(rewriteYmlPercent(injectStagingPercentage(YML_BASE, 40).text ?? "", 0).text ?? "") === "0.3.0",
+  );
+
+  // --- pure module: dispatch ----------------------------------------------
+  check(
+    "P3-460: rewriteFeedPercent routes a JSON text to the JSON field and a yml text to the yml field",
+    rewriteFeedPercent(jsonFeed(ARM64_ZIP, null), 40).text === rewriteJsonPercent(jsonFeed(ARM64_ZIP, null), 40).text &&
+      rewriteFeedPercent(YML_BASE, 40).text === rewriteYmlPercent(YML_BASE, 40).text,
+  );
+  check(
+    "P3-460: rewriteFeedPercent on a non-feed text (neither JSON nor an electron-builder yml) refuses with problems",
+    (() => {
+      const out = rewriteFeedPercent("hello world\n", 40);
+      return out.text === null && out.problems.length > 0 && out.problems.some((p) => p.includes("version"));
+    })(),
+  );
+  check("P3-460: rewriteFeedPercent re-checks the percent (belt and braces — unvalidated throws)", (() => {
+    for (const bad of [101, -1, 12.5, "50", null, undefined]) {
+      try {
+        rewriteFeedPercent(jsonFeed(ARM64_ZIP, null), bad as number);
+        return false;
+      } catch {
+        // expected
+      }
+    }
+    return true;
+  })());
+
+  // Module hygiene (P2-335/P3-458 lesson): the rewriter stays pure — its only
+  // import is the shared validator module, and no fs/network/timer creeps in.
+  const rewriteSrc = readFileSync(join(repoRoot, "apps", "desktop", "scripts", "rolloutrewrite.mjs"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*/g, " ");
+  check(
+    "P3-460: rolloutrewrite.mjs stays pure — imports only rolloutpercent.mjs, no node:, no fetch, no timers",
+    (() => {
+      const imports = [...rewriteSrc.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1] ?? "");
+      return (
+        imports.length === 1 &&
+        imports[0] === "./rolloutpercent.mjs" &&
+        !rewriteSrc.includes("node:") &&
+        !rewriteSrc.includes("require(") &&
+        !rewriteSrc.includes("fetch(") &&
+        !rewriteSrc.includes("setTimeout") &&
+        !rewriteSrc.includes("setInterval")
+      );
+    })(),
+    JSON.stringify([...rewriteSrc.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1])),
+  );
+
+  // --- CLI over a fake gh (the real orchestration, no network) ------------
+  // The fake gh records its argv and shuffles bytes between a simulated
+  // release assets dir and the download dir, exactly like the real one —
+  // minus the network. Every scenario below runs the REAL rollout.mjs.
+  const fakeReleaseFixture = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "rollout-release-"));
+    for (const name of ROLLOUT_FEED_ASSETS) {
+      if (name === "latest.yml") writeFileSync(join(dir, name), YML_BASE);
+      else if (name === "update-mac-x64.json") writeFileSync(join(dir, name), jsonFeed(X64_ZIP, null));
+      else writeFileSync(join(dir, name), jsonFeed(ARM64_ZIP, null));
+    }
+    // The installers the CLI must never touch — present in the fake release
+    // so the test can prove they stay untouched.
+    writeFileSync(join(dir, ARM64_ZIP), "zip-bytes");
+    writeFileSync(join(dir, X64_ZIP), "zip-bytes");
+    writeFileSync(join(dir, "OpenCode-Remote-0.3.0-arm64.dmg"), "dmg-bytes");
+    writeFileSync(join(dir, "OpenCode-Remote-Setup-0.3.0.exe"), "exe-bytes");
+    writeFileSync(join(dir, "OpenCode-Remote-Setup-0.3.0.exe.blockmap"), "blockmap-bytes");
+    return dir;
+  };
+  const runCli = (args: string[], env: NodeJS.ProcessEnv) =>
+    spawnSync(process.execPath, [cliScript, ...args], { encoding: "utf8", env: { ...process.env, ...env } });
+
+  const ghLog = (path: string): string[] =>
+    existsSync(path) ? readFileSync(path, "utf8").split("\n").filter((l) => l.length > 0) : [];
+
+  // 1. Happy path: 40% over a complete release. One download, one clobbered
+  //    upload of exactly the four feeds, installers untouched, percentages
+  //    correct, alias intact.
+  {
+    const releaseDir = fakeReleaseFixture();
+    const fakeBin = mkdtempSync(join(tmpdir(), "rollout-fakebin-"));
+    const fakeGh = join(fakeBin, "gh");
+    const logPath = join(fakeBin, "gh.log");
+    writeFileSync(
+      fakeGh,
+      [
+        "#!/usr/bin/env node",
+        'import { appendFileSync, copyFileSync, existsSync, mkdirSync } from "node:fs";',
+        'import { basename, join } from "node:path";',
+        "const argv = process.argv.slice(2);",
+        'const log = process.env.OCR_FAKE_GH_LOG ?? "";',
+        'if (log) appendFileSync(log, argv.join("\\u001f") + "\\n");',
+        'const releaseDir = process.env.OCR_FAKE_RELEASE_DIR ?? "";',
+        'const isDownload = argv[1] === "download";',
+        'const isUpload = argv[1] === "upload";',
+        'const dirFlag = argv.indexOf("--dir");',
+        "const dir = dirFlag !== -1 ? argv[dirFlag + 1] ?? \".\" : \".\";",
+        "const names = [];",
+        "for (let i = 3; i < argv.length; i++) {",
+        '  if (argv[i] === "--dir") { i++; continue; }',
+        '  if (String(argv[i]).startsWith("-")) continue;',
+        "  names.push(argv[i]);",
+        "}",
+        'if (process.env.OCR_FAKE_GH_FAIL_DOWNLOAD === "1" && isDownload) { console.error("gh: download failed (fake)"); process.exit(1); }',
+        'if (process.env.OCR_FAKE_GH_FAIL_UPLOAD === "1" && isUpload) { console.error("gh: upload failed (fake)"); process.exit(1); }',
+        "if (isDownload) {",
+        "  mkdirSync(dir, { recursive: true });",
+        "  for (const n of names) { const src = join(releaseDir, n); if (existsSync(src)) copyFileSync(src, join(dir, n)); }",
+        "  process.exit(0);",
+        "}",
+        "if (isUpload) {",
+        "  for (const n of names) {",
+        '    if (!existsSync(n)) { console.error("fake gh: upload source missing: " + n); process.exit(1); }',
+        "    copyFileSync(n, join(releaseDir, basename(n)));",
+        "  }",
+        "  process.exit(0);",
+        "}",
+        'console.error("fake gh: unsupported invocation"); process.exit(1);',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeGh, 0o755);
+    const env: NodeJS.ProcessEnv = {
+      PATH: `${fakeBin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
+      OCR_FAKE_GH_LOG: logPath,
+      OCR_FAKE_RELEASE_DIR: releaseDir,
+    };
+    const run = runCli(["v0.3.0", "40"], env);
+    const lines = ghLog(logPath);
+    check(
+      "P3-460: CLI with a valid percent calls gh download once with the four feed names (no installer names anywhere)",
+      run.status === 0 && lines.length === 2 && /^release\u001fdownload\u001fv0\.3\.0\u001f/.test(lines[0] ?? "") &&
+        ROLLOUT_FEED_ASSETS.every((n) => (lines[0] ?? "").includes(n)) &&
+        !(lines[0] ?? "").includes(".dmg") && !(lines[0] ?? "").includes(".exe") && !(lines[0] ?? "").includes(".zip"),
+      JSON.stringify({ status: run.status, lines }),
+    );
+    check(
+      "P3-460: the CLI uploads exactly the four feeds with --clobber (and nothing else)",
+      /^release\u001fupload\u001fv0\.3\.0\u001f/.test(lines[1] ?? "") &&
+        ROLLOUT_FEED_ASSETS.every((n) => (lines[1] ?? "").includes(n)) &&
+        (lines[1] ?? "").includes("--clobber") &&
+        !(lines[1] ?? "").includes(".dmg") &&
+        !(lines[1] ?? "").includes(".exe") &&
+        !(lines[1] ?? "").includes(".zip") &&
+        !(lines[1] ?? "").includes(".blockmap"),
+      JSON.stringify({ lines }),
+    );
+    check(
+      "P3-460: the uploaded feeds carry the new percentage; the alias stays identical to the arm64 document",
+      readFileSync(join(releaseDir, "update-mac-arm64.json"), "utf8") === jsonFeed(ARM64_ZIP, 40) &&
+        readFileSync(join(releaseDir, "update-mac.json"), "utf8") === readFileSync(join(releaseDir, "update-mac-arm64.json"), "utf8") &&
+        readFileSync(join(releaseDir, "update-mac-x64.json"), "utf8") === jsonFeed(X64_ZIP, 40) &&
+        readFileSync(join(releaseDir, "latest.yml"), "utf8") === (injectStagingPercentage(YML_BASE, 40).text ?? ""),
+      readFileSync(join(releaseDir, "update-mac-arm64.json"), "utf8"),
+    );
+    check(
+      "P3-460: the installers stay byte-identical on the release (zip, dmg, exe, blockmap never touched)",
+      readFileSync(join(releaseDir, ARM64_ZIP), "utf8") === "zip-bytes" &&
+        readFileSync(join(releaseDir, X64_ZIP), "utf8") === "zip-bytes" &&
+        readFileSync(join(releaseDir, "OpenCode-Remote-0.3.0-arm64.dmg"), "utf8") === "dmg-bytes" &&
+        readFileSync(join(releaseDir, "OpenCode-Remote-Setup-0.3.0.exe"), "utf8") === "exe-bytes" &&
+        readFileSync(join(releaseDir, "OpenCode-Remote-Setup-0.3.0.exe.blockmap"), "utf8") === "blockmap-bytes",
+    );
+    check(
+      "P3-460: the CLI reports the per-feed fields on success",
+      (run.stdout ?? "").includes("rollout: OK v0.3.0 — 40") &&
+        (run.stdout ?? "").includes(`update-mac-arm64.json: ${ROLLOUT_JSON_FIELD} 40`) &&
+        (run.stdout ?? "").includes(`latest.yml: ${ROLLOUT_YML_FIELD} 40`),
+      run.stdout + run.stderr,
+    );
+
+    // 2. 0 (suspend) and 100 (full release) — the two documented commands —
+    //    move the percentages on the same release; the documents' other bytes
+    //    are exactly what the pure module produces.
+    for (const percent of [0, 100]) {
+      const runP = runCli(["v0.3.0", String(percent)], env);
+      check(
+        `P3-460: the CLI at ${percent} rewrites the feeds to ${percent} (0 suspends, 100 releases fully)`,
+        runP.status === 0 &&
+          readFileSync(join(releaseDir, "update-mac-arm64.json"), "utf8") === jsonFeed(ARM64_ZIP, percent) &&
+          readFileSync(join(releaseDir, "update-mac.json"), "utf8") === jsonFeed(ARM64_ZIP, percent) &&
+          readFileSync(join(releaseDir, "update-mac-x64.json"), "utf8") === jsonFeed(X64_ZIP, percent) &&
+          readFileSync(join(releaseDir, "latest.yml"), "utf8") === (injectStagingPercentage(YML_BASE, percent).text ?? ""),
+        runP.stdout + runP.stderr,
+      );
+    }
+    // 3. Idempotent re-run at the same percentage: exit 0, same bytes.
+    const runAgain = runCli(["v0.3.0", "0"], env);
+    check(
+      "P3-460: a re-run at the same percentage is byte-for-byte stable (idempotent clobber)",
+      runAgain.status === 0 && readFileSync(join(releaseDir, "update-mac-arm64.json"), "utf8") === jsonFeed(ARM64_ZIP, 0),
+      runAgain.stdout + runAgain.stderr,
+    );
+
+    // 4. Invalid percentage: exit 1 with the problem listed, and gh is NEVER
+    //    invoked (the log would show it) — nothing is downloaded or uploaded.
+    const logBefore = ghLog(logPath).length;
+    for (const bad of ["101", "-1", "12.5", "abc"]) {
+      const runBad = runCli(["v0.3.0", bad], env);
+      check(
+        `P3-460: invalid percent ${JSON.stringify(bad)} → exit 1, problem listed, gh never called`,
+        runBad.status === 1 && (runBad.stderr ?? "").includes("0..100") && ghLog(logPath).length === logBefore,
+        runBad.stdout + runBad.stderr,
+      );
+    }
+    // 5. Missing arguments: usage, exit 1, gh never called.
+    for (const args of [[], ["v0.3.0"], ["v0.3.0", ""], ["--help", "40"]]) {
+      const runArgs = runCli(args as string[], env);
+      check(
+        `P3-460: missing/flagged args ${JSON.stringify(args)} → usage + exit 1, gh never called`,
+        runArgs.status === 1 && (runArgs.stderr ?? "").includes("usage:") && ghLog(logPath).length === logBefore,
+        runArgs.stdout + runArgs.stderr,
+      );
+    }
+    // 6. A tag whose release lacks a feed: the fake gh is lenient (copies what
+    //    exists), so the CLI's own completeness check names the missing file
+    //    and uploads nothing.
+    const partialRelease = fakeReleaseFixture();
+    rmSync(join(partialRelease, "latest.yml"));
+    const runPartial = runCli(["v0.3.1", "40"], { ...env, OCR_FAKE_RELEASE_DIR: partialRelease });
+    check(
+      "P3-460: a release without latest.yml → exit 1 naming the missing file, nothing uploaded",
+      runPartial.status === 1 && (runPartial.stderr ?? "").includes("latest.yml") && ghLog(logPath).length === logBefore + 1,
+      runPartial.stdout + runPartial.stderr,
+    );
+    const emptyRelease = fakeReleaseFixture();
+    for (const name of ROLLOUT_FEED_ASSETS) rmSync(join(emptyRelease, name));
+    const runEmpty = runCli(["v0.3.2", "40"], { ...env, OCR_FAKE_RELEASE_DIR: emptyRelease });
+    check(
+      "P3-460: a release with no feeds at all → exit 1 listing all four missing files, nothing uploaded",
+      runEmpty.status === 1 && ROLLOUT_FEED_ASSETS.every((n) => (runEmpty.stderr ?? "").includes(n)) && ghLog(logPath).length === logBefore + 2,
+      runEmpty.stdout + runEmpty.stderr,
+    );
+    // 7. gh download failure surfaces the problem and uploads nothing.
+    const runDlFail = runCli(["v0.3.0", "40"], { ...env, OCR_FAKE_GH_FAIL_DOWNLOAD: "1" });
+    check(
+      "P3-460: a failing gh download → exit 1 with the detail, nothing uploaded",
+      runDlFail.status === 1 && (runDlFail.stderr ?? "").includes("gh release download") && ghLog(logPath).length === logBefore + 3,
+      runDlFail.stdout + runDlFail.stderr,
+    );
+    // 8. A divergent alias refuses the whole run before any rewrite lands.
+    const brokenAlias = fakeReleaseFixture();
+    writeFileSync(join(brokenAlias, ALIAS_ASSET), jsonFeed(X64_ZIP, 40));
+    const runAlias = runCli(["v0.3.3", "40"], { ...env, OCR_FAKE_RELEASE_DIR: brokenAlias });
+    check(
+      "P3-460: a divergent update-mac.json alias → exit 1 naming the alias contract, nothing uploaded",
+      runAlias.status === 1 &&
+        (runAlias.stderr ?? "").includes(ALIAS_ASSET) &&
+        (runAlias.stderr ?? "").includes(ALIAS_OF_ASSET) &&
+        ghLog(logPath).length === logBefore + 4,
+      runAlias.stdout + runAlias.stderr,
+    );
+    // 9. gh upload failure: exit 1 with the detail; re-running is the retry.
+    const runUpFail = runCli(["v0.3.0", "40"], { ...env, OCR_FAKE_GH_FAIL_UPLOAD: "1" });
+    check(
+      "P3-460: a failing gh upload → exit 1 with the detail and the retry hint",
+      runUpFail.status === 1 && (runUpFail.stderr ?? "").includes("gh release upload"),
+      runUpFail.stdout + runUpFail.stderr,
+    );
+    // 10. No gh on PATH at all → a named problem, exit 1, nothing uploaded.
+    const runNoGh = runCli(["v0.3.0", "40"], {
+      OCR_FAKE_GH_LOG: logPath,
+      OCR_FAKE_RELEASE_DIR: releaseDir,
+      PATH: fakeBin.replace(/./g, "x"),
+    });
+    check(
+      "P3-460: gh missing from PATH → exit 1 naming the CLI, nothing uploaded",
+      runNoGh.status === 1 && (runNoGh.stderr ?? "").includes("gh CLI not found"),
+      runNoGh.stdout + runNoGh.stderr,
+    );
+    rmSync(releaseDir, { recursive: true, force: true });
+    rmSync(partialRelease, { recursive: true, force: true });
+    rmSync(emptyRelease, { recursive: true, force: true });
+    rmSync(brokenAlias, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
 }
 
 
