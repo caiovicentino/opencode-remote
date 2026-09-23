@@ -55,9 +55,20 @@ function startDaemon(opts: { diskFull?: boolean } = {}): ChildProcess {
   // leg at the end flips to the mirror hatch OCR_DISK_FULL=1 instead; the two
   // are mutually exclusive by construction here.
   const diskHatch = opts.diskFull ? { OCR_DISK_FULL: "1" } : { OCR_DISK_OK: "1" };
+  // P2-347 gate finding (CI verify run 35922517298): spawn the daemon
+  // DIRECTLY. Under the npx→tsx→node wrapper a SIGTERM reached only
+  // the wrapper on Linux — npm exec exits without forwarding or waiting, so
+  // stopAndAwaitExit observed "exit" while the real daemon lived on: two
+  // daemons sat in the same relay room (the relay's connection total kept
+  // growing across restarts) and the critical leg's upload was answered 200
+  // by the surviving healthy one. A direct child makes the exit event the
+  // daemon's REAL exit — the P3-345 contract, now true on every platform —
+  // and, as its own process group (detached), lets killTree below reach the
+  // whole tree. Same invocation the packaged sidecar uses (node --import
+  // tsx/esm), so nothing about the boot path changes.
   const p = spawn(
-    "npx",
-    ["tsx", "apps/daemon/src/index.ts"],
+    process.execPath,
+    ["--import", "tsx/esm", "apps/daemon/src/index.ts"],
     {
       cwd: join(import.meta.dirname, ".."),
       env: {
@@ -69,6 +80,7 @@ function startDaemon(opts: { diskFull?: boolean } = {}): ChildProcess {
         ...diskHatch,
       },
       stdio: ["ignore", "ignore", "inherit"],
+      detached: true, // own process group — the kills below reach the daemon itself
     },
   );
   return p;
@@ -85,16 +97,35 @@ async function waitForState(): Promise<{ room: string; ecdhPub: string }> {
   throw new Error("daemon state file never appeared");
 }
 
-const relay = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
-  cwd: join(import.meta.dirname, ".."),
-  env: { ...process.env, RELAY_PORT: String(RELAY_PORT) },
-  stdio: ["ignore", "inherit", "inherit"],
-});
+const relay = spawn(
+  process.execPath,
+  ["--import", "tsx/esm", "apps/relay/src/index.ts"],
+  {
+    cwd: join(import.meta.dirname, ".."),
+    env: { ...process.env, RELAY_PORT: String(RELAY_PORT) },
+    stdio: ["ignore", "inherit", "inherit"],
+    detached: true, // own process group — same wrapper-free rule as startDaemon
+  },
+);
 relay.on("error", (e) => console.error("relay spawn error:", e));
 relay.on("exit", (c) => console.error("relay exited with", c));
+// P2-347 gate finding: kill by process GROUP — with detached:true the pid is
+// a group leader, so the negative-pid signal reaches every member of the
+// spawn tree (a wrapper tree would have leaked on Linux, where npm exec
+// neither forwards SIGTERM nor waits for children). ESRCH once the tree is
+// already gone is the expected no-op. SIGKILL: the teardown must never
+// outlive the test, and a wedged process must never survive it.
+const killTree = (p: ChildProcess, signal: NodeJS.Signals): void => {
+  if (!p.pid) return;
+  try {
+    process.kill(-p.pid, signal);
+  } catch {
+    /* already gone */
+  }
+};
 process.on("exit", () => {
-  relay.kill("SIGTERM");
-  daemon.kill("SIGTERM");
+  killTree(relay, "SIGKILL");
+  killTree(daemon, "SIGKILL");
 });
 
 let daemon = startDaemon();
@@ -478,7 +509,7 @@ console.log("file-kind persistence for agent tools: OK");
 }
 
 ws.close();
-relay.kill("SIGTERM");
-daemon.kill("SIGTERM");
+killTree(relay, "SIGKILL");
+killTree(daemon, "SIGKILL");
 console.log("RECONNECT TEST PASSED");
 process.exit(0);

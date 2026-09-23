@@ -39457,6 +39457,28 @@ import { settingsMirror } from "../apps/daemon/src/settingsmirror";
   check("P3-345: the polite signal is configurable", custom.kills[0] === "SIGINT");
   const src = readFileSync(join(import.meta.dirname, "reconnect.test.ts"), "utf8");
   check("P3-345: reconnect.test.ts restarts via stopAndAwaitExit and no longer sleeps a fixed 1s between SIGTERM and startDaemon", src.includes("await stopAndAwaitExit(daemon") && !/daemon\.kill\("SIGTERM"\);\s*\n\s*await new Promise\(\(r\) => setTimeout\(r, 1000\)\);/.test(src));
+  // P2-347 gate finding (CI verify run 35922517298): under the
+  // npx→tsx→node wrapper, SIGTERM on Linux reached only the wrapper — npm exec
+  // exits without forwarding or waiting — so "old daemon exited" fired while
+  // the real daemon lived on, two daemons shared the relay room and the
+  // disk-critical upload leg was answered 200 by the surviving healthy one.
+  // The fix is structural: no wrapper at all (direct process.execPath spawn,
+  // the same invocation the packaged sidecar uses), so the awaited exit event
+  // IS the daemon's real exit, and the teardown kills by process group.
+  check(
+    "P2-347: reconnect spawns daemon and relay directly via process.execPath (no npx wrapper, no bare tsx args) so the awaited exit is the real exit",
+    /spawn\(\s*process\.execPath,\s*\n\s*\["--import", "tsx\/esm", "apps\/daemon\/src\/index\.ts"\]/.test(src) &&
+      /spawn\(\s*process\.execPath,\s*\n\s*\["--import", "tsx\/esm", "apps\/relay\/src\/index\.ts"\]/.test(src) &&
+      !src.includes('spawn("npx"') &&
+      !src.includes('["tsx",'),
+  );
+  check(
+    "P2-347: reconnect kills by process group (detached spawn + negative-pid kill) so no tree member can outlive the test",
+    (src.match(/detached: true/g) ?? []).length >= 2 &&
+      (src.match(/process\.kill\(-p\.pid, signal\)/g) ?? []).length === 1 &&
+      src.includes("killTree(relay,") &&
+      src.includes("killTree(daemon,"),
+  );
   const helper = readFileSync(join(import.meta.dirname, "procexit.ts"), "utf8");
   check("P3-345: procexit.ts is pure over the injected child (no child_process, no fs, no net import)", !/from "node:(child_process|fs|net|http)"/.test(helper));
 }
