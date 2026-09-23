@@ -1989,6 +1989,24 @@ const ROOM_BUDGET_JSON_ORDER = [
   "room_budget_terminated",
   "rooms_active",
 ];
+// P3-461: the additive occupancy split joined the documented set, appended
+// right after rooms_active in BOTH formats (the rooms shape the aggregate
+// count hides)
+const ROOM_OCC_SERIES = [
+  "relay_rooms_single_peer",
+  "relay_rooms_paired",
+  "relay_rooms_crowded",
+] as const;
+const ROOM_OCC_JSON_KEYS = [
+  "rooms_single_peer",
+  "rooms_paired",
+  "rooms_crowded",
+] as const;
+const GAUGE_SERIES: readonly string[] = [
+  "relay_connections_active",
+  "relay_rooms_active",
+  ...ROOM_OCC_SERIES,
+];
 
 // P2-313: the additive process series (Prometheus names, in order) and their
 // JSON body twins — appended AFTER every pre-existing series by procmetrics.ts
@@ -2126,7 +2144,7 @@ check(
     const jsonRaw = await fetchMetricsBody(mport);
     const json = JSON.parse(jsonRaw) as Record<string, unknown>;
     check(
-      "room-budget-metrics: today's Prometheus line table keeps its names and order, with only the P2-313 process series after it",
+      "room-budget-metrics: today's Prometheus line table keeps its names and order, with the P3-461 occupancy split and the P2-313 process series after it",
       (() => {
         const dataNames = prom
           .split("\n")
@@ -2134,21 +2152,21 @@ check(
           .map((l) => l.split(" ")[0]);
         return (
           JSON.stringify(dataNames) ===
-          JSON.stringify([...ROOM_BUDGET_PROM_ORDER, ...PROC_SERIES])
+          JSON.stringify([...ROOM_BUDGET_PROM_ORDER, ...ROOM_OCC_SERIES, ...PROC_SERIES])
         );
       })(),
     );
     check(
       "room-budget-metrics: each series keeps its TYPE header immediately before its value line",
-      ROOM_BUDGET_PROM_ORDER.every((n) => {
-        const kind = n === "relay_connections_active" || n === "relay_rooms_active" ? "gauge" : "counter";
+      [...ROOM_BUDGET_PROM_ORDER, ...ROOM_OCC_SERIES].every((n) => {
+        const kind = GAUGE_SERIES.includes(n) ? "gauge" : "counter";
         return prom.includes(`# TYPE ${n} ${kind}\n${n} `);
       }),
     );
     check(
-      "room-budget-metrics: JSON keeps every existing key in today's order, with only the P2-313 process keys after them",
+      "room-budget-metrics: JSON keeps every existing key in today's order, with the P3-461 occupancy keys and the P2-313 process keys after them",
       JSON.stringify(Object.keys(json)) ===
-        JSON.stringify([...ROOM_BUDGET_JSON_ORDER, ...PROC_JSON_KEYS]),
+        JSON.stringify([...ROOM_BUDGET_JSON_ORDER, ...ROOM_OCC_JSON_KEYS, ...PROC_JSON_KEYS]),
     );
     check(
       "room-budget-metrics: JSON of the same scrape carries the new key with exactly the Prometheus value",
@@ -2442,8 +2460,8 @@ check(
       .filter((l) => l && !l.startsWith("# TYPE"))
       .map((l) => l.split(" ")[0]);
     check(
-      "proc-metrics live: the new series are the only lines after the pre-existing block, in order",
-      JSON.stringify(tailDataNames) === JSON.stringify([...PROC_SERIES]),
+      "proc-metrics live: the series after the pre-existing block are exactly the occupancy split and the process gauges, in order",
+      JSON.stringify(tailDataNames) === JSON.stringify([...ROOM_OCC_SERIES, ...PROC_SERIES]),
     );
     for (const name of PROC_SERIES) {
       check(
@@ -2463,10 +2481,13 @@ check(
     }
     const keys = Object.keys(json);
     check(
-      "proc-metrics live: the JSON body is the pre-existing key set plus exactly the four additive fields",
-      keys.length === ROOM_BUDGET_JSON_ORDER.length + PROC_JSON_KEYS.length &&
+      "proc-metrics live: the JSON body is the pre-existing key set plus exactly the occupancy and process additive fields",
+      keys.length === ROOM_BUDGET_JSON_ORDER.length + ROOM_OCC_JSON_KEYS.length + PROC_JSON_KEYS.length &&
         keys.every(
-          (k) => ROOM_BUDGET_JSON_ORDER.includes(k) || (PROC_JSON_KEYS as readonly string[]).includes(k),
+          (k) =>
+            ROOM_BUDGET_JSON_ORDER.includes(k) ||
+            (ROOM_OCC_JSON_KEYS as readonly string[]).includes(k) ||
+            (PROC_JSON_KEYS as readonly string[]).includes(k),
         ),
     );
     check(

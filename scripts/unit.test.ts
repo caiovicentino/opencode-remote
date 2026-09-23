@@ -198,6 +198,7 @@ import {
   type RelayProbeInput,
 } from "../apps/desktop/src/relayprobe";
 import { isValidInstanceId } from "../apps/relay/src/instanceid";
+import { roomOccupancyCounts } from "../apps/relay/src/roomoccupancy";
 import { clockSkewMessage, skewVerdict, CLOCK_SKEW_TOLERANCE_MS } from "../apps/desktop/src/clockskew";
 import { linkVerdict, sanitizeRedialVerdict, sanitizeRelayProtocolState, type RelayLinkFacts, type RelayRedialOutcome } from "../apps/desktop/src/relaylink";
 import { TRAY_TIP_MAX_CHARS, trayStatus } from "../apps/desktop/src/traystatus";
@@ -40178,6 +40179,213 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
       cssSource.includes(".pair-relaylink-redial:focus-visible") &&
       cssSource.includes(".pair-relaylink-redial-result"),
   );
+}
+
+// --- P3-461: room occupancy split for /metrics (roomoccupancy.ts) ------------
+// The aggregate relay_rooms_active count cannot denounce the split-replica
+// trap (P3-401): two replicas behind one address each show normal active
+// rooms while no frame ever routes. The signal is the SHAPE of the rooms —
+// a replica holding mostly one-participant rooms serves only one side of
+// each conversation. The pure module classifies room sizes into exactly the
+// three buckets the operator needs; index.ts publishes them as additive
+// gauges next to rooms_active in BOTH formats.
+{
+  // 1. the required pure table: empty list, only singles, only pairs, a mix
+  //    and a room with three — plus the boundary behavior around them.
+  check("P3-461: an empty list publishes all three buckets as zero", (() => {
+    const c = roomOccupancyCounts([]);
+    return c.single === 0 && c.paired === 0 && c.crowded === 0;
+  })());
+  check("P3-461: only one-participant rooms count as single", (() => {
+    const c = roomOccupancyCounts([1, 1, 1]);
+    return c.single === 3 && c.paired === 0 && c.crowded === 0;
+  })());
+  check("P3-461: only paired rooms count as paired", (() => {
+    const c = roomOccupancyCounts([2, 2]);
+    return c.single === 0 && c.paired === 2 && c.crowded === 0;
+  })());
+  check("P3-461: a mix classifies every size into its exact bucket", (() => {
+    const c = roomOccupancyCounts([1, 2, 1, 2, 3]);
+    return c.single === 2 && c.paired === 2 && c.crowded === 1;
+  })());
+  check("P3-461: a room with three is crowded, never single or paired", (() => {
+    const c = roomOccupancyCounts([3]);
+    return c.single === 0 && c.paired === 0 && c.crowded === 1;
+  })());
+  check("P3-461: sizes beyond three stay crowded, buckets stay exact", (() => {
+    const c = roomOccupancyCounts([3, 4, 10]);
+    return c.single === 0 && c.paired === 0 && c.crowded === 3;
+  })());
+  check("P3-461: whole positive sizes always sum to the list length (honest arithmetic)", (() => {
+    for (const sizes of [[], [1], [2], [3], [1, 1], [2, 2], [1, 2, 3], [1, 2, 3, 4, 5, 6, 7]]) {
+      const c = roomOccupancyCounts(sizes);
+      if (c.single + c.paired + c.crowded !== sizes.length) return false;
+    }
+    return true;
+  })());
+  check("P3-461: a size nobody holds is skipped, never guessed into a bucket", (() => {
+    for (const bad of [undefined, null, "2", 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, {}]) {
+      const c = roomOccupancyCounts([bad, 2]);
+      if (c.single !== 0 || c.paired !== 1 || c.crowded !== 0) return false;
+    }
+    return true;
+  })());
+  check("P3-461: counting is order-insensitive — the same sizes give the same buckets in any order", (() => {
+    return (
+      JSON.stringify(roomOccupancyCounts([1, 2, 3])) === JSON.stringify(roomOccupancyCounts([3, 2, 1])) &&
+      JSON.stringify(roomOccupancyCounts([2, 1, 1, 3])) === JSON.stringify(roomOccupancyCounts([3, 1, 2, 1]))
+    );
+  })());
+  check("P3-461: deterministic — identical inputs give identical counts on every call", (() => {
+    return JSON.stringify(roomOccupancyCounts([1, 2, 3])) === JSON.stringify(roomOccupancyCounts([1, 2, 3]));
+  })());
+  check("P3-461: the input list is never mutated", (() => {
+    const sizes = [1, 2, 3];
+    const snapshot = [...sizes];
+    roomOccupancyCounts(sizes);
+    return sizes.join(",") === snapshot.join(",");
+  })());
+
+  // 2. purity: zero imports, no node:, no process, no network, no timer —
+  //    the unit battery must be able to load it without booting anything.
+  {
+    const roomOccSrc = readFileSync(
+      join(import.meta.dirname, "..", "apps", "relay", "src", "roomoccupancy.ts"),
+      "utf8",
+    );
+    const codeOnly = roomOccSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    check(
+      "P3-461 purity: the module has zero imports, no process, no network and no timer",
+      codeOnly.trim().length > 0 &&
+        !/^import /m.test(codeOnly) &&
+        !codeOnly.includes("from \"") &&
+        !codeOnly.includes("node:") &&
+        !/require\(/.test(codeOnly) &&
+        !/\bprocess\b/.test(codeOnly) &&
+        !/setInterval|setTimeout/.test(codeOnly) &&
+        !/fetch\(/.test(codeOnly),
+    );
+  }
+
+  // 3. real-source assertions on index.ts: today's series stay present and
+  //    in the same order, the three gauges ride additively right after
+  //    rooms_active in BOTH formats, zero publishes as zero (plain
+  //    unconditional template lines), the computation happens per scrape
+  //    over the live rooms map — and no timer, route or listener entered.
+  {
+    const relayIndex = readFileSync(
+      join(import.meta.dirname, "..", "apps", "relay", "src", "index.ts"),
+      "utf8",
+    );
+    const promAt = relayIndex.indexOf('if (req.url.includes("format=prom")) {');
+    // the documented line table of today, in the exact order index.ts
+    // publishes it — every pre-existing series keeps its place; the new
+    // occupancy split joins right after relay_rooms_active. The two
+    // per-reason refusal series are generated from the ROOM_REJECT_REASONS
+    // table (one spread whose order the rejectreasons tests pin), so they
+    // enter the scan as that one spread.
+    const PROM_ORDER = [
+      "# TYPE relay_connections_total counter",
+      "# TYPE relay_connections_active gauge",
+      "# TYPE relay_frames_routed counter",
+      "# TYPE relay_bytes_routed counter",
+      "# TYPE relay_rejects counter",
+      "# TYPE relay_rate_limited_total counter",
+      "# TYPE relay_rooms_rejected counter",
+      "...ROOM_REJECT_REASONS.flatMap(",
+      "# TYPE relay_stale_terminated counter",
+      "# TYPE relay_slow_consumers_total counter",
+      "# TYPE relay_capacity_refused_total counter",
+      "# TYPE relay_idle_unjoined_closed counter",
+      "# TYPE relay_room_budget_terminated counter",
+      "# TYPE relay_rooms_active gauge",
+      "# TYPE relay_rooms_single_peer gauge",
+      "# TYPE relay_rooms_paired gauge",
+      "# TYPE relay_rooms_crowded gauge",
+      "...certExpiryMetrics(",
+      "...procMetrics(",
+    ];
+    let cursor = promAt;
+    let ordered = promAt > -1;
+    for (const name of PROM_ORDER) {
+      const at = relayIndex.indexOf(name, cursor);
+      if (at === -1) {
+        ordered = false;
+        break;
+      }
+      cursor = at + 1;
+    }
+    check(
+      "P3-461 source: today's Prometheus series keep their names and order, the occupancy split rides right after rooms_active",
+      ordered,
+    );
+    for (const [name, prop] of [
+      ["relay_rooms_single_peer", "occupancy.single"],
+      ["relay_rooms_paired", "occupancy.paired"],
+      ["relay_rooms_crowded", "occupancy.crowded"],
+    ] as Array<[string, string]>) {
+      check(
+        `P3-461 source: ${name} is one TYPE gauge immediately before one value line fed from ${prop} (zero publishes as zero, never omitted)`,
+        (relayIndex.match(new RegExp(`# TYPE ${name} gauge`, "g")) ?? []).length === 1 &&
+          (relayIndex.match(new RegExp(String.raw`\`${name} \$\{${prop.replaceAll(".", "\\.")}\}\``, "g")) ?? [])
+            .length === 1,
+      );
+    }
+    check(
+      "P3-461 source: the JSON body carries the three occupancy keys additively, after rooms_active and before the process fields",
+      relayIndex.indexOf("rooms_active: rooms.size,") > -1 &&
+        relayIndex.indexOf("rooms_single_peer: occupancy.single,") >
+          relayIndex.indexOf("rooms_active: rooms.size,") &&
+        relayIndex.indexOf("rooms_paired: occupancy.paired,") >
+          relayIndex.indexOf("rooms_single_peer: occupancy.single,") &&
+        relayIndex.indexOf("rooms_crowded: occupancy.crowded,") >
+          relayIndex.indexOf("rooms_paired: occupancy.paired,") &&
+        relayIndex.indexOf("rooms_crowded: occupancy.crowded,") < relayIndex.indexOf("...procMetricsJson("),
+    );
+    check(
+      "P3-461 source: the buckets are computed per scrape over the live rooms map the aggregate gauge already reads",
+      relayIndex.includes("const occupancy = roomOccupancyCounts([...rooms.values()].map((set) => set.size));") &&
+        relayIndex.indexOf("const occupancy =") >
+          relayIndex.indexOf("sweepDelayMaxMs = 0;", relayIndex.indexOf('startsWith("/metrics")')) &&
+        relayIndex.indexOf("const occupancy =") < relayIndex.indexOf("format=prom"),
+    );
+    check(
+      "P3-461 source: no new timer entered (the one pre-existing sweep)",
+      (relayIndex.match(/setInterval\(/g) ?? []).length === 1,
+    );
+    check(
+      "P3-461 source: no new route or listener entered (one /metrics literal, the two servers the relay already had)",
+      (relayIndex.match(/\/metrics"/g) ?? []).length === 1 &&
+        (relayIndex.match(/createHttpServer\(/g) ?? []).length === 2,
+    );
+    check(
+      "P3-461 source: the three series names appear only as their own TYPE+value pairs — nothing interpolates a room id, address or IP",
+      (relayIndex.match(/relay_rooms_single_peer/g) ?? []).length === 2 &&
+        (relayIndex.match(/relay_rooms_paired/g) ?? []).length === 2 &&
+        (relayIndex.match(/relay_rooms_crowded/g) ?? []).length === 2,
+    );
+  }
+
+  // 4. the docs keep the promise: the series are documented next to the
+  //    aggregate, and the occupancy section explains the split-replica
+  //    signal with the instanceId test as the confirmation step.
+  {
+    const doc = readFileSync(join(import.meta.dirname, "..", "docs", "RELAY-HOSTING.md"), "utf8");
+    check(
+      "P3-461 docs: RELAY-HOSTING.md documents all three occupancy series in both formats",
+      doc.includes("`relay_rooms_single_peer`") &&
+        doc.includes("`relay_rooms_paired`") &&
+        doc.includes("`relay_rooms_crowded`") &&
+        doc.includes("`rooms_single_peer`, `rooms_paired` and `rooms_crowded`"),
+    );
+    check(
+      "P3-461 docs: the occupancy section names the split-replica signal and confirms through the instanceId test",
+      doc.includes("Rooms with one participant: the metric that denounces it (P3-461)") &&
+        doc.includes("divergent replicas behind one address") &&
+        doc.includes("two-minute `instanceId` test above") &&
+        doc.includes("relay_rooms_single_peer / relay_rooms_active > 0.5"),
+    );
+  }
 }
 
 if (failures > 0) {
