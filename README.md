@@ -1893,7 +1893,10 @@ moving to the field, and the hint clears as soon as typing starts. A rejected
 submit also flags the field itself (P3-431): while the invalid-code error
 stands, the paste box carries the danger border and its keyboard focus ring
 reads danger instead of the global accent — the field no longer signals
-"valid/focused" sitting right above the red verdict; typing dissolves both. On the
+"valid/focused" sitting right above the red verdict; typing dissolves both. The
+App-level verdict for a garbled `#/pair?…` deep link flags the field the same
+way (P3-428), so the red block never sits below a paste box still wearing the
+green accent ring. On the
 first-run QR splash "Pair later" is now a quiet text link — the QR is the only
 primary element on that screen. The paste field reads as the same care
 (P3-369): a compact two-row mono box with the resize grip removed, spellcheck

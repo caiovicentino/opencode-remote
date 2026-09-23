@@ -34,7 +34,18 @@ check("pairing textarea renders rows=2", /className="pair-code"\s*\n\s*rows=\{2\
 // focus-visible ring reads danger while the inline error block stands.
 // P3-440: the empty submit joins the same state (codeError || emptyHint), so
 // both failing paths wear the flag instead of only the garbled-code one.
-check("invalid code sets aria-invalid on the paste box", /aria-invalid=\{codeError \|\| emptyHint \? true : undefined\}/.test(view));
+// P3-428: the App-level verdict joins too — a garbled #/pair?… deep link
+// renders the same red block without ever touching codeError, so the field
+// flags itself from that same condition (appInvalidCode) instead of leaving
+// a focused paste box with the accent-green ring above the rejection.
+check(
+  "invalid code sets aria-invalid on the paste box",
+  /aria-invalid=\{codeError \|\| emptyHint \|\| appInvalidCode \? true : undefined\}/.test(view),
+);
+check(
+  "PairingView derives the app-level invalid-code flag from the block's own condition",
+  /appInvalidCode = phase === "error" && error === t\("invalidCode"\)/.test(view),
+);
 const invalidRule = css.match(/\.pair-code\[aria-invalid="true"\][^{]*\{[^}]*\}/);
 check("index.css styles the invalid paste box with the danger border", !!invalidRule && /border-color:\s*var\(--danger\)/.test(invalidRule[0]));
 const ringRule = css.match(/\.pair-code\[aria-invalid="true"\]:focus-visible\s*\{[^}]*\}/);

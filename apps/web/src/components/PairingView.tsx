@@ -49,6 +49,13 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
   // "invalid" is the garbled-text case, "version" the parse's
   // unsupported-protocol throw — each with its own localized copy.
   const [codeError, setCodeError] = useState<"invalid" | "version" | null>(null);
+  // P3-428: the App-level verdict for a garbled #/pair?… deep link renders
+  // the same red invalid-code block (error === t("invalidCode")) but never
+  // touched codeError — the field stayed unflagged and a focused paste box
+  // kept the accent-green focus ring directly above the rejection. The flag
+  // rides the same condition the block reads (P3-431 pattern: one attribute
+  // drives both the danger border and the danger focus ring).
+  const appInvalidCode = phase === "error" && error === t("invalidCode");
   const busy = phase === "connecting";
 
   // P3-410: shared gate for every onPair entry (paste submit + QR scan).
@@ -127,8 +134,10 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
         /* P3-440: the field flags itself on BOTH failing paths — a rejected
            submit must not read as valid (P3-431: aria-invalid rides the same
            state that renders the inline message, so the empty path gets the
-           same visual verdict the garbled-code path has had since P3-410). */
-        aria-invalid={codeError || emptyHint ? true : undefined}
+           same visual verdict the garbled-code path has had since P3-410).
+           P3-428: the App-level invalid-code verdict (garbled deep link)
+           flags the field too. */
+        aria-invalid={codeError || emptyHint || appInvalidCode ? true : undefined}
         placeholder="opencode-remote://pair?v=2&relay=…"
         value={code}
         onChange={(e) => {
