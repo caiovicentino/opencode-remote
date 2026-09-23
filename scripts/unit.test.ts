@@ -32074,6 +32074,110 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   );
 }
 
+// --- P3-456: the Windows upgrade path must not wipe app-data ------------------
+// P2-249 set nsis.deleteAppDataOnUninstall: true; P3-456 verified against the
+// INSTALLED app-builder-lib that the silent uninstall of an upgrade never
+// fires it (the new installer passes --updated to the old uninstaller, whose
+// wipe is guarded by ${ifNot} ${isUpdated}), so the flag stays and the
+// protection is pinned by reading the real sources instead.
+{
+  const root = join(import.meta.dirname, "..");
+  // app-builder-lib is the transitive devDependency (electron-builder) whose
+  // NSIS templates are the compile-time truth the real installer is built
+  // from — a source-reading pin fails the moment the lockfile drifts (lesson
+  // P2-338), forcing a human re-verification instead of a silent regression.
+  const lib = join(root, "node_modules", "app-builder-lib");
+  const uninstaller = readFileSync(join(lib, "templates", "nsis", "uninstaller.nsh"), "utf8");
+  const installUtil = readFileSync(join(lib, "templates", "nsis", "include", "installUtil.nsh"), "utf8");
+  const generator = readFileSync(join(lib, "out", "targets", "nsis", "nsisScriptGenerator.js"), "utf8");
+  const target = readFileSync(join(lib, "out", "targets", "nsis", "NsisTarget.js"), "utf8");
+  const libPkg = JSON.parse(readFileSync(join(lib, "package.json"), "utf8")) as { version: string };
+  const yml = readFileSync(join(root, "apps", "desktop", "electron-builder.yml"), "utf8");
+  const nsh = readFileSync(join(root, "apps", "desktop", "build", "installer.nsh"), "utf8");
+
+  // the templates this block pins are the ones the release builds with
+  check("P3-456: the installed app-builder-lib stays at the pinned 26.15.3", libPkg.version === "26.15.3");
+
+  // 1. the flag stays declared inside the nsis block: a REAL uninstall
+  //    (control panel, or the /S smoke) must keep wiping app-data.
+  const nsisAt = yml.indexOf("nsis:");
+  const linuxAt = yml.indexOf("linux:");
+  const wipeAt = yml.indexOf("deleteAppDataOnUninstall: true");
+  check(
+    "P3-456: electron-builder.yml keeps deleteAppDataOnUninstall in the nsis block (a real uninstall still wipes)",
+    nsisAt !== -1 && wipeAt > nsisAt && (linuxAt === -1 || wipeAt < linuxAt),
+  );
+
+  // 2. the installed template guards the wipe: $isDeleteAppData only becomes
+  //    "1" when --delete-app-data is on the uninstaller's own command line,
+  //    or — when the flag define exists — when the uninstaller was NOT
+  //    launched with --updated. The upgrade flow always passes --updated.
+  const decide = uninstaller.slice(
+    uninstaller.indexOf("Var /GLOBAL isDeleteAppData"),
+    uninstaller.indexOf('${if} $isDeleteAppData == "1"'),
+  );
+  check(
+    "P3-456: the installed uninstaller wipes only under --delete-app-data, or under the flag define when NOT --updated",
+    decide.includes('StrCpy $isDeleteAppData "0"') &&
+      decide.includes('${GetOptions} $R0 "--delete-app-data" $R1') &&
+      decide.indexOf("!ifdef DELETE_APP_DATA_ON_UNINSTALL") !== -1 &&
+      decide.indexOf("${ifNot} ${isUpdated}") > decide.indexOf("!ifdef DELETE_APP_DATA_ON_UNINSTALL") &&
+      decide.indexOf('StrCpy $isDeleteAppData "1"') > decide.indexOf("${ifNot} ${isUpdated}"),
+  );
+  check(
+    "P3-456: every APPDATA RMDir sits after the isDeleteAppData decision (no unconditional wipe anywhere)",
+    uninstaller.indexOf("RMDir /r \"$APPDATA\\${APP_FILENAME}\"") > uninstaller.indexOf('${if} $isDeleteAppData == "1"') &&
+      !uninstaller.slice(0, uninstaller.indexOf('${if} $isDeleteAppData == "1"')).includes("RMDir /r \"$APPDATA"),
+  );
+
+  // 3. the guard is real, not dead code: ${isUpdated} is a LogicLib condition
+  //    generated into the SHARED header (installer and uninstaller builds)
+  //    from the --updated CLI flag, and DELETE_APP_DATA_ON_UNINSTALL comes
+  //    from exactly the deleteAppDataOnUninstall option.
+  check(
+    "P3-456: NsisScriptGenerator.flags derives the isUpdated condition from the --updated CLI flag",
+    generator.includes('$\\{StdUtils.TestParameter} $R9 "${flagName}"') &&
+      generator.includes('!define ${variableName} \\`"" ${variableName} ""\\`') &&
+      generator.includes('return "is" + flagName[0].toUpperCase() + flagName.substring(1);'),
+  );
+  check(
+    "P3-456: NsisTarget registers the updated/delete-app-data flags and feeds the uninstaller build the same header",
+    target.includes('scriptGenerator.flags(["updated", "force-run", "keep-shortcuts", "no-desktop-shortcut", "delete-app-data", "allusers", "currentuser"])') &&
+      target.includes("if (options.deleteAppDataOnUninstall) {") &&
+      target.includes("defines.DELETE_APP_DATA_ON_UNINSTALL = null;") &&
+      target.includes("const sharedHeader = await this.computeCommonInstallerScriptHeader();") &&
+      target.includes("computeScriptAndSignUninstaller(definesUninstaller, commandsUninstaller, installerPath, sharedHeader, archs)"),
+  );
+
+  // 4. the new installer's uninstallOldVersion passes --updated to the old
+  //    uninstaller whenever it passes no --delete-app-data — that is the
+  //    line that makes the upgrade path preserve app-data.
+  const unOld = installUtil.slice(
+    installUtil.indexOf("Function uninstallOldVersion"),
+    installUtil.indexOf("!macro uninstallOldVersion ROOT_KEY"),
+  );
+  const flagArgs = unOld.slice(
+    unOld.indexOf("${if} ${isDeleteAppData}"),
+    unOld.indexOf('StrCpy $uninstallerFileNameTemp "$PLUGINSDIR\\old-uninstaller.exe"'),
+  );
+  check(
+    "P3-456: uninstallOldVersion passes --updated to the old uninstaller unless the new installer itself got --delete-app-data",
+    flagArgs.includes('${if} ${isDeleteAppData}') &&
+      flagArgs.includes('StrCpy $0 "$0 --delete-app-data"') &&
+      flagArgs.includes('StrCpy $0 "$0 --updated"') &&
+      flagArgs.indexOf("StrCpy $0 \"$0 --updated\"") > flagArgs.indexOf("${else}") &&
+      flagArgs.includes("DELETE_APP_DATA_ON_UNINSTALL is defined, user data will be not removed"),
+  );
+
+  // 5. build/installer.nsh adds no wipe of its own: customUnInstall runs on
+  //    EVERY uninstall invocation — including the upgrade-driven one — so it
+  //    must never carry an unguarded APPDATA removal.
+  check(
+    "P3-456: build/installer.nsh never touches APPDATA (its customUnInstall runs on upgrade uninstalls too)",
+    !nsh.includes("APPDATA") && !/\bRMDir\b/i.test(nsh),
+  );
+}
+
 // --- P2-255: caskmanifest — buildCaskManifest full table ----------------------
 {
   const armSha = "a".repeat(64);
