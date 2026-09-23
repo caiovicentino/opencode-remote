@@ -1075,6 +1075,8 @@ import { imageTags } from "./relay-image";
 
 import { imageSmokeVerdict } from "./relay-image-smoke";
 
+import { INSTANCE_ID_MAX_LENGTH } from "../apps/relay/src/instanceid";
+
 import { expectedAssets, missingAssets, tagProblems } from "./release-assets";
 import { publishDecision } from "./release-publish";
 
@@ -15567,7 +15569,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     {
       name: "healthz",
       status: 200,
-      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
     },
     {
       name: "web-root",
@@ -15596,7 +15598,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   // P2-331: the healthz probe must demand the announced wire protocol
   const noProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: healthz body without protocol → problem (fail-closed)",
@@ -15604,7 +15606,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(noProtocol),
   );
   const wrongProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL + 1, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL + 1, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: healthz announcing a different wire protocol → problem",
@@ -15612,13 +15614,48 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(wrongProtocol),
   );
   const junkProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: "2", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: "2", uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: non-integer protocol → problem",
     junkProtocol.length === 1 && junkProtocol[0]!.includes("positive integer"),
     JSON.stringify(junkProtocol),
   );
+
+  // P3-459: the healthz probe must demand the opaque per-instance identity —
+  // the field the docs/RELAY-HOSTING.md two-minute test compares to catch the
+  // silent two-replica pairing trap. The grammar is the imported instanceid.ts
+  // one, so the smoke can never invent a different notion of publishable id.
+  const noInstance = failOne("healthz", {
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+  });
+  check(
+    "P3-459: healthz body without instanceId → problem (fail-closed)",
+    noInstance.length === 1 && noInstance[0]!.includes("instanceId"),
+    JSON.stringify(noInstance),
+  );
+  const instanceTable: [string, unknown][] = [
+    ["empty", ""],
+    ["non-string (number)", 42],
+    ["one above the ceiling", "a".repeat(INSTANCE_ID_MAX_LENGTH + 1)],
+    ["space inside", "replica b"],
+    ["underscore", "replica_b"],
+    ["address-like", "10.0.0.1:8787"],
+  ];
+  for (const [label, bad] of instanceTable) {
+    const badInstance = failOne("healthz", {
+      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: bad }),
+    });
+    check(
+      `P3-459: healthz instanceId ${label} → problem`,
+      badInstance.length === 1 && badInstance[0]!.includes("instanceId"),
+      JSON.stringify(badInstance),
+    );
+  }
+  const ceilingInstance = failOne("healthz", {
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "a".repeat(INSTANCE_ID_MAX_LENGTH) }),
+  });
+  check("P3-459: healthz instanceId exactly at the ceiling → no problem", ceilingInstance.length === 0, JSON.stringify(ceilingInstance));
 
   const healthz = failOne("healthz", { status: 503, body: "draining" });
   check(
@@ -15716,6 +15753,16 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     "P2-196: push stays opt-in fail-closed on PUBLISH_RELAY_IMAGE after the smoke",
     /Push both references[\s\S]*?if: vars\.PUBLISH_RELAY_IMAGE == 'true'/.test(job.slice(pushAt)) &&
       job.includes("if: vars.PUBLISH_RELAY_IMAGE == 'true'"),
+  );
+  // P3-459: the smoke's instanceId grammar must come from the imported
+  // instanceid.ts constants — the same module the boot and the healthz handler
+  // use — never a locally re-declared pattern or length that could drift.
+  const smoke = readFileSync(join(repoRoot, "scripts", "relay-image-smoke.ts"), "utf8");
+  check(
+    "P3-459: relay-image-smoke imports the instanceid grammar, never a local literal",
+    smoke.includes('from "../apps/relay/src/instanceid"') &&
+      !/INSTANCE_ID_PATTERN\s*=/.test(smoke) &&
+      !/INSTANCE_ID_MAX_LENGTH\s*=/.test(smoke),
   );
 }
 

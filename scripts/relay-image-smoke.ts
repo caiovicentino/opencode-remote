@@ -18,9 +18,12 @@
  *
  *   healthz         → GET /healthz answers 200 with today's counter body
  *                     (ok:true, version, protocol, uptimeS, rooms,
- *                     roomsRejected) with protocol equal to the
+ *                     roomsRejected, instanceId) with protocol equal to the
  *                     RELAY_WIRE_PROTOCOL constant the image was built from
- *                     (P2-331)
+ *                     (P2-331) and instanceId inside the closed instanceid.ts
+ *                     grammar (P3-401; smoke-pinned in P3-459) — the replica
+ *                     identity the docs/RELAY-HOSTING.md two-minute test
+ *                     compares
  *   web-root        → GET / answers 200, text/html, carrying every security
  *                     header P2-192 introduced (HSTS is TLS-gated and only
  *                     checked when present-allowed: the smoke runs over
@@ -38,6 +41,14 @@
  * Run: npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:<port> <user>
  */
 import { pathToFileURL } from "node:url";
+
+// P3-459: the closed grammar of the published instanceId counter, imported
+// from the same pure module the relay boot and the healthz handler use — so
+// the smoke, the boot and the probe can never drift apart on what counts as
+// a publishable replica identity. A relative import of a zero-dependency
+// source module: bare tsx in the release job resolves it straight off the
+// checkout, no node_modules required.
+import { INSTANCE_ID_MAX_LENGTH, INSTANCE_ID_PATTERN } from "../apps/relay/src/instanceid";
 
 /** The wire protocol this tree ships. The relay-image job runs this script via
  * bare `npx tsx` (no npm ci), so it cannot import @ocr/protocol; the literal is
@@ -177,6 +188,22 @@ function parseCounters(body: string | undefined): string[] | string {
     if (typeof counters[field] !== "number" || !Number.isFinite(counters[field] as number) || (counters[field] as number) < 0) {
       problems.push(`counter "${field}" is not a non-negative number`);
     }
+  }
+  // P3-459: the image must publish the opaque per-instance identity — the
+  // field that turns the silent two-replica pairing trap into the two-minute
+  // diagnostic of docs/RELAY-HOSTING.md (P3-401). An image answering without
+  // it, or with a value outside the closed instanceid.ts grammar, offers the
+  // operator no replica identity to compare and must not reach GHCR. The
+  // grammar is the imported instanceid.ts one: same rules as the boot and the
+  // healthz handler, never a local literal.
+  const instanceId = counters["instanceId"];
+  if (
+    typeof instanceId !== "string" ||
+    instanceId.length === 0 ||
+    instanceId.length > INSTANCE_ID_MAX_LENGTH ||
+    !INSTANCE_ID_PATTERN.test(instanceId)
+  ) {
+    problems.push('counter "instanceId" is not a short opaque instance id (1-64 characters of A-Z a-z 0-9 -)');
   }
   return problems;
 }
