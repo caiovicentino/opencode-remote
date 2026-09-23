@@ -161,6 +161,8 @@ export interface ShellAwakeLabels {
 /** The full tray journey vocabulary (mirrors traystatus.ts's rule table). */
 export interface ShellTrayLabels {
   down: ShellTrayPhrase;
+  /** P2-338: the wire-protocol mismatch — a warning exactly like refused. */
+  incompatible: ShellTrayPhrase;
   refused: ShellTrayPhrase;
   misconfigured: ShellTrayPhrase;
   dialing: ShellTrayPhrase;
@@ -212,6 +214,10 @@ const EN: ShellLabels = {
     down: {
       tooltip: "OpenCode Remote — local process is down: no phone reaches this machine",
       menuLine: "Local process is down — no phone reaches this machine right now",
+    },
+    incompatible: {
+      tooltip: "OpenCode Remote — the hosted relay speaks a different wire protocol: update the app or the relay",
+      menuLine: "The hosted relay speaks a different wire protocol — update the app or the hosted relay",
     },
     refused: {
       tooltip: "OpenCode Remote — the relay refused the connection: the phone does not reach this machine",
@@ -287,6 +293,10 @@ const PT: ShellLabels = {
     down: {
       tooltip: "OpenCode Remote — processo local fora do ar: nenhum telefone alcança esta máquina",
       menuLine: "Processo local fora do ar — nenhum telefone alcança esta máquina agora",
+    },
+    incompatible: {
+      tooltip: "OpenCode Remote — o relay hospedado fala um protocolo de fio diferente deste app: atualize o app ou o relay",
+      menuLine: "O relay hospedado fala um protocolo de fio diferente deste app — atualize o app ou o relay hospedado",
     },
     refused: {
       tooltip: "OpenCode Remote — o relay recusou a conexão: o celular não alcança a máquina",

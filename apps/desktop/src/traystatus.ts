@@ -13,8 +13,10 @@
 // Rule order (the rules below are evaluated exactly in this order):
 //   1. Sidecar down wins over everything — without the local process nothing
 //      works and no other fact matters.
-//   2. Link state: refused, misconfigured, dialing and unknown each carry
-//      their own phrase.
+//   2. Link state: incompatible (P2-338 — the wire-protocol mismatch the
+//      daemon already probed; a warning exactly like refused, no new menu
+//      item), refused, misconfigured, dialing and unknown each carry their
+//      own phrase.
 //   3. Only with the sidecar up and the link connected or local: zero paired
 //      phones becomes the invite-to-pair phrase; local mode with phones keeps
 //      its local-network phrase.
@@ -55,7 +57,15 @@ export interface TrayStatusText {
 
 /** The link states linkVerdict can mint. Anything else — or nothing at all —
  * degrades to the neutral phrase instead of throwing. */
-const KNOWN_LINK_STATES = new Set(["connected", "local", "dialing", "refused", "misconfigured", "unknown"]);
+const KNOWN_LINK_STATES = new Set([
+  "connected",
+  "local",
+  "dialing",
+  "refused",
+  "misconfigured",
+  "incompatible",
+  "unknown",
+]);
 
 /**
  * Map (sidecar health, link state, paired-phone count) to the tray tooltip and
@@ -77,6 +87,10 @@ export function trayStatus(
   // unrecognized state falls to the neutral phrase, never an accusation.
   const state = typeof linkState === "string" && KNOWN_LINK_STATES.has(linkState) ? linkState : "unknown";
   switch (state) {
+    case "incompatible":
+      // P2-338: the wire-protocol mismatch is a warning exactly like refused —
+      // the tray speaks it, no new menu item.
+      return { tooltip: labels.tray.incompatible.tooltip, menuLine: labels.tray.incompatible.menuLine };
     case "refused":
       return { tooltip: labels.tray.refused.tooltip, menuLine: labels.tray.refused.menuLine };
     case "misconfigured":

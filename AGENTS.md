@@ -406,6 +406,20 @@ unknown com uma frase estática curta sem URL/host/IP/porta/número de versão,
 uma única linha de log por transição de estado — só mismatch é veredito duro,
 todo o resto preserva o comportamento de hoje byte a byte (um frame entregue
 pelo relay encerra o streak e suplanta um mismatch velho, então consertar o
+relay se auto-cura). P2-338: a fatia de UI consome o campo — o shell desktop
+sanitiza `relayProtocol.state` para o conjunto fechado em
+`apps/desktop/src/relaylink.ts` (`sanitizeRelayProtocolState`, fail-closed
+para nulo: ausente/nulo/fora do conjunto/objeto sem `state` degradam a nulo),
+e `linkVerdict` sozinho não muda nenhum veredito de hoje: `local` vence tudo,
+payload legado sem `relayConnected` continua `unknown`, `misconfigured`
+continua antes, um link VIVO vence um mismatch velho (o daemon se auto-cura)
+e só então um mismatch gravado vira o estado aditivo `incompatible` —
+"o relay hospedado fala um protocolo de fio diferente deste app — atualize o
+app ou o relay hospedado e aguarde a reconexão" — antes de `refused` e
+`dialing`, com ok/legacy/unknown mantendo o comportamento byte a byte. A
+linha do PairingOverlay e a bandeja (`traystatus.ts` trata `incompatible`
+como aviso igual a `refused`, sem item de menu novo) param de dizer
+"reconectando, aguarde e rescaneie" — a espera infinita tem nome.
 relay se auto-cura). A fatia de UI que consome o campo vem depois. P2-339 dá
 dente ao veredito: com mismatch gravado, um piso documentado de 5 minutos
 entra no MESMO max do `retryInMs` no close handler (`relayProtocolDialFloorMs`

@@ -1179,9 +1179,12 @@ pareamento está aberta, o shell lê o veredito desse elo na mesma resposta de
 `/api/health` que já busca a cada tick e mostra uma linha calma logo abaixo da
 linha de alcance: **conectado**, **modo local** (sem relay), **conectando /
 reconectando** (discagem em curso ou backoff), **recusado** (relay lotado ou
-limitando o ritmo) ou **mal configurado** (o endereço de relay do daemon foi
-recusado na partida). A linha descreve a máquina que hospeda o daemon — não o
-celular, não a câmera. Como todo aviso desta tela, ela nunca bloqueia o
+limitando o ritmo), **mal configurado** (o endereço de relay do daemon foi
+recusado na partida) ou — desde a P2-338 — **incompatível** (a própria sonda
+do daemon viu o relay hospedado falando um protocolo de fio que este build não
+entende: atualize o app ou o relay hospedado; um elo vivo ainda vence um
+mismatch velho, e a bandeja carrega o mesmo aviso sem item de menu novo). A
+linha descreve a máquina que hospeda o daemon — não o celular, não a câmera. Como todo aviso desta tela, ela nunca bloqueia o
 pareamento nem esconde o QR: o elo pode voltar antes de o celular terminar de
 escanear.
 
