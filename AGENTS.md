@@ -406,4 +406,13 @@ unknown com uma frase estática curta sem URL/host/IP/porta/número de versão,
 uma única linha de log por transição de estado — só mismatch é veredito duro,
 todo o resto preserva o comportamento de hoje byte a byte (um frame entregue
 pelo relay encerra o streak e suplanta um mismatch velho, então consertar o
-relay se auto-cura). A fatia de UI que consome o campo vem depois.
+relay se auto-cura). A fatia de UI que consome o campo vem depois. P2-339 dá
+dente ao veredito: com mismatch gravado, um piso documentado de 5 minutos
+entra no MESMO max do `retryInMs` no close handler (`relayProtocolDialFloorMs`
+puro em relayprotocol.ts; ok/legacy/unknown/valor fora do conjunto = piso
+zero), `relayRetryFloorSource` ganha o valor aditivo `protocol-mismatch`
+exposto como `relayRetry.floorSource` em `/api/health` sem chave nova
+(relay-close mantém prioridade sobre ele), e a rota de redial da P2-327 pode
+antecipar a espera protocol-mismatch — o clique humano de reconectar depois
+de atualizar app ou relay — respeitando o throttle de 10s, enquanto
+relay-close segue nunca antecipável.

@@ -26,6 +26,17 @@
 // for byte the behavior the daemon had before this module existed. The pt-BR
 // phrases are static operator copy: no URL, no host, no IP, no port, no
 // version number and no raw error ever rides them (the P2-140 bar).
+//
+// P2-339: the mismatch verdict now also paces the daemon's own dialing — the
+// reconnect wait takes a documented 5-minute floor through the SAME
+// max(jittered, floor) rule relayclose.ts established, so an app that KNOWS
+// the hosted relay speaks an incompatible wire version stops opening sockets
+// at the pace of a transient drop. relayProtocolDialFloorMs is the pure floor
+// table: only a recorded mismatch floors anything, and every other state —
+// ok, legacy, unknown, any value outside the set — floors zero, preserving
+// the pre-P2-339 behavior byte for byte. A human may still shorten the wait
+// on purpose via the redial route (relayredial.ts anticipates a
+// protocol-mismatch floor); a relay-close floor keeps priority over it.
 
 /** The closed set of wire-protocol verdicts the daemon can hold. */
 export type RelayProtocolState = "ok" | "mismatch" | "legacy" | "unknown";
@@ -70,6 +81,27 @@ export interface RelayProtocolVerdict {
   state: RelayProtocolState;
   /** static pt-BR phrase — no URL, host, IP, port or raw error */
   message: string;
+}
+
+/**
+ * P2-339: documented dial floor applied while a mismatch is on record (5
+ * minutes) — long enough that an old app stops hammering a multi-tenant
+ * relay it can never talk to, short enough that an operator who updates the
+ * app or rolls the relay back sees the fix land within one wait.
+ */
+export const RELAY_PROTOCOL_MISMATCH_FLOOR_MS = 5 * 60_000;
+
+/**
+ * P2-339: the dial floor for one recorded verdict. Only the hard mismatch
+ * floors the reconnect wait (5 documented minutes, the same
+ * max(jittered, floor) rule relayclose.ts established); ok, legacy, unknown
+ * and ANY value outside the closed set floor zero, preserving the pre-P2-339
+ * dialing byte for byte. Pure — no network, no node:fs, no timers — and
+ * fail-closed: anything that is not the exact "mismatch" string floors
+ * nothing.
+ */
+export function relayProtocolDialFloorMs(state: unknown): number {
+  return state === "mismatch" ? RELAY_PROTOCOL_MISMATCH_FLOOR_MS : 0;
 }
 
 /** Inputs of one verdict, already normalized by the caller. */

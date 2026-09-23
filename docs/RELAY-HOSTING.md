@@ -707,6 +707,16 @@ failure, timeout or unrecognizable body stays `unknown` — so publishing an
 incompatible `protocol` here is the one change that turns "reconnecting
 forever" into a named, actionable state for the machine's owner.
 
+Since P2-339 a recorded `mismatch` also paces the daemon itself: its
+reconnect wait takes a documented 5-minute floor (surfaced as
+`relayRetry.floorSource: "protocol-mismatch"` on `GET /api/health`), so an
+app installed before the bump dials an incompatible relay at most once every
+5 minutes instead of at the pace of a transient drop. A relay that publishes
+an incompatible `protocol` therefore stops being hammered by the fleet while
+the operator updates the app or rolls the wire version back — and once the
+relay delivers a frame again the verdict clears itself and the normal
+backoff resumes.
+
 ### Why a room was refused: the rejection breakdown (P2-293)
 
 A single opaque `roomsRejected` total cannot answer the operator's actual
