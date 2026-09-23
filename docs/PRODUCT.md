@@ -62,10 +62,15 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
    estiver travado — o fallback do topo ("chat") pintava o item desabilitado
    como o painel aberto, contradizendo o próprio tooltip. Janela
   estreita, cerimônia manual e erros de pareamento guardado continuam na tela
-   clássica centrada. Os panes abertos no portão mostram mundos vazios
+   clássica centrada.    Os panes abertos no portão mostram mundos vazios
    esperados — nunca o erro vermelho de mundo pareado (P3-327: Mission Control
    abre na visão forense com a copy de vazio, dashboard/captura ao vivo
-   escondidos; a lista de artifacts fica calma). P3-375: a calma da lista de
+   escondidos; a lista de artifacts fica calma). P3-426: o card de missão
+   vazio nomeia também o caminho offline verdadeiro — a caixa de primeira
+   mensagem desta mesma tela aceita o texto da missão agora (promessa de
+   guardar fica na caixa; o card só diz de onde a missão vem) — e adia o
+   caminho do chat pro depois de parear, o painel que pede pareamento
+   (P3-446). P3-375: a calma da lista de
    artifacts virou comportamento do próprio pane — falha "not connected"
    (primeiro boot, troca de máquina) mostra a copy vazia + aviso discreto de
    sincronização, nunca o erro vermelho "sem pareamento"
