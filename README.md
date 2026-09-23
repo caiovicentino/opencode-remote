@@ -1205,9 +1205,12 @@ screen is up, the shell reads that link's verdict from the same `/api/health`
 answer it already fetches every tick and shows one calm line right below the
 reach line: **connected**, **local mode** (no relay needed), **connecting /
 reconnecting** (dial in progress or backoff), **refused** (relay at capacity
-or rate-limiting) or **misconfigured** (the daemon's relay address was refused
-at boot). The line describes the machine hosting the daemon — not the phone,
-not the camera. Like every warning on this screen it never blocks pairing and
+or rate-limiting), **misconfigured** (the daemon's relay address was refused
+at boot) or — since P2-338 — **incompatible** (the daemon's own probe saw the
+hosted relay speaking a wire protocol this build does not understand: update
+the app or the hosted relay; a live link still outranks a stale mismatch, and
+the tray carries the same warning with no new menu item). The line describes
+the machine hosting the daemon — not the phone, not the camera. Like every warning on this screen it never blocks pairing and
 never hides the QR: the link can come back up before the phone finishes
 scanning.
 

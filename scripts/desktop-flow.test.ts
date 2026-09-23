@@ -15,10 +15,12 @@
  */
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
@@ -31,6 +33,7 @@ import {
 } from "../apps/daemon/src/sessionctx";
 import { CLOSE_HINT_LOG } from "../apps/desktop/src/closehint";
 import { shellLabels } from "../apps/desktop/src/shelllang";
+import { RELAY_PROTOCOL_PHRASES } from "../apps/daemon/src/relayprotocol";
 import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -5198,6 +5201,116 @@ phase("P2-152: one-time close-to-tray hint");
     if (diagBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: diagEnv });
     killDiagDaemon("SIGKILL");
     rmSync(diagHome, { recursive: true, force: true });
+  }
+}
+
+// --- P2-338: incompatible hosted relay — the QR line names the wire mismatch --
+// P2-335 named the wire-protocol mismatch on the daemon; P2-338 carries it to
+// the desktop: the pairing overlay's relay-link line and the tray must stop
+// saying "reconnecting, wait and rescan" (the endless wait the P2-335 lesson
+// warns about) and name the real problem instead. The fake daemon below is
+// the committed fixture for exactly that: it answers ONLY the loopback routes
+// the pairing tick needs — the same 401 anti-squatter challenge the shell
+// requires before adopting (P2-199) and a /api/health body carrying
+// relayProtocol.state = "mismatch" in the P2-335 payload shape (the phrase is
+// imported from the daemon's own table so the fixture cannot drift from it).
+// The adopted shell boots into local mode (P1-070); the explicit
+// remote-pairing request (Settings, same path the P2-106 beat exercises)
+// re-opens the overlay and the next tick renders the new state — the QR stays
+// visible: an incompatible relay is not a reason to hide the journey.
+{
+  const mismatchHome = mkdtempSync(join(tmpdir(), "ocr-flow-p338-"));
+  const mismatchStateFile = join(mismatchHome, "daemon-state.json");
+  const mismatchToken = randomBytes(24).toString("hex");
+  writeFileSync(mismatchStateFile, JSON.stringify({ apiToken: mismatchToken }), { mode: 0o600 });
+  const mismatchHealth = {
+    relayConnected: false,
+    relayProtocol: { state: "mismatch", message: RELAY_PROTOCOL_PHRASES.mismatch },
+    relayRetry: { attempt: 2, nextDelayMs: 4000, lastClose: { kind: "transient" } },
+    relay: { ok: true },
+    opencode: { state: "ok", reason: "", hint: "", checkedAt: null, binaryFound: true },
+  };
+  const mismatchPort = await new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+  const mismatchServer = createHttpServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${mismatchToken}`) {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    if (req.url === "/api/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(mismatchHealth));
+      return;
+    }
+    if (req.url === "/__ocr/devices") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ devices: [] }));
+      return;
+    }
+    if (req.url === "/__ocr/pairing-uri") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          uri:
+            "opencode-remote://pair?v=2&relay=ws%3A%2F%2Frelay.example.com%3A8788&room=p338-fixture&k=ZmFrZQ%3D%3D&vapid=ZmFrZQ%3D%3D&name=Fixture%20P2-338",
+        }),
+      );
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  mismatchServer.listen(mismatchPort, "127.0.0.1");
+  const mismatchEnv = {
+    ...process.env,
+    OCR_DESKTOP_SESSION: `${session}-p338`,
+    // harness hatch: adopt this state file (drops OCR_DAEMON_FORCE_DOWN) — the
+    // same P1-070 local-boot adoption, pointed at the fake daemon above.
+    OCR_DESKTOP_LOCAL_STATE: mismatchStateFile,
+    OCR_DAEMON_METRICS_PORT: String(mismatchPort),
+  };
+  let mismatchBooted = false;
+  try {
+    const open = run("P2-338: open (hermetic fake-daemon launch)", ["open"], 45_000, mismatchEnv);
+    mismatchBooted = open.ok;
+    if (open.ok) {
+      run("P2-338: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, mismatchEnv);
+      run("P2-338: open Settings pane", ["menu-click", "go-pane-settings"], 15_000, mismatchEnv);
+      const clicked = run("P2-338: request remote pairing", ["click", ".pair-remote-entry"], 15_000, mismatchEnv);
+      if (clicked.ok) {
+        await waitProbe(
+          "P2-338: the overlay names the wire mismatch next to the (still visible) QR",
+          "(() => { const line = document.querySelector('.pair-relaylink'); return (line?.textContent ?? '') + '|' + (line?.className ?? '') + '|' + (!!document.querySelector('.pair-overlay-qr')); })()",
+          // ipc stdout is JSON-encoded (trailing quote) — match by inclusion
+          (v) =>
+            v.includes("protocolo de fio diferente") &&
+            v.includes("atualize o app ou o relay hospedado") &&
+            v.includes("pair-relaylink-warn") &&
+            v.includes("|true"),
+          mismatchEnv,
+          24,
+          500,
+        );
+        const shot338_1440 = join(shotsDir, "P2-338-incompatible-1440.png");
+        const s1 = run("P2-338: 1440x900 incompatible shot", ["shot", shot338_1440, "1440", "900"], 15_000, mismatchEnv);
+        if (s1.ok) check("P2-338: incompatible 1440x900 shot is a real PNG", pngSize(shot338_1440).join("x") === "1440x900");
+        const shot338_390 = join(shotsDir, "P2-338-incompatible-390.png");
+        const s2 = run("P2-338: 390 incompatible shot", ["shot", shot338_390, "390", "844"], 15_000, mismatchEnv);
+        if (s2.ok) check("P2-338: incompatible 390 shot is a real PNG", pngSize(shot338_390)[0] === 390);
+      }
+    }
+  } finally {
+    if (mismatchBooted)
+      spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: mismatchEnv });
+    mismatchServer.close();
+    rmSync(mismatchHome, { recursive: true, force: true });
   }
 }
 
