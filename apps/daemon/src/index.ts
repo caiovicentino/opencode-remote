@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, lstatSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, lstatSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs, statfsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -91,7 +91,9 @@ import { ARTIFACTS_ROOT, artifactMime, capArtifacts, kindFor, listArtifacts, rea
 import { RETENTION_INTERVAL_MS, retentionDisabled, retentionPlan, type RetentionEntry } from "./artifactretention.js";
 import { parseUploadRetention, uploadRetentionPlan, type UploadEntry as UploadFile } from "./uploadretention.js";
 import { clipRetentionPlan, parseClipRetention, type ClipGroup } from "./clipretention.js";
-import { diskVerdict, type DiskVerdict } from "./diskguard.js";
+import type { DiskVerdict } from "./diskguard.js";
+import { DISK_WARN_FREE_BYTES } from "./diskguard.js";
+import { diskProbePlan, diskStateFromReading, uploadDiskGate } from "./diskspace.js";
 import { docConvertProbe, docConvertVerdict, type DocConvertVerdict } from "./doccap.js";
 import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
@@ -1628,9 +1630,27 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
     }
   }
   if (req.path === "/__ocr/upload/chunk" && req.method === "POST") {
+    // P2-347: the very start of an upload — a critical disk refuses here,
+    // before any byte is staged or retained, with the phrase /api/health
+    // serves; ok, low and unknown keep today's behavior.
+    maybeReprobeUploadsDisk();
+    const gate = uploadDiskGate(diskStatus());
+    if (gate) {
+      log("warn", "upload refused: disk critical");
+      return { id: req.id, status: gate.status, body: { error: gate.error } };
+    }
     return stageChunk(req, "/__ocr/upload/chunk");
   }
   if (req.path === "/__ocr/upload/complete" && req.method === "POST") {
+    // P2-347: the same gate before any byte is written — the kind "file"
+    // branch below would writeFileSync the whole buffer into uploads/, and a
+    // mid-write ENOSPC is exactly the generic failure this gate closes.
+    maybeReprobeUploadsDisk();
+    const gate = uploadDiskGate(diskStatus());
+    if (gate) {
+      log("warn", "upload refused: disk critical");
+      return { id: req.id, status: gate.status, body: { error: gate.error } };
+    }
     const { id, mime, filename, kind } = req.body as {
       id?: string;
       mime?: string;
@@ -2962,16 +2982,31 @@ artifactWatcher.start();
 // in the neutral unknown and the next scheduled sweep cycle reads again.
 // Fire-and-forget async statfs: boot is never blocked or delayed.
 
-let diskSpace: DiskVerdict = diskVerdict(null, null);
+let diskSpace: DiskVerdict = diskStateFromReading(null, null);
+// P2-347: when the cached reading was established (0 = never probed) — the
+// instant the lazy re-read throttle and /api/health's diskCheckedAt are
+// derived from. Stamped when a reading attempt completes, success or failure.
+let diskProbedAt = 0;
 
 function refreshDiskState(): void {
-  statfs(STATE_DIR, (err, stats) => {
+  // P2-347: the reading targets the uploads root — the directory the upload
+  // writes and the retention janitors fill. It is a child of STATE_DIR, so
+  // the volume is the same and the verdict keeps its P2-215 meaning; the
+  // mkdir keeps the statfs defined on a fresh install (uploads/ is otherwise
+  // created only on the first write).
+  try {
+    mkdirSync(UPLOADS_ROOT, { recursive: true });
+  } catch {
+    // the statfs below still runs and reports the real failure as unknown
+  }
+  statfs(UPLOADS_ROOT, (err, stats) => {
+    diskProbedAt = Date.now();
     if (err) {
-      diskSpace = diskVerdict(null, null);
+      diskSpace = diskStateFromReading(null, null);
       log("warn", "disk space probe failed", { error: err.message });
       return;
     }
-    diskSpace = diskVerdict(stats.bavail * stats.bsize, stats.blocks * stats.bsize);
+    diskSpace = diskStateFromReading(stats.bavail * stats.bsize, stats.blocks * stats.bsize);
     log("info", "disk space probed", { state: diskSpace.state });
   });
 }
@@ -2980,10 +3015,19 @@ function refreshDiskState(): void {
  * P2-215: disk verdict for /api/health and the settings mirror. OCR_DISK_FULL=1
  * is a documented test hatch (same spirit as OCR_OPENCODE_OLD/OCR_MODEL_BLOCK):
  * it forces the critical verdict so the Settings disk line can be evidenced
- * deterministically on hosts with plenty of free space.
+ * deterministically on hosts with plenty of free space. P2-347 adds the
+ * symmetric OCR_DISK_OK=1: it forces the ok verdict (a roomy 100GB-of-400GB
+ * reading, the same shape the P2-215 unit table calls ok) so hermetic tests on
+ * a genuinely full machine exercise the healthy paths — the reconnect and
+ * desktop-flow upload beats need a working upload surface regardless of the
+ * operator host's real volume. OCR_DISK_FULL wins if both are set; neither
+ * hatch ever reaches the lazy re-probe (forced verdicts are never probed away).
  */
 function diskStatus(): DiskVerdict {
-  if (process.env.OCR_DISK_FULL === "1") return diskVerdict(0, 1);
+  if (process.env.OCR_DISK_FULL === "1") return diskStateFromReading(0, 1);
+  if (process.env.OCR_DISK_OK === "1") {
+    return diskStateFromReading(100 * DISK_WARN_FREE_BYTES, 400 * DISK_WARN_FREE_BYTES);
+  }
   return diskSpace;
 }
 
@@ -3083,6 +3127,40 @@ function sweepUploadRetention(): void {
     // retry; the next scheduled sweep picks it up
     log("warn", "upload retention sweep failed", { error: (err as Error).message });
   }
+}
+
+// --- P2-347: uploads-volume lazy revalidation + upload gate -------------------
+// The P2-215 reading above is taken once at boot and then on the janitor's
+// interval — between two readings the volume can fill and a write fails
+// mid-file with a raw filesystem error while the phone sees only a generic
+// failure. The upload routes close the gap: each upload start re-reads the
+// volume lazily (at most once per the shared OCR_READINESS_MIN_MS interval —
+// the same knobs every other readiness uses, P2-250 pattern — with no new
+// periodic timer) and a critical verdict refuses the upload BEFORE any byte
+// is written, with the same phrase /api/health serves. ok, low and unknown
+// keep today's behavior byte for byte. The documented OCR_DISK_FULL=1 hatch
+// forces the refusal too (it is applied by diskStatus() at read time) and
+// skips the re-read so the forced verdict is never probed away — the same
+// spirit as OCR_TTS_BLOCK=1.
+function maybeReprobeUploadsDisk(): void {
+  // the documented hatches keep their forced verdicts — never probed away
+  if (process.env.OCR_DISK_FULL === "1" || process.env.OCR_DISK_OK === "1") return;
+  const plan = diskProbePlan(diskProbedAt, Date.now(), readinessKnobs);
+  if (plan.action !== "redo") return;
+  try {
+    mkdirSync(UPLOADS_ROOT, { recursive: true });
+    const stats = statfsSync(UPLOADS_ROOT);
+    diskSpace = diskStateFromReading(stats.bavail * stats.bsize, stats.blocks * stats.bsize);
+  } catch (err) {
+    // a failed reading lands in the neutral unknown, like the boot probe
+    diskSpace = diskStateFromReading(null, null);
+    diskProbedAt = Date.now();
+    log("warn", "uploads disk re-probe failed", { error: (err as Error).message });
+    return;
+  }
+  diskProbedAt = Date.now();
+  // one line per re-read: the resulting state only — never a path or a count
+  log("info", "uploads disk re-probe", { state: diskSpace.state });
 }
 
 // --- P2-248: clips retention ---------------------------------------------------
@@ -4566,6 +4644,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         // fields keep their exact shape.
         diskState: disk.state,
         diskMessage: disk.message,
+        // P2-347: additive — when the uploads-volume reading was last taken
+        // (boot probe or lazy re-read at the upload routes), so a screen can
+        // say when that was checked. null until the first reading lands.
+        // Appended after the existing pair — nothing is renamed or removed.
+        diskCheckedAt: readinessCheckedAt(diskProbedAt),
         // P2-231: additive document→PDF conversion readiness — probed once at
         // boot (state + short pt-BR phrase + covered extensions). No absolute
         // path, URL scheme or raw probe output ever reaches the payload, and

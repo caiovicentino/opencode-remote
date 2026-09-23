@@ -5,7 +5,7 @@
  * Run: npx tsx scripts/reconnect.test.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync, existsSync, mkdtempSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, mkdtempSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,10 +48,27 @@ setTimeout(() => {
 const home = mkdtempSync(join(tmpdir(), "ocr-reconnect-"));
 const stateFile = join(home, ".opencode-remote", "daemon.json");
 
-function startDaemon(): ChildProcess {
+function startDaemon(opts: { diskFull?: boolean } = {}): ChildProcess {
+  // P2-347: the healthy legs ride the documented OCR_DISK_OK hatch — this
+  // machine's volume can be genuinely full and the P2-347 gate would then
+  // refuse the upload payload the reconnect proof depends on. The critical
+  // leg at the end flips to the mirror hatch OCR_DISK_FULL=1 instead; the two
+  // are mutually exclusive by construction here.
+  const diskHatch = opts.diskFull ? { OCR_DISK_FULL: "1" } : { OCR_DISK_OK: "1" };
+  // P2-347 gate finding (CI verify run 35922517298): spawn the daemon
+  // DIRECTLY. Under the npx→tsx→node wrapper a SIGTERM reached only
+  // the wrapper on Linux — npm exec exits without forwarding or waiting, so
+  // stopAndAwaitExit observed "exit" while the real daemon lived on: two
+  // daemons sat in the same relay room (the relay's connection total kept
+  // growing across restarts) and the critical leg's upload was answered 200
+  // by the surviving healthy one. A direct child makes the exit event the
+  // daemon's REAL exit — the P3-345 contract, now true on every platform —
+  // and, as its own process group (detached), lets killTree below reach the
+  // whole tree. Same invocation the packaged sidecar uses (node --import
+  // tsx/esm), so nothing about the boot path changes.
   const p = spawn(
-    "npx",
-    ["tsx", "apps/daemon/src/index.ts"],
+    process.execPath,
+    ["--import", "tsx/esm", "apps/daemon/src/index.ts"],
     {
       cwd: join(import.meta.dirname, ".."),
       env: {
@@ -60,8 +77,10 @@ function startDaemon(): ChildProcess {
         RELAY_URL,
         OCR_LOG_LEVEL: "error",
         OPENCODE_URL: "http://127.0.0.1:1",
+        ...diskHatch,
       },
       stdio: ["ignore", "ignore", "inherit"],
+      detached: true, // own process group — the kills below reach the daemon itself
     },
   );
   return p;
@@ -78,16 +97,35 @@ async function waitForState(): Promise<{ room: string; ecdhPub: string }> {
   throw new Error("daemon state file never appeared");
 }
 
-const relay = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
-  cwd: join(import.meta.dirname, ".."),
-  env: { ...process.env, RELAY_PORT: String(RELAY_PORT) },
-  stdio: ["ignore", "inherit", "inherit"],
-});
+const relay = spawn(
+  process.execPath,
+  ["--import", "tsx/esm", "apps/relay/src/index.ts"],
+  {
+    cwd: join(import.meta.dirname, ".."),
+    env: { ...process.env, RELAY_PORT: String(RELAY_PORT) },
+    stdio: ["ignore", "inherit", "inherit"],
+    detached: true, // own process group — same wrapper-free rule as startDaemon
+  },
+);
 relay.on("error", (e) => console.error("relay spawn error:", e));
 relay.on("exit", (c) => console.error("relay exited with", c));
+// P2-347 gate finding: kill by process GROUP — with detached:true the pid is
+// a group leader, so the negative-pid signal reaches every member of the
+// spawn tree (a wrapper tree would have leaked on Linux, where npm exec
+// neither forwards SIGTERM nor waits for children). ESRCH once the tree is
+// already gone is the expected no-op. SIGKILL: the teardown must never
+// outlive the test, and a wedged process must never survive it.
+const killTree = (p: ChildProcess, signal: NodeJS.Signals): void => {
+  if (!p.pid) return;
+  try {
+    process.kill(-p.pid, signal);
+  } catch {
+    /* already gone */
+  }
+};
 process.on("exit", () => {
-  relay.kill("SIGTERM");
-  daemon.kill("SIGTERM");
+  killTree(relay, "SIGKILL");
+  killTree(daemon, "SIGKILL");
 });
 
 let daemon = startDaemon();
@@ -351,23 +389,27 @@ console.log("live session intact after replays: OK");
 // room the moment its relay socket opens (apps/daemon index.ts sends it on
 // every connect). Waiting for that announce instead of a fixed sleep removes
 // the cold-start race where the op is dialed into an empty room — a blind
-// relay drops the frame and the 8s request timeout kills the run.
-const daemonAnnounce = new Promise<void>((resolve, reject) => {
-  const t = setTimeout(() => reject(new Error("no daemon announce after restart (15s)")), 15_000);
-  const onMsg = (data: WebSocket.RawData) => {
-    let frame: { from?: string; payload?: string };
-    try {
-      frame = JSON.parse(data.toString());
-    } catch {
-      return; // non-JSON frame: not a relay envelope, never the announce
-    }
-    if (frame.from !== state.room || frame.payload !== "") return;
-    clearTimeout(t);
-    ws.off("message", onMsg);
-    resolve();
-  };
-  ws.on("message", onMsg);
-});
+// relay drops the frame and the 8s request timeout kills the run. One FRESH
+// promise per restart: an already-resolved announce never waits again, so
+// each restart gets its own (P2-347 adds a second restart below).
+function waitDaemonAnnounce(timeoutMs = 15_000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("no daemon announce after restart (15s)")), timeoutMs);
+    const onMsg = (data: WebSocket.RawData) => {
+      let frame: { from?: string; payload?: string };
+      try {
+        frame = JSON.parse(data.toString());
+      } catch {
+        return; // non-JSON frame: not a relay envelope, never the announce
+      }
+      if (frame.from !== state.room || frame.payload !== "") return;
+      clearTimeout(t);
+      ws.off("message", onMsg);
+      resolve();
+    };
+    ws.on("message", onMsg);
+  });
+}
 // P3-345: wait for the REAL exit of the old process, never a fixed sleep. A
 // fixed 1s left two daemons in the relay room whenever the drain ran long
 // (slow unload/flush): the blind router then delivered frames to both, and the
@@ -377,7 +419,7 @@ const daemonAnnounce = new Promise<void>((resolve, reject) => {
 const { forced } = await stopAndAwaitExit(daemon);
 console.log(`old daemon exited (forced=${forced})`);
 daemon = startDaemon();
-await daemonAnnounce;
+await waitDaemonAnnounce();
 
 res = await send("POST", "/__ocr/transcribe/chunk", { id: "t2", idx: 0, data: "" });
 if (res.status !== 200) throw new Error(`post-restart op failed: ${res.status}`);
@@ -432,8 +474,42 @@ if (readFileSync(filePath, "utf8") !== "fake-video-bytes") {
 }
 console.log("file-kind persistence for agent tools: OK");
 
+// --- P2-347: the disk-critical refusal is end-to-end real -------------------
+// The gate's review found the refusal proven only statically (gate before
+// writeFileSync ordering + the pure gate table). This leg makes it executable:
+// a REAL restart with the mirror hatch OCR_DISK_FULL=1, both upload routes
+// answering 507 with the machine's own phrase BEFORE any byte is written, and
+// the uploads dir keeping exactly the files the healthy legs above created —
+// the refusal is not a mid-write failure wearing a status code.
+{
+  const uploadsDir = join(home, ".opencode-remote", "uploads");
+  const filesBefore = existsSync(uploadsDir) ? readdirSync(uploadsDir).length : 0;
+  const criticalExit = await stopAndAwaitExit(daemon);
+  if (criticalExit.forced) throw new Error("daemon needed SIGKILL before the critical leg");
+  daemon = startDaemon({ diskFull: true });
+  await waitDaemonAnnounce();
+  res = await send("POST", "/__ocr/upload/chunk", {
+    id: "blocked-1",
+    idx: 0,
+    data: Buffer.from("should-never-land").toString("base64"),
+  });
+  if (res.status !== 507) throw new Error(`expected 507 on critical upload chunk, got ${res.status}`);
+  if (!(res.body as { error?: string }).error?.includes("quase cheio")) {
+    throw new Error("the 507 body lost the machine's own phrase");
+  }
+  // the gate precedes even the entry lookup: an unknown id still refuses with
+  // the disk phrase instead of the stale 404 — nothing is staged, nothing written
+  res = await send("POST", "/__ocr/upload/complete", { id: "blocked-1", mime: "image/jpeg", filename: "never.jpg" });
+  if (res.status !== 507) throw new Error(`expected 507 on critical upload complete, got ${res.status}`);
+  const filesAfter = existsSync(uploadsDir) ? readdirSync(uploadsDir).length : 0;
+  if (filesAfter !== filesBefore) {
+    throw new Error(`uploads dir changed during the critical leg: ${filesBefore} -> ${filesAfter}`);
+  }
+  console.log("disk-critical upload refusal (507 before any byte): OK");
+}
+
 ws.close();
-relay.kill("SIGTERM");
-daemon.kill("SIGTERM");
+killTree(relay, "SIGKILL");
+killTree(daemon, "SIGKILL");
 console.log("RECONNECT TEST PASSED");
 process.exit(0);
