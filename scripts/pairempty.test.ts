@@ -35,9 +35,10 @@ check("hint copy comes from pairEmptyCode", view.includes('t("pairEmptyCode")'))
 // P3-440: the field flags itself on both failing paths — aria-invalid rides
 // the same state that renders each inline message (P3-431 pattern), so the
 // empty path wears the same danger ring the garbled-code path has since
-// P3-410, and a rejected submit never reads as valid.
-check("empty submit flags the paste box aria-invalid", /aria-invalid=\{codeError \|\| emptyHint \? true : undefined\}/.test(view));
-check("garbled submit keeps driving the same flag", /aria-invalid=\{codeError \|\| emptyHint \? true : undefined\}/.test(view));
+// P3-410, and a rejected submit never reads as valid. P3-428: the App-level
+// invalid-code verdict (garbled #/pair?… deep link) joins the same flag.
+check("empty submit flags the paste box aria-invalid", /aria-invalid=\{codeError \|\| emptyHint \|\| appInvalidCode \? true : undefined\}/.test(view));
+check("garbled submit keeps driving the same flag", /aria-invalid=\{codeError \|\| emptyHint \|\| appInvalidCode \? true : undefined\}/.test(view));
 
 // typing clears the nudge — one dismissal per mistake, not a sticky label
 check("typing clears the hint", /onChange=\{\(e\) => \{[\s\S]{0,80}setCode\(e\.target\.value\);[\s\S]{0,40}setEmptyHint\(false\);/.test(view));
