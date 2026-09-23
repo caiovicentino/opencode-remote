@@ -27,7 +27,7 @@ import {
 } from "./daemon";
 import { relaySettingFile, readStoredRelayUrl, readStoredWebAppUrl, writeStoredRelayUrl, writeStoredWebAppUrl } from "./relaystore";
 import { relayUrlProblems, resolveRelayUrl } from "./relaysetting";
-import { RELAY_PROBE_BODY_MAX, RELAY_PROBE_TIMEOUT_MS, relayHealthUrl, relayProbeErrorName, relayProbeVerdict, type RelayProbeVerdict as RelayTestVerdict } from "./relayprobe";
+import { RELAY_PROBE_BODY_MAX, RELAY_PROBE_EXTRA_READS, RELAY_PROBE_TIMEOUT_MS, relayHealthUrl, relayInstanceIdFromBody, relayProbeErrorName, relayProbeVerdict, relayReplicaVerdict, type RelayProbeVerdict as RelayTestVerdict } from "./relayprobe";
 import { resolveWebAppUrl, webAppUrlProblems } from "./webappurl";
 import { buildPairLink } from "./pairlink";
 import { hasAppMarker, probeVerdict, rawDateHeader, type ReachProbeOutcome, type ReachVerdict } from "./webreach";
@@ -2801,13 +2801,32 @@ async function probeRelay(raw: unknown): Promise<RelayTestVerdict> {
     // The body only matters for the two statuses that can be "ok"/"draining";
     // every other answer is classified by its status alone.
     const body = res.status === 200 || res.status === 503 ? await readRelayBodyPrefix(res, RELAY_PROBE_BODY_MAX) : "";
-    return relayProbeVerdict({
+    const verdict = relayProbeVerdict({
       raw,
       status: res.status,
       redirected: res.redirected,
       body,
       errorName: "",
     });
+    // P2-344: only an ok FIRST read justifies the replica sampling — every
+    // other state already names its own fault, and the sampling may never
+    // mask it. The address can still be served by MORE THAN ONE relay
+    // replica (each with its own in-memory room map — P3-401), which the
+    // operator only discovers because the published instanceId changes
+    // between reads. At most RELAY_PROBE_EXTRA_READS more SEQUENTIAL reads
+    // of the same healthz, each best-effort with the same ceilings (a failed
+    // or stranger read contributes no value and can never change the
+    // verdict); divergence between the sanitized ids flips the verdict to
+    // the additive split-replicas state. No verdict is invented for the ok
+    // path — the first read's answer is returned byte for byte.
+    if (verdict.state !== "ok") return verdict;
+    const ids: unknown[] = [relayInstanceIdFromBody(body)];
+    let replica = relayReplicaVerdict(ids);
+    for (let extra = 0; extra < RELAY_PROBE_EXTRA_READS && replica.state !== "split-replicas"; extra++) {
+      ids.push(await relayInstanceIdSample(healthUrl));
+      replica = relayReplicaVerdict(ids);
+    }
+    return replica.state === "split-replicas" ? replica : verdict;
   } catch (err) {
     // net.fetch failures carry the Chromium code in the message
     // ("net::ERR_CONNECTION_REFUSED …") or in cause.code; a timed-out dial is
@@ -2821,6 +2840,26 @@ async function probeRelay(raw: unknown): Promise<RelayTestVerdict> {
       body: "",
       errorName: relayProbeErrorName(err),
     });
+  }
+}
+
+// P2-344: ONE best-effort /healthz read of the SAME address the first probe
+// just blessed — the only I/O the replica sampling spends. Same manual
+// redirect, same RELAY_PROBE_TIMEOUT_MS ceiling and same RELAY_PROBE_BODY_MAX
+// body cap as the first read. Everything it can fail with (network error,
+// timeout, cancelled redirect, stranger body, non-JSON) degrades to
+// `undefined`: a failed sample contributes no instance id and can never
+// change the verdict (P2-338 fail-closed lesson). Never throws.
+async function relayInstanceIdSample(healthUrl: string): Promise<unknown> {
+  try {
+    const res = await net.fetch(healthUrl, {
+      signal: AbortSignal.timeout(RELAY_PROBE_TIMEOUT_MS),
+      redirect: "manual",
+    });
+    const body = res.status === 200 || res.status === 503 ? await readRelayBodyPrefix(res, RELAY_PROBE_BODY_MAX) : "";
+    return relayInstanceIdFromBody(body);
+  } catch {
+    return undefined;
   }
 }
 

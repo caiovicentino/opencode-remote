@@ -897,6 +897,12 @@ your platform's replica id keeps the identity stable across restarts; a
 generated id changes per boot but always agrees with itself minute to
 minute, which is all the test needs.
 
+The desktop shell runs the same comparison for you: the Settings relay
+card's **Test connection** (P2-344) samples the published `instanceId` up to
+two more times after a healthy first read and reports
+`split-replicas` — more than one instance answers this address, pairing
+fails until only one remains — instead of blessing the address.
+
 ## Metrics endpoint
 
 `GET /metrics` (counters as JSON; add `?format=prom` for Prometheus text
@@ -1033,6 +1039,15 @@ incompatible relay (update the app or the hosted relay — saving would leave
 the daemon reconnecting forever), and a relay that does not publish the field
 at all reports it is old — it still works and can be saved, but consider
 updating it.
+
+Since P2-344 the same test also guards the replica trap below: when the
+first read answers healthy, the shell takes up to two more sequential reads
+of the same `/healthz` (same ceilings, each best-effort) and compares the
+`instanceId` values. Different ids in a row mean more than one relay replica
+is answering that address — the pairing breaks in silence until only one
+remains — and the card says exactly that instead of blessing the address.
+Absent, out-of-grammar values or a relay that publishes no field at all
+never turn a healthy probe into an alarm.
 
 Since P3-453 the same card also carries one quiet **live status line** — the
 same daemon↔relay verdict the pairing QR's line speaks (connected, local

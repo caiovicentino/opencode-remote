@@ -11,6 +11,17 @@
 // runtime and scripts/unit.test.ts exercises every branch in plain Node.
 // Messages are static pt-BR and English with no URL, no host, no IP, no port
 // and no raw error (the P2-140 bar): a short phrase the operator can act on.
+//
+// P2-344: the probe also reads the `instanceId` field the relay publishes on
+// /healthz (P3-401). One healthy read cannot prove the address is served by
+// exactly ONE relay replica — two replicas behind one public address split
+// every room in half and pairing breaks in silence while every probe looks
+// green. So after an ok FIRST read, main.ts samples the same healthz up to
+// RELAY_PROBE_EXTRA_READS more times (same ceilings, each best-effort) and
+// relayReplicaVerdict turns a divergence between the sanitized ids into the
+// additive split-replicas state. A failed read, an absent value, an
+// out-of-grammar value or fewer than two valid values never change the
+// verdict (P2-338 lesson: fail-closed, sanitize to a closed grammar or null).
 
 import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol/relaywire.js";
 import { relayUrlProblems } from "./relaysetting";
@@ -22,10 +33,17 @@ export const RELAY_PROBE_TIMEOUT_MS = 5_000;
  * hostile or broken peer must not stream gigabytes into the shell. */
 export const RELAY_PROBE_BODY_MAX = 4_096;
 
+/** P2-344: how many EXTRA /healthz reads the replica sampler may spend after
+ * an ok first read ("at most two more sequential reads"). Three samples in
+ * total make two distinct ids very likely to surface behind a round-robin
+ * load balancer; divergence exits the loop early. */
+export const RELAY_PROBE_EXTRA_READS = 2;
+
 export type RelayProbeState =
   | "ok"
   | "protocol-mismatch"
   | "protocol-outdated"
+  | "split-replicas"
   | "draining"
   | "not-a-relay"
   | "dns"
@@ -82,6 +100,10 @@ const VERDICTS: Record<RelayProbeState, { message: string; messageEn: string }> 
     message: "o relay é antigo — convém atualizá-lo",
     messageEn: "the relay is old — consider updating it",
   },
+  "split-replicas": {
+    message: "mais de uma instância do relay responde nesse endereço — o pareamento vai falhar até sobrar uma só",
+    messageEn: "more than one relay instance answers this address — pairing will fail until only one remains",
+  },
   draining: {
     message: "o relay respondeu, mas está encerrando — teste de novo em instantes",
     messageEn: "the relay answered, but it is draining — test again shortly",
@@ -117,6 +139,13 @@ const VERDICTS: Record<RelayProbeState, { message: string; messageEn: string }> 
 };
 
 function verdict(state: RelayProbeState): RelayProbeVerdict {
+  return { state, ...VERDICTS[state] };
+}
+
+/** P2-344: the replica sampler's verdict builder — the narrow union keeps the
+ * returned state exactly the two documented values while the phrase comes
+ * from the same sibling table the probe uses. */
+function replicaVerdict(state: RelayReplicaState): RelayReplicaVerdict {
   return { state, ...VERDICTS[state] };
 }
 
@@ -219,4 +248,107 @@ export function relayProbeVerdict(p: RelayProbeInput): RelayProbeVerdict {
   }
   if (p.status === 503 && !p.redirected && body?.ok === false) return verdict("draining");
   return verdict("not-a-relay");
+}
+
+// --- P2-344: replica identity sampler ------------------------------------------
+//
+// The relay publishes an opaque per-instance id on /healthz (P3-401,
+// apps/relay/src/instanceid.ts). Two replicas behind one public address split
+// the in-memory room map and pairing breaks in silence while every individual
+// probe looks green — the only signal the CLIENT can gather is "the id changed
+// between reads". These helpers keep the sampling pure: the grammar is
+// duplicated from apps/relay/src/instanceid.ts on purpose (apps cannot import
+// each other without dragging Electron-adjacent or server sources into the
+// build — P2-338/P2-335 lessons) and scripts/unit.test.ts pins parity against
+// the real instanceid.ts source, failing the moment the two diverge.
+
+/** P2-344: longest accepted instance id — byte-for-byte the
+ *  INSTANCE_ID_MAX_LENGTH of apps/relay/src/instanceid.ts (parity-tested). */
+const INSTANCE_ID_MAX_LENGTH = 64;
+
+/** P2-344: the whole accepted grammar — letters, digits and dashes; anything
+ *  else (spaces, underscores, dots, control bytes, non-ASCII) is unsafe for a
+ *  public probe field. Byte-for-byte the INSTANCE_ID_PATTERN of
+ *  apps/relay/src/instanceid.ts (parity-tested). */
+const INSTANCE_ID_PATTERN = /^[A-Za-z0-9-]+$/;
+
+/**
+ * P2-344: sanitize one raw `instanceId` value to the closed grammar of
+ * apps/relay/src/instanceid.ts — a non-empty string of at most 64 letters,
+ * digits and dashes. Fail-closed (P2-338 lesson): an absent, null, non-string,
+ * empty, oversized or out-of-grammar value degrades to null and NEVER changes
+ * the verdict; no id is ever invented from partial input. Returns the value
+ * verbatim (no trimming, no case folding — an id either is fully inside the
+ * grammar or is rejected whole).
+ */
+export function sanitizeInstanceId(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > INSTANCE_ID_MAX_LENGTH) return null;
+  return INSTANCE_ID_PATTERN.test(raw) ? raw : null;
+}
+
+/** P2-344: the states the replica sampler can answer. "ok" means "nothing
+ * contradicts today's verdict" — the caller keeps whatever the probe said;
+ * "split-replicas" is the additive fault state (relayprobe VERDICTS carries
+ * its static pt/en phrases, so the shape stays RelayProbeVerdict-compatible). */
+export type RelayReplicaState = "ok" | "split-replicas";
+
+/** P2-344: verdict of the replica sampling. Structurally a
+ * RelayProbeVerdict (its state is inside RelayProbeState), so main.ts can
+ * return it wherever the probe verdict travels. */
+export interface RelayReplicaVerdict {
+  state: RelayReplicaState;
+  /** static pt-BR phrase — no URL, host, IP, port or instance id */
+  message: string;
+  /** static en phrase — same bar as the pt one above */
+  messageEn: string;
+}
+
+/**
+ * P2-344: decide whether the instance ids read from consecutive /healthz
+ * answers contradict "exactly one relay instance serves this address".
+ * Every value is sanitized through the closed instanceid.ts grammar first;
+ * an absent, null, non-string, empty, oversized or out-of-grammar value is
+ * dropped and can never change the verdict (a legacy relay publishing no
+ * field at all, or one replica newer than the other, must NOT turn a healthy
+ * probe into an alarm). Rules, in order:
+ *   1. a non-array input (or one that is not a list of values) carries no
+ *      evidence — "ok" (fail-closed: fewer than two valid values never
+ *      changes today's verdict);
+ *   2. fewer than two valid values after sanitization → "ok";
+ *   3. every valid value identical → "ok" (one stable instance);
+ *   4. two or more distinct valid values → "split-replicas".
+ * The split phrase is the sibling static pair from VERDICTS — no URL, host,
+ * IP, port, id or raw error, and the caller never renders the ids anywhere.
+ */
+export function relayReplicaVerdict(values: unknown): RelayReplicaVerdict {
+  const list = Array.isArray(values) ? values : [];
+  const ids: string[] = [];
+  for (const v of list) {
+    const id = sanitizeInstanceId(v);
+    if (id !== null) ids.push(id);
+  }
+  if (ids.length < 2) return replicaVerdict("ok");
+  if (new Set(ids).size <= 1) return replicaVerdict("ok");
+  return replicaVerdict("split-replicas");
+}
+
+/**
+ * P2-344: the raw `instanceId` field of one /healthz body — `undefined`
+ * whenever the body is not a JSON object carrying the field (a legacy relay,
+ * a stranger body or a failed read contribute no value and can never change
+ * the verdict). The VALUE is returned raw on purpose: the sanitization to the
+ * closed grammar lives in relayReplicaVerdict/sanitizeInstanceId so the unit
+ * battery can pin both halves of the contract separately.
+ */
+export function relayInstanceIdFromBody(body: string): unknown {
+  if (!body) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return (parsed as Record<string, unknown>).instanceId;
+    }
+  } catch {
+    // not JSON — no value; the caller treats it like any other failed read
+  }
+  return undefined;
 }
