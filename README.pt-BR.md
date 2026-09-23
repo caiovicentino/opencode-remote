@@ -140,9 +140,15 @@ remoto, zero confiança**.
   abaixo de 2 GB livres ou 10% do volume livre, **crítico** abaixo de 500 MB
   livres ou 5% do volume livre. O indicador descreve a máquina que hospeda o
   daemon — nunca o celular — é lido uma vez no boot e depois no mesmo ciclo
-  do janitor de retenção de artifacts, e **nunca impede nada**: envio, voz e
-  todos os controles continuam habilitados mesmo com o veredito crítico
-  (vereditos ok/unknown ficam em silêncio). O mesmo veredito viaja em
+  do janitor de retenção de artifacts. Desde a P3-462 o composer do chat
+  consulta o mesmo veredito na leitura de settings que ele já faz (nenhum
+  poll novo): com **crítico** o botão de anexo fica desabilitado ao lado de
+  uma linha curta sob o composer (a frase da própria máquina, literal, ou a
+  frase estática do app quando a máquina não mandou nenhuma); com **low**
+  aparece só um aviso discreto, nada é bloqueado; com **ok** ou veredito
+  desconhecido o composer continua exatamente como era. Todo o resto —
+  envio, voz, câmera, todos os outros controles — mantém a disciplina
+  fail-open da P2-215: só o anexo é barrado. O mesmo veredito viaja em
   `GET /api/health` (`diskState` / `diskMessage`) e em `GET /__ocr/settings`
   (`disk`). Para liberar espaço nessa máquina, remova ou arquive arquivos
   grandes (os artifacts de sessões antigas em

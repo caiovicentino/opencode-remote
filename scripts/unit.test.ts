@@ -422,6 +422,14 @@ import {
   type MachineReadinessRow,
 } from "../apps/web/src/lib/machinestate";
 
+import {
+  composerDiskAdvice,
+  DISK_PHRASE_MAX,
+  DISK_STATES,
+  sanitizeDiskPhrase,
+  sanitizeDiskState,
+} from "../apps/web/src/lib/diskstate";
+
 import { WELCOME_DONE, shouldShowWelcome } from "../apps/web/src/lib/welcome";
 
 import { permissionPreview } from "../apps/web/src/lib/permission";
@@ -12226,6 +12234,187 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
         handler.includes("maybeReprobeBrowse")
       );
     })(),
+  );
+}
+
+// --- P3-462: the composer's disk-readiness verdict (pure module) --------------
+{
+  // Table 1 — sanitizeDiskState: the closed set from the additive field. Both
+  // wire shapes are accepted (the flat string /api/health publishes and the
+  // object the settings mirror carries); everything else is null, fail-closed
+  // (lesson P2-338) — absent/null/malformed never become a verdict.
+  const table: [string, unknown, string][] = [
+    ["flat ok", "ok", "ok"],
+    ["flat low", "low", "low"],
+    ["flat critical", "critical", "critical"],
+    ["absent (undefined)", undefined, "null"],
+    ["absent (missing key)", {}, "null"],
+    ["null", null, "null"],
+    ["empty string", "", "null"],
+    ["whitespace", "   ", "null"],
+    ["uppercase out-of-set", "OK", "null"],
+    ["out-of-set word", "unknown", "null"],
+    ["out-of-set word", "full", "null"],
+    ["number", 42, "null"],
+    ["boolean", true, "null"],
+    ["array", ["ok"], "null"],
+    ["object without state", { message: "x" }, "null"],
+    ["object with out-of-set state", { state: "nonsense" }, "null"],
+    ["object with non-textual state", { state: 42 }, "null"],
+    ["object with null state", { state: null }, "null"],
+    ["nested object", { state: { state: "ok" } }, "null"],
+    ["object with ok state", { state: "ok" }, "ok"],
+    ["object with low state", { state: "low" }, "low"],
+    ["object with critical state", { state: "critical" }, "critical"],
+    ["object with state + message", { state: "low", message: "frase" }, "low"],
+  ];
+  check(
+    "P3-462: sanitizeDiskState table — in-set values pass (both shapes), everything else is null",
+    table.every(([_, input, want]) => sanitizeDiskState(input) === (want === "null" ? null : want)),
+  );
+  check(
+    "P3-462: the closed set has exactly the three documented states",
+    JSON.stringify(DISK_STATES) === JSON.stringify(["ok", "low", "critical"]),
+  );
+
+  // Table 2 — the phrase rule: the machine's own phrase rides verbatim while
+  // it is a short single-line string; anything else is refused (null) so the
+  // caller falls back to its own static copy.
+  check(
+    "P3-462: sanitizeDiskPhrase table — short single-line strings pass, everything else is null",
+    sanitizeDiskPhrase("O disco desta máquina está quase cheio.") === "O disco desta máquina está quase cheio." &&
+      sanitizeDiskPhrase("  espaços em volta caem fora  ") === "espaços em volta caem fora" &&
+      sanitizeDiskPhrase(undefined) === null &&
+      sanitizeDiskPhrase(null) === null &&
+      sanitizeDiskPhrase("") === null &&
+      sanitizeDiskPhrase(42) === null &&
+      sanitizeDiskPhrase("x".repeat(DISK_PHRASE_MAX + 1)) === null &&
+      sanitizeDiskPhrase("x".repeat(DISK_PHRASE_MAX)) === "x".repeat(DISK_PHRASE_MAX) &&
+      sanitizeDiskPhrase("linha um\nlinha dois") === null &&
+      sanitizeDiskPhrase("linha um\rcom retorno") === null,
+  );
+
+  // Table 3 — the derived composer state (the header table, executable form):
+  //   null → nothing rendered, nothing blocked (composer identical to today)
+  //   ok   → nothing rendered, nothing blocked
+  //   low  → one discreet line (payload phrase when short, static otherwise),
+  //          never blocking
+  //   critical → the attach button disabled + the line under the composer
+  // The read accepts BOTH wire shapes: the flat pair /api/health publishes
+  // (diskState + diskMessage, preferred) and the object the settings mirror
+  // carries (disk: { state, message }).
+  const STATIC_LOW = "AVISO-LOW";
+  const STATIC_CRITICAL = "AVISO-CRITICO";
+  const advice = (field: unknown, phrase?: unknown) => {
+    if (phrase === undefined) return composerDiskAdvice({ disk: field }, STATIC_LOW, STATIC_CRITICAL);
+    // string fields are the flat wire shape; objects keep their state member
+    const state = typeof field === "string" ? field : (field as { state?: unknown } | null)?.state;
+    return composerDiskAdvice({ disk: { state, message: phrase } }, STATIC_LOW, STATIC_CRITICAL);
+  };
+  check(
+    "P3-462: composer advice table — null/ok stay silent, low warns without blocking, critical blocks",
+    // unknown / malformed → the documented no-op
+    JSON.stringify(advice(undefined)) === JSON.stringify({ state: null, blocked: false, message: "" }) &&
+      JSON.stringify(advice(null)) === JSON.stringify({ state: null, blocked: false, message: "" }) &&
+      JSON.stringify(advice("nonsense")) === JSON.stringify({ state: null, blocked: false, message: "" }) &&
+      // ok → nothing rendered, nothing blocked
+      JSON.stringify(advice("ok")) === JSON.stringify({ state: "ok", blocked: false, message: "" }) &&
+      JSON.stringify(advice({ state: "ok", message: "tudo certo" })) === JSON.stringify({ state: "ok", blocked: false, message: "" }) &&
+      // low → discreet warning, never blocking; payload phrase when short,
+      // static copy otherwise
+      JSON.stringify(advice("low")) === JSON.stringify({ state: "low", blocked: false, message: STATIC_LOW }) &&
+      JSON.stringify(advice("low", "disco ficando cheio")) === JSON.stringify({ state: "low", blocked: false, message: "disco ficando cheio" }) &&
+      JSON.stringify(advice("low", "x".repeat(DISK_PHRASE_MAX + 1))) === JSON.stringify({ state: "low", blocked: false, message: STATIC_LOW }) &&
+      JSON.stringify(advice("low", "duas\nlinhas")) === JSON.stringify({ state: "low", blocked: false, message: STATIC_LOW }) &&
+      JSON.stringify(advice({ state: "low" })) === JSON.stringify({ state: "low", blocked: false, message: STATIC_LOW }) &&
+      // critical → the attach button is disabled; the phrase follows the same rule
+      JSON.stringify(advice("critical")) === JSON.stringify({ state: "critical", blocked: true, message: STATIC_CRITICAL }) &&
+      JSON.stringify(advice({ state: "critical" })) === JSON.stringify({ state: "critical", blocked: true, message: STATIC_CRITICAL }) &&
+      JSON.stringify(advice("critical", "disco cheio agora")) === JSON.stringify({ state: "critical", blocked: true, message: "disco cheio agora" }),
+  );
+
+  // The flat pair rides too: /api/health's diskState + diskMessage siblings
+  // take precedence, and a present-but-broken flat field never falls through
+  // to the mirror object (the payload that broke its contract is trusted
+  // nowhere — fail-closed).
+  check(
+    "P3-462: the flat pair (diskState + diskMessage) drives the advice; a broken flat field silences it",
+    JSON.stringify(composerDiskAdvice({ diskState: "critical", diskMessage: "frase do payload" }, STATIC_LOW, STATIC_CRITICAL)) ===
+      JSON.stringify({ state: "critical", blocked: true, message: "frase do payload" }) &&
+      JSON.stringify(composerDiskAdvice({ diskState: "critical", diskMessage: 42 }, STATIC_LOW, STATIC_CRITICAL)) ===
+        JSON.stringify({ state: "critical", blocked: true, message: STATIC_CRITICAL }) &&
+      JSON.stringify(composerDiskAdvice({ diskState: "junk", disk: { state: "low" } }, STATIC_LOW, STATIC_CRITICAL)) ===
+        JSON.stringify({ state: null, blocked: false, message: "" }) &&
+      JSON.stringify(composerDiskAdvice({ diskState: null, disk: { state: "low" } }, STATIC_LOW, STATIC_CRITICAL)) ===
+        JSON.stringify({ state: null, blocked: false, message: "" }) &&
+      JSON.stringify(composerDiskAdvice({}, STATIC_LOW, STATIC_CRITICAL)) ===
+        JSON.stringify({ state: null, blocked: false, message: "" }) &&
+      JSON.stringify(composerDiskAdvice(null, STATIC_LOW, STATIC_CRITICAL)) ===
+        JSON.stringify({ state: null, blocked: false, message: "" }),
+  );
+
+  // The daemons' real phrases (P2-215) ride verbatim through the advice: the
+  // object the settings mirror carries keeps its message, and the static copy
+  // is only a fallback.
+  const realDisk = {
+    state: "low",
+    message: "O disco desta máquina está ficando sem espaço — quem gerencia a máquina pode liberar arquivos para a conversa continuar sem erros.",
+  };
+  check(
+    "P3-462: the machine's own long phrase rides verbatim through the composer advice",
+    composerDiskAdvice({ disk: realDisk }, STATIC_LOW, STATIC_CRITICAL).message === realDisk.message &&
+      composerDiskAdvice({ disk: realDisk }, STATIC_LOW, STATIC_CRITICAL).blocked === false &&
+      composerDiskAdvice({ disk: { ...realDisk, state: "critical" } }, STATIC_LOW, STATIC_CRITICAL).blocked === true,
+  );
+
+  // Determinism: the same input twice, the identical result.
+  const onceAdvice = JSON.stringify(composerDiskAdvice({ disk: realDisk }, STATIC_LOW, STATIC_CRITICAL));
+  check(
+    "P3-462: the same input yields the identical advice on two calls",
+    onceAdvice === JSON.stringify(composerDiskAdvice({ disk: realDisk }, STATIC_LOW, STATIC_CRITICAL)),
+  );
+
+  // The app's static copy exists in both locales, non-empty, and carries no
+  // path, URL scheme or secret (P2-118 key parity is pinned globally; here the
+  // two disk keys are pinned explicitly).
+  const diskKeys = ["diskLowHint", "diskAttachBlocked"];
+  check(
+    "P3-462: the composer's static disk copy exists in both locales and stays path/URL-free",
+    diskKeys.every((k) =>
+      ["en", "pt"].every((lang) => {
+        const s = String((dict as Record<string, Record<string, string>>)[lang][k]);
+        return (
+          s.trim() !== "" &&
+          !s.includes("://") &&
+          !s.startsWith("/") &&
+          !s.includes("~/.") &&
+          !/^[A-Za-z]:\\/.test(s)
+        );
+      }),
+    ),
+  );
+
+  // Real-repo assertions: the composer consults the verdict from the SAME
+  // settings read it already performs (no new request, no new poll), the
+  // attach button reads the derived advice, and the lib stays pure.
+  const chatSrc = readFileSync(new URL("../apps/web/src/components/ChatView.tsx", import.meta.url), "utf8");
+  const diskstateSrc = readFileSync(new URL("../apps/web/src/lib/diskstate.ts", import.meta.url), "utf8");
+  check(
+    "P3-462: ChatView reads the disk verdict from the same GET /__ocr/settings (no new poll) and gates the attach button on it",
+    chatSrc.includes("import { composerDiskAdvice } from \"../lib/diskstate\"") &&
+      (chatSrc.split('request("GET", "/__ocr/settings")').length - 1) === 1 &&
+      chatSrc.includes("setDiskRead({ disk: body.disk, diskState: body.diskState, diskMessage: body.diskMessage })") &&
+      chatSrc.includes("composerDiskAdvice(diskRead, t(\"diskLowHint\"), t(\"diskAttachBlocked\"))") &&
+      chatSrc.includes("uploading || recState === \"busy\" || diskAdvice.blocked") &&
+      chatSrc.includes('composer-hint${diskAdvice.blocked'),
+  );
+  check(
+    "P3-462: diskstate.ts stays pure — no React, no fetch, no node:, no timers",
+    !diskstateSrc.includes("from \"react\"") &&
+      !diskstateSrc.includes("fetch(") &&
+      !diskstateSrc.includes("node:") &&
+      !diskstateSrc.includes("setInterval") &&
+      !diskstateSrc.includes("setTimeout"),
   );
 }
 

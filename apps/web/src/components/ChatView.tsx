@@ -57,6 +57,7 @@ import {
   type PasteItem,
 } from "../lib/pasteattach";
 import { dropVerdict } from "../lib/dropgate";
+import { composerDiskAdvice } from "../lib/diskstate";
 import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
   canHighlightInline,
@@ -498,6 +499,16 @@ export default function ChatView({
   const modelStatus = useModelStatus(request, modelProbe);
   const modelHint = modelStatus && modelStatus.state !== "ready" ? modelStatus : null;
   const modelHintText = modelHint ? modelHintKey(modelHint.state, !!desktopShell) : null;
+  // P3-462: the machine's disk-readiness verdict for the composer — read from
+  // the SAME GET /__ocr/settings response refreshChatSettings already fetches
+  // (the channel that mirrors /api/health's readiness verdicts, P2-215/
+  // P2-288), so no new request, no new poll. The pure lib fails closed:
+  // absent/malformed/out-of-set stays null and the composer renders exactly
+  // what it did before this verdict existed. Only `critical` disables the
+  // attach button; `low` renders one discreet line without blocking; the
+  // machine's own phrase renders verbatim while it is a short single-line
+  // string, the app's static copy otherwise.
+  const [diskRead, setDiskRead] = useState<unknown>(undefined);
   // P2-125 voice replies: toggle + playback state. Availability comes from the
   // daemon (edge-tts installed on the host); the full answer stays in the chat.
   const [ttsOn, setTtsOn] = useState(() => localStorage.getItem("ocr-tts-on") === "1");
@@ -708,6 +719,9 @@ export default function ChatView({
   const overlayPhase = useExitAnimation(!!overlaySource && !wide);
   const overlayArtifact = overlaySource ?? (overlayPhase !== "closed" ? lastOverlayRef.current : null);
   const t = useT();
+  // P3-462: the derived composer advice — static copy resolved per locale
+  // (P2-118); the machine's own phrase renders verbatim when it qualifies.
+  const diskAdvice = composerDiskAdvice(diskRead, t("diskLowHint"), t("diskAttachBlocked"));
 
   const [exporting, setExporting] = useState(false);
   async function handoffToDesktop() {
@@ -1145,15 +1159,29 @@ export default function ChatView({
   // P1-082: AutoMode — the daemon answers permission asks on the user's behalf.
   // While on, no actionable card is ever rendered (passive badge only); the
   // daemon's audit log is the record.
+  // P3-462: the same read also carries the disk verdict (the channel mirrors
+  // /api/health's readiness fields) — the composer consults the machine's
+  // readiness from this existing consultation, no new route and no new poll.
   const [autoMode, setAutoMode] = useState(false);
-  async function refreshAutoMode() {
+  async function refreshChatSettings() {
     try {
       const res = await request("GET", "/__ocr/settings");
-      if (res.status === 200) setAutoMode((res.body as { autoMode?: boolean }).autoMode === true);
+      if (res.status === 200) {
+        const body = res.body as {
+          autoMode?: boolean;
+          disk?: unknown;
+          diskState?: unknown;
+          diskMessage?: unknown;
+        };
+        setAutoMode(body.autoMode === true);
+        // only the disk slice travels into state — the settings body never
+        // outlives this read
+        setDiskRead({ disk: body.disk, diskState: body.diskState, diskMessage: body.diskMessage });
+      }
     } catch {}
   }
   useEffect(() => {
-    void refreshAutoMode();
+    void refreshChatSettings();
   }, [sessionId]);
 
   // P1-082: permission events no longer render cards by themselves — they
@@ -1459,7 +1487,7 @@ export default function ChatView({
       // immediately, then re-check settings so a mid-session toggle-off
       // also takes effect without a reload
       setAutoMode(true);
-      void refreshAutoMode();
+      void refreshChatSettings();
     }
   }, [events, sessionId]);
   useEffect(() => {
@@ -3562,9 +3590,9 @@ export default function ChatView({
             <button
               className="composer-btn composer-attach"
               onClick={() => fileRef.current?.click()}
-              disabled={uploading || recState === "busy"}
+              disabled={uploading || recState === "busy" || diskAdvice.blocked}
               aria-label={t("attachFile")}
-              title={t("attachFile")}
+              title={diskAdvice.blocked ? diskAdvice.message : t("attachFile")}
             >
               {uploading ? "…" : <IconPlus />}
             </button>
@@ -3703,6 +3731,14 @@ export default function ChatView({
           {sttBlocked && (
             <p className="composer-hint" role="status">
               {stt.message}
+            </p>
+          )}
+          {diskAdvice.message && (
+            <p
+              className={`composer-hint${diskAdvice.blocked ? " composer-hint-warn" : ""}`}
+              role="status"
+            >
+              {diskAdvice.message}
             </p>
           )}
         </div>

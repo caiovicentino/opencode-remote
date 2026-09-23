@@ -184,7 +184,10 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // OCR_OPENCODE_MISSING=1 daemon hatch + welcome agent-step actions + paired
 // Settings copy) inside it too. P3-398 added the file-drop beats (gate drop →
 // calm warning; home drop → new conversation with the attachment, against a
-// fake opencode that answers POST /session) inside the same budget.
+// fake opencode that answers POST /session) inside the same budget. P3-462
+// added the disk-verdict composer beats (the normal-state probes + shots ride
+// the paired local boot; the critical state boots one more hermetic daemon
+// with the OCR_DISK_FULL=1 hatch — the probes poll at 500ms) inside it too.
 const startedAt = Date.now();
 const DEADLINE_MS = 420_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -5473,6 +5476,218 @@ phase("P2-152: one-time close-to-tray hint");
     if (diagBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: diagEnv });
     killDiagDaemon("SIGKILL");
     rmSync(diagHome, { recursive: true, force: true });
+  }
+}
+
+// --- P3-462: the composer consults the machine's disk readiness --------------
+// Two hermetic boots, one per evidence state (the operator host's own disk
+// verdict is whatever its volume reports, so neither state may ride an
+// arbitrary live boot):
+//
+//   A. normal state — the paired boot's daemon is SIGKILLed BEFORE any chat
+//      opens, so the settings read that carries the disk verdict fails and
+//      the composer's advice stays null (the exact state a legacy daemon
+//      without the field produces — the unit table pins both shapes). The
+//      composer must render EXACTLY what it did before P3-462: attach
+//      enabled, no warn line under it. The shell's reconnecting strip is
+//      expected in these shots — the composer itself is unchanged.
+//   B. critical state — the daemon's P2-215 hatch OCR_DISK_FULL=1 forces the
+//      critical verdict deterministically: the attach button is DISABLED
+//      beside the machine's own phrase (verbatim, the settings mirror
+//      carries it) under the composer.
+{
+  // Shared boot helper: one hermetic daemon per state, killed at scope exit.
+  const bootDiskDaemon = async (
+    label: string,
+    withHatch: boolean,
+  ): Promise<{ token: string; kill: (signal?: NodeJS.Signals) => void; port: number; stateFile: string; home: string }> => {
+    const home = mkdtempSync(join(tmpdir(), `ocr-flow-disk-${label}-`));
+    const stateFile = join(home, ".opencode-remote", "daemon.json");
+    const port = await new Promise<number>((resolve, reject) => {
+      const srv = createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const { port } = srv.address() as AddressInfo;
+        srv.close(() => resolve(port));
+      });
+      srv.on("error", reject);
+    });
+    const daemon = spawn(daemonSpawn().command, daemonSpawn().args, {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HOME: home,
+        OCR_METRICS_PORT: String(port),
+        RELAY_URL: "ws://127.0.0.1:1", // dead: relay must stay irrelevant in local mode
+        OPENCODE_URL: "http://127.0.0.1:1",
+        OCR_LOG_LEVEL: "error",
+        ...(withHatch ? { OCR_DISK_FULL: "1" } : {}), // P2-215 hatch: forces critical
+      },
+      stdio: ["ignore", "ignore", "ignore"],
+      detached: true,
+    });
+    const kill = (signal: NodeJS.Signals = "SIGKILL"): void => {
+      if (!daemon.pid) return;
+      try {
+        process.kill(-daemon.pid, signal);
+      } catch {
+        /* already gone */
+      }
+    };
+    process.on("exit", () => kill("SIGKILL"));
+    const token = await waitForDaemonStateFile(stateFile, port);
+    return { token, kill, port, stateFile, home };
+  };
+
+  // A. normal state: no verdict ever reached the composer (daemon gone first)
+  {
+    phase("P3-462: normal composer — no verdict ever reached it, nothing changed");
+    const boot = await bootDiskDaemon("ndisk", false);
+    const normalEnv = {
+      ...process.env,
+      OCR_DESKTOP_SESSION: `${session}-ndisk`,
+      OCR_DESKTOP_LOCAL_STATE: boot.stateFile,
+      OCR_DAEMON_METRICS_PORT: String(boot.port),
+      RELAY_URL: "ws://127.0.0.1:1",
+    };
+    let normalBooted = false;
+    try {
+      check("P3-462: hermetic normal daemon published the 0600 state file", !!boot.token);
+      // the host's real verdict is recorded only — the beat does not depend on
+      // it; the null advice below is forced by the daemon being gone, not by
+      // the host's disk
+      const health = await fetch(`http://127.0.0.1:${boot.port}/api/health`, {
+        headers: { authorization: `Bearer ${boot.token}` },
+      }).catch(() => null);
+      const healthBody = (await health?.json().catch(() => null)) as { diskState?: string } | null;
+      console.log(`     P3-462: host disk verdict (for the record): ${healthBody?.diskState ?? "absent"}`);
+      const open = run("P3-462: open (normal boot)", ["open"], 45_000, normalEnv);
+      normalBooted = open.ok;
+      if (open.ok) {
+        run("P3-462: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, normalEnv);
+        await waitProbe(
+          "P3-462: app paired with the hermetic normal daemon",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          normalEnv,
+        );
+        // the daemon dies BEFORE any chat opens — no settings read has ever
+        // delivered a disk verdict, so the composer advice is null from mount
+        boot.kill();
+        run("P3-462: deep-link opens the chat (daemon already gone)", ["ipc", "location.hash = '#/session/ses-p3-462-normal'"], 15_000, normalEnv);
+        const normalProbe = await waitProbe(
+          "P3-462: the composer mounts with no disk advice",
+          "(() => { const a = document.querySelector('.composer-attach'); return { mounted: !!a, disabled: a ? a.disabled : null, warns: document.querySelectorAll('.composer-hint-warn').length, phrases: Array.from(document.querySelectorAll('.composer-hint')).map((p) => (p.textContent ?? '').includes('quase cheio') || (p.textContent ?? '').includes('ficando sem espaço')) }; })()",
+          (v) => {
+            try {
+              const d = JSON.parse(v) as { mounted?: boolean; disabled?: boolean | null; warns?: number; phrases?: boolean[] };
+              return d.mounted === true && d.disabled === false && d.warns === 0 && (d.phrases ?? [true]).every((x) => x === false);
+            } catch {
+              return false;
+            }
+          },
+          normalEnv,
+          24,
+          500,
+        );
+        if (normalProbe) console.log(`     P3-462: normal composer probe: ${normalProbe.trim().slice(0, 200)}`);
+        const nShot1440 = join(shotsDir, "P3-462-composer-normal-1440.png");
+        const n1 = run("P3-462: 1440x900 composer shot (normal state)", ["shot", nShot1440, "1440", "900"], 15_000, normalEnv);
+        if (n1.ok) check("P3-462: normal 1440x900 shot is a real PNG", pngSize(nShot1440).join("x") === "1440x900");
+        const nShot390 = join(shotsDir, "P3-462-composer-normal-390.png");
+        const n2 = run("P3-462: 390 composer shot (normal state)", ["shot", nShot390, "390", "844"], 15_000, normalEnv);
+        if (n2.ok) check("P3-462: normal 390 shot is a real PNG", pngSize(nShot390)[0] === 390);
+      }
+    } finally {
+      if (normalBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: normalEnv });
+      boot.kill();
+      rmSync(boot.home, { recursive: true, force: true });
+    }
+  }
+
+  // B. critical state: the hatch forces the verdict, the composer obeys it
+  {
+    phase("P3-462: disk-critical composer (hatch) — attach disabled with the machine's phrase");
+    const boot = await bootDiskDaemon("crit", true);
+    const critEnv = {
+      ...process.env,
+      OCR_DESKTOP_SESSION: `${session}-disk`,
+      OCR_DESKTOP_LOCAL_STATE: boot.stateFile,
+      OCR_DAEMON_METRICS_PORT: String(boot.port),
+      RELAY_URL: "ws://127.0.0.1:1",
+    };
+    let critBooted = false;
+    try {
+      check("P3-462: hermetic disk daemon published the 0600 state file", !!boot.token);
+      // the verdict rides /api/health before any UI is involved
+      const health = await fetch(`http://127.0.0.1:${boot.port}/api/health`, {
+        headers: { authorization: `Bearer ${boot.token}` },
+      }).catch(() => null);
+      const healthBody = (await health?.json().catch(() => null)) as { diskState?: string; diskMessage?: string } | null;
+      check(
+        "P3-462: the hatched daemon answers diskState=critical with its phrase",
+        healthBody?.diskState === "critical" && (healthBody?.diskMessage ?? "").includes("quase cheio"),
+        JSON.stringify(healthBody ?? {}),
+      );
+      const open = run("P3-462: open (hermetic launch with the disk hatch)", ["open"], 45_000, critEnv);
+      critBooted = open.ok;
+      if (open.ok) {
+        run("P3-462: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, critEnv);
+        await waitProbe(
+          "P3-462: app paired with the hermetic disk daemon",
+          "document.querySelector('[data-phase]')?.getAttribute('data-phase') ?? ''",
+          (v) => v.includes("paired"),
+          critEnv,
+        );
+        // open a chat — the settings read that carries the verdict fires on mount
+        run("P3-462: deep-link opens the chat", ["ipc", "location.hash = '#/session/ses-p3-462-critical'"], 15_000, critEnv);
+        await waitProbe(
+          "P3-462: the critical verdict renders as the warn line under the composer",
+          "(() => { const h = document.querySelector('.composer-hint-warn'); const a = document.querySelector('.composer-attach'); return (h ? h.textContent.slice(0, 40) : 'NONE') + '|' + (a ? String(a.disabled) : 'NO-ATTACH'); })()",
+          (v) => {
+            // ipc stdout is JSON-encoded (trailing quote) — strip and match
+            const w = v.replace(/"/g, "").trim();
+            return w.includes("quase cheio") && /\|true$/.test(w);
+          },
+          critEnv,
+          24,
+          500,
+        );
+        const blockProbe = run(
+          "P3-462: critical state — attach disabled, warning carries the machine's phrase",
+          ["ipc", `(() => {
+            const attach = document.querySelector('.composer-attach');
+            const line = document.querySelector('.composer-hint-warn');
+            return {
+              disabled: attach ? attach.disabled : null,
+              phrase: (line?.textContent ?? '').slice(0, 120),
+            };
+          })()`],
+          15_000,
+          critEnv,
+        );
+        if (blockProbe.ok) {
+          let b: { disabled?: boolean | null; phrase?: string } | null = null;
+          try {
+            b = JSON.parse(blockProbe.stdout) as typeof b;
+          } catch {}
+          check(
+            "P3-462: critical blocks the attach button with the daemon's verbatim phrase",
+            b?.disabled === true && (b?.phrase ?? "").includes("quase cheio"),
+            blockProbe.stdout,
+          );
+        }
+        const critShot1440 = join(shotsDir, "P3-462-composer-critical-1440.png");
+        const c1 = run("P3-462: 1440x900 composer shot (critical state)", ["shot", critShot1440, "1440", "900"], 15_000, critEnv);
+        if (c1.ok) check("P3-462: critical 1440x900 shot is a real PNG", pngSize(critShot1440).join("x") === "1440x900");
+        const critShot390 = join(shotsDir, "P3-462-composer-critical-390.png");
+        const c2 = run("P3-462: 390 composer shot (critical state)", ["shot", critShot390, "390", "844"], 15_000, critEnv);
+        if (c2.ok) check("P3-462: critical 390 shot is a real PNG", pngSize(critShot390)[0] === 390);
+      }
+    } finally {
+      if (critBooted) spawnSync(process.execPath, ["tools/desktop.mjs", "close"], { cwd: repoRoot, encoding: "utf8", env: critEnv });
+      boot.kill();
+      rmSync(boot.home, { recursive: true, force: true });
+    }
   }
 }
 

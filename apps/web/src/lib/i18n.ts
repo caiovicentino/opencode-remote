@@ -602,6 +602,12 @@ export const dict = {
     dropGateRefuse: "Pair first — scan the QR with your phone, then drop files anywhere to start a chat",
     dropGateShellRefuse: "Pair with your machine first — then drop files anywhere to start a chat",
     micNeedsPermission: "Microphone unavailable — allow access to record voice",
+    // P3-462: the composer's disk verdict — the app's own static copy used
+    // when the machine's phrase is absent or not a short single-line string.
+    // low warns without blocking; critical is the line beside the disabled
+    // attach button.
+    diskLowHint: "This machine's disk is running low — attachments may fail",
+    diskAttachBlocked: "This machine's disk is full — free space to attach files again",
     // P2-312: mic-denied copy — the phone keeps the Safari sentence, the
     // desktop shell swaps in the OS verdict phrase (apps/desktop/src/micaccess.ts).
     micDeniedIos: "microphone denied — allow it once in iOS Settings → Apps → Safari → Microphone, then reload",
@@ -1503,6 +1509,11 @@ export const dict = {
     dropGateRefuse: "Pareie primeiro — escaneie o QR com o celular e depois solte arquivos em qualquer lugar pra abrir uma conversa",
     dropGateShellRefuse: "Pareie com sua máquina primeiro — depois solte arquivos em qualquer lugar pra abrir uma conversa",
     micNeedsPermission: "Microfone indisponível — permita o acesso pra gravar voz",
+    // P3-462: mesmas chaves — o veredito de disco do composer, na cópia
+    // estática do app usada quando a frase da máquina não vem ou não é
+    // uma string curta. low só avisa; critical é a linha do anexo desabilitado.
+    diskLowHint: "O disco desta máquina está ficando sem espaço — anexos podem falhar",
+    diskAttachBlocked: "O disco desta máquina está cheio — libere espaço pra voltar a anexar arquivos",
     // P2-312: same keys as above — the phone sentence and the panel action.
     micDeniedIos: "microfone negado — permita o acesso em Ajustes → Apps → Safari → Microfone e recarregue",
     micNoMicrophone: "nenhum microfone encontrado neste dispositivo",
