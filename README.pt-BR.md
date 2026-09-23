@@ -436,7 +436,15 @@ remoto, zero confiança**.
   também se cura no lugar (P3-443): quando a ponte do shell pode reiniciar o daemon,
   o retry deixa o lugar para o "Reconectar agora" accent — a ação que de fato resolve
   a causa, com a mesma identidade do card do passo anterior — enquanto um boot sem a
-  ponte mantém o retry. Superfície
+  ponte mantém o retry. O escape cai num ceremony coerente com o estado de onde ele
+  veio (P3-427): com o agente local fora do ar, a tela de pareamento manual deixa de
+  renderizar a intro que promete o QR do daemon, o botão de escanear e a entrada de
+  parear celular — os três prometem um QR que o agente fora do ar não pode gerar — e
+  mostra o card de veredito do agente com o próprio "Reconectar agora" accent, para a
+  recuperação deixar de esconder atrás do Voltar discreto do header; o campo de colar
+  código continua (um código de outra máquina que já esteja rodando o app é o único
+  caminho que funciona ali), e o ceremony completo volta quando o daemon responde
+  de novo. Superfície
   única em tela cheia: sem banners e sem overlay de
   pareamento (regra P2-108)
 - **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor

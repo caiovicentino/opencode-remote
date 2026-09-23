@@ -3107,6 +3107,19 @@ button.desk-new:disabled {
 .pair-error-retry:hover {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
+/* P3-427: the agent-down verdict card inside the manual ceremony. The card
+   reuses the degraded journey's status vocabulary verbatim (.degraded-status
+   + .degraded-dot, the same markup the wizard's agent step renders) so the
+   verdict can never contradict the card one screen back; only the recovery
+   button rides its own hook — the shared accent primary (P3-450) with the
+   disabled treatment the other ReconnectButton surfaces already use. */
+.pair-agent-down-reconnect:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.pair-agent-down-reconnect {
+  margin-top: var(--space-2);
+}
 /* P3-361: empty-submit nudge — the paste form answers an empty "Pair" click
    with the same small, quiet voice as the invalid-code hint, inline with the
    field (no bordered block; the mistake is obvious without one). */

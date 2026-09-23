@@ -1820,6 +1820,12 @@ That branch also self-heals in place (P3-443): when the shell carries the
 restart bridge, the bare retry is replaced by the accent "Reconnect now" —
 the action that actually fixes the cause, wearing the same identity as the
 step-2 card — while a boot without the bridge keeps the retry.
+The manual escape lands on a ceremony that matches the state it is reached
+from (P3-427): with the local agent down, the manual screen drops the
+daemon-assuming intro, the QR-scan entry and the phone-pairing entry — all
+three promise a QR the down agent cannot mint — and renders the agent-down
+verdict card with its own accent "Reconnect now", so the recovery no longer
+hides behind the header's quiet Back.
 The step
 indicator reads as part of the brand block — centered under the wordmark — and
 progress is three quiet dots rather than a caps caption: the active step is an
@@ -1874,7 +1880,14 @@ render of this form is now the standalone manual ceremony, where the paste
 form IS the main action and the grey-flat chip read as a disabled ghost beside
 the error. It renders with the same accent fill as the wizard's "Começar" and
 the reconnect card (one primary dialect per journey, P3-449/P3-450), keeping
-its primary rank over the quiet scan option (P3-366). The host entry
+its primary rank over the quiet scan option (P3-366). When the local agent is
+down (P3-427), the scan entry and the host entry disappear from this surface
+entirely — the QR they promise is minted by the daemon that is out — and a
+calm verdict card ("The local agent is not running.") carries the reconnect
+action in the same block; the paste form stays, since a code from another
+machine already running the app is the only path that can work here. The full
+ceremony — intro, host entry and scan option — returns the moment the daemon
+answers again. The host entry
 (also in Settings) reads as a button: a trailing chevron and a hover that
 fills the row (P3-335) — it is the only host-pairing action, so it must be
 discoverable at a glance. It carries no inner border (P3-370): one container
