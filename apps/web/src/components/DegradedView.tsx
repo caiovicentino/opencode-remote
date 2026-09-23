@@ -4,8 +4,13 @@ import { useT, setLang, getLang, type Lang } from "../lib/i18n";
 // control ships here too, reading and persisting through the shared lib/theme
 // helpers (same ocr_theme key + applyTheme() path as the Settings card).
 import { applyTheme, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
-import { escalationMinutes, escalateDetailKey, retryLineParts, shouldEscalateRetry, ESCALATE_HATCH_KEY, RETRY_ESCALATE_AFTER_SEC } from "../lib/degraded";
+import { shouldEscalateRetry } from "../lib/degraded";
 import type { DegradedKind, SidecarExitNotice, SidecarWedgeNotice, UpstreamNotice } from "../lib/degraded";
+// P3-454: the live retry feedback (line + cumulative clock + escalation
+// block) is one contract shared with the welcome wizard's agent step —
+// extracted here so the same shell state never renders two retry dialects
+// one screen apart.
+import { EscalationBlock, RetryLine, useRetryClock } from "./RetryFeedback";
 // P3-360: the offline first-message queue — text typed here is saved on this
 // machine (localStorage via lib/gatequeue) and becomes the first message of
 // the first conversation once the daemon answers (App consumes the queue on
@@ -67,83 +72,6 @@ interface Props {
   /** P3-406 r3: called with the consumed tick so App can reset it — a later
    * remount then sees 0 and never steals the caret on plain navigation. */
   onQueueFocusConsumed?: (tick: number) => void;
-}
-
-/** P3-372: the auto-retry line with live feedback — seconds tick since the
- * current attempt started and the shell's attempt counter rides along (the
- * counter the component docstring below promises; it used to appear only in
- * the reconnecting title). Elapsed resets when the shell bumps its counter,
- * so the number doubles as a quiet countdown to the next probe. P3-333's
- * lesson applied verbatim: a restart resets the started-at ref AND bumps a
- * state sitting in the interval effect's deps — zeroing the elapsed state
- * alone would leave the already-cleared interval and the ticker would never
- * re-arm. The live segment is aria-hidden: role="status" on the line would
- * otherwise re-announce it to screen readers every second. */
-function RetryLine({ attempts }: { attempts?: number }) {
-  const t = useT();
-  const [elapsed, setElapsed] = useState(0);
-  const startedAtRef = useRef(Date.now());
-  const [tickEpoch, setTickEpoch] = useState(0);
-
-  useEffect(() => {
-    startedAtRef.current = Date.now();
-    setElapsed(0);
-    setTickEpoch((e) => e + 1);
-  }, [attempts]);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setElapsed(Math.round((Date.now() - startedAtRef.current) / 1000));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [tickEpoch]);
-
-  return (
-    <>
-      {t("degradedRetrying")}
-      <span className="degraded-retry-meta" aria-hidden="true">
-        {retryLineParts(elapsed, attempts, t)}
-      </span>
-    </>
-  );
-}
-
-/** P3-363: the escalation block the card earns after a minute of silent
- * retrying (shouldEscalateRetry) — the counter keeps accumulating across
- * attempts while the auto-retry line is visible and pauses when it is not
- * (busy connect in flight, "down" already has its own copy). P3-333's lesson
- * applied: the interval effect arms on [autoRetry] itself and the tick
- * increments functionally, so a re-arm can never leave a stale cleared timer
- * nor double-count; the total is deliberately never zeroed — sustained
- * failure stays escalated for the life of the mount. P3-385: the block is
- * also where the manual reconnect action lives once escalation fires — the
- * standalone orange button that used to stack right below is suppressed, so
- * the column keeps ONE calm recovery path; the retry returns demoted to a
- * quiet text link beside the diagnostics button (same feedback contract as
- * the old button: trying state, spinner, result toast). */
-function EscalationBlock({ totalSec, onOpenHelp, reconnect, desktopShell }: { totalSec: number; onOpenHelp?: () => void; reconnect?: () => Promise<boolean>; desktopShell?: boolean }) {
-  const t = useT();
-  return (
-    <div className="degraded-escalate" role="note">
-      <p className="degraded-escalate-title">
-        {t("degradedEscalateTitle", { m: escalationMinutes(totalSec) })}
-      </p>
-      {/* P3-394: the detail follows the surface — desktop names the in-app
-          diagnostics button right below, the phone points back to the
-          computer. No terminal command on either. */}
-      <p className="degraded-escalate-detail">{t(escalateDetailKey(!!desktopShell))}</p>
-      {(onOpenHelp || reconnect) && (
-        <div className="degraded-escalate-actions">
-          {onOpenHelp && (
-            <button className="degraded-upstream-help" onClick={onOpenHelp}>
-              {t("degradedEscalateDiagnostics")}
-            </button>
-          )}
-          {reconnect && <ReconnectButton className="degraded-reconnect-link" reconnect={reconnect} />}
-        </div>
-      )}
-    </div>
-  );
 }
 
 /** P2-112: first-boot degraded journey (desktop shell). With the local daemon
@@ -209,21 +137,9 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
   const autoRetry = !busy && kind !== "down";
   // P3-363: cumulative seconds spent auto-retrying on this mount, and the
   // escalation it unlocks — the "silent forever loop" gets a diagnostic path.
-  // P3-394: documented test hatch (ESCALATE_HATCH_KEY + reload, desktop-flow
-  // gate) — mounts the card already escalated, no 60s wait. Same policy as
-  // the other test-only hatches: read once at mount, persists nothing.
-  const [retryTotal, setRetryTotal] = useState(() => {
-    try {
-      return localStorage.getItem(ESCALATE_HATCH_KEY) === "1" ? RETRY_ESCALATE_AFTER_SEC : 0;
-    } catch {
-      return 0;
-    }
-  });
-  useEffect(() => {
-    if (!autoRetry) return;
-    const id = setInterval(() => setRetryTotal((s) => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [autoRetry]);
+  // P3-454: the clock is the shared useRetryClock contract (same hatch, same
+  // arm-on-active interval) the wizard's agent step rides.
+  const retryTotal = useRetryClock(autoRetry);
   const escalated = autoRetry && shouldEscalateRetry(retryTotal);
   // P2-324: one calm band for both shell verdicts — the exit notice wins when
   // both exist (a dead daemon is the stronger story than a wedged one being

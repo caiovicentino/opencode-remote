@@ -12509,6 +12509,82 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
 }
 
+// --- P3-454: the wizard's agent step shows the same live retry feedback -------
+// The step-2 card promised "esta tela segue tentando sozinha" yet rendered no
+// retry line at all — the same shell state one screen later (the gate card)
+// shows a live "Tentando sozinho… há 9s" counter. The wizard now shares the
+// gate's RetryFeedback contract (line, clock, escalation), so one journey
+// never renders two retry dialects and the promised recovery is visible
+// before the user advances past the onboarding.
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const welcome = read("components/WelcomeView.tsx");
+  const degraded = read("components/DegradedView.tsx");
+  const feedback = read("components/RetryFeedback.tsx");
+  const app = read("App.tsx");
+  const css = read("index.css");
+  // One contract, two surfaces: both views import the shared components — a
+  // forked copy could drift into a second retry dialect (the P3-449 lesson:
+  // one journey, one identity per element kind).
+  check(
+    "P3-454: gate card and wizard import the shared RetryFeedback (line, clock, escalation)",
+    feedback.includes("export function RetryLine") &&
+      feedback.includes("export function useRetryClock") &&
+      feedback.includes("export function EscalationBlock") &&
+      degraded.includes('from "./RetryFeedback"') &&
+      welcome.includes('from "./RetryFeedback"'),
+  );
+  // The step-2 card renders the live line with the same classes/status
+  // contract as the gate card, driven by the shell's attempt counter.
+  check(
+    "P3-454: step 2 renders the same live retry line (role=status, shell attempts)",
+    /<p className="degraded-retry" role="status">\s*<RetryLine attempts=\{reconnectAttempts\} \/>/.test(welcome) &&
+      welcome.includes("t(\"degradedRetrying\")") === false,
+  );
+  // Honest per state: no line while the auto-connect is in flight (it has its
+  // own "connecting" copy) and none in the "down" state (that copy says the
+  // automatic attempts stopped) — the exact gate-card verdict.
+  check(
+    "P3-454: the retry line obeys the gate card's verdict (never while busy, never in 'down')",
+    welcome.includes("step === 2 && !busy && kind !== \"none\""),
+  );
+  // The wizard's cumulative clock ticks only while the agent step is on
+  // screen — dwelling on step 1 never escalates a card the user has not
+  // reached, and the escalation keeps the gate's 60s threshold + hatch.
+  check(
+    "P3-454: the wizard's retry clock runs only on the agent step and escalates at the shared threshold",
+    welcome.includes("useRetryClock(stepAutoRetry)") &&
+      welcome.includes("stepAutoRetry && shouldEscalateRetry(retryTotal)") &&
+      feedback.includes("RETRY_ESCALATE_AFTER_SEC") &&
+      feedback.includes("ESCALATE_HATCH_KEY"),
+  );
+  // Same calm recovery path once escalated (P3-385 in the wizard): the
+  // standalone reconnect button folds into the escalation block.
+  check(
+    "P3-454: the escalated step folds the reconnect into the escalation block (one recovery path)",
+    /escalated \? \(\s*<EscalationBlock/.test(welcome) &&
+      /<ReconnectButton className="welcome-retry" reconnect=\{reconnect\} \/>/.test(welcome),
+  );
+  // The diagnostics path is real on this surface: App stamps the welcome flag
+  // and opens the Settings help section (P1-071 — reachable from first boot).
+  check(
+    "P3-454: the wizard's escalation reaches the real diagnostics (App wires onOpenHelp)",
+    app.includes("finishWelcome();") && /onOpenHelp=\{\(\) => \{\s*finishWelcome\(\);\s*setHelpOpen\(true\);\s*\}\}/.test(app),
+  );
+  // The escalation detail follows the surface — the wizard is desktop-only,
+  // so App passes the same shell verdict the install hint computes.
+  check(
+    "P3-454: the wizard passes the desktop-shell verdict to the escalation detail",
+    app.includes("desktopShell={!!desktopBridge()}") && welcome.includes("desktopShell={desktopShell}"),
+  );
+  // The wizard card stretches the shared blocks edge to edge like the gate
+  // card (one column, no floating half-width panels inside the step surface).
+  check(
+    "P3-454: the wizard stretches the retry line and escalation block with the status card",
+    /\.welcome-agent \.degraded-status,\s*\n\.welcome-agent \.degraded-upstream,\s*\n\.welcome-agent \.degraded-retry,\s*\n\.welcome-agent \.degraded-escalate \{/.test(css),
+  );
+}
+
 // --- P3-374 round 2: demoted mobile chrome + board listing watchdog -----------
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");

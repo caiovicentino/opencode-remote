@@ -105,6 +105,15 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   natural do desktop vira caminho de entrada em vez de nada. Teto de 4
   arquivos por soltura, com linha calma para soltura vazia, excedente ou
   ilegível (veredito puro em lib/dropgate, testado em tabela).
+- A promessa de retry do wizard fica visível (P3-454): o passo do agente
+  ("Seu agente local") promete "esta tela segue tentando sozinha" e agora
+  mostra o mesmo feedback vivo do card calmo que vem uma tela depois — linha
+  "Tentando sozinho… há 9s · tentativa 3" (mesmo contrato compartilhado,
+  nunca um segundo dialecto) e, passado o limiar de 60s, a mesma escalada com
+  o "Abrir diagnósticos" que grava a flag de boas-vindas e abre a seção de
+  ajuda das Configurações — sair do onboarding para diagnóstico é escolha
+  explícita, nunca beco sem saída; o relógio só corre com o passo do agente
+  na tela, então demorar no passo 1 nunca escalada um card não visto
 - Escalada com um caminho só de recuperação (P3-385): quando o card calmo
   escala ("Sem resposta do daemon local há 1 min" + "Abrir diagnósticos"), o
   botão laranja "Reconectar agora" para de aparecer empilhado logo abaixo —

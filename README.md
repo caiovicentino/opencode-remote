@@ -1712,7 +1712,13 @@ attempt counter rides along once it exists. The ticking segment appears from
   (P3-417) the segment itself switches to minutes ("há 2 min" / "2 min"),
   driven by the same clock as the escalation title — the card never shows a
   raw "há 214s" beside the title's "há 3 min" again, two watches that disagree
-  about the same wait.
+  about the same wait. Since P3-454 the welcome wizard's agent step renders
+  this exact line and escalation for the same shell state — the step-2 card
+  promises "this screen keeps trying on its own," and that promise is now
+  backed by the same visible feedback while the user is still onboarding (the
+  escalation's "Open diagnostics" stamps the welcome flag and opens the
+  Settings help section, so leaving onboarding for it is an explicit choice,
+  never a dead end).
 
 **One calm recovery path once escalated (P3-385)**: when the calm card
 escalates after a minute of silent retrying ("No answer from the local daemon
@@ -1795,7 +1801,13 @@ tone as the exit notice.
 **First-run welcome (P2-148)**: the very first desktop launch walks through
 three steps — what the app is (one sentence), the local agent's live state
 (reusing the calm degraded-journey copy and the P2-138 upstream notice), and
-the phone-pairing invitation with an explicit "do this later". It opens with
+the phone-pairing invitation with an explicit "do this later". The agent step
+carries the gate card's full retry contract (P3-454): while the card promises
+"this screen keeps trying on its own" it renders the same live
+"Retrying automatically… há 9s · attempt 3" line and, after the shared 60s
+threshold, the same escalation block — whose "Open diagnostics" escape stamps
+the welcome flag and opens the Settings help section instead of dead-ending
+mid-onboarding. It opens with
 the product identity (P3-340) — the accent glyph above the serif "OpenCode
 Remote" wordmark, the same mark language as the P2-123 home greeting, a mark
 the pairing and degraded first-contact screens now share (P3-373). The
