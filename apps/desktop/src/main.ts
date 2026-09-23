@@ -118,6 +118,8 @@ import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLangDecision, 
 import { badgePlan, type BadgePlan } from "./badge";
 import { CLOSE_HINT_LOG, closeHintPlan, hintFlagPath, readHintFlag, writeHintFlag } from "./closehint";
 import { checkForUpdatesOnBoot, installBlocksUpdate, updatesEnabled, updateMenuLabel, type UpdateDialogSinks, type UpdateStatus, type WinInstallerRequest } from "./update";
+import type { UpdateRolloutView } from "./updaterollout";
+import { loadRolloutId, rolloutIdFile } from "./rolloutidstore";
 import { sanitizeUpdateNotes } from "./updatenotes";
 import { UPDATE_DOWNLOADED_TRAY_LABEL, UPDATE_REMIND_LIMITS, updateReminderPlan, type UpdateOfferRecord } from "./updateremind";
 import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./winupdate";
@@ -556,6 +558,30 @@ let ownerUpdateRelease = false;
 let lastOfferedUpdateVersion: string | null = null;
 let updateGuardVerdict: string | null = null;
 let updateGuardReason: string | null = null;
+
+// P2-342: gradual rollout. `rolloutIdCache` holds the stable installation id
+// — a random UUID persisted once in userData with mode 0600
+// (rolloutidstore.ts), never derived from hardware, keys or pairing —
+// resolved lazily so a machine with no pending update never touches the
+// file. `lastRolloutState` dedups the desktop.log line to ONE per verdict
+// transition (adiar→oferecer, freio→campo…); the pure verdict itself is
+// stateless and deterministic.
+let rolloutIdCache: string | null | undefined;
+let lastRolloutState: string | null = null;
+function rolloutInstallationId(): string | null {
+  // The hermetic harness never touches the id file: its session always
+  // resolves oferecer by the pure rule 1 before the id is ever consulted.
+  if (HERMETIC_E2E) return null;
+  if (rolloutIdCache !== undefined) return rolloutIdCache;
+  rolloutIdCache = loadRolloutId(rolloutIdFile(app.getPath("userData")));
+  return rolloutIdCache;
+}
+function noteRolloutVerdict(view: UpdateRolloutView): void {
+  const key = `${view.decision}:${view.reason}`;
+  if (lastRolloutState === key) return;
+  lastRolloutState = key;
+  log(`[desktop] update rollout: ${view.decision} (${view.reason}) — ${view.label}`);
+}
 
 const gotLock = app.requestSingleInstanceLock();
 // P2-329: cache of the last validated deep link, pulled late by the renderer
@@ -1040,6 +1066,18 @@ function runUpdateCheck(source: string): void {
       ownerRelease: ownerUpdateRelease,
       lastState: lastUpdateStatus,
     },
+    // P2-342: gradual rollout — the verdict is consulted inside the check at
+    // the same point the offered version is resolved for the P2-291 guard,
+    // before any download. The explicit "Check for updates" click (tray or
+    // Help menu) bypasses bucket percentages 1..99; a published 0 stays the
+    // brake for everyone, even on that click. The id resolver is lazy and
+    // returns null under the harness (the pure rule 1 decides first anyway).
+    rollout: {
+      harnessSession: HERMETIC_E2E,
+      installationId: rolloutInstallationId,
+      explicitCheck: source === "tray",
+    },
+    onRollout: noteRolloutVerdict,
     // P2-211: the boot verdict gates the consent dialog — a bundle the
     // updater cannot replace (DMG volume / translocated copy) is never
     // offered a restart it cannot apply. Fail-open: unknown/absent never

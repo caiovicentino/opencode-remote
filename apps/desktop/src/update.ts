@@ -27,6 +27,7 @@ import { app, autoUpdater } from "electron";
 import { activeDaemonPort } from "./daemon";
 import { assetUrlFrom, parseWindowsFeed } from "./winupdate";
 import { updateGuard } from "./updateguard";
+import { updateRollout, type UpdateRolloutView } from "./updaterollout";
 
 /** Shape of the subset of Electron's autoUpdater we need (tests inject fakes). */
 export interface UpdaterLike {
@@ -44,6 +45,11 @@ export interface FeedInfo {
   notes: string;
   /** "json" = Squirrel.Mac feed (autoUpdater consumes it); "yml" = latest-mac.yml (parse+log only). */
   format: "json" | "yml";
+  /** P2-342: the raw gradual-rollout field as the feed carried it —
+   * `rolloutPercent` in the Squirrel JSON feed, `stagingPercentage` in a yml
+   * feed. Undefined when the feed did not carry the field; the pure rollout
+   * module owns every tolerance rule (a missing/invalid value fails open). */
+  rollout?: unknown;
 }
 
 export type UpdateStatus =
@@ -244,11 +250,14 @@ export function parseFeed(body: string): FeedInfo | null {
   if (!text) return null;
   if (text.startsWith("{")) {
     try {
-      const parsed = JSON.parse(text) as { url?: unknown; name?: unknown; notes?: unknown };
+      const parsed = JSON.parse(text) as { url?: unknown; name?: unknown; notes?: unknown; rolloutPercent?: unknown };
       if (parsed && typeof parsed.url === "string" && typeof parsed.name === "string") {
         return {
           version: parsed.name,
           notes: typeof parsed.notes === "string" ? parsed.notes : "",
+          // P2-342: the additive rollout field rides along raw — the pure
+          // rollout module (updaterollout.ts) owns every tolerance rule.
+          rollout: "rolloutPercent" in parsed ? parsed.rolloutPercent : undefined,
           format: "json",
         };
       }
@@ -259,7 +268,10 @@ export function parseFeed(body: string): FeedInfo | null {
   }
   const version = /^version:\s*["']?([^"'\s]+)["']?\s*$/m.exec(text)?.[1];
   if (!version) return null;
-  return { version, notes: parseYmlNotes(text), format: "yml" };
+  // P2-342: electron-builder's own staged-rollout field rides along raw from
+  // the yml (top-level line only — the indented files: block never counts).
+  const staging = /^stagingPercentage:\s*["']?([^"'\s]+)["']?\s*$/m.exec(text)?.[1];
+  return { version, notes: parseYmlNotes(text), rollout: staging, format: "yml" };
 }
 
 /** Minimal yml release-notes reader: inline scalar or `|`/`>` indented block. */
@@ -310,6 +322,25 @@ export interface UpdateCheckOptions {
     ownerRelease: boolean;
     lastState: string | null;
   } | null;
+  /** P2-342: gradual-rollout inputs main.ts resolves once per process (the
+   * harness flag, the stable installation id and whether this check is an
+   * explicit owner click). The rollout verdict itself is consulted below,
+   * at the same point the offered version is resolved for the P2-291 guard —
+   * BEFORE any download (Squirrel wiring, Windows installer sink, release
+   * page). Absent → the rollout never runs (byte-for-byte today's behavior;
+   * the e2e driver and every pre-P2-342 caller stay untouched). */
+  rollout?: {
+    harnessSession: boolean;
+    /** Lazy resolver: the id file is only touched when a genuinely newer
+     * version is about to be handed to the shell. Null on store failure →
+     * the pure verdict fails open (oferecer). */
+    installationId: () => string | null;
+    explicitCheck: boolean;
+  } | null;
+  /** P2-342: fired with the rollout verdict exactly when a newer version was
+   * about to be offered (after the guard + version comparison, before any
+   * download). main.ts writes ONE desktop.log line per verdict transition. */
+  onRollout?: (verdict: UpdateRolloutView) => void;
   /** Overrides the public fallback feed (tests); undefined uses publicFeedUrl(). */
   publicFeed?: string | null;
   /** Overrides app.isPackaged (tests drive the packaged-default fallback path
@@ -682,6 +713,29 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   if (!isNewerVersion(current, feed.version)) {
     log(`update check: no update (current ${current} >= feed ${feed.version})`);
     return finish("update-not-available");
+  }
+
+  // P2-342: the gradual-rollout verdict — consulted at the same point the
+  // offered version is resolved for the P2-291 guard above, and BEFORE any
+  // download: an `adiar` resolves like "no update" (the tray keeps its
+  // up-to-date state, no "Update available" label, no page, no engine armed),
+  // so the Squirrel.Mac wiring, the Windows explicit installer sink and the
+  // release-page flow are all never reached for this machine. The verdict is
+  // deterministic (same id + version → same bucket), so the next scheduled
+  // recheck lands in the same seat until the owner widens the percentage.
+  if (opts.rollout) {
+    const rollout = updateRollout({
+      harnessSession: opts.rollout.harnessSession,
+      rollout: feed.rollout,
+      installationId: opts.rollout.installationId(),
+      offeredVersion: feed.version,
+      explicitCheck: opts.rollout.explicitCheck,
+    });
+    if (opts.onRollout) opts.onRollout(rollout);
+    if (rollout.decision === "adiar") {
+      log(`update rollout: ${rollout.decision} (${rollout.reason}) — ${rollout.phrase}`);
+      return finish("update-not-available", feed.version);
+    }
   }
 
   // Decision made: hand the release to the shell. JSON feeds go to

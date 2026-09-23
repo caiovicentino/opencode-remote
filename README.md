@@ -2524,6 +2524,22 @@ directory (where the artifacts live). `setFeedURL` is only ever called on the
 JSON feed path. Feed or network
 failures are strictly log-only and never block or crash the window.
 
+**Gradual rollout (P2-342)**: a release no longer has to reach 100% of the
+fleet in the same instant. The feed may carry a percentage — `rolloutPercent`
+in the Squirrel JSON feed, `stagingPercentage` in a yml feed — and each
+installation lands in one of 100 buckets derived from its own stable
+installation id (a random UUID written once to the app's data directory with
+mode 0600, never derived from hardware, keys or pairing): the release is
+offered to a machine only while its bucket is below the published percentage.
+Raising the percentage widens the rollout gradually; a published **0** is the
+release brake and holds every machine back — even one whose owner clicked
+**Check for updates**, which otherwise bypasses any percentage between 1 and
+99. A missing, unreadable or out-of-range percentage offers to everyone
+(nothing is ever held by doubt). A deferred machine keeps the tray in its
+up-to-date state and records one `update rollout:` line per verdict
+transition in `desktop.log`; the verdict is deterministic, so the same
+machine stays in the same seat between checks until the percentage grows.
+
 Whenever a feed is configured, the tray menu also gains two items (P3-019): a
 status line reflecting the latest check ("Update available — check for
 updates", "Update available — open release page", "Up to date", or the failure

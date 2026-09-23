@@ -18,7 +18,7 @@
 import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1286,6 +1286,392 @@ releaseName: 0.9.0
     "P3-393: a notes-less feed offers the dialog with no notes (base detail only)",
     asked.length === 2 && asked[1].version === "0.4.0" && asked[1].notes === "",
     JSON.stringify(asked),
+  );
+}
+
+// --- P2-342: gradual rollout (updaterollout.ts) — every rule in order --------
+import { rolloutBucket, updateRollout, type UpdateRolloutView } from "../apps/desktop/src/updaterollout";
+import { loadRolloutId, rolloutIdFile } from "../apps/desktop/src/rolloutidstore";
+
+const ROLLOUT_ID = "6f0a1b2c-3d4e-4f5a-6b7c-8d9e0f1a2b3c";
+const ROLLOUT_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+// Rule 1: the harness session is oferecer before everything — even the zero
+// brake (rule 3) and even an explicit click.
+{
+  const harness = { harnessSession: true, rollout: 40, installationId: ROLLOUT_ID, offeredVersion: "0.3.0", explicitCheck: false };
+  const first = updateRollout(harness);
+  check("P2-342 r1: harness session → oferecer before everything", first.decision === "oferecer" && first.reason === "harness");
+  check(
+    "P2-342 r1: the harness rule outranks the zero brake",
+    updateRollout({ ...harness, rollout: 0 }).decision === "oferecer" &&
+      updateRollout({ ...harness, rollout: 0 }).reason === "harness",
+  );
+}
+
+// Rule 2: missing, null, non-numeric, fractional or out-of-range → oferecer
+// (fail-open, byte-for-byte the behavior of every release before P2-342).
+{
+  const base = { harnessSession: false, installationId: ROLLOUT_ID, offeredVersion: "0.3.0", explicitCheck: false };
+  const invalids: unknown[] = [undefined, null, "banana", true, false, {}, [], 12.5, "12.5", -1, -10, 101, 100.5, "101", "-1", "1e2", Number.NaN];
+  check(
+    "P2-342 r2: every illegible percentage fails open to oferecer (campo)",
+    invalids.every((v) => updateRollout({ ...base, rollout: v }).decision === "oferecer" && updateRollout({ ...base, rollout: v }).reason === "campo"),
+  );
+  // The whole unusable input (non-object, non-textual version) also fails open.
+  check(
+    "P2-342 r2: unusable input shapes fail open too",
+    [null, "x", 42, [], { offeredVersion: "" }, { offeredVersion: "0.3.0", installationId: 7 }].every(
+      (v) => updateRollout(v).decision === "oferecer" && updateRollout(v).reason === "campo",
+    ),
+  );
+  // An integer-valued TEXT token is accepted — the yml feeds carry text.
+  check(
+    "P2-342 r2: integer-valued text tokens are honored",
+    updateRollout({ ...base, rollout: "40", explicitCheck: false }).reason === "balde" &&
+      updateRollout({ ...base, rollout: " 40 " }).reason === "campo",
+  );
+}
+
+// Rule 3: percentage 0 is the brake — adiar for everyone, INCLUDING the
+// owner's explicit click.
+{
+  const base = { harnessSession: false, installationId: ROLLOUT_ID, offeredVersion: "0.3.0", explicitCheck: false };
+  check(
+    "P2-342 r3: percent 0 → adiar (freio)",
+    updateRollout({ ...base, rollout: 0 }).decision === "adiar" && updateRollout({ ...base, rollout: 0 }).reason === "freio",
+  );
+  check(
+    "P2-342 r3: percent 0 as text → adiar (freio)",
+    updateRollout({ ...base, rollout: "0" }).decision === "adiar",
+  );
+  check(
+    "P2-342 r3: the brake holds even on the explicit click",
+    updateRollout({ ...base, rollout: 0, explicitCheck: true }).decision === "adiar" &&
+      updateRollout({ ...base, rollout: 0, explicitCheck: true }).reason === "freio",
+  );
+}
+
+// Rule 5: the bucket — hash(installation id, offered version) mod 100,
+// oferecer strictly below the percentage. Rule 4: the explicit click ignores
+// percentages 1..99 (never 0).
+{
+  const b = rolloutBucket(ROLLOUT_ID, "0.3.0");
+  check("P2-342 r5: the bucket stays inside 0..99", Number.isInteger(b) && b >= 0 && b <= 99);
+  const base = { harnessSession: false, installationId: ROLLOUT_ID, offeredVersion: "0.3.0", explicitCheck: false };
+  check(
+    "P2-342 r5: bucket strictly below the percentage → oferecer (balde)",
+    updateRollout({ ...base, rollout: b + 1 }).decision === "oferecer" && updateRollout({ ...base, rollout: b + 1 }).reason === "balde",
+  );
+  check(
+    "P2-342 r5: bucket equal to the percentage → adiar (abaixo is strict)",
+    updateRollout({ ...base, rollout: b }).decision === "adiar" && updateRollout({ ...base, rollout: b }).reason === "balde",
+  );
+  check(
+    "P2-342 r4: the explicit click ignores percentages 1..99",
+    updateRollout({ ...base, rollout: 40, explicitCheck: true }).decision === "oferecer" &&
+      updateRollout({ ...base, rollout: 40, explicitCheck: true }).reason === "clique" &&
+      updateRollout({ ...base, rollout: 99, explicitCheck: true }).decision === "oferecer",
+  );
+  check(
+    "P2-342: percent 100 reaches every bucket",
+    updateRollout({ ...base, rollout: 100 }).decision === "oferecer",
+  );
+  // Determinism: the same input in two calls yields an identical view — and
+  // the seat is stable per (id, version) pair but varies across versions.
+  const once = updateRollout(base);
+  check(
+    "P2-342: two calls with the same input yield the identical view",
+    JSON.stringify(updateRollout(base)) === JSON.stringify(once) &&
+      JSON.stringify(updateRollout({ ...base, rollout: 40, explicitCheck: true })) ===
+        JSON.stringify(updateRollout({ ...base, rollout: 40, explicitCheck: true })),
+  );
+  check(
+    "P2-342: the bucket depends on the offered version, not on the clock",
+    rolloutBucket(ROLLOUT_ID, "0.3.0") === rolloutBucket(ROLLOUT_ID, "0.3.0") &&
+      rolloutBucket(ROLLOUT_ID, "0.3.0") !== rolloutBucket(ROLLOUT_ID, "0.4.0") &&
+      rolloutBucket(ROLLOUT_ID, "0.4.0") !== rolloutBucket("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "0.4.0"),
+  );
+  // Label hygiene: static pt-BR, short, single-line, no path/address/secret.
+  const views: UpdateRolloutView[] = [
+    updateRollout({ harnessSession: true, rollout: 5, installationId: ROLLOUT_ID, offeredVersion: "1.0.0", explicitCheck: false }),
+    updateRollout({ harnessSession: false, rollout: 0, installationId: ROLLOUT_ID, offeredVersion: "1.0.0", explicitCheck: false }),
+    updateRollout({ harnessSession: false, rollout: 40, installationId: ROLLOUT_ID, offeredVersion: "0.3.0", explicitCheck: true }),
+    updateRollout({ harnessSession: false, rollout: undefined, installationId: null, offeredVersion: "1.0.0", explicitCheck: false }),
+    updateRollout({ harnessSession: false, rollout: 90, installationId: ROLLOUT_ID, offeredVersion: "0.3.0", explicitCheck: false }),
+    updateRollout({ harnessSession: false, rollout: 90, installationId: ROLLOUT_ID, offeredVersion: "0.9.0", explicitCheck: false }),
+  ];
+  check(
+    "P2-342: every label and phrase is short static pt-BR without path, address or secret",
+    views
+      .flatMap((v) => [v.label, v.phrase])
+      .every(
+        (s) =>
+          s.length > 0 &&
+          s.length < 128 &&
+          !/[\n\r]/.test(s) &&
+          !/\p{Extended_Pictographic}/u.test(s) &&
+          !s.includes("/") &&
+          !s.includes("://") &&
+          !/[A-Za-z]:\\/.test(s),
+      ),
+  );
+}
+
+// --- P2-342: the installation id store (rolloutidstore.ts) --------------------
+{
+  const dir = mkdtempSync(join(tmpdir(), "ocr-rollout-id-"));
+  try {
+    const file = rolloutIdFile(dir);
+    const first = loadRolloutId(file);
+    check("P2-342 id: missing file → a fresh UUID is minted and persisted", typeof first === "string" && ROLLOUT_UUID_RE.test(first ?? ""));
+    check("P2-342 id: the file is written with mode 0600", (statSync(file).mode & 0o777) === 0o600);
+    const mtime = statSync(file).mtimeMs;
+    check("P2-342 id: the next read returns the SAME id and never rewrites", loadRolloutId(file) === first && statSync(file).mtimeMs === mtime);
+    writeFileSync(file, "banana", { mode: 0o600 });
+    const regen = loadRolloutId(file);
+    check(
+      "P2-342 id: illegible content → regenerated (new UUID, file rewritten)",
+      regen !== null && regen !== first && ROLLOUT_UUID_RE.test(regen) && readFileSync(file, "utf8").trim() === regen,
+    );
+    writeFileSync(file, "", { mode: 0o600 });
+    const regen2 = loadRolloutId(file);
+    check("P2-342 id: an empty file regenerates too", regen2 !== null && regen2 !== regen && ROLLOUT_UUID_RE.test(regen2));
+    rmSync(file);
+    mkdirSync(file);
+    check("P2-342 id: an unreadable target (directory in place) fails open as null", loadRolloutId(file) === null);
+    mkdirSync(join(dir, "other-userdata"));
+    check(
+      "P2-342 id: two ids from different files differ (never derived from hardware/keys/pairing)",
+      loadRolloutId(rolloutIdFile(join(dir, "other-userdata"))) !== regen2,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- P2-342: the feed carries the rollout field -------------------------------
+check(
+  "P2-342 feed: Squirrel JSON carries rolloutPercent raw",
+  parseFeed(JSON.stringify({ url: "http://x/y.zip", name: "0.3.0", rolloutPercent: 40 }))?.rollout === 40,
+);
+check(
+  "P2-342 feed: JSON without the field → rollout undefined (fail-open)",
+  parseFeed(JSON.stringify({ url: "http://x/y.zip", name: "0.3.0" }))?.rollout === undefined,
+);
+check(
+  "P2-342 feed: yml carries stagingPercentage as raw text",
+  parseFeed(`${YML}stagingPercentage: 40\n`)?.rollout === "40",
+);
+check(
+  "P2-342 feed: yml without the field → undefined; an indented line never counts",
+  parseFeed(YML)?.rollout === undefined && parseFeed(`${YML}  stagingPercentage: 5\n`)?.rollout === undefined,
+);
+
+// --- P2-342: the verdict gates the whole check, before any download -----------
+{
+  // The zero brake: adiar even for the explicit tray click, and NOTHING on
+  // Windows touches the P2-233 explicit download flow.
+  const brakeLogs: string[] = [];
+  const brakeUpdater = fakeUpdater();
+  const brakeWinCalls: WinInstallerRequest[] = [];
+  const brakeViews: string[] = [];
+  const brakePages: string[] = [];
+  const brakeStatus = await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/latest.yml",
+    currentVersion: "0.2.0",
+    updater: brakeUpdater,
+    fetchImpl: fakeFetcher(`${YML_030}stagingPercentage: 0\n`),
+    platform: "win32",
+    winInstallerDownload: async (info) => {
+      brakeWinCalls.push(info);
+      return true;
+    },
+    openReleasePage: (url) => brakePages.push(url),
+    rollout: { harnessSession: false, installationId: () => ROLLOUT_ID, explicitCheck: true },
+    onRollout: (v) => brakeViews.push(`${v.decision}:${v.reason}`),
+    log: (l) => brakeLogs.push(l),
+  });
+  check("P2-342: the zero brake defers even the explicit click", brakeStatus === "update-not-available");
+  check("P2-342: adiar keeps the tray in the up-to-date state", updateMenuLabel("update-not-available") === "Up to date");
+  check("P2-342: adiar never arms Squirrel (no setFeedURL, no check)", brakeUpdater.spy.feedURLs.length === 0 && brakeUpdater.spy.checks === 0);
+  check("P2-342: adiar never invokes the P2-233 Windows installer sink", brakeWinCalls.length === 0);
+  check("P2-342: adiar never opens the release page", brakePages.length === 0);
+  check("P2-342: adiar logs exactly one rollout line", brakeLogs.filter((l) => l.includes("update rollout: adiar (freio)")).length === 1);
+  check("P2-342: onRollout fired once with the verdict", JSON.stringify(brakeViews) === JSON.stringify(["adiar:freio"]));
+
+  // The bucket seat: with the percentage one above this machine's bucket the
+  // release flows through (the Windows explicit sink IS reached); at the
+  // bucket itself it defers — and the deferred check is deterministic in
+  // two calls. The Windows yml carries a spaceless installer name (the
+  // NSIS setup) — parseWindowsFeed refuses spaced names by design.
+  const WIN_YML_030 = `version: 0.3.0
+path: OpenCode-Remote-Setup-0.3.0.exe
+sha512: qz9KkfakeBase64DigestAA==
+releaseName: 0.3.0
+`;
+  const b = rolloutBucket(ROLLOUT_ID, "0.3.0");
+  const winCalls: WinInstallerRequest[] = [];
+  const offeredStatus = await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/latest.yml",
+    currentVersion: "0.2.0",
+    updater: fakeUpdater(),
+    fetchImpl: fakeFetcher(`${WIN_YML_030}stagingPercentage: ${b + 1}\n`),
+    platform: "win32",
+    winInstallerDownload: async (info) => {
+      winCalls.push(info);
+      return true;
+    },
+    rollout: { harnessSession: false, installationId: () => ROLLOUT_ID, explicitCheck: false },
+    log: () => {},
+  });
+  check(
+    "P2-342: bucket below the percentage → oferecer, the P2-233 Windows flow works as today",
+    offeredStatus === "update-installer-ready" && winCalls.length === 1 && winCalls[0]?.version === "0.3.0",
+  );
+  const deferViews: string[] = [];
+  const deferOpts = {
+    feedUrl: "http://127.0.0.1:9/latest.yml",
+    currentVersion: "0.2.0",
+    updater: fakeUpdater(),
+    fetchImpl: fakeFetcher(`${WIN_YML_030}stagingPercentage: ${b}\n`),
+    platform: "win32" as const,
+    winInstallerDownload: async () => {
+      throw new Error("must never be called while adiar");
+    },
+    rollout: { harnessSession: false, installationId: () => ROLLOUT_ID, explicitCheck: false },
+    onRollout: (v: UpdateRolloutView) => deferViews.push(`${v.decision}:${v.reason}`),
+    log: () => {},
+  };
+  check(
+    "P2-342: bucket equal to the percentage → adiar twice, deterministic, sink untouched",
+    (await checkForUpdatesOnBoot(deferOpts)) === "update-not-available" &&
+      (await checkForUpdatesOnBoot(deferOpts)) === "update-not-available" &&
+      JSON.stringify(deferViews) === JSON.stringify(["adiar:balde", "adiar:balde"]),
+  );
+
+  // The explicit click bypasses percentages 1..99: same deferred input, the
+  // click offers now.
+  const clickCalls: WinInstallerRequest[] = [];
+  const clickStatus = await checkForUpdatesOnBoot({
+    ...deferOpts,
+    fetchImpl: fakeFetcher(`${WIN_YML_030}stagingPercentage: ${b}\n`),
+    winInstallerDownload: async (info) => {
+      clickCalls.push(info);
+      return true;
+    },
+    rollout: { harnessSession: false, installationId: () => ROLLOUT_ID, explicitCheck: true },
+  });
+  check(
+    "P2-342: the explicit check bypasses the bucket percentage (1..99)",
+    clickStatus === "update-installer-ready" && clickCalls.length === 1,
+  );
+
+  // The harness session offers before everything: percent 0 still flows.
+  const harnessUpdater = fakeUpdater();
+  const harnessStatus = await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: harnessUpdater,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.4.0", rolloutPercent: 0 })),
+    rollout: { harnessSession: true, installationId: () => ROLLOUT_ID, explicitCheck: false },
+    log: () => {},
+  });
+  check(
+    "P2-342: a harness session offers even under the zero brake (rule 1 first)",
+    harnessStatus === "update-available" && harnessUpdater.spy.feedURLs[0]?.serverType === "json",
+  );
+
+  // Fail-open end-to-end: a fractional or missing percentage offers exactly
+  // like every release before P2-342; a failed id store fails open too.
+  const failOpenUpdater = fakeUpdater();
+  const failOpenStatus = await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: failOpenUpdater,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.4.0", rolloutPercent: 12.5 })),
+    rollout: { harnessSession: false, installationId: () => ROLLOUT_ID, explicitCheck: false },
+    log: () => {},
+  });
+  const noFieldUpdater = fakeUpdater();
+  const noFieldStatus = await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: noFieldUpdater,
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.4.0" })),
+    rollout: { harnessSession: false, installationId: () => ROLLOUT_ID, explicitCheck: false },
+    log: () => {},
+  });
+  const deadIdStatus = await checkForUpdatesOnBoot({
+    feedUrl: "http://127.0.0.1:9/feed.json",
+    currentVersion: "0.2.0",
+    updater: fakeUpdater(),
+    fetchImpl: fakeFetcher(JSON.stringify({ url: "http://x/y.zip", name: "0.4.0", rolloutPercent: 90 })),
+    rollout: { harnessSession: false, installationId: () => null, explicitCheck: false },
+    log: () => {},
+  });
+  check(
+    "P2-342: fractional/missing percentage and a failed id store all fail open to update-available",
+    failOpenStatus === "update-available" &&
+      noFieldStatus === "update-available" &&
+      deadIdStatus === "update-available" &&
+      failOpenUpdater.spy.checks === 1 &&
+      noFieldUpdater.spy.checks === 1,
+  );
+
+  // --- P2-342: source-level contracts -----------------------------------------
+  const rolloutSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "updaterollout.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*/g, " ");
+  const storeSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "rolloutidstore.ts"), "utf8");
+  const updateSrc2 = readFileSync(join(repoRoot, "apps", "desktop", "src", "update.ts"), "utf8");
+  const mainSrc2 = readFileSync(join(repoRoot, "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-342: updaterollout.ts stays import-free and pure (no node:, no fetch, no timers, no randomness)",
+    !/\bimport\b/.test(rolloutSrc) &&
+      !rolloutSrc.includes("require(") &&
+      !rolloutSrc.includes("node:") &&
+      !rolloutSrc.includes("fetch(") &&
+      !rolloutSrc.includes("setTimeout") &&
+      !rolloutSrc.includes("setInterval") &&
+      !rolloutSrc.includes("randomUUID"),
+  );
+  check(
+    "P2-342: the id store uses a random UUID (never hardware/keys/pairing) with 0600 writes",
+    storeSrc.includes("randomUUID()") && (storeSrc.match(/0o600/g) ?? []).length >= 1 && !storeSrc.includes("os.platform") && !storeSrc.includes("machine-id"),
+  );
+  // Order contract: inside checkForUpdatesOnBoot the rollout consult sits
+  // after the guard + version comparison and before EVERY download path.
+  const bootStart = updateSrc2.indexOf("export async function checkForUpdatesOnBoot");
+  const bootSrc = updateSrc2.slice(bootStart);
+  const rolloutIdx = bootSrc.indexOf("updateRollout({");
+  const adiarIdx = bootSrc.indexOf('rollout.decision === "adiar"');
+  check(
+    "P2-342: the rollout consult precedes the Squirrel wiring, the Windows sink and the release page",
+    rolloutIdx > 0 &&
+      adiarIdx > rolloutIdx &&
+      adiarIdx < bootSrc.indexOf("updater.setFeedURL(") &&
+      adiarIdx < bootSrc.indexOf("opts.winInstallerDownload(") &&
+      adiarIdx < bootSrc.indexOf("opts.openReleasePage("),
+  );
+  check(
+    "P2-342: an adiar resolves like no-update (update-not-available) inside the check",
+    bootSrc.slice(adiarIdx, adiarIdx + 200).includes('finish("update-not-available", feed.version)'),
+  );
+  check(
+    "P2-342: main.ts hands the lazy id, the explicit flag and the transition sink to the check",
+    mainSrc2.includes("installationId: rolloutInstallationId") &&
+      mainSrc2.includes("explicitCheck: source === \"tray\"") &&
+      mainSrc2.includes("onRollout: noteRolloutVerdict"),
+  );
+  check(
+    "P2-342: the desktop.log rollout line is written once per transition (deduped by state)",
+    mainSrc2.includes("if (lastRolloutState === key) return;") &&
+      mainSrc2.indexOf("if (lastRolloutState === key) return;") < mainSrc2.indexOf("log(`[desktop] update rollout:"),
+  );
+  check(
+    "P2-342: the harness never touches the id file",
+    mainSrc2.indexOf("if (HERMETIC_E2E) return null;") < mainSrc2.indexOf("loadRolloutId(rolloutIdFile(app.getPath(\"userData\")))"),
   );
 }
 
