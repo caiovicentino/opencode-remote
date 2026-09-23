@@ -1014,7 +1014,14 @@ import { checkPng } from "../tools/pngcheck.mjs";
 
 import { signingProfile } from "../apps/desktop/scripts/signing-profile.mjs";
 import { signingProfileWin } from "../apps/desktop/scripts/signing-profile-win.mjs";
-import { archOfFileName, macFeedPlan } from "../apps/desktop/scripts/update-feed.mjs";
+import {
+  archOfFileName,
+  injectStagingPercentage,
+  macFeedPlan,
+  parseYmlVersion,
+  STAGING_YML_MODE,
+} from "../apps/desktop/scripts/update-feed.mjs";
+import { parseRolloutPercent, ROLLOUT_JSON_FIELD, ROLLOUT_YML_FIELD } from "../apps/desktop/scripts/rolloutpercent.mjs";
 
 import {
   avgDoneDuration,
@@ -15958,6 +15965,482 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+
+// --- P3-458: ROLLOUT_PERCENT — the feed finally declares the gradual rollout --
+{
+  const SLUG = "caiovicentino/opencode-remote";
+  const ARM64_ZIP = "OpenCode-Remote-0.3.0-arm64.zip";
+  const X64_ZIP = "OpenCode-Remote-0.3.0-x64.zip";
+  const repoRoot = join(import.meta.dirname, "..");
+  const script = join(repoRoot, "apps", "desktop", "scripts", "update-feed.mjs");
+  // The plain tag-push environment: ROLLOUT_PERCENT absent, whatever the
+  // outer process carried.
+  const envNoVar: NodeJS.ProcessEnv = { ...process.env };
+  delete envNoVar.ROLLOUT_PERCENT;
+  // A digest that passes feedhash's base64 shape check (86 chars + "==" is
+  // 88 — any length multiple of 4 with the canonical charset).
+  const DIGEST = `${"abcd".repeat(21)}ab==`;
+
+  // The single shared validator (P2-336 lesson): ONLY an integer 0..100
+  // arriving as a string is valid — the full acceptance table the spec asks
+  // for (ausente, vazio, 0, 100, 50, 101, negativo, fracionário, texto).
+  const table: ReadonlyArray<{ raw: unknown; ok: boolean; value?: number; fragment?: string }> = [
+    { raw: undefined, ok: false, fragment: "not set" }, // ausente
+    { raw: null, ok: false, fragment: "not set" },
+    { raw: 50, ok: false, fragment: "not set" }, // env values are strings — a bare number is a caller bug
+    { raw: "", ok: false, fragment: "empty" }, // vazio
+    { raw: "   ", ok: false, fragment: "empty" },
+    { raw: "0", ok: true, value: 0 },
+    { raw: "100", ok: true, value: 100 },
+    { raw: "50", ok: true, value: 50 },
+    { raw: "050", ok: true, value: 50 }, // digit-only token, canonical value out
+    { raw: "101", ok: false, fragment: "outside 0..100" },
+    { raw: "-1", ok: false, fragment: "0..100" }, // negativo
+    { raw: "-0", ok: false, fragment: "0..100" },
+    { raw: "12.5", ok: false, fragment: "0..100" }, // fracionário — never rounded
+    { raw: "abc", ok: false, fragment: "0..100" }, // texto
+    { raw: "1e2", ok: false, fragment: "0..100" },
+    { raw: "50%", ok: false, fragment: "0..100" },
+  ];
+  for (const row of table) {
+    const parsed = parseRolloutPercent(row.raw);
+    check(
+      `P3-458: parseRolloutPercent(${JSON.stringify(row.raw)}) → ${row.ok ? `value ${row.value}` : "problems"}`,
+      row.ok
+        ? "value" in parsed && parsed.value === row.value && parsed.problems === undefined
+        : "problems" in parsed && parsed.problems.length > 0 && parsed.problems.every((p) => typeof p === "string" && p.length > 0) && (row.fragment === undefined || parsed.problems.some((p) => p.includes(row.fragment!))),
+      JSON.stringify(parsed),
+    );
+  }
+
+  // Module hygiene (P2-335/P2-342 lesson): the validator the unit battery
+  // imports must stay import-free and pure — no node:, no network, no timers.
+  const validatorSrc = readFileSync(join(repoRoot, "apps", "desktop", "scripts", "rolloutpercent.mjs"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/.*/g, " ");
+  check(
+    "P3-458: rolloutpercent.mjs stays import-free and pure (no node:, no require, no fetch, no timers)",
+    !/\bimport\b/.test(validatorSrc) &&
+      !validatorSrc.includes("require(") &&
+      !validatorSrc.includes("node:") &&
+      !validatorSrc.includes("fetch(") &&
+      !validatorSrc.includes("setTimeout") &&
+      !validatorSrc.includes("setInterval"),
+    validatorSrc,
+  );
+
+  // macFeedPlan: the rollout field rides along only when the caller validated
+  // one; anything present-but-invalid is a fail-closed problem, and the
+  // absent case keeps the documents byte-identical to the pre-P3-458 shape.
+  const META = { notes: "release notes", pubDate: "2026-09-01T12:00:00.000Z" };
+  const rolled = macFeedPlan([ARM64_ZIP, X64_ZIP], "v0.3.0", SLUG, { ...META, rolloutPercent: 40 });
+  check(
+    "P3-458: macFeedPlan with a validated rolloutPercent writes the field into both arch documents",
+    rolled.feeds !== null && rolled.feeds.arm64.rolloutPercent === 40 && rolled.feeds.x64.rolloutPercent === 40,
+    JSON.stringify(rolled),
+  );
+  check(
+    `P3-458: the rollout field rides last in the JSON document (Squirrel shape first)`,
+    rolled.feeds !== null && Object.keys(rolled.feeds.arm64).join(",") === `url,name,notes,pub_date,${ROLLOUT_JSON_FIELD}`,
+    JSON.stringify(rolled.feeds?.arm64),
+  );
+  check(
+    "P3-458: without meta.rolloutPercent no document carries the field (the today shape)",
+    (() => {
+      const plain = macFeedPlan([ARM64_ZIP, X64_ZIP], "v0.3.0", SLUG, META);
+      return plain.feeds !== null && !("rolloutPercent" in plain.feeds.arm64) && !("rolloutPercent" in plain.feeds.x64);
+    })(),
+  );
+  for (const bad of [101, -1, 12.5, "50", null, true]) {
+    const badPlan = macFeedPlan([ARM64_ZIP, X64_ZIP], "v0.3.0", SLUG, { ...META, rolloutPercent: bad });
+    check(
+      `P3-458: macFeedPlan refuses a present-but-invalid rolloutPercent (${String(bad)}) — fail closed`,
+      badPlan.feeds === null && badPlan.problems.length === 1 && badPlan.problems[0]!.includes("0..100"),
+      JSON.stringify(badPlan),
+    );
+  }
+
+  // The pure yml transform behind the --staging-yml write.
+  const YML_BASE =
+    `version: 0.3.0\nfiles:\n  - url: OpenCode-Remote-0.3.0-arm64.zip\n    sha512: ${DIGEST}\n    size: 3\npath: OpenCode-Remote-0.3.0-arm64.zip\nsha512: ${DIGEST}\nreleaseName: 0.3.0\nreleaseDate: '2026-09-01'\n`;
+  check(
+    "P3-458: injectStagingPercentage inserts one top-level line right after version: and keeps every other byte",
+    injectStagingPercentage(YML_BASE, 50).text === `version: 0.3.0\n${ROLLOUT_YML_FIELD}: 50\n${YML_BASE.slice("version: 0.3.0\n".length)}`,
+    JSON.stringify(injectStagingPercentage(YML_BASE, 50)),
+  );
+  check(
+    "P3-458: injectStagingPercentage replaces an existing top-level line in place (idempotent re-run)",
+    (() => {
+      const withTen = injectStagingPercentage(YML_BASE, 10).text ?? "";
+      const again = injectStagingPercentage(withTen, 50).text ?? "";
+      return withTen.includes(`${ROLLOUT_YML_FIELD}: 10\n`) && again === injectStagingPercentage(YML_BASE, 50).text;
+    })(),
+  );
+  check(
+    "P3-458: an indented stagingPercentage inside the files: block is never touched nor counted",
+    (() => {
+      const yml = "version: 0.3.0\nfiles:\n  - url: x\n    stagingPercentage: 9\npath: x\n";
+      const out = injectStagingPercentage(yml, 50);
+      return out.problems.length === 0 && (out.text ?? "").includes("    stagingPercentage: 9") && /(^|\n)stagingPercentage: 50\n/.test(out.text ?? "");
+    })(),
+  );
+  check(
+    "P3-458: a yml with two top-level stagingPercentage lines is refused (no guessing)",
+    (() => {
+      const out = injectStagingPercentage(`version: 0.3.0\nstagingPercentage: 1\nstagingPercentage: 2\n`, 50);
+      return out.text === null && out.problems.length === 1 && out.problems[0]!.includes("stagingPercentage");
+    })(),
+  );
+  check(
+    "P3-458: a yml without a top-level version: line is refused (not an electron-builder feed)",
+    (() => {
+      const out = injectStagingPercentage("something: else\n", 50);
+      return out.text === null && out.problems.length === 1 && out.problems[0]!.includes("version");
+    })(),
+  );
+  check(
+    "P3-458: an empty yml is refused, never silently skipped",
+    (() => {
+      const out = injectStagingPercentage("", 50);
+      return out.text === null && out.problems.length === 1 && out.problems[0]!.includes("empty");
+    })(),
+  );
+  check(
+    "P3-458: the rewritten yml still parses its version (the writer's own re-run contract)",
+    parseYmlVersion(injectStagingPercentage(YML_BASE, 50).text ?? "") === "0.3.0",
+  );
+  check("P3-458: injectStagingPercentage refuses an unvalidated percent (belt and braces)", (() => {
+    try {
+      injectStagingPercentage(YML_BASE, 101);
+      return false;
+    } catch {
+      return true;
+    }
+  })());
+
+  // CLI fixtures — the exact files each packaging job leaves in ITS dist
+  // root: the mac job has latest-mac.yml (+ the zips the JSON feeds point
+  // at), the windows job has latest.yml. Each mode sees only its own root.
+  const distFixture = (opts: { macYml?: boolean; winYml?: boolean }): string => {
+    const dir = mkdtempSync(join(tmpdir(), "update-feed-rollout-"));
+    writeFileSync(join(dir, ARM64_ZIP), "zip");
+    writeFileSync(join(dir, X64_ZIP), "zip");
+    if (opts.macYml !== false) writeFileSync(join(dir, "latest-mac.yml"), YML_BASE);
+    if (opts.winYml) writeFileSync(join(dir, "latest.yml"), YML_BASE);
+    return dir;
+  };
+  const baseDoc = (zip: string, percent: number | null): string =>
+    `${JSON.stringify(
+      {
+        url: `https://github.com/${SLUG}/releases/download/v0.3.0/${encodeURIComponent(zip)}`,
+        name: "0.3.0",
+        notes: "",
+        pub_date: "2026-09-01T00:00:00.000Z",
+        ...(percent !== null ? { [ROLLOUT_JSON_FIELD]: percent } : {}),
+      },
+      null,
+      2,
+    )}\n`;
+
+  // 1. Without the variable (and with it empty — the unfilled dispatch input)
+  //    the CLI must stay byte-for-byte what it always wrote, in both modes.
+  const dirA = distFixture({});
+  const runA = spawnSync(process.execPath, [script, "--dist", dirA, "--tag", "v0.3.0"], { encoding: "utf8", env: envNoVar });
+  check(
+    "P3-458: without ROLLOUT_PERCENT the CLI exits 0 and writes the three feeds",
+    runA.status === 0 && existsSync(join(dirA, "update-mac-arm64.json")) && existsSync(join(dirA, "update-mac-x64.json")) && existsSync(join(dirA, "update-mac.json")),
+    runA.stdout + runA.stderr,
+  );
+  const arm64A = readFileSync(join(dirA, "update-mac-arm64.json"), "utf8");
+  check(
+    "P3-458: without ROLLOUT_PERCENT the JSON feed is byte-identical to today (no rollout field anywhere)",
+    arm64A === baseDoc(ARM64_ZIP, null) &&
+      !arm64A.includes(ROLLOUT_JSON_FIELD) &&
+      readFileSync(join(dirA, "update-mac.json"), "utf8") === arm64A &&
+      !readFileSync(join(dirA, "update-mac-x64.json"), "utf8").includes(ROLLOUT_JSON_FIELD),
+    arm64A,
+  );
+  check(
+    "P3-458: without ROLLOUT_PERCENT the yml feed keeps every byte (no stagingPercentage line)",
+    readFileSync(join(dirA, "latest-mac.yml"), "utf8") === YML_BASE,
+  );
+  const dirA2 = distFixture({});
+  const runA2 = spawnSync(process.execPath, [script, "--dist", dirA2, "--tag", "v0.3.0"], {
+    encoding: "utf8",
+    env: { ...envNoVar, ROLLOUT_PERCENT: "" },
+  });
+  check(
+    "P3-458: an EMPTY ROLLOUT_PERCENT (the unfilled dispatch input) behaves exactly like absence",
+    runA2.status === 0 && readFileSync(join(dirA2, "update-mac-arm64.json"), "utf8") === baseDoc(ARM64_ZIP, null) && readFileSync(join(dirA2, "latest-mac.yml"), "utf8") === YML_BASE,
+    runA2.stdout + runA2.stderr,
+  );
+  const dirA3 = distFixture({});
+  const runA3 = spawnSync(process.execPath, [script, "--dist", dirA3, "--tag", "v0.3.0"], {
+    encoding: "utf8",
+    env: { ...envNoVar, ROLLOUT_PERCENT: "   " },
+  });
+  check(
+    "P3-458: a whitespace-only ROLLOUT_PERCENT is also absence (nothing written)",
+    runA3.status === 0 && readFileSync(join(dirA3, "latest-mac.yml"), "utf8") === YML_BASE,
+    runA3.stdout + runA3.stderr,
+  );
+  const dirA4 = distFixture({ macYml: false, winYml: true });
+  const runA4 = spawnSync(process.execPath, [script, STAGING_YML_MODE, "--dist", dirA4], {
+    encoding: "utf8",
+    env: envNoVar,
+  });
+  check(
+    "P3-458: --staging-yml without ROLLOUT_PERCENT is a documented no-op — latest.yml keeps every byte",
+    runA4.status === 0 && readFileSync(join(dirA4, "latest.yml"), "utf8") === YML_BASE,
+    runA4.stdout + runA4.stderr,
+  );
+
+  // 2. With a valid value the field lands exactly where the client reads it:
+  //    rolloutPercent in the three JSON feeds (mac job), stagingPercentage in
+  //    latest.yml (--staging-yml, the windows job). The mac dist root's
+  //    latest-mac.yml is deliberately never touched — no consumer reads it.
+  const dirB = distFixture({});
+  const runB = spawnSync(process.execPath, [script, "--dist", dirB, "--tag", "v0.3.0"], {
+    encoding: "utf8",
+    env: { ...envNoVar, ROLLOUT_PERCENT: "50" },
+  });
+  check(
+    "P3-458: with ROLLOUT_PERCENT=50 the mac feed CLI exits 0 and reports the rollout",
+    runB.status === 0 && runB.stdout.includes("rollout 50%"),
+    runB.stdout + runB.stderr,
+  );
+  const arm64B = readFileSync(join(dirB, "update-mac-arm64.json"), "utf8");
+  check(
+    "P3-458: the arm64 feed carries rolloutPercent 50 (a real number in the JSON)",
+    arm64B === baseDoc(ARM64_ZIP, 50) && JSON.parse(arm64B).rolloutPercent === 50,
+    arm64B,
+  );
+  check(
+    "P3-458: the x64 feed carries the same rolloutPercent",
+    readFileSync(join(dirB, "update-mac-x64.json"), "utf8") === baseDoc(X64_ZIP, 50),
+  );
+  check(
+    "P3-458: the legacy alias stays byte-identical to the arm64 document (rollout included)",
+    readFileSync(join(dirB, "update-mac.json"), "utf8") === arm64B,
+  );
+  check(
+    "P3-458: the mac dist root's latest-mac.yml stays byte-identical even with ROLLOUT_PERCENT (no consumer reads it)",
+    readFileSync(join(dirB, "latest-mac.yml"), "utf8") === YML_BASE,
+  );
+  const dirB2 = distFixture({ macYml: false, winYml: true });
+  const runB2 = spawnSync(process.execPath, [script, STAGING_YML_MODE, "--dist", dirB2], {
+    encoding: "utf8",
+    env: { ...envNoVar, ROLLOUT_PERCENT: "50" },
+  });
+  check(
+    "P3-458: --staging-yml with ROLLOUT_PERCENT=50 exits 0 and reports the injection",
+    runB2.status === 0 && runB2.stdout.includes(`${ROLLOUT_YML_FIELD}: 50`),
+    runB2.stdout + runB2.stderr,
+  );
+  check(
+    "P3-458: latest.yml (the Windows feed the spec names) gains the top-level stagingPercentage line after version:",
+    readFileSync(join(dirB2, "latest.yml"), "utf8") === injectStagingPercentage(YML_BASE, 50).text,
+    readFileSync(join(dirB2, "latest.yml"), "utf8"),
+  );
+  const runB3 = spawnSync(process.execPath, [script, STAGING_YML_MODE, "--dist", dirB2], {
+    encoding: "utf8",
+    env: { ...envNoVar, ROLLOUT_PERCENT: "50" },
+  });
+  check(
+    "P3-458: --staging-yml re-run at the same percentage is an idempotent no-op (bytes unchanged)",
+    runB3.status === 0 &&
+      runB3.stdout.includes("already") &&
+      readFileSync(join(dirB2, "latest.yml"), "utf8") === injectStagingPercentage(YML_BASE, 50).text,
+    runB3.stdout + runB3.stderr,
+  );
+  const runB4 = spawnSync(process.execPath, [script, STAGING_YML_MODE, "--dist", dirB2], {
+    encoding: "utf8",
+    env: { ...envNoVar, ROLLOUT_PERCENT: "80" },
+  });
+  check(
+    "P3-458: --staging-yml re-run at a new percentage moves the field without moving anything else",
+    runB4.status === 0 && readFileSync(join(dirB2, "latest.yml"), "utf8") === injectStagingPercentage(YML_BASE, 80).text,
+    runB4.stdout + runB4.stderr,
+  );
+  const dirB5 = distFixture({ macYml: false, winYml: false });
+  const runB5 = spawnSync(process.execPath, [script, STAGING_YML_MODE, "--dist", dirB5], {
+    encoding: "utf8",
+    env: { ...envNoVar, ROLLOUT_PERCENT: "50" },
+  });
+  check(
+    "P3-458: --staging-yml without a latest.yml fails closed listing the problem (nothing written)",
+    runB5.status === 1 && runB5.stderr.includes("latest.yml"),
+    runB5.stdout + runB5.stderr,
+  );
+
+  // 3. An invalid value fails the whole run BEFORE a single byte is written,
+  //    in both modes.
+  for (const bad of ["abc", "101", "12.5", "-1"]) {
+    const dirC = distFixture({ winYml: true });
+    const runC = spawnSync(process.execPath, [script, "--dist", dirC, "--tag", "v0.3.0"], {
+      encoding: "utf8",
+      env: { ...envNoVar, ROLLOUT_PERCENT: bad },
+    });
+    check(
+      `P3-458: ROLLOUT_PERCENT=${bad} → exit 1, problem listed, nothing written`,
+      runC.status === 1 &&
+        runC.stderr.includes("ROLLOUT_PERCENT") &&
+        !existsSync(join(dirC, "update-mac-arm64.json")) &&
+        !existsSync(join(dirC, "update-mac.json")) &&
+        !existsSync(join(dirC, "update-mac-x64.json")) &&
+        readFileSync(join(dirC, "latest-mac.yml"), "utf8") === YML_BASE &&
+        readFileSync(join(dirC, "latest.yml"), "utf8") === YML_BASE,
+      runC.stderr,
+    );
+    const dirC2 = distFixture({ macYml: false, winYml: true });
+    const runC2 = spawnSync(process.execPath, [script, STAGING_YML_MODE, "--dist", dirC2], {
+      encoding: "utf8",
+      env: { ...envNoVar, ROLLOUT_PERCENT: bad },
+    });
+    check(
+      `P3-458: --staging-yml ROLLOUT_PERCENT=${bad} → exit 1, problem listed, latest.yml untouched`,
+      runC2.status === 1 && runC2.stderr.includes("ROLLOUT_PERCENT") && readFileSync(join(dirC2, "latest.yml"), "utf8") === YML_BASE,
+      runC2.stderr,
+    );
+    rmSync(dirC, { recursive: true, force: true });
+    rmSync(dirC2, { recursive: true, force: true });
+  }
+  for (const dir of [dirA, dirA2, dirA3, dirA4, dirB, dirB2, dirB5]) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // P2-338 lesson: the writer (rolloutpercent.mjs) and the reader
+  // (updaterollout.ts, via update.ts) cannot import each other — parity is
+  // pinned by reading the real sources, so a renamed field or a moved limit
+  // fails here instead of silently publishing a percentage no client reads.
+  const readerSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "updaterollout.ts"), "utf8");
+  const readerCode = readerSrc.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/.*/g, " ");
+  const updateSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "update.ts"), "utf8");
+  check(
+    "P3-458: parity — updaterollout.ts still names the JSON field the writer writes",
+    readerSrc.includes(ROLLOUT_JSON_FIELD) && ROLLOUT_JSON_FIELD === "rolloutPercent",
+  );
+  check(
+    "P3-458: parity — updaterollout.ts still names the yml field the writer writes",
+    readerSrc.includes(ROLLOUT_YML_FIELD) && ROLLOUT_YML_FIELD === "stagingPercentage",
+  );
+  check(
+    "P3-458: parity — the reader's tolerance bounds stay 0..100 on the number and text paths",
+    readerCode.includes(">= 0") && readerCode.includes("<= 100"),
+    readerCode,
+  );
+  check(
+    "P3-458: parity — the writer accepts exactly the reader's envelope (0 and 100 in; 101/negative/fraction out)",
+    (() => {
+      const zero = parseRolloutPercent("0");
+      const hundred = parseRolloutPercent("100");
+      return (
+        "value" in zero && zero.value === 0 && "value" in hundred && hundred.value === 100 &&
+        "problems" in parseRolloutPercent("101") && "problems" in parseRolloutPercent("-1") &&
+        "problems" in parseRolloutPercent("12.5")
+      );
+    })(),
+  );
+  const stagingLine = updateSrc.split("\n").find((l) => l.includes("const staging = /"));
+  const readerRe = /^const staging = \/(.*)\/m\.exec\(/.exec((stagingLine ?? "").trim());
+  check(
+    "P3-458: parity — the written stagingPercentage line parses through update.ts's own reader regex",
+    readerRe !== null &&
+      new RegExp(readerRe[1]!, "m").test(`${ROLLOUT_YML_FIELD}: 50`) &&
+      !new RegExp(readerRe[1]!, "m").test(`    ${ROLLOUT_YML_FIELD}: 9`),
+    stagingLine ?? "",
+  );
+  check(
+    "P3-458: parity — update.ts's JSON reader still consumes the exact key the writer writes",
+    updateSrc.includes(ROLLOUT_JSON_FIELD) && updateSrc.includes('"rolloutPercent" in parsed'),
+  );
+
+  // Item 4 of the spec: the release verification accepts the additive field —
+  // feed-consistency (name/url + version/path) and feedhash (the files:
+  // digest block) tolerate a feed carrying the rollout fields, and the alias
+  // contract holds with the field in place.
+  const publishedRollout = [
+    ARM64_ZIP,
+    X64_ZIP,
+    "latest-mac.yml",
+    "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
+    "latest.yml",
+  ];
+  const rolloutJsonDoc = (zip: string): string =>
+    `${JSON.stringify(
+      {
+        url: `https://github.com/${SLUG}/releases/download/v0.3.0/${encodeURIComponent(zip)}`,
+        name: "0.3.0",
+        notes: "release notes",
+        pub_date: "2026-09-01T12:00:00.000Z",
+        rolloutPercent: 40,
+      },
+      null,
+      2,
+    )}\n`;
+  const rolloutYmlDoc = (): string => injectStagingPercentage(YML_BASE, 40).text ?? "";
+  check(
+    "P3-458: release-verify accepts the additive field — per-arch feeds + alias with rolloutPercent have zero problems",
+    archFeedProblems("v0.3.0", rolloutJsonDoc(ARM64_ZIP), rolloutJsonDoc(ARM64_ZIP), rolloutJsonDoc(X64_ZIP), publishedRollout).length === 0,
+    JSON.stringify(archFeedProblems("v0.3.0", rolloutJsonDoc(ARM64_ZIP), rolloutJsonDoc(ARM64_ZIP), rolloutJsonDoc(X64_ZIP), publishedRollout)),
+  );
+  check(
+    "P3-458: feed-consistency's yml gate tolerates the stagingPercentage line (version/path still verified)",
+    feedProblems("v0.3.0", rolloutJsonDoc(ARM64_ZIP), rolloutYmlDoc(), publishedRollout).length === 0,
+    JSON.stringify(feedProblems("v0.3.0", rolloutJsonDoc(ARM64_ZIP), rolloutYmlDoc(), publishedRollout)),
+  );
+  check(
+    "P3-458: feedhash's yml entry reader keeps the files: digest block intact next to a top-level stagingPercentage",
+    (() => {
+      const entries = parseLatestYmlEntries(rolloutYmlDoc());
+      return entries.length === 1 && entries[0]!.fileName === "OpenCode-Remote-0.3.0-arm64.zip" && entries[0]!.sha512 === DIGEST;
+    })(),
+  );
+  check(
+    "P3-458: feedhash still confronts the declared digest when the yml carries the rollout line",
+    (() => {
+      const yml = rolloutYmlDoc();
+      const problems = feedHashProblems([{ label: "latest.yml", entries: parseLatestYmlEntries(yml) }], [
+        { fileName: "OpenCode-Remote-0.3.0-arm64.zip", sha512: DIGEST, size: 3 },
+      ]);
+      return problems.length === 0;
+    })(),
+  );
+
+  // The workflow wiring: an optional workflow_dispatch input passed through
+  // as ROLLOUT_PERCENT to BOTH halves — the mac feed step (Squirrel JSON
+  // feeds) and the new windows step (--staging-yml injects the percentage
+  // into latest.yml, the feed electron-builder writes on the windows runner).
+  const releaseText = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const triggerBlock = releaseText.slice(0, releaseText.indexOf("\njobs:"));
+  check(
+    "P3-458: release.yml declares the optional rollout_percent workflow_dispatch input",
+    triggerBlock.includes("workflow_dispatch:") && triggerBlock.includes("rollout_percent:") && triggerBlock.includes("required: false"),
+    triggerBlock,
+  );
+  const feedStepIdx = releaseText.indexOf("- name: Build the Squirrel.Mac JSON feed");
+  const feedStep = releaseText.slice(feedStepIdx, releaseText.indexOf("- name:", feedStepIdx + 10));
+  check(
+    "P3-458: the mac feed step receives ROLLOUT_PERCENT from the dispatch input",
+    feedStepIdx > 0 && feedStep.includes("ROLLOUT_PERCENT: ${{ inputs.rollout_percent }}"),
+    feedStep,
+  );
+  const winStepIdx = releaseText.indexOf("- name: Inject the staged-rollout percentage into the Windows feed");
+  const winStep = releaseText.slice(winStepIdx, releaseText.indexOf("- name:", winStepIdx + 10));
+  check(
+    "P3-458: the windows step runs update-feed.mjs --staging-yml with the same ROLLOUT_PERCENT (latest.yml is born on the windows runner)",
+    winStepIdx > 0 &&
+      winStep.includes("node apps/desktop/scripts/update-feed.mjs --staging-yml") &&
+      winStep.includes("ROLLOUT_PERCENT: ${{ inputs.rollout_percent }}") &&
+      winStep.includes("shell: bash") &&
+      winStepIdx > feedStepIdx &&
+      releaseText.indexOf("apps/desktop/dist/*.exe apps/desktop/dist/latest.yml", winStepIdx) > winStepIdx,
+    winStep,
+  );
 }
 
 

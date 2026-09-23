@@ -2540,6 +2540,29 @@ up-to-date state and records one `update rollout:` line per verdict
 transition in `desktop.log`; the verdict is deterministic, so the same
 machine stays in the same seat between checks until the percentage grows.
 
+**Publishing with a percentage (P3-458)**: the release pipeline itself can
+now declare the rollout. `apps/desktop/scripts/update-feed.mjs` reads the
+`ROLLOUT_PERCENT` variable (wired to an optional `rollout_percent` input on
+the release workflow): an empty/absent value writes no rollout field and
+every feed stays byte for byte as before. With a valid integer 0–100, the
+mac packaging job writes `rolloutPercent` into `update-mac-arm64.json`,
+`update-mac-x64.json` and the legacy `update-mac.json` alias, and the
+windows packaging job runs the same script in `--staging-yml` mode to add a
+top-level `stagingPercentage:` line to `latest.yml` — the Windows feed (and
+the field electron-updater's own staged rollout reads; the mac dist root's
+`latest-mac.yml` is deliberately never touched, no consumer reads it). An
+invalid value (anything that is not an integer 0–100: `12.5`, `-1`, `101`,
+text) fails the release step **before anything is written**. The validity
+rule lives in one shared module (`apps/desktop/scripts/rolloutpercent.mjs`)
+so a writer and the installed client (`updaterollout.ts`) can never drift
+apart — a parity test in the unit battery reads the client's real source and
+fails the moment the field names or the 0–100 limits diverge. Release a
+fraction of the fleet from the CLI with:
+
+```bash
+gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20
+```
+
 Whenever a feed is configured, the tray menu also gains two items (P3-019): a
 status line reflecting the latest check ("Update available — check for
 updates", "Update available — open release page", "Up to date", or the failure
