@@ -423,6 +423,20 @@ function buildDiagnostics(): string {
     // P2-291: the update guard's last verdict and short reason only — never a
     // path, an address or a secret (privacy contract in diagnostics.ts).
     updateGuard: updateGuardVerdict ? { state: updateGuardVerdict, reason: updateGuardReason ?? "" } : null,
+    // P2-345: the gradual-rollout verdict of the last update check — decision
+    // and stable reason only, never the installation id, the bucket or the
+    // percentage (privacy contract in diagnostics.ts). Mirrored by
+    // noteRolloutVerdict.
+    rollout: lastRolloutView ? { decision: lastRolloutView.decision, reason: lastRolloutView.reason } : null,
+    // P2-345: the last relay-link state the pairing tick computed — the
+    // closed set of relaylink.ts only, never the message or any address
+    // (privacy contract in diagnostics.ts).
+    relayLink: lastRelayLinkState ?? null,
+    // P2-345: the wedge verdict in effect — the closed kind of
+    // sidecarwedge.ts only, never a path, an identifier or a probe count
+    // (privacy contract in diagnostics.ts). Same getter the pairing payload
+    // already calls; no new computation, no timer.
+    sidecarWedge: sidecarWedgeState()?.state ?? null,
   }), homedir());
 }
 
@@ -568,6 +582,14 @@ let updateGuardReason: string | null = null;
 // stateless and deterministic.
 let rolloutIdCache: string | null | undefined;
 let lastRolloutState: string | null = null;
+// P2-345: the diagnostics bundle mirrors the last rollout verdict, the last
+// relay-link state and the wedge verdict in effect — the same values the
+// pairing-state payload already carries (sidecarWedgeState() is the getter
+// the tick uses). Stored at the points that already exist: noteRolloutVerdict
+// (below) and the pairing tick's linkVerdict call. No timer, no IPC, no route,
+// no new request.
+let lastRolloutView: UpdateRolloutView | null = null;
+let lastRelayLinkState: string | null = null;
 function rolloutInstallationId(): string | null {
   // The hermetic harness never touches the id file: its session always
   // resolves oferecer by the pure rule 1 before the id is ever consulted.
@@ -577,6 +599,11 @@ function rolloutInstallationId(): string | null {
   return rolloutIdCache;
 }
 function noteRolloutVerdict(view: UpdateRolloutView): void {
+  // P2-345: the bundle's `update rollout:` line mirrors decision + stable
+  // reason only (diagnostics.ts privacy contract — never the installation
+  // id, the bucket or the percentage). Stored on every computation, before
+  // the dedupe: the dedupe governs the log line, not the mirror.
+  lastRolloutView = view;
   const key = `${view.decision}:${view.reason}`;
   if (lastRolloutState === key) return;
   lastRolloutState = key;
@@ -3056,6 +3083,10 @@ async function refreshPairingState(): Promise<void> {
     let relayLink: RelayLinkVerdict | undefined;
     if (!quietLocal && (!paired || remotePairingRequested) && relay) {
       relayLink = linkVerdict({ ...relay, localMode: quietLocal });
+      // P2-345: mirror the state for the diagnostics bundle — the closed-set
+      // state only, exactly what the pairing payload already carries (the
+      // state itself never carries an address, a port or a relay id).
+      lastRelayLinkState = relayLink.state;
       log(`[desktop] relay link: ${relayLink.state}`);
     }
     // P2-252: the tray rides the SAME tick and the SAME verdict — local mode
