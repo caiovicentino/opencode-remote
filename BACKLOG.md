@@ -5,6 +5,7 @@ O Pilot consome a primeira task `## Ready` em ordem. P0 > P1 > P2 > P3.
 Tasks feitas vão para `## Done` automaticamente.
 
 ## Ready
+- [ ] (RT-466) [P0] Symlink escape in the file-download allowlist breaks constitution invariant #6 ( accessibleDownload / /__ocr/files , app — spec: **Title:** Symlink escape in the file-download allowlist breaks constitution invariant #6 ( accessibleDownload / /__ocr/files , apps/daemon/src/index.ts:884-896, 1172-1253) **Severity:** Medium (arbitrary file read outside the constitution's download roots machine-checked invariant violated) **Proof/attack sketch:** accessibleDownload() validates only the *string* form of the path ( resolve(p) + abs.startsWith(r + "/") ) — path.resolve never consults the filesystem, so a symlink planted inside any allowed root passes the gate, and both POST /__ocr/download/start ( statSync follows links) and t (area: relay)
 
 **1. Daemon tunnel SSRF with credential exfiltration (`proxy()` passthrough accepts absolute URLs) — HIGH**
 `apps/daemon/src/index.ts:1877` builds the upstream URL with `new URL(req.path, OPENCODE_URL)` (base `http://127.0.0.1:4096`, line 224) where `req.path` is the free-form string inside the E2E-sealed op envelope (`packages/protocol/src/types.ts:90`), and every preceding check in `proxy()` is an exact `req.path === "…"` match or a `^/session/…` regex — there is no `startsWith("/")` or allowlist gate anywhere. A paired client (or local WS peer) seals `{"method":"GET","path":"http://evil
