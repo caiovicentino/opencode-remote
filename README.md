@@ -1137,6 +1137,18 @@ no envelope fields, no identities); `RELAY_ROOM_BUDGET_BYTES=-1` disables
 the budget for a private, allowlisted relay. Runbook:
 [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
 
+And when the relay process itself crashes — one unhandled promise rejection
+or one uncaught exception — it no longer dies with a raw stack and no
+explanation (P2-351): the process writes exactly one structured `relay crash`
+line on stderr (event kind, error class, a 200-character message with every
+room id, IP and frame fragment redacted, the first stack frame with absolute
+paths reduced to basenames, and the uptime), bumps `relay_crashes_total` on
+`/metrics` (published as zero on a healthy relay, never omitted), and runs
+the same graceful drain a `SIGTERM` gets — `/healthz` flips to `503`, every
+websocket closes with `1001` — before exiting `1`, so the supervisor
+restarts it and every room rebuilds through the normal reconnect path.
+Runbook: [docs/RELAY-HOSTING.md](docs/RELAY-HOSTING.md).
+
 The hosted relay's `/healthz` probe also announces the TLS certificate
 verdict (P2-290): with a cert pair configured, the body gains the additive
 `certExpiryVerdict` (`use`/`warn`/`refuse-expired`/`refuse-not-yet-valid`)

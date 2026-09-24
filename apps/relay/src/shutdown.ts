@@ -42,16 +42,29 @@ export interface ShutdownDeps {
  * 3. stop listeners (http(s) close; every ws client closed with code 1001)
  * 4. short settle so close frames flush, log the final line, exit 0
  * A hard timer caps the drain at DRAIN_MS; a second signal exits immediately.
+ *
+ * P2-351: the fatal-event listeners (crashline wiring in index.ts) reuse this
+ * same drain with an exit CODE of 1, so the supervisor restarts the process
+ * after an uncaughtException / unhandledRejection instead of leaving it up in
+ * an unknown state. The optional second parameter is the code to exit with;
+ * omitting it keeps the signal behavior byte for byte (exit 0). The code is
+ * sticky and monotonic (`Math.max`) — whichever drain flavor starts first
+ * wins the sequence, and a crash arriving mid-drain can only ever raise the
+ * pending code to 1, never lower a crash exit to a clean 0. The hard timer
+ * reads the live pending code too, so a crash during a signal drain still
+ * exits 1 even when the 3s backstop fires.
  */
 export function createShutdown(deps: ShutdownDeps): {
-  shutdown: (signal: string) => Promise<void>;
+  shutdown: (signal: string, exitCode?: number) => Promise<void>;
   isShuttingDown: () => boolean;
 } {
   let started = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  let pendingCode = 0;
+  const shutdown = async (signal: string, exitCode?: number): Promise<void> => {
+    pendingCode = Math.max(pendingCode, exitCode ?? 0);
     if (started) {
       deps.log("warn", "shutdown already in progress; exiting immediately", { signal });
-      deps.exit(0);
+      deps.exit(pendingCode);
       return;
     }
     started = true;
@@ -62,7 +75,7 @@ export function createShutdown(deps: ShutdownDeps): {
       uptimeS: Math.round(deps.uptimeMs() / 1000),
       drainGraceMs: deps.graceMs ?? 0,
     });
-    const hard = deps.setTimeout(() => deps.exit(0), DRAIN_MS);
+    const hard = deps.setTimeout(() => deps.exit(pendingCode), DRAIN_MS);
     const graceMs = deps.graceMs ?? 0;
     try {
       // grace > 0 only: an empty env must keep the exact pre-P2-145 timer
@@ -80,7 +93,7 @@ export function createShutdown(deps: ShutdownDeps): {
       closedConnections: closing,
       uptimeS: Math.round(deps.uptimeMs() / 1000),
     });
-    deps.exit(0);
+    deps.exit(pendingCode);
   };
   return { shutdown, isShuttingDown: () => started };
 }

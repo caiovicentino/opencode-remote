@@ -192,6 +192,46 @@ process never dies because of one frame. Legitimate traffic is byte-for-byte
 unchanged: absent `seq` stays omitted, `null` stays `null`, and an absent or
 `null` `from` still falls back to the socket id.
 
+### One unexpected crash never dies silent (P2-351)
+
+The per-frame guard above protects the routing path, but an unhandled promise
+rejection (a discarded `void promise` — the exact class the red team found)
+or an uncaught exception anywhere else used to kill the whole process with
+Node's default raw stack: every room of every tenant went down together, and
+the log carried no structured line, no metric and no explanation — only a
+multi-line dump of the host's file layout.
+
+The relay now takes over both fatal events at boot. Each one emits **exactly
+one** structured JSONL line on **stderr** at error level — `relay crash` —
+carrying only:
+
+- the event kind (`uncaughtException` or `unhandledRejection`);
+- the error's class name (a sanitized token like `RangeError`; for non-Error
+  rejects the honest kind — `String`, `Object`, `Undefined`);
+- the message, truncated to 200 characters, with every room id, IP address
+  and frame fragment redacted: every token of the room-id grammar becomes
+  `[room:removed]` and every address becomes `[ip:removed]`. The relay
+  cannot tell words from ids, so the message is a **redacted hint, not a
+  transcript** — the diagnosis lives in the class name and the first stack
+  frame, which carries only its basename so provider log retention never
+  learns the host's directory layout;
+- the process uptime in whole seconds, the crash-loop sibling of the
+  `relay_uptime_seconds` gauge.
+
+The same event increments the additive `relay_crashes_total` counter on
+`/metrics` (published as zero on a healthy relay, never omitted), and then
+the exact drain a `SIGTERM` gets runs — `/healthz` flips to `503`, every
+websocket is closed with code `1001`, the listeners stop — and the process
+exits with code `1`, so the supervisor restarts it and daemons and phones
+reconnect with backoff. The error is never swallowed and the process never
+continues in an uncertain state: the first fatal event starts the drain,
+later events only add their own line and counter increment.
+
+The counter alone rarely fires while a scraper is watching (the process is
+gone seconds later), so the alerting signal for a crash loop remains
+`RelayCrashLoop` — an `relay_uptime_seconds` that keeps resetting toward
+zero — while the crash line and the counter give the post-mortem its context.
+
 ### Backpressure: the relay closes who does not read (P2-217)
 
 Before P2-217 the only memory defense on the forwarding path was the
@@ -957,6 +997,14 @@ JSON payload gains the matching `rooms_rejected_invalid_room_id` /
 `rooms_rejected`. Same contract as the probe: the sum never exceeds the
 total, and no line or field carries a room id, address or IP.
 
+The fatal-crash counter rides the same surface (P2-351): `relay_crashes_total`
+in the Prometheus text format and `crashes_total` in the JSON, published right
+next to `relay_rate_limited_total` and always as a whole number — zero on a
+healthy relay, never omitted, so a scraping-based alert distinguishes a
+healthy process from a missing series. The details of a crash never reach the
+metric: they ride the one structured `relay crash` stderr line the fatal-event
+listeners write (see the crash section above).
+
 The certificate verdict the relay already recomputes on its liveness sweep is
 exported as Prometheus text lines too (P2-294) — the surface an operator's
 alerting actually scrapes: `relay_cert_expiry_state` (gauge; `0` = `use`,
@@ -1141,3 +1189,10 @@ draining (`/healthz` → 503, upgrades refused — see above), optionally waits
 reconnect with backoff), and exits `0` within ~3s — so `docker stop` /
 redeploy loops are safe. Deploy order does not matter: daemons and PWAs
 reconnect to the new relay automatically.
+
+The same drain also runs when a fatal crash takes the process down (P2-351):
+one unhandled rejection or uncaught exception writes the structured `relay
+crash` line on stderr, bumps `relay_crashes_total`, and exits `1` instead of
+`0` — the drain is identical, only the code differs, so the supervisor
+restarts the process and every room rebuilds through the normal reconnect
+path (see the crash section above).
