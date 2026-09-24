@@ -165,7 +165,17 @@ candidatas de layout vêm do módulo puro `packaged-boot-layout.mjs` e
 `resolveExecutable` segue sendo o único ponto do script que toca disco. O
 veredito vive numa função pura (`bootVerdict`) com motivos `binary-missing`,
 `load-failed`, `blank-window`, `console-capture-broken` e `console-error`;
-Playwright ausente falha fechado. Desde a P3-343, no Windows o binário é
+Playwright ausente falha fechado. Desde a P2-354 o smoke também **mede o
+cold start** que acabou de provar — wall-clock do spawn do processo (a
+chamada `electron.launch`) até o load-finished com o canário visto — e
+imprime exatamente uma linha de ratchet em toda execução, `packaged-boot
+boot in Xms budget Yms`, com o teto por plataforma resolvido do módulo puro
+`bootbudget.mjs` (baseline darwin medido na máquina de desenvolvimento,
+teto generoso documentado para win32 por ser runner de CI). O spike **falha
+aberto**: timing ausente imprime `unknown` e nunca muda o código de saída, e
+o veredito de orçamento (`ok`/`over-budget`/`unknown`) é informativo — nada
+gateia por tempo ainda; apertar o teto é a fatia seguinte, depois de um
+baseline estável. Desde a P3-343, no Windows o binário é
 reconhecido pelo sufixo `.exe` e não por bits de execução — libuv nunca os
 define em `st_mode` no win32, e foi isso que produziu o falso
 `binary-missing` do run 34275463862 — e o boot salva um screenshot da janela
