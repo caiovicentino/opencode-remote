@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, lstatSync, readdirSync, openSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs, statfsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, lstatSync, realpathSync, readdirSync, readSync, closeSync, copyFileSync, createReadStream, accessSync, constants, rmSync, statfs, statfsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -36,6 +36,7 @@ import type {
   RelayFrame,
 } from "@ocr/protocol";
 import { log } from "./log.js";
+import { accessibleDownloadPath, openContainedFile, resolveDownloadRoots } from "./downloadpath.js";
 import { frameVerdict } from "./frameguard.js";
 import {
   buildHandoffCommand,
@@ -890,9 +891,39 @@ const DOWNLOAD_ROOTS = [
 ].map((r) => resolve(r));
 const downloads = new Map<string, { path: string; size: number; at: number }>();
 
+// RT-466: string containment is not containment — a symlink inside any root
+// passes a prefix check and exposes files outside. `accessibleDownload`
+// resolves every path through the filesystem (realpathSync) before admission
+// (invariant #6); the real roots are computed lazily so roots created after
+// boot (e.g. uploads) are picked up — recomputed only when a root that was
+// missing at the last resolve now exists (no timer).
+let realRootsCache: string[] | null = null;
+const rootsMissingAtLastResolve = new Set<string>();
+function realRoots(): string[] {
+  if (realRootsCache) {
+    for (const r of rootsMissingAtLastResolve) {
+      if (existsSync(r)) {
+        realRootsCache = null;
+        break;
+      }
+    }
+  }
+  if (!realRootsCache) {
+    realRootsCache = resolveDownloadRoots(DOWNLOAD_ROOTS);
+    rootsMissingAtLastResolve.clear();
+    for (const r of DOWNLOAD_ROOTS) {
+      try {
+        realpathSync(r);
+      } catch {
+        rootsMissingAtLastResolve.add(r);
+      }
+    }
+  }
+  return realRootsCache;
+}
+
 function accessibleDownload(p: string): string | null {
-  const abs = resolve(p);
-  return DOWNLOAD_ROOTS.some((r) => abs === r || abs.startsWith(r + "/")) ? abs : null;
+  return accessibleDownloadPath(p, realRoots());
 }
 
 // P3-403: per-session rate limit for the voice loop (camera-ask v2 "Voz").
@@ -1181,8 +1212,11 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
       for (const name of entries) {
         const full = join(root, name);
         try {
-          const st = statSync(full);
-          if (st.isFile()) files.push({ path: full, name, size: st.size, mtime: st.mtimeMs });
+          // RT-466: listing follows nothing — a symlink entry is never
+          // announced as downloadable (lstat, not stat).
+          const st = lstatSync(full);
+          if (!st.isSymbolicLink() && st.isFile())
+            files.push({ path: full, name, size: st.size, mtime: st.mtimeMs });
         } catch {}
       }
     }
@@ -1192,7 +1226,14 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
   if (req.path === "/__ocr/download/start" && req.method === "POST") {
     const { path: p } = (req.body ?? {}) as { path?: string };
     const abs = p ? accessibleDownload(p) : null;
-    if (!abs) return { id: req.id, status: 403, body: { error: "path not allowed" } };
+    if (!abs) {
+      // RT-466: refused paths (outside roots, symlinks escaping, missing
+      // files) share one verdict — no path ever lands in the log (P2-314).
+      // A missing file now answers 403 like an outside path: the realpath
+      // resolution is the admission gate.
+      log("warn", "download start refused", { reason: "outside-roots" });
+      return { id: req.id, status: 403, body: { error: "path not allowed" } };
+    }
     let size: number;
     try {
       size = statSync(abs).size;
@@ -1240,12 +1281,11 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
     log("debug", "chunk request", { query: req.query, mapSize: downloads.size });
     const d = downloads.get(req.query.id ?? "");
     if (!d) return { id: req.id, status: 404, body: { error: "download expired; start a new one" } };
-    let fd: number;
-    try {
-      fd = openSync(d.path, "r");
-    } catch {
-      return { id: req.id, status: 404, body: { error: "file gone" } };
-    }
+    // RT-466: `d.path` is the real path recorded at start; the open
+    // re-verifies it did not become a symlink or leave the roots between
+    // start and now (TOCTOU), closing the swap-after-start escape.
+    const fd = openContainedFile(d.path, realRoots());
+    if (fd === null) return { id: req.id, status: 404, body: { error: "file gone" } };
     const buf = Buffer.alloc(500_000);
     const read = readSync(fd, buf, 0, 500_000, Number(req.query.idx ?? 0) * 500_000);
     closeSync(fd);

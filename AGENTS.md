@@ -124,7 +124,10 @@ e inclua na sua resposta uma linha no formato:
 
 O app do celular mostra um card com botão "Save" — o usuário salva direto
 no telefone. Diretórios acessíveis para download: `~/.opencode-remote/uploads`,
-`~/Desktop`, `~/Downloads`, `~/Documents` e o diretório deste repo.
+`~/Desktop`, `~/Downloads`, `~/Documents` e o diretório deste repo. (RT-466)
+Links simbólicos para fora dessas pastas não são baixáveis — o caminho é
+resolvido pelo sistema de arquivos (realpath) antes da admissão e a listagem
+de `/__ocr/files` nunca anuncia uma entrada symlink.
 
 Caption appearance can be customized: `~/.opencode-remote/clip-style.json` accepts
 `font`, `fontSize`, `primary`, `secondary`, `outlineColor`, `outline` and `marginV`.

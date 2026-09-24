@@ -589,6 +589,22 @@ The chunk route (`GET /__ocr/download/chunk`) and the 500,000-byte chunk
 count are untouched. Refusal log lines carry only the static reason — never
 the path, file name or size.
 
+## Symlink-safe download admission (RT-466)
+
+The allowlist no longer trusts the string form of the path: every request
+is resolved through the filesystem (`realpathSync`) before admission, so a
+symlink planted inside `uploads/`, Desktop, Downloads, Documents or the repo
+that points outside the allowed roots answers **403** (`path not allowed`)
+instead of exposing the target. The real path is what gets registered and
+what the chunk route reopens — the open re-verifies containment (and refuses
+symlinks outright, `O_NOFOLLOW`), so a file swapped for a symlink after
+`start` answers **404** (`file gone`) instead of reading the new target.
+One consequence: a **missing** file now answers **403** (`path not allowed`)
+like any other unadmittable path (the resolution itself is the gate) rather
+than the old **404** `file not found`. `GET /__ocr/files` never announces a
+link — symlink entries are skipped — and a valid download of a regular file
+in any allowed root works exactly as before.
+
 ## Scheduled routines — per-routine execution history (P2-316)
 
 `GET /__ocr/routines` keeps returning the scheduled routines and now each

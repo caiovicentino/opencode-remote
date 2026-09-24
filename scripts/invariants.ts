@@ -44,6 +44,19 @@ try {
   const daemon = readFileSync(join(ROOT, "apps/daemon/src/index.ts"), "utf8");
   check("daemon: SAFE_PAYLOAD 413 guard present", /SAFE_PAYLOAD/.test(daemon));
   check("daemon: path traversal allowlist present", /uploads|Desktop|Downloads|Documents/.test(daemon));
+  // RT-466 (invariant #6): string-only prefix containment passes a symlink
+  // planted inside an allowed root. The download admission must resolve the
+  // real path (realpathSync) and open it with O_NOFOLLOW, re-checked at
+  // chunk time — downloadpath.ts owns the verdict, index.ts must wire it in.
+  // Scan-target change only — checks below are additive, none weakened.
+  const downloadPathSrc = readFileSync(join(ROOT, "apps/daemon/src/downloadpath.ts"), "utf8");
+  check(
+    "daemon: download admission resolves real paths (realpathSync + O_NOFOLLOW)",
+    /realpathSync/.test(downloadPathSrc) &&
+      /O_NOFOLLOW/.test(downloadPathSrc) &&
+      /realpathSync\(real\)/.test(downloadPathSrc) &&
+      /from "\.\/downloadpath\.js"/.test(daemon),
+  );
 
   // web: no raw HTML injection
   const webFiles = (() => {
