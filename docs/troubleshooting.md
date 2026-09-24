@@ -709,6 +709,43 @@ button → Add to Home Screen).
 - Android is deliberately out of scope: Chrome has its own install prompt and
   a different storage-eviction policy (future task if it ever earns one).
 
+## The browser refused to keep the app's storage (P3-463)
+
+The same eviction story, one layer earlier: at the moment a fresh pairing is
+saved, the PWA asks the browser **once** to persist its storage
+(`navigator.storage.persist`). The ask is best-effort and silent — a missing
+API, a rejected promise or a malformed answer all degrade to `unknown` and
+nothing breaks. The verdict lives in a one-word localStorage flag
+(`ocr.storagepersist`, no key material).
+
+- **`granted`**: nothing renders — the browser committed to keeping the data.
+- **`denied`**: Settings gains one discreet line in the About card saying the
+  browser may clear the pairing when storage runs low and recommending the
+  Home Screen install. This is the only surface that mentions it: no banner
+  in the chat, no other screen.
+- **`unknown`**: renders nothing (the behavior is exactly the pre-P3-463 one).
+- For testing, open the address with `?storagepersist=denied` — a documented
+  test-only hatch that forces the denied verdict for screenshots and support
+  reproduction; nothing is persisted by it, and only the degraded state can
+  be forced.
+
+## The pairing screen says the browser cleared the site's data (P3-463)
+
+When the pairing disappears at boot and a minimal marker proves this storage
+once held one (a one-word localStorage flag stamped every time a pairing row
+is written, carrying no room, no key, no token), the pairing screen shows a
+calm line explaining that the browser cleared the site's data, including the
+previous pairing — instead of pretending it is a first use. Deliberate
+removals clear the marker with the pairing: the "pair again" wipe (it lives
+in the dotted `ocr.` namespace the wipe removes) and forgetting the last
+machine both reset it, so the line only ever names the browser, never the
+user. A full wipe of all site data erases the marker too — in that case the
+app falls back to the plain first-use screen, exactly as before.
+
+- For testing, open the address with `?pairwiped=1` — a documented test-only
+  hatch that forces the line for screenshots and support reproduction; the
+  forced value can only add the line, never suppress the real marker logic.
+
 ## The phone opens the app with no network (P2-239)
 
 Since P2-239 the service worker precaches the root document and every

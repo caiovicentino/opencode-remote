@@ -159,6 +159,43 @@ const STATE_KEY = "ocr.pairing.v2";
 const PAIRINGS_KEY = "ocr.pairings.v2";
 const ACTIVE_KEY = "ocr.active.room";
 
+/**
+ * P3-463: the "pairing existed before" marker. A browser that evicts this
+ * site's storage (disk pressure, iOS ITP) takes the pairing rows with it and
+ * the app would re-open on the pairing screen pretending it is a first use.
+ * The marker — stamped by upsertPairing() (every pairing write), wiped with
+ * the deliberate wipe below (it lives in the dotted `ocr.` namespace, so
+ * identityStorageKeys removes it) and cleared when the user forgets the last
+ * machine (App owns that call) — lets the pairing screen say what actually
+ * happened instead. MINIMAL by contract: one word, never a room, a key or a
+ * token.
+ */
+export const PAIRED_BEFORE_KEY = "ocr.pairing.existed";
+
+export function markPairingExisted(): void {
+  try {
+    localStorage.setItem(PAIRED_BEFORE_KEY, "1");
+  } catch {
+    // storage unavailable (private mode quota) — the marker is best effort
+  }
+}
+
+export function clearPairingExisted(): void {
+  try {
+    localStorage.removeItem(PAIRED_BEFORE_KEY);
+  } catch {
+    // storage unavailable — nothing to clear
+  }
+}
+
+export function hadPairingExisted(): boolean {
+  try {
+    return localStorage.getItem(PAIRED_BEFORE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function loadPairings(): Pairing[] {
   try {
     const list = JSON.parse(localStorage.getItem(PAIRINGS_KEY) ?? "[]") as Pairing[];
@@ -171,6 +208,10 @@ export function upsertPairing(p: Pairing): Pairing[] {
   const list = loadPairings().filter((x) => x.room !== p.room);
   list.push(p);
   localStorage.setItem(PAIRINGS_KEY, JSON.stringify(list));
+  // P3-463: every write of a pairing row proves this storage held a pairing
+  // — stamp the marker so a later eviction (never a deliberate wipe) can be
+  // recognized at boot.
+  markPairingExisted();
   return list;
 }
 

@@ -8,6 +8,7 @@ import { IconArrowLeft, IconChevronDown, IconX } from "./icons";
 import { getTtsLang, setTtsLang as persistTtsLang, type TtsLang } from "../lib/voice";
 import { readinessRows, summarize, MACHINE_SEVERITY_DOT, BROWSE_STATES, DOC_STATES, VOICE_STATES, TTS_STATES } from "../lib/machinestate";
 import type { UpstreamNotice } from "../lib/degraded";
+import type { StoragePersistState } from "../lib/storagepersist";
 import { applyTheme, FONT_KEY, readTheme, THEME_KEY, type ThemeChoice } from "../lib/theme";
 import { scrollBehavior } from "../lib/motion";
 
@@ -125,6 +126,11 @@ interface Props {
    * "unavailable"); the phone and the pure browser never pass it, so the
    * button never renders there. */
   redialRelay?: () => Promise<string>;
+  /** P3-463: this device's browser-storage persistence verdict (App holds
+   * it). Only `denied` renders anything — a discreet line in the About card
+   * warning that the browser may clear the pairing; `granted`, `unknown`
+   * and absent all render nothing. */
+  storagePersist?: StoragePersistState | null;
 }
 
 interface Device {
@@ -254,7 +260,7 @@ function forcedAgentFound(): boolean | undefined {
   return localStorage.getItem("ocr.agentStateOverride") === "missing" ? false : undefined;
 }
 
-export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream, relayFocusTick, onRelayFocusConsumed, relayLink, redialRelay }: Props) {
+export default function SettingsView({ request, onBack, transport, getDiagnostics, saveDiagnostics, onPairRemote, getRelaySetting, setRelayUrl, testRelay, getWebAppUrl, setWebAppUrl, getProxySetting, setProxyChoice, upstream, relayFocusTick, onRelayFocusConsumed, relayLink, redialRelay, storagePersist }: Props) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [name, setName] = useState("");
   const [notify, setNotify] = useState({ permission: true, idle: true });
@@ -712,6 +718,15 @@ export default function SettingsView({ request, onBack, transport, getDiagnostic
           <p className="muted" style={{ margin: "2px 0 0" }}>
             {transport === "local" ? t("connLocal") : t("connRelay")}
           </p>
+          {/* P3-463: the browser may evict this site's data (disk pressure,
+              iOS ITP) and the pairing dies with it. The ask already ran once
+              after the first pairing; only a DENIED verdict earns a line
+              here — granted/unknown stay silent, never a banner in chat. */}
+          {storagePersist === "denied" && (
+            <p className="muted storage-persist-hint" style={{ margin: "8px 0 0" }}>
+              {t("storagePersistHint")}
+            </p>
+          )}
         </div>
 
         <div className="card machine-state">

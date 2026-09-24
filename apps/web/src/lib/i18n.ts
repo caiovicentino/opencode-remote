@@ -767,6 +767,13 @@ export const dict = {
     installHintBody:
       "Add the app to your Home Screen to keep this pairing saved — in the browser, tap the Share button and choose Add to Home Screen.",
     installHintDismiss: "Dismiss",
+    // P3-463: browser-storage persistence — the denied verdict's discreet
+    // line in Settings' About card (never a banner), and the calm pairing
+    // screen line for a recognized eviction. Mirrored in both locales.
+    storagePersistHint:
+      "This browser may clear the pairing when storage runs low — install the app to your Home Screen to keep it saved.",
+    pairStorageWiped:
+      "The browser cleared this site's data, including the previous pairing — nothing you did. Pair again to reconnect.",
     // P2-266: update-ready strip — one calm line + explicit action; the
     // button is the only path that swaps the waiting worker in.
     swUpdateReady: "A new version of the app is ready.",
@@ -1664,6 +1671,13 @@ export const dict = {
     // EXATAMENTE a frase do módulo puro (afirmado por scripts/unit.test.ts).
     installHintBody: INSTALL_HINT_MESSAGE,
     installHintDismiss: "Dispensar",
+    // P3-463: persistência do armazenamento do navegador — a linha discreta
+    // do veredito denied no card Sobre das Configurações (nunca um banner),
+    // e a linha calma da tela de pareamento para uma evicção reconhecida.
+    storagePersistHint:
+      "Este navegador pode apagar o pareamento quando faltar espaço no aparelho — instale o app na Tela de Início para mantê-lo salvo.",
+    pairStorageWiped:
+      "O navegador apagou os dados deste site, incluindo o pareamento anterior — não foi nada que você tenha feito. Pareie de novo para religar a máquina.",
     // P2-266: faixa de versão nova — uma linha calma + ação explícita; o
     // botão é o único caminho que troca o worker esperado.
     swUpdateReady: "Uma versão nova do app está pronta.",
