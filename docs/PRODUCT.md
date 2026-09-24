@@ -255,7 +255,9 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   e os pontos de status continuam visíveis — todo `:focus-visible` da folha
   recebe outline sólido na cor de sistema Highlight (incluindo os controles
   cujo foco hoje é só borda, que o modo forçado achata para o mesmo
-  CanvasText do repouso) e os pontos de status que só tinham cor de fundo
+  CanvasText do repouso, e os dois inputs de pergunta — cam do shell e
+  screen-peek — que prendem `outline: none` com só essa borda escalada) e os
+  pontos de status que só tinham cor de fundo
   (indicador de conexão, pulso do cartão degradado e do auto-conectar, mic
   gravando, passos do wizard, dots de filtro/não lida/menu/audit, typing)
   ganham uma borda CanvasText de 1px que os lê como anel em vez de quadrado

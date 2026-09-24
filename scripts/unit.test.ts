@@ -41974,19 +41974,52 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
     "P3-464: the sheet still declares focus-visible affordances (parser sanity, global ring present)",
     focusSelectors.size > 0 && focusSelectors.has(":focus-visible"),
   );
+  // Round 2 review finding: a second lost-cue class lives outside
+  // :focus-visible — :focus rules that pin outline:none and escalate only a
+  // border-color (the cam-question and screen-peek-ask ask inputs). Forced
+  // colors flatten the focused border to the resting CanvasText, so the cue
+  // vanishes exactly like the box-shadow class; the block must give them the
+  // same solid outline. The derivation is narrow on purpose: a :focus rule
+  // with outline:none but no border cue (the modal scrim, tabIndex=-1,
+  // programmatic focus host) suppresses the ring by design and is NOT this
+  // class. Any future :focus rule in the shape (outline:none + border) grows
+  // the set and fails the coverage check below until the block covers it —
+  // fail-closed, same contract as the box-shadow superset.
+  const outlineNoneFocus = new Set<string>();
+  for (const rule of parseRules(outside)) {
+    const body = rule.body.replace(/\s+/g, " ");
+    if (!/\boutline:\s*none\b/.test(body) || !/\bborder(?:-color)?:/.test(body)) continue;
+    for (const part of rule.sel.split(",")) {
+      const s = part.trim();
+      if (s.includes(":focus") && !s.includes(":focus-visible")) outlineNoneFocus.add(s);
+    }
+  }
+  check(
+    "P3-464: the outline:none focus class is exactly the two border-escalation ask inputs (parser sanity)",
+    outlineNoneFocus.size === 2 &&
+      outlineNoneFocus.has(".cam-question:focus") &&
+      outlineNoneFocus.has(".screen-peek-ask input:focus"),
+  );
   const blockRules = parseRules(blockInner);
   const covered = new Set<string>();
+  const coveredOutlineNone = new Set<string>();
   for (const rule of blockRules) {
     const solid = /outline:[^;]*\bsolid\b[^;]*\bHighlight\b/.test(rule.body.replace(/\s+/g, " "));
     for (const part of rule.sel.split(",")) {
       const s = part.trim();
       if (s.includes(":focus-visible") && solid) covered.add(s);
+      if (outlineNoneFocus.has(s) && solid) coveredOutlineNone.add(s);
     }
   }
   const missingFocus = [...focusSelectors].filter((s) => !covered.has(s));
   check(
     "P3-464: every :focus-visible affordance carries a solid system-Highlight outline inside the block (box-shadow subset included)",
     missingFocus.length === 0,
+  );
+  const missingOutlineNone = [...outlineNoneFocus].filter((s) => !coveredOutlineNone.has(s));
+  check(
+    "P3-464: every outline:none border-escalation :focus rule carries a solid system-Highlight outline inside the block (ask inputs included)",
+    missingOutlineNone.length === 0,
   );
   check(
     "P3-464: the block never invents focus-visible selectors absent from the sheet",
