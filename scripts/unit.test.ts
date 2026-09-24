@@ -205,6 +205,7 @@ import { linkVerdict, sanitizeRedialVerdict, sanitizeRelayProtocolState, type Re
 import { TRAY_TIP_MAX_CHARS, trayStatus } from "../apps/desktop/src/traystatus";
 import { installMessage, installVerdict } from "../apps/desktop/src/installloc";
 import { loginItemMessage, loginItemPlan } from "../apps/desktop/src/loginitem";
+import { LOGIN_LAUNCH_ARG, loginLaunchPlan } from "../apps/desktop/src/loginlaunch";
 import { uninstallCleanupPlan, UNINSTALL_REMOVABLE_NAMES } from "../apps/desktop/src/uninstallplan";
 import { readStartupDecided, startupSettingFile, writeStartupDecided } from "../apps/desktop/src/startupstore";
 import {
@@ -28445,6 +28446,186 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-218: the diagnostics bundle gains exactly one login-item line (state + reason only)",
     (diagSrc.match(/login item:/g) ?? []).length === 1 && diagSrc.includes("d.startup?.state") && diagSrc.includes("d.startup?.reason"),
+  );
+}
+
+// --- P2-348: login-launch verdict (loginlaunch.ts) + wiring -------------------
+
+{
+  const plan = (
+    platform: string,
+    packaged: boolean,
+    wasOpenedAtLogin: boolean,
+    argv: readonly string[],
+    coldDeepLink: boolean,
+  ) => loginLaunchPlan({ platform, packaged, wasOpenedAtLogin, argv, coldDeepLink });
+
+  // 1. a cold deep link always wins — even a login boot shows the window
+  check(
+    "P2-348: mac login boot + cold deep link → show (the invite always wins)",
+    plan("darwin", true, true, [], true).action === "show",
+  );
+  check(
+    "P2-348: windows login boot + cold deep link → show (the invite always wins)",
+    plan("win32", true, false, [LOGIN_LAUNCH_ARG], true).action === "show",
+  );
+  // 2. a dev build always shows — the developer launched it themselves
+  check(
+    "P2-348: dev build → show even when the OS reports a login launch",
+    plan("darwin", false, true, [], false).action === "show",
+  );
+  check(
+    "P2-348: dev build carrying the login argument → show",
+    plan("win32", false, false, [LOGIN_LAUNCH_ARG], false).action === "show",
+  );
+  // 3. mac: the OS report decides — opened at login stays in the tray
+  check("P2-348: mac opened at login → tray (window ready and hidden)", plan("darwin", true, true, [], false).action === "tray");
+  check("P2-348: mac opened by the user → show", plan("darwin", true, false, [], false).action === "show");
+  // 4. windows: the dedicated argument decides
+  check("P2-348: windows with the dedicated login argument → tray", plan("win32", true, false, [LOGIN_LAUNCH_ARG], false).action === "tray");
+  check("P2-348: windows without the argument (user launch) → show", plan("win32", true, false, [], false).action === "show");
+  check(
+    "P2-348: a similar-looking argument is NOT the login argument (exact entry match)",
+    plan("win32", true, false, ["--ocr-login-launcher", "--other-flag"], false).action === "show",
+  );
+  // 5. platform without login-item support → no auto-launch exists there
+  check("P2-348: platform without login-item support → show", plan("linux", true, false, [], false).action === "show");
+
+  // every generated reason: non-empty, no file path, no URL scheme, no secret
+  const verdicts = [
+    plan("darwin", true, true, [], true),
+    plan("win32", true, false, [LOGIN_LAUNCH_ARG], true),
+    plan("darwin", false, true, [], false),
+    plan("win32", false, false, [LOGIN_LAUNCH_ARG], false),
+    plan("darwin", true, true, [], false),
+    plan("darwin", true, false, [], false),
+    plan("win32", true, false, [LOGIN_LAUNCH_ARG], false),
+    plan("win32", true, false, [], false),
+    plan("linux", true, false, [], false),
+  ];
+  const clean = (s: string): boolean =>
+    s.length > 0 &&
+    !s.includes("/") &&
+    !s.includes("\\") &&
+    !s.includes("http:") &&
+    !s.includes("https:") &&
+    !s.includes("file:") &&
+    !s.includes("Users") &&
+    !s.includes("~");
+  check(
+    "P2-348: every reason is non-empty, path-free and scheme-free",
+    verdicts.every((v) => clean(v.reason)),
+  );
+  check(
+    "P2-348: the closed set is exactly show/tray",
+    verdicts.every((v) => v.action === "show" || v.action === "tray"),
+  );
+
+  // module purity: same bar as loginitem.ts — no imports at all, no electron,
+  // no node:fs, no fetch, no timers (plain Node exercises it in unit tests).
+  const launchSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "loginlaunch.ts"), "utf8");
+  check(
+    "P2-348: loginlaunch.ts stays pure — no imports, no electron, no fs, no fetch, no timers",
+    !/^import\b/m.test(launchSrc) &&
+      !launchSrc.includes("require(") &&
+      !launchSrc.includes("electron") &&
+      !launchSrc.includes("node:fs") &&
+      !launchSrc.includes("fetch(") &&
+      !launchSrc.includes("setInterval") &&
+      !launchSrc.includes("setTimeout"),
+  );
+  check(
+    "P2-348: the argument literal is declared exactly once — in the canonical pure module",
+    (launchSrc.match(/"--ocr-login-launch"/g) ?? []).length === 1,
+  );
+  check(
+    "P2-348: the plan never reports tray for a user-style argv (deep link, dev, user launch, no-arg, unknown args)",
+    plan("darwin", true, false, [], false).action === "show" &&
+      plan("darwin", false, true, [], false).action === "show" &&
+      plan("win32", true, false, [], false).action === "show" &&
+      plan("win32", true, false, ["--ocr-login-launcher", "--other-flag"], false).action === "show",
+  );
+
+  // --- real-source assertions over the REAL main.ts --------------------------
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-348: the login-launch plan is consulted exactly once in the real main.ts",
+    (mainSrc.match(/loginLaunchPlan\(/g) ?? []).length === 1,
+  );
+  const verdictAt = mainSrc.indexOf("const launchVerdict = loginLaunchPlan({");
+  const createBootAt = mainSrc.indexOf("createWindow({ bootHidden:");
+  check(
+    "P2-348: the verdict is computed in onReady BEFORE the first window creation",
+    verdictAt > -1 && createBootAt > verdictAt,
+  );
+  check(
+    "P2-348: the verdict is logged once as the documented login launch line",
+    (mainSrc.match(/\[desktop\] login launch:/g) ?? []).length === 1,
+  );
+  check(
+    "P2-348: the boot window consults the verdict (bootHidden) — a tray boot stays hidden",
+    mainSrc.includes("createWindow({ bootHidden: launchVerdict.action === \"tray\" })"),
+  );
+  const readyAt = mainSrc.indexOf('win.once("ready-to-show"');
+  const readyBlock = readyAt >= 0 ? mainSrc.slice(readyAt, readyAt + 900) : "";
+  const hiddenAt = readyBlock.indexOf("if (opts.bootHidden) return;");
+  const maximizeAt = readyBlock.indexOf("win.maximize()");
+  check(
+    "P2-348: the ready-to-show handler skips maximize+show for the boot-hidden window (maximize shows too)",
+    hiddenAt > -1 && maximizeAt > hiddenAt,
+  );
+  // later creations are user actions and must keep showing: activate and
+  // showMainWindow call createWindow() WITHOUT the bootHidden flag.
+  check(
+    "P2-348: later re-creations show — activate and showMainWindow call createWindow() bare",
+    mainSrc.includes("length === 0) createWindow();") &&
+      mainSrc.includes("if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();"),
+  );
+  // r2 (review round 1): the deferred maximize restore — the boot's pending
+  // owner choice is carried out of createWindow and applied by the first
+  // user-driven show, never dropped (a quiet boot must not turn a maximized
+  // owner preference into a windowed reopen).
+  const pendingSetAt = mainSrc.indexOf("bootPendingMaximize = !!opts.bootHidden && maximized === true;");
+  const showFnAt = mainSrc.indexOf("function showMainWindow(): void {");
+  const showFnBlock = showFnAt >= 0 ? mainSrc.slice(showFnAt, showFnAt + 1200) : "";
+  const pendingApplyAt = showFnBlock.indexOf("bootPendingMaximize = false;");
+  const showCallAt = showFnBlock.indexOf("mainWindow.show();");
+  check(
+    "P2-348 r2: the pending maximize is set only for the boot-hidden creation and applied by the first showMainWindow, before show",
+    pendingSetAt > -1 && showFnAt > -1 && pendingApplyAt > -1 && showCallAt > pendingApplyAt,
+  );
+  const closeSaveAt = mainSrc.indexOf("saveWindowBounds(stateFile, {");
+  const closeSaveBlock = closeSaveAt >= 0 ? mainSrc.slice(closeSaveAt, mainSrc.indexOf("});", closeSaveAt)) : "";
+  check(
+    "P2-348 r2: a never-shown boot window preserves the owner's stored maximized choice instead of overwriting it with false",
+    closeSaveBlock.includes("bootPendingMaximize ? true : win.isMaximized()"),
+  );
+  // the Windows login argument rides the shared helper — the single call point
+  const setItemAt = mainSrc.indexOf("function setLoginItemEnabled");
+  const helperBlock = setItemAt >= 0 ? mainSrc.slice(setItemAt, setItemAt + 700) : "";
+  check(
+    "P2-348: the dedicated argument is registered inside setLoginItemEnabled, gated to win32 enable",
+    helperBlock.includes("LOGIN_LAUNCH_ARG") &&
+      helperBlock.includes('process.platform === "win32" && enabled'),
+  );
+  check(
+    "P2-348: registration and detection share the one constant — import + single use in main.ts, never a re-typed literal",
+    (mainSrc.match(/LOGIN_LAUNCH_ARG/g) ?? []).length === 2 &&
+      mainSrc.includes('from "./loginlaunch"') &&
+      !mainSrc.includes('"--ocr-login-launch"'),
+  );
+  check(
+    "P2-348: app.setLoginItemSettings has exactly ONE caller — the shared helper (unchanged)",
+    (mainSrc.match(/app\.setLoginItemSettings\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-348: no new periodic timer was introduced",
+    (mainSrc.match(/setInterval\(/g) ?? []).length === 2,
+  );
+  check(
+    "P2-348: the existing show paths survive — tray click, second-instance and activate show the window",
+    mainSrc.includes('tray.on("click", showMainWindow)') &&
+      /second-instance", \(_event, argv\) => \{\n\s+showMainWindow\(\);/.test(mainSrc),
   );
 }
 

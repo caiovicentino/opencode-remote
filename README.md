@@ -1307,6 +1307,24 @@ touched, other platforms keep the previous behavior, and
 `OCR_DESKTOP_FORCE_LOGIN_ITEM=1` on the desktop shell forces the announce for
 deterministic screenshots (test-only hatch, machine untouched).
 
+**Quiet login boot (P2-348)**: an automatic **Start at login** boot no longer
+throws the main window in the owner's face. The shell tells an automatic
+launch apart from a user launch — on macOS the OS itself reports the login
+launch, on Windows the app registers its login entry with a dedicated
+argument it recognizes on the next boot — and an automatic boot keeps the
+window ready and hidden: the tray icon appears, the daemon keeps this machine
+reachable, and one calm line in the boot log records the decision
+(`[desktop] login launch: …`). Opening the app the normal way, clicking the
+tray icon, a second launch, the global hotkey or a fresh pair invite all show
+the window — exactly as it was left (maximized included, the owner's quit-time
+preference is restored on that first show); dev builds and platforms without
+login-item support always show. On Windows, installs that already had
+**Start at login** on before this update keep the old window-up-on-boot
+behavior until the toggle is applied again (turn it off and back on once in
+the tray menu); on macOS the OS reports the login launch itself, so existing
+installs go quiet on the very first boot after the update with nothing to
+re-apply.
+
 **Windows uninstall (P2-249)**: uninstalling the app removes the **Start at
 login** autostart entry (no more boots trying to open a program that no
 longer exists) and the app's own data folder under your user profile — state

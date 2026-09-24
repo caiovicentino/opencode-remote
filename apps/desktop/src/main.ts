@@ -35,6 +35,7 @@ import { clockSkewMessage, skewVerdict, type ClockSkewVerdict } from "./clockske
 import { linkVerdict, sanitizeRedialVerdict, type RelayLinkVerdict, type RelayRedialOutcome } from "./relaylink";
 import { installMessage, installVerdict, type InstallLocationVerdict } from "./installloc";
 import { loginItemMessage, loginItemPlan, type LoginItemVerdict } from "./loginitem";
+import { LOGIN_LAUNCH_ARG, loginLaunchPlan } from "./loginlaunch";
 import { readStartupDecided, startupSettingFile, writeStartupDecided } from "./startupstore";
 import {
   QUIT_BUTTON_INDEX,
@@ -251,6 +252,17 @@ let bootStartup: LoginItemVerdict | null = null;
 // verdict keeps the payload stable for the whole session. null only before
 // the probe ran.
 let bootStorage: StorageVerdict | null = null;
+
+// P2-348: a quiet login boot defers the P2-172 maximize restore instead of
+// dropping it — the ready-to-show handler must not maximize() a hidden window
+// (maximize() also SHOWS it), so the pending owner choice is carried here and
+// applied by the first user-driven showMainWindow(). While the flag is set the
+// boot window was never shown, and the close handler preserves the OWNER's
+// stored maximized choice rather than overwriting it with the never-shown
+// window's false — a boot the owner never initiated must not rewrite their
+// persisted window state. Every createWindow() recomputes the flag (a later
+// re-creation is a user action; the ready-to-show path restores then).
+let bootPendingMaximize = false;
 
 // P2-221: latest quit-confirmation verdict of the explicit quit path, for the
 // diagnostics bundle. null until the user asks to quit this session — the
@@ -1574,9 +1586,18 @@ async function offerUpdateReminderDialog(version: string): Promise<void> {
 // back on. Best-effort: a failed apply/write is log-only and never takes the
 // shell down (the decision file may still record the intent, which is safe —
 // the OS setting itself is re-read from app.getLoginItemSettings each boot).
+// P2-348: on Windows the registration carries the dedicated login-launch
+// argument (the constant imported from loginlaunch.ts) next to openAtLogin,
+// so a login boot is distinguishable from a user launch (loginlaunch.ts
+// consults the argv); macOS keeps no argument — the OS itself reports the
+// login launch via wasOpenedAtLogin. The argument only matters while the
+// item is ON; a disabled item is removed from the registry either way.
 function setLoginItemEnabled(enabled: boolean): void {
   try {
-    app.setLoginItemSettings({ openAtLogin: enabled });
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      ...(process.platform === "win32" && enabled ? { args: [LOGIN_LAUNCH_ARG] } : {}),
+    });
   } catch (err) {
     logError("[desktop] login item apply failed:", err);
   }
@@ -2372,7 +2393,27 @@ async function onReady(): Promise<void> {
     }
   });
 
-  createWindow();
+  // P2-348: the login-launch verdict is computed EXACTLY ONCE, right before
+  // the first window creation — the cold-deep-link flag cannot race the
+  // renderer's late app:deepLink pull (that pull only exists after this
+  // window loads, and only consumes lastDeepLink afterwards). With "tray"
+  // the boot leaves the window ready and HIDDEN while the sidecar, the tray
+  // and every other boot step start normally — the owner's screen is not
+  // stolen by a restart they did not trigger — and every show path (tray
+  // click, second launch, activate, hotkey) keeps working through the
+  // existing showMainWindow(). wasOpenedAtLogin is the OS's own report on
+  // macOS (undefined elsewhere); on Windows the argv carries the dedicated
+  // login-launch argument when this very registration launched the shell.
+  const launchVerdict = loginLaunchPlan({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    wasOpenedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin === true,
+    argv: process.argv,
+    coldDeepLink: lastDeepLink !== null,
+  });
+  log(`[desktop] login launch: ${launchVerdict.action} (${launchVerdict.reason})`);
+
+  createWindow({ bootHidden: launchVerdict.action === "tray" });
   startPairingWatcher();
   // P2-209: react to the machine's return from sleep / session unlock —
   // registered after the pairing watcher so the probe path already exists.
@@ -3388,7 +3429,13 @@ function applyOverlayBadge(plan: BadgePlan): void {
   }
 }
 
-function createWindow(): BrowserWindow {
+// P2-348: bootHidden is true only for the FIRST window creation of a boot
+// whose login-launch verdict was "tray" — the ready-to-show handler then
+// leaves the window ready and hidden (maximize() is skipped with it: Electron's
+// maximize() also SHOWS a hidden window). Every later creation — tray click,
+// activate, showMainWindow after a destroyed window — is a user action and
+// shows, so the parameter never applies there.
+function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   // P3-008: restore the last window bounds. loadWindowBounds degrades to the
   // 1280x820 default on a missing/corrupted file, and sanitizeWindowBounds
   // drops bounds that don't intersect any currently attached display (window
@@ -3406,6 +3453,12 @@ function createWindow(): BrowserWindow {
   // P2-172: bounds feed the constructor; the maximized flag is applied in the
   // ready-to-show handler below.
   const { maximized, ...bounds } = restored;
+  // P2-348: a login boot (tray verdict) DEFERS the maximize restore — the
+  // ready-to-show handler skips it (maximize() would also SHOW the hidden
+  // window), and showMainWindow carries the pending owner choice on the first
+  // user-driven show. A non-boot creation is always a user action and clears
+  // any stale pending here; its own restore runs in ready-to-show as before.
+  bootPendingMaximize = !!opts.bootHidden && maximized === true;
   const win = new BrowserWindow({
     ...bounds,
     minWidth: WINDOW_MIN.width,
@@ -3431,6 +3484,9 @@ function createWindow(): BrowserWindow {
     // P1-081: under the hermetic e2e marker the window stays hidden — the
     // gate interacts via webContents and the operator's screen is left alone.
     if (HERMETIC_E2E) return;
+    // P2-348: a login boot (tray verdict) keeps the window ready and hidden —
+    // every later user action shows it through the existing paths.
+    if (opts.bootHidden) return;
     // P2-172: reopen maximized when the user quit maximized. maximize() must
     // run here, right before show(), and never in the hermetic path: Electron's
     // maximize() also SHOWS a hidden window (electron.d.ts), so calling it on
@@ -3475,7 +3531,12 @@ function createWindow(): BrowserWindow {
     // harness session writes no zoom field at all (JSON drops undefined).
     saveWindowBounds(stateFile, {
       ...win.getNormalBounds(),
-      maximized: win.isMaximized(),
+      // P2-348: while the quiet boot's window was never shown, the owner's
+      // stored maximized choice stays untouched — a never-shown window
+      // reports isMaximized()=false and must not rewrite the flag the
+      // window-state contract defines as the owner's quit choice. Once shown,
+      // bootPendingMaximize is spent and the live state rules again.
+      maximized: bootPendingMaximize ? true : win.isMaximized(),
       zoom: zoomPersistable ? zoomLevel : undefined,
     });
     if (!quitting) {
@@ -3680,6 +3741,16 @@ function showMainWindow(): void {
   if (HERMETIC_E2E) return;
   if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createWindow();
   if (mainWindow.isMinimized()) mainWindow.restore();
+  // P2-348: the first user-driven show after a quiet login boot carries the
+  // deferred maximize restore (the boot's ready-to-show skipped it —
+  // maximize() would also have SHOWN the hidden window). The flag is spent on
+  // application, so every later show follows the live window state; the
+  // visibility guard keeps an already-visible window from being re-maximized
+  // out of the blue if a pending flag ever outlived its window.
+  if (bootPendingMaximize && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+    bootPendingMaximize = false;
+    mainWindow.maximize();
+  }
   mainWindow.show();
   mainWindow.focus();
 }
