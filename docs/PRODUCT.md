@@ -251,6 +251,16 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   troca de modelo. O rascunho do composer coexiste com o sheet: pergunta
   digitada nunca o apaga; enviar sem digitar faz dele a própria mensagem,
   com aviso visível no sheet
+- Contraste alto do Windows (P3-464): com forced-colors ativo o anel de foco
+  e os pontos de status continuam visíveis — todo `:focus-visible` da folha
+  recebe outline sólido na cor de sistema Highlight (incluindo os controles
+  cujo foco hoje é só borda, que o modo forçado achata para o mesmo
+  CanvasText do repouso) e os pontos de status que só tinham cor de fundo
+  (indicador de conexão, pulso do cartão degradado e do auto-conectar, mic
+  gravando, passos do wizard, dots de filtro/não lida/menu/audit, typing)
+  ganham uma borda CanvasText de 1px que os lê como anel em vez de quadrado
+  invisível; um único bloco de media no index.css, sem `forced-color-adjust`
+  em contêiner grande — no modo normal nada muda, byte a byte
 
 ## Regra de ouro
 Cada task de UI fecha com screenshot desktop-flow provando o critério visual.

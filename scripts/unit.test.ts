@@ -41897,6 +41897,166 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check("P2-346 view: the phrase wears its own class with the warn tone (state vs action)", cssSrc.includes(".degraded-storage") && /degraded-storage \{[^}]*color: var\(--warn\)/.test(cssSrc));
 }
 
+// --- P3-464: forced colors (Windows high contrast) keeps focus + dots visible --
+// With forced-colors active the engine discards box-shadow and repaints theme
+// tokens with the system palette, so focus cues that only lived in a
+// box-shadow and status dots that only lived in a background vanish. The
+// acceptance contract asks for one forced-colors block covering every
+// focus-visible selector (the box-shadow subset is currently empty — the
+// superset is the fail-closed pin) and a CanvasText border on every listed
+// background-only status dot.
+{
+  const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const MEDIA = "@media (forced-colors: active)";
+  type Parsed = { sel: string; body: string };
+  // Brace-aware walker: returns every rule (top level and inside @media,
+  // @supports…) with its selector intact — @keyframes frames are skipped.
+  const parseRules = (src: string): Parsed[] => {
+    const out: Parsed[] = [];
+    let depth = 0;
+    let start = 0;
+    let bodyStart = -1;
+    let header = "";
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === "{") {
+        if (depth === 0) {
+          header = src.slice(start, i).trim();
+          // a selector never contains ";", so everything before the last one
+          // is brace-free at-rule boilerplate (@import…) gluing onto the rule
+          if (header.includes(";")) header = header.slice(header.lastIndexOf(";") + 1).trim();
+          bodyStart = i + 1;
+        }
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          const body = src.slice(bodyStart, i);
+          if (header && !header.startsWith("@keyframes")) out.push({ sel: header, body });
+          if (header.startsWith("@media") || header.startsWith("@supports")) out.push(...parseRules(body));
+          start = i + 1;
+        }
+      }
+    }
+    return out;
+  };
+  check("P3-464: index.css declares the forced-colors media block exactly once", css.split(MEDIA).length - 1 === 1);
+  const blockStart = css.indexOf(MEDIA);
+  let blockEnd = -1;
+  if (blockStart >= 0) {
+    const open = css.indexOf("{", blockStart);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          blockEnd = i + 1;
+          break;
+        }
+      }
+    }
+  }
+  const blockSpan = blockStart >= 0 && blockEnd > blockStart ? css.slice(blockStart, blockEnd) : "";
+  const blockInner = blockSpan ? blockSpan.slice(blockSpan.indexOf("{") + 1, blockSpan.length - 1) : "";
+  const outside = blockStart >= 0 && blockEnd > blockStart ? css.slice(0, blockStart) + css.slice(blockEnd) : css;
+  const focusSelectors = new Set<string>();
+  for (const rule of parseRules(outside)) {
+    for (const part of rule.sel.split(",")) {
+      const s = part.trim();
+      if (s.includes(":focus-visible")) focusSelectors.add(s);
+    }
+  }
+  check(
+    "P3-464: the sheet still declares focus-visible affordances (parser sanity, global ring present)",
+    focusSelectors.size > 0 && focusSelectors.has(":focus-visible"),
+  );
+  const blockRules = parseRules(blockInner);
+  const covered = new Set<string>();
+  for (const rule of blockRules) {
+    const solid = /outline:[^;]*\bsolid\b[^;]*\bHighlight\b/.test(rule.body.replace(/\s+/g, " "));
+    for (const part of rule.sel.split(",")) {
+      const s = part.trim();
+      if (s.includes(":focus-visible") && solid) covered.add(s);
+    }
+  }
+  const missingFocus = [...focusSelectors].filter((s) => !covered.has(s));
+  check(
+    "P3-464: every :focus-visible affordance carries a solid system-Highlight outline inside the block (box-shadow subset included)",
+    missingFocus.length === 0,
+  );
+  check(
+    "P3-464: the block never invents focus-visible selectors absent from the sheet",
+    [...covered].every((s) => focusSelectors.has(s)),
+  );
+  // Status dots that today paint only a background: the connection indicator,
+  // the degraded card's pulse (+ its local auto-connect twin), the recording
+  // mic, the wizard's progress dots, the filter/unread/menu/event dots and
+  // the typing indicator. Each must gain a CanvasText border inside the block
+  // while its base rules stay border-free — the ring exists only in forced
+  // colors, so normal mode renders byte for byte as before.
+  const dotSelectors = [
+    ".status-dot",
+    ".degraded-dot",
+    ".pair-auto-dot",
+    ".composer-mic-rec",
+    ".welcome-step-dot",
+    ".sess-filter-dot",
+    ".mission-ev-dot",
+    ".shell-menu-dot",
+    ".convo-row-dot",
+    ".drawer-dot",
+    ".typing span",
+  ];
+  const outsideSels = new Set<string>();
+  for (const rule of parseRules(outside)) {
+    for (const part of rule.sel.split(",")) outsideSels.add(part.trim());
+  }
+  const missingDots = dotSelectors.filter((sel) => !outsideSels.has(sel));
+  check(
+    "P3-464: every listed status dot is a real selector in the sheet (block tracks real dots)",
+    missingDots.length === 0,
+  );
+  const dottedBlock = dotSelectors.filter((sel) =>
+    !blockRules.some(
+      (rule) => rule.sel.split(",").some((p) => p.trim() === sel) && /border:[^;]*\bCanvasText\b/.test(rule.body.replace(/\s+/g, " ")),
+    ),
+  );
+  check(
+    "P3-464: every listed status dot wears a CanvasText border inside the forced-colors block",
+    dottedBlock.length === 0,
+  );
+  const borderBase = dotSelectors.filter((sel) =>
+    parseRules(outside)
+      .filter((rule) => rule.sel.includes(sel))
+      .some((rule) => /(?:^|;)\s*border(?:-top|-right|-bottom|-left)?:/.test(rule.body.replace(/\s+/g, " "))),
+  );
+  check(
+    "P3-464: the listed dots have no border outside the block (normal mode unchanged)",
+    borderBase.length === 0,
+  );
+  const extraDots = blockRules
+    .flatMap((rule) => rule.sel.split(",").map((p) => p.trim()))
+    .filter((sel) => sel.includes("-dot") || sel.startsWith(".typing") || sel.startsWith(".status-dot"))
+    .filter((sel) => !dotSelectors.includes(sel));
+  check(
+    "P3-464: the block adds no dot selector beyond the listed background-only ones",
+    extraDots.length === 0,
+  );
+  // The spec's guard: no forced-color-adjust opt-out (large surfaces keep the
+  // user's palette; only these tiny affordances are pinned), and the system
+  // colors never leak outside the block, so the normal palette is untouched.
+  check(
+    "P3-464: the forced-colors block never opts out of forced colors (no forced-color-adjust)",
+    !blockSpan.includes("forced-color-adjust"),
+  );
+  check(
+    "P3-464: system colors (Highlight/CanvasText) stay inside the forced-colors block",
+    !/\bHighlight\b|\bCanvasText\b/.test(outside),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

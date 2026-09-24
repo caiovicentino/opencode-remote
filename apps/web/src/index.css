@@ -5772,3 +5772,50 @@ button.desk-new:disabled {
 .screen-flash-source:hover {
   background: var(--bg2);
 }
+
+/* ── P3-464: Windows high contrast keeps focus + status dots visible ───────
+   With forced colors active the engine discards box-shadow and repaints
+   theme-token colors with the system palette — so a focus cue that only ever
+   lived in a box-shadow and a status dot that only ever lived in a background
+   vanish into the surface. This single media block is the whole forced-colors
+   dialect: every :focus-visible affordance in the sheet gets a solid outline
+   in the system Highlight color (outline geometry survives the repaint and a
+   system color is honored verbatim — it also restores the two controls whose
+   focus cue is only a border-color escalation, because forced colors flatten
+   resting and focused borders to the same CanvasText), and every status dot
+   that paints only a background gets a 1px CanvasText ring, so the connection
+   indicator or the degraded card's pulse reads as a ring instead of an
+   invisible square. No forced-color-adjust opt-out anywhere — large surfaces
+   keep the user's chosen palette; only these tiny affordances are pinned.
+   Normal mode renders byte for byte as before: nothing outside this block. */
+@media (forced-colors: active) {
+  :focus-visible,
+  .thinking-head:focus-visible,
+  .msg-copy:focus-visible,
+  .pair-webapp-openconfig:focus-visible,
+  .pair-relaylink-redial:focus-visible,
+  .pair-code[aria-invalid="true"]:focus-visible,
+  .degraded-queue-input:focus-visible,
+  .degraded-local-prefs select:focus-visible,
+  .routine-history-head:focus-visible,
+  .pair-gate-hint-action:focus-visible,
+  .ask-actions button:focus-visible,
+  .ask-input:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .status-dot,
+  .degraded-dot,
+  .pair-auto-dot,
+  .composer-mic-rec,
+  .welcome-step-dot,
+  .sess-filter-dot,
+  .mission-ev-dot,
+  .shell-menu-dot,
+  .convo-row-dot,
+  .drawer-dot,
+  .typing span {
+    border: 1px solid CanvasText;
+  }
+}
