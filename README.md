@@ -1650,7 +1650,15 @@ the relay link follows too (saving the same choice again changes nothing).
 Since P2-303 a fixed choice also reaches the daemon sidecar (as
 `OCR_RELAY_PROXY`), so the relay dial tunnels through the same proxy. Every
 decision lands as one mode-plus-origin-and-reason `proxy:` line in
-`desktop.log`, never the address or credentials.
+`desktop.log`, never the address or credentials. Since P2-350 the shell also
+registers the Electron `login` event (one listener, at boot): when the proxy
+itself demands authentication (HTTP 407), the shell cancels the challenge —
+asking for and storing proxy credentials is out of scope — and names the
+reason instead of hiding it: one `proxy auth:` line per state change in
+`desktop.log`, the same verdict in the diagnostic bundle's `proxy auth:`
+line, and the tray's update error names the proxy instead of a generic feed
+failure while the verdict stands. No phrase, label or log line ever carries
+the proxy host, a port or a credential.
 
 Since P1-046 the window is a real two-column cockpit: the conversation stays
 open in the left column while Artifacts, Browser, Files or Settings open in a
@@ -2211,7 +2219,8 @@ support questions: `update rollout:` (the gradual-release decision of the last
 update check — offered/deferred with its stable reason, never the installation
 id, the bucket or the percentage), `relay link:` (the closed-set state of the
 daemon↔relay link from the last pairing tick — why the phone cannot connect)
-and `sidecar wedge:` (the wedged-daemon verdict in effect). No secrets: the
+and `sidecar wedge:` (the wedged-daemon verdict in effect), and since P2-350
+`proxy auth:` (whether a network challenge came from the proxy). No secrets: the
 apiToken, allowlist and pairing URI are never included (the sidecar log is
 already redacted on disk), and the new lines follow the same privacy contract
 — no installation id, bucket, URL, host, port or relay instance id. Since

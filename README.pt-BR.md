@@ -1395,7 +1395,15 @@ local do daemon nunca passa pelo proxy). Desde a P2-289 o dono também pode
 escolher o proxy à mão em Configurações → **Proxy da máquina** (sistema / sem
 proxy / endereço fixo): a escolha fica guardada nesta máquina e vale a
 partir do próximo início do app. Cada decisão vira uma linha `proxy:` (modo,
-origem e motivo) no `desktop.log`, nunca o endereço nem credenciais.
+origem e motivo) no `desktop.log`, nunca o endereço nem credenciais. Desde a
+P2-350 o shell também registra o evento `login` do Electron (um listener, no
+boot): quando o próprio proxy exige autenticação (HTTP 407), o shell cancela
+o desafio — pedir e guardar credencial de proxy está fora do escopo — e
+nomeia o motivo em vez de escondê-lo: uma linha `proxy auth:` por mudança de
+estado no `desktop.log`, o mesmo veredito na linha `proxy auth:` do pacote
+de diagnóstico, e o erro de atualização da bandeja nomeia o proxy em vez do
+texto genérico de feed enquanto o veredito vale. Nenhuma frase, rótulo ou
+linha de log carrega o host do proxy, uma porta ou credencial.
 
 Desde o P1-046 a janela é um cockpit de duas colunas de verdade: a conversa
 fica aberta na coluna da esquerda enquanto Artifacts, Browser, Arquivos ou
@@ -1619,7 +1627,8 @@ rollout:` (a decisão de liberação gradual da última verificação de update 
 oferecido/adiado com o reason estável, nunca o id de instalação, o balde ou o
 percentual), `relay link:` (o estado do conjunto fechado do link
 daemon↔relay no último tick de pareamento — por que o celular não conecta) e
-`sidecar wedge:` (o veredito de daemon travado em efeito). Sem segredos:
+`sidecar wedge:` (o veredito de daemon travado em efeito), e desde a P2-350
+`proxy auth:` (se um desafio de rede veio do proxy). Sem segredos:
 apiToken, allowlist e URI de pareamento nunca são incluídos (o log do sidecar
 já é redigido em disco), e as linhas novas seguem o mesmo contrato de
 privacidade — sem id de instalação, balde, URL, host, porta nem id de
