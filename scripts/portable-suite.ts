@@ -55,6 +55,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "deeplink-coldstart.test.ts",
   "desktop-log.test.ts",
   "diagredact.test.ts",
+  "download-path.test.ts",
   "drawer.test.ts",
   "gate-queue.test.ts",
   "gate-wordmark.test.ts",

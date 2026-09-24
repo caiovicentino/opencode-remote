@@ -18,6 +18,9 @@ constituição NÃO é mergeado — sem exceção, sem waiver.
 5. **Guards de payload** — `SAFE_PAYLOAD` (900KB) no daemon e `MAX_FRAME` (1MB)
    no relay presentes.
 6. **Sem traversal** — downloads restritos a `uploads/Desktop/Downloads/Documents/repo`.
+   (RT-466) caminhos admitidos são resolvidos por `realpathSync` antes da admissão e
+   reabertos com `O_NOFOLLOW` + re-checagem no chunk: symlinks que saem das raízes são
+   recusados; a listagem `/__ocr/files` nunca anuncia entradas symlink.
 7. **Sem segredos commitados** — scan de padrões de chave/token no repositório.
 8. **Sem HTML injection** — `dangerouslySetInnerHTML` proibido no apps/web.
 9. **Portas documentadas** — nenhum listener novo sem documentação em README/docs.
