@@ -926,6 +926,13 @@ import { buildDiagnosticReport, type DiagnosticsInput } from "../apps/desktop/sr
 import { menuSpec, type MenuItemSpec } from "../apps/desktop/src/menu";
 import { shellLang, shellLabels, SUPPORTED_SHELL_LANGS, type ShellLabels } from "../apps/desktop/src/shelllang";
 import {
+  dockMenuSpec,
+  hasNewChatFlag,
+  NEW_CHAT_ACTION,
+  NEW_CHAT_FLAG,
+  windowsUserTasks,
+} from "../apps/desktop/src/jumplist";
+import {
   DEFAULT_ZOOM_LEVEL,
   MAX_ZOOM_LEVEL,
   MIN_ZOOM_LEVEL,
@@ -42145,6 +42152,132 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check("P2-352 wiring: main.ts registers display-metrics-changed exactly once", (mainSrc352.match(/screen\.on\("display-metrics-changed"/g) ?? []).length === 1);
   check("P2-352 wiring: no new setInterval entered main.ts (the OS event is the only trigger)", (mainSrc352.match(/\bsetInterval\b/g) ?? []).length === 2);
   check("P2-352 wiring: the rescue applies the pure verdict and logs one line per rescue", /rescueBounds\(win\.getNormalBounds\(\)/.test(mainSrc352) && mainSrc352.includes("[desktop] window rescued"));
+}
+
+// --- P2-353: Dock menu + Jump List (jumplist.ts) + the argv paths ---------------
+
+{
+  // dockMenuSpec: exactly ONE item, wired to the newChat action, in both
+  // languages — the label comes from the same table the Go menu reads.
+  const ptLabels = shellLabels("pt");
+  const enLabels = shellLabels("en");
+  const ptDock = dockMenuSpec(ptLabels);
+  check(
+    "P2-353: dockMenuSpec returns exactly one item wired to newChat with the shell label",
+    ptDock.length === 1 &&
+      ptDock[0].label === ptLabels.menu.newChat &&
+      ptDock[0].action === NEW_CHAT_ACTION &&
+      NEW_CHAT_ACTION === "newChat",
+  );
+  check(
+    "P2-353: dockMenuSpec follows the language table (pt/en) and carries no accelerator of its own",
+    dockMenuSpec(enLabels)[0].label === enLabels.menu.newChat &&
+      dockMenuSpec(enLabels)[0].action === NEW_CHAT_ACTION &&
+      !("accelerator" in ptDock[0]),
+  );
+
+  // windowsUserTasks: exactly ONE task for the packaged build, none for a
+  // dev run — the OS task would launch a binary the installer never registered.
+  const execPath = "C:\\Program Files\\OpenCode Remote\\OpenCode Remote.exe";
+  const winTaskPt = windowsUserTasks(execPath, true, ptLabels);
+  const winTaskEn = windowsUserTasks(execPath, true, enLabels);
+  check(
+    "P2-353: windowsUserTasks (packaged) returns exactly one task with the dedicated argv flag",
+    winTaskPt.length === 1 &&
+      winTaskPt[0].title === ptLabels.menu.newChat &&
+      winTaskPt[0].description.length > 0 &&
+      winTaskPt[0].program === execPath &&
+      JSON.stringify(winTaskPt[0].args) === JSON.stringify([NEW_CHAT_FLAG]) &&
+      NEW_CHAT_FLAG === "--ocr-new-chat",
+  );
+  check(
+    "P2-353: windowsUserTasks follows the language table and is deterministic",
+    winTaskEn.length === 1 &&
+      winTaskEn[0].title === enLabels.menu.newChat &&
+      JSON.stringify(windowsUserTasks(execPath, true, ptLabels)) === JSON.stringify(winTaskPt),
+  );
+  check(
+    "P2-353: windowsUserTasks (unpackaged) registers nothing",
+    windowsUserTasks(execPath, false, ptLabels).length === 0 &&
+      windowsUserTasks(execPath, false, enLabels).length === 0,
+  );
+
+  // hasNewChatFlag: exact match only — a lookalike never fires the action.
+  check(
+    "P2-353: hasNewChatFlag matches the dedicated flag alone and mid-argv, and refuses lookalikes",
+    hasNewChatFlag([]) === false &&
+      hasNewChatFlag(["C:\\app.exe", NEW_CHAT_FLAG]) === true &&
+      hasNewChatFlag(["C:\\app.exe", "--ocr-new-chat", "extra"]) === true &&
+      hasNewChatFlag(["--ocr-new-chat-extra"]) === false &&
+      hasNewChatFlag(["--ocr-new-chatt"]) === false &&
+      hasNewChatFlag(["-ocr-new-chat"]) === false &&
+      hasNewChatFlag(["--OCR-NEW-CHAT"]) === false &&
+      hasNewChatFlag("not-an-array" as unknown as string[]) === false,
+  );
+
+  // Real-source assertions over the REAL main.ts.
+  const mainSrc353 = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check(
+    "P2-353 wiring: main.ts registers the Dock menu exactly once",
+    (mainSrc353.match(/app\.dock\.setMenu\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-353 wiring: main.ts registers the Jump List exactly once",
+    (mainSrc353.match(/app\.setUserTasks\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-353 wiring: the Dock menu registers only on darwin, outside hermetic sessions, from the shared label source",
+    /if \(!HERMETIC_E2E && process\.platform === "darwin" && app\.dock\) \{\s*\n\s*app\.dock\.setMenu\(Menu\.buildFromTemplate\(toElectronItems\(dockMenuSpec\(currentShellLabels\(\)\)\)\)\);/.test(mainSrc353),
+  );
+  check(
+    "P2-353 wiring: the Jump List registers only on win32, outside hermetic sessions, from the pure spec",
+    /if \(!HERMETIC_E2E && process\.platform === "win32"\) \{\s*\n\s*const userTasks = windowsUserTasks\(process\.execPath, app\.isPackaged, currentShellLabels\(\)\);/.test(mainSrc353),
+  );
+  check(
+    "P2-353 wiring: the dedicated flag is never re-typed in main.ts (one constant, one interpreter)",
+    mainSrc353.includes('from "./jumplist"') && !mainSrc353.includes('"--ocr-new-chat"'),
+  );
+  check(
+    "P2-353 wiring: the second-instance handler answers the flag with a queued new conversation, after the existing show",
+    /second-instance", \(_event, argv\) => \{\n\s+showMainWindow\(\);\n[\s\S]{0,300}?if \(hasNewChatFlag\(argv\)\) requestNewChat\(\);/.test(mainSrc353),
+  );
+  const consultAt = mainSrc353.indexOf("if (hasNewChatFlag(process.argv)) requestNewChat();");
+  const firstCreateAt = mainSrc353.indexOf("createWindow({ bootHidden:");
+  check(
+    "P2-353 wiring: the cold-start argv consult happens in onReady before the first window exists",
+    consultAt > -1 && firstCreateAt > consultAt,
+  );
+  check(
+    "P2-353 wiring: the queued broadcast flushes only from did-finish-load — after the renderer can hear it",
+    /did-finish-load", \(\) => \{\s*\n\s*if \(win\.isDestroyed\(\)\) return;\s*\n\s*loadFailAttempts = 0;[\s\S]{0,400}?mainWindowLoaded = true;[\s\S]{0,300}?sendMenuAction\("newChat"\);/.test(mainSrc353),
+  );
+  check(
+    "P2-353 wiring: exactly two newChat broadcasts exist in main.ts — the loaded branch of requestNewChat and the did-finish-load flush",
+    (mainSrc353.match(/sendMenuAction\("newChat"\)/g) ?? []).length === 2 &&
+      /function requestNewChat\(\): void \{\s*\n\s*if \(HERMETIC_E2E\) return;\s*\n\s*if \(mainWindowLoaded\) \{\s*\n\s*showMainWindow\(\);\s*\n\s*sendMenuAction\("newChat"\);\s*\n\s*return;\s*\n\s*\}\s*\n[\s\S]{0,200}?pendingNewChat = true;/.test(mainSrc353),
+  );
+  check(
+    "P2-353 wiring: no ipcMain.handle line carries the jump-list feature (no new channel, no new handler)",
+    mainSrc353
+      .split("\n")
+      .filter((line) => line.includes("ipcMain.handle("))
+      .every((line) => !line.includes("newChat") && !line.includes("NEW_CHAT_FLAG") && !line.includes("jumplist")),
+  );
+
+  // Purity: the module stays electron-free so the unit battery can import it.
+  const jumplistSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "jumplist.ts"), "utf8")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  const jumplistImports = jumplistSrc.match(/^import[^;]+;/gm) ?? [];
+  check(
+    "P2-353: the pure jumplist module imports no electron, no node:fs and no timer — only the ShellLabels type",
+    jumplistImports.length === 1 &&
+      jumplistImports.every((line) => /import type /.test(line)) &&
+      !jumplistSrc.includes("electron") &&
+      !jumplistSrc.includes("node:") &&
+      !jumplistSrc.includes("setInterval") &&
+      !jumplistSrc.includes("setTimeout"),
+  );
 }
 
 if (failures > 0) {

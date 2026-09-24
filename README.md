@@ -2527,6 +2527,18 @@ welcome wizard). Override it with `OCR_DESKTOP_QUICK_HOTKEY` (same rules as
 `OCR_DESKTOP_HOTKEY`), the Go menu shows it as **Quick entry**, and an
 immediate double-press collapses into one action.
 
+**Dock menu and Jump List (P2-353)**: right-clicking the app icon offers the
+fastest path into a conversation. On macOS the Dock icon's context menu gains
+**Nova conversa**; on Windows the taskbar icon's Jump List gains the same
+entry (packaged builds only — a dev run registers no OS task). Both fire the
+same `newChat` action the Go menu broadcasts, so at the pairing gate the
+renderer's existing calm warning applies. A Jump List relaunch with the app
+already running — or a cold start carrying the dedicated `--ocr-new-chat`
+flag — focuses the window through the existing show path and starts the
+conversation only after the renderer finished loading, so the action never
+races the page. Both surfaces register once per boot with the boot language's
+labels, and automated test sessions never register them.
+
 **Quitting asks when the phone would lose access (P2-221)**: **Quit** in the
 tray menu and **Encerrar OpenCode Remote** in the app menu (or `Cmd+Q`) are a
 real quit with full daemon cleanup — and since the app now opens at login
