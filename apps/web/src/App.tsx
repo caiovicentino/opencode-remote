@@ -69,6 +69,7 @@ import SettingsView, {
   type ProxySettingWriteResult,
 } from "./components/SettingsView";
 import { applyTheme } from "./lib/theme";
+import { windowTitle } from "./lib/wintitle";
 import { readGateQueue, clearGateQueue } from "./lib/gatequeue";
 import FilesView from "./components/FilesView";
 import ArtifactsView from "./components/ArtifactsView";
@@ -285,6 +286,11 @@ const GATE_SHELL_PANES = new Set<string>(["artifacts", "browser", "mission", "se
  * disabled with the gate hint until pairing succeeds, so the selected pill
  * must never paint on it (gateActiveSlots). */
 const GATE_LOCKED_SLOTS: readonly Slot[] = ["chat"];
+
+/** P3-465: the fallback window title — what every window read before
+ * conversation titles landed (index.html's static <title> keeps the same
+ * string; the brand name stays untranslated, like the shell menus). */
+const APP_WINDOW_NAME = "OpenCode Remote";
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
@@ -963,6 +969,55 @@ export default function App() {
       alive = false;
     };
   }, [phase, isDesktop, drawerOpen, tick]);
+
+  // P3-465: the OS window title must name the open conversation (Windows
+  // Alt+Tab + taskbar, the macOS Window menu, screen readers). The active
+  // session's title is resolved from the sessions list (the same GET /session
+  // the sidebar loads) — once on open, then once more whenever a turn of the
+  // ACTIVE session ends (the agent names a conversation from its first
+  // prompt, so a title resolved only on open would go stale). Failures and
+  // untitled sessions leave the bare app name; document.title is written in
+  // exactly ONE effect below (pinned by scripts/unit.test.ts).
+  const [activeTitle, setActiveTitle] = useState<{ id: string; title: string } | null>(null);
+  const titleKeyRef = useRef("");
+  useEffect(() => {
+    // idles of the ACTIVE session only — streaming parts and other
+    // conversations' events never trigger a refetch
+    let idles = 0;
+    for (const evt of events) {
+      const p = (evt.properties ?? {}) as { sessionID?: string };
+      if (evt.type === "session.idle" && p.sessionID === session) idles++;
+    }
+    const key = `${phase}:${session}:${idles}`;
+    if (titleKeyRef.current === key) return;
+    titleKeyRef.current = key;
+    if (phase !== "paired" || !session) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await request("GET", "/session");
+        if (!alive || res.status !== 200 || !Array.isArray(res.body)) return;
+        for (const row of res.body as { id?: unknown; title?: unknown }[]) {
+          if (row && row.id === session && typeof row.title === "string") {
+            setActiveTitle({ id: session, title: row.title });
+            break;
+          }
+        }
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [phase, session, events]);
+
+  // P3-465: the ONE place document.title is written (pinned by unit tests).
+  // Outside the conversations pane (another pane on top, the pairing gate)
+  // or with no active session, the title falls back to the bare app name —
+  // exactly what index.html's static <title> said before this change.
+  useEffect(() => {
+    const known = activeTitle && activeTitle.id === session ? activeTitle.title : null;
+    document.title = windowTitle(top === "chat" && session ? known : null, APP_WINDOW_NAME);
+  }, [top, session, activeTitle]);
 
   function disconnect() {
     clientRef.current?.close();

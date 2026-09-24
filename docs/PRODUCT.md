@@ -260,9 +260,20 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   pontos de status que só tinham cor de fundo
   (indicador de conexão, pulso do cartão degradado e do auto-conectar, mic
   gravando, passos do wizard, dots de filtro/não lida/menu/audit, typing)
-  ganham uma borda CanvasText de 1px que os lê como anel em vez de quadrado
-  invisível; um único bloco de media no index.css, sem `forced-color-adjust`
-  em contêiner grande — no modo normal nada muda, byte a byte
+   ganham uma borda CanvasText de 1px que os lê como anel em vez de quadrado
+   invisível; um único bloco de media no index.css, sem `forced-color-adjust`
+   em contêiner grande — no modo normal nada muda, byte a byte
+- O título da janela nomeia a conversa aberta (P3-465): o Alt+Tab do Windows,
+  a barra de tarefas, o menu Janela do macOS e o leitor de tela liam só
+  "OpenCode Remote" — agora o shell desktop (e a aba do navegador/PWA)
+  titula-se "Nome da conversa — OpenCode Remote" com a conversa ativa no pane
+  de conversas, e volta ao nome puro do app fora dele (home, outro pane na
+  frente, portão de pareamento) ou sem conversa aberta. O nome vem da lista
+  de sessões quando a conversa abre — atualizado quando um turno da conversa
+  ativa termina, para o nome que o agente deriva da primeira mensagem chegar
+  sem reabrir a conversa —, caracteres de controle saem, e o título corta em
+  60 caracteres com reticências; nada muda dentro da página — o Electron
+  repassa o `document.title` do renderer à janela
 
 ## Regra de ouro
 Cada task de UI fecha com screenshot desktop-flow provando o critério visual.
