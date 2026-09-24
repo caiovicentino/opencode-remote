@@ -42410,10 +42410,18 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
       bootSrc.indexOf('await page.waitForLoadState("load"') < bootSrc.indexOf("console.error('${CANARY}')"),
   );
   check(
-    "P2-354: the ratchet line is built exactly once and printed at most once per process",
+    "P2-354: the ratchet line is built exactly once and printed at most once per process — on all six exit paths",
     (bootSrc.match(/bootBudgetLine\(/g) ?? []).length === 1 &&
       /if \(bootTimingPrinted\) return;/.test(bootSrc) &&
-      (bootSrc.match(/printBootTiming\(\);/g) ?? []).length === 4,
+      (bootSrc.match(/printBootTiming\(\);/g) ?? []).length === 6,
+  );
+  check(
+    "P2-354: the watchdog timeout path prints the ratchet line before exiting — a hung boot is still an execution",
+    /watchdog = setTimeout\(\(\) => \{[\s\S]*?printBootTiming\(\);[\s\S]*?process\.exit\(postVerdictExitCode/.test(bootSrc),
+  );
+  check(
+    "P2-354: the uncaught-error path prints the ratchet line before process.exit(1)",
+    /main\(\)\.catch\(\(err\) => \{[\s\S]*?printBootTiming\(\);\s*\n\s*process\.exit\(1\);/.test(bootSrc),
   );
   const timingFn = /function printBootTiming\(\) \{[\s\S]*?\n\}/.exec(bootSrc)?.[0] ?? "";
   check(

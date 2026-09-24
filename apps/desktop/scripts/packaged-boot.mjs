@@ -246,6 +246,10 @@ async function main() {
     try {
       activeApp?.process().kill("SIGKILL");
     } catch {}
+    // P2-354: a hung boot is still an execution — the ratchet line prints
+    // before the exit (absent timing prints `unknown`; a post-verdict fire is
+    // absorbed by the bootTimingPrinted guard, never a second line).
+    printBootTiming();
     // P3-437: the verdict is the gate — a post-verdict teardown wedge keeps
     // finish()'s code instead of flipping a proven-OK boot to FAIL.
     process.exit(postVerdictExitCode(verdictPrinted, process.exitCode));
@@ -369,6 +373,9 @@ const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 if (import.meta.url === invoked) {
   main().catch((err) => {
     console.error(`packaged-boot: uncaught: ${String(err?.stack ?? err).split("\n")[0]}`);
+    // P2-354: every execution prints the ratchet line, the exceptional ones
+    // too — absent timing prints `unknown`, the exit code stays fail-closed.
+    printBootTiming();
     process.exit(1);
   });
 }
