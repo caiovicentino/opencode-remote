@@ -136,6 +136,30 @@ check("crashline: a port-only address token is redacted with its host", (() => {
   return !line.message.includes("8787") && line.message.includes(CRASH_REDACTED_IP);
 })());
 
+// host paths in the MESSAGE: fs errors embed them outside the stack frames —
+// the same reduction the stack field applies runs on the message too
+check("crashline: an fs error's absolute path in the message is reduced to its basename", (() => {
+  const line = crashLine(
+    "uncaughtException",
+    new Error("ENOENT: no such file or directory, open '/etc/letsencrypt/live/relay.example.com/privkey.pem'"),
+    0,
+  );
+  return (
+    !line.message.includes("/etc") &&
+    !line.message.includes("letsencrypt") &&
+    !line.message.includes("relay.example.com") &&
+    line.message === "ENOENT: no such file or [room:removed], open 'privkey.pem'"
+  );
+})());
+check("crashline: a home-dir path with a short username never leaks the account either", (() => {
+  const line = crashLine("uncaughtException", new Error("failed to read /home/bob/relay/state.json"), 0);
+  return !line.message.includes("/home") && !line.message.includes("bob") && line.message === "failed to read state.json";
+})());
+check("crashline: a Windows drive path inside the message is reduced too", (() => {
+  const line = crashLine("uncaughtException", new Error("cannot open C:\\Users\\operator\\relay\\state.json"), 0);
+  return !line.message.includes("operator") && !line.message.includes("Users") && line.message === "cannot open state.json";
+})());
+
 // frame content: binary payload material only ever surfaces as control bytes
 check("crashline: control bytes (binary payload garbage) are washed out", (() => {
   const line = crashLine("uncaughtException", new Error("bad frame \u0000\u0007\u001F tail"), 0);
@@ -195,6 +219,36 @@ check("crashline: the class name is a sanitized token, never free text", (() => 
   const line = crashLine("uncaughtException", weird, 0);
   return /^[A-Za-z0-9_$]{1,40}$/.test(line.class) && !line.class.includes("<");
 })());
+check("crashline: a crafted Symbol.toStringTag cannot smuggle free text or a planted id into the class", (() => {
+  const crafted = { [Symbol.toStringTag]: "secret-room a1b2c3d4e5f60718 <img>" };
+  const line = crashLine("unhandledRejection", crafted, 0);
+  return (
+    line.class === "Object" &&
+    !line.class.includes("a1b2c3d4") &&
+    !line.class.includes("secret") &&
+    !line.message.includes("a1b2c3d4") &&
+    !line.message.includes("secret-room")
+  );
+})());
+check("crashline: a throwing Symbol.toStringTag getter never throws the formatter", (() => {
+  const hostile = {
+    get [Symbol.toStringTag](): string {
+      throw new Error("tag getter exploded");
+    },
+  };
+  const line = crashLine("unhandledRejection", hostile, 0);
+  return (
+    line.class === "Object" &&
+    line.message.length > 0 &&
+    !line.message.includes("exploded") &&
+    JSON.stringify(Object.keys(line).sort()) === JSON.stringify(["class", "event", "message", "stack", "uptimeS"])
+  );
+})());
+check("crashline: a tag prefixing a vocabulary word degrades to that word without the rest", (() => {
+  const crafted = { [Symbol.toStringTag]: "Object a1b2c3d4e5f60718" };
+  const line = crashLine("unhandledRejection", crafted, 0);
+  return line.class === "Object" && !line.message.includes("a1b2c3d4");
+})());
 
 check("crashline: the object carries exactly the five documented fields", (() => {
   const line = crashLine("unhandledRejection", new Error("m"), 0);
@@ -253,21 +307,26 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 {
   const t = mkTimers();
   const exits: number[] = [];
+  const logs: Array<{ level: string; msg: string }> = [];
   const { shutdown } = createShutdown({
     activeConnections: () => 0,
     uptimeMs: () => 1000,
     stopListeners: async () => {},
-    log: () => {},
+    log: (level, msg) => logs.push({ level, msg }),
     exit: (code) => exits.push(code),
     setTimeout: t.setTimeout,
     clearTimeout: t.clearTimeout,
   });
   const p = shutdown("unhandledRejection", 1);
   await tick();
-  check("drain-crash: the drain starts like a signal drain (same flag shape)", true);
+  check(
+    "drain-crash: the started-drain line is logged before the settle window (the signal-drain sequence, crash flavor)",
+    logs.some((l) => l.msg === "relay shutting down") && !logs.some((l) => l.msg === "relay shut down"),
+  );
   t.flush(DRAIN_MS - 1); // fire the settle only; the hard timer is cleared on completion
   await p;
   check("drain-crash: a crash drain exits 1 after the usual settle", exits.length === 1 && exits[0] === 1);
+  check("drain-crash: the final line lands only after the settle (the drain completed)", logs.some((l) => l.msg === "relay shut down"));
   check("drain-crash: the settle consumed the timers, none left pending", t.timers.length === 0);
 }
 

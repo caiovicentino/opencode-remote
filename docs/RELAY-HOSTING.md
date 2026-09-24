@@ -209,12 +209,14 @@ carrying only:
 - the error's class name (a sanitized token like `RangeError`; for non-Error
   rejects the honest kind — `String`, `Object`, `Undefined`);
 - the message, truncated to 200 characters, with every room id, IP address
-  and frame fragment redacted: every token of the room-id grammar becomes
-  `[room:removed]` and every address becomes `[ip:removed]`. The relay
-  cannot tell words from ids, so the message is a **redacted hint, not a
-  transcript** — the diagnosis lives in the class name and the first stack
-  frame, which carries only its basename so provider log retention never
-  learns the host's directory layout;
+  and frame fragment redacted AND every absolute path reduced to its basename
+  (fs errors embed host paths in the message, not only in the frames): every
+  token of the room-id grammar becomes `[room:removed]` and every address
+  becomes `[ip:removed]`. The relay cannot tell words from ids, so the
+  message is a **redacted hint, not a transcript** — the diagnosis lives in
+  the class name and the first stack frame, which carries only its basename
+  so provider log retention never learns the host's directory layout, the TLS
+  certificate location or an account name from a crash line;
 - the process uptime in whole seconds, the crash-loop sibling of the
   `relay_uptime_seconds` gauge.
 

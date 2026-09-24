@@ -18,9 +18,15 @@
  *   "unhandledRejection");
  * - `class` — the error's class name (e.g. "RangeError"); a sanitized token,
  *   never free text, and for non-Error values the Object.prototype.toString
- *   kind ("String", "Object", "Null", ...);
+ *   kind reduced to a closed vocabulary ("String", "Object", "Null", ...) —
+ *   a crafted or throwing `Symbol.toStringTag` cannot smuggle content or a
+ *   throw through this field;
  * - `message` — the error message truncated to CRASH_MESSAGE_MAX_CHARS with
- *   room ids, IPs and frame content redacted (see below);
+ *   room ids, IPs and frame content redacted AND every absolute path reduced
+ *   to its basename: Node fs errors embed host paths in the MESSAGE (not only
+ *   in the frames), so the same reduction the stack field gets applies here —
+ *   provider log retention never learns the host's directory layout, the TLS
+ *   certificate location or a user's account name from a crash line;
  * - `stack` — the FIRST stack frame line only (the "where", never the whole
  *   trace), with every absolute path reduced to its basename so provider log
  *   retention never learns the host's directory layout;
@@ -44,7 +50,11 @@
  * also removes any long printable payload run, (b) the wash of control
  * characters, which removes binary payload material an error message could
  * only ever surface as garbage bytes, and (c) the 200-character ceiling, which
- * bounds whatever remains.
+ * bounds whatever remains. Host paths are not payload, but they carry the
+ * host's directory layout — the message field strips them to basenames with
+ * the same reduction the stack field applies, so an fs error ("ENOENT: ...
+ * open '/etc/letsencrypt/live/relay.example.com/privkey.pem'") leaves only
+ * the file name behind, never the tree above it.
  *
  * Pure by contract: no imports at all — no node:*, no ws, no process, no
  * timers — so the unit battery (and any future consumer) can load and pin it
@@ -59,9 +69,9 @@ export type CrashEvent = "uncaughtException" | "unhandledRejection";
 export interface CrashLine {
   /** Which fatal listener fired. */
   event: CrashEvent;
-  /** Sanitized error class name — a fixed-vocabulary token, never free text. */
+  /** Sanitized error class name — a closed-vocabulary token, never free text. */
   class: string;
-  /** Message truncated to CRASH_MESSAGE_MAX_CHARS, room ids / IPs / frame content redacted. */
+  /** Message truncated to CRASH_MESSAGE_MAX_CHARS: room ids / IPs / frame content redacted, absolute paths reduced to basenames. */
   message: string;
   /** First stack frame only, absolute paths reduced to basenames ("" when none). */
   stack: string;
@@ -79,6 +89,36 @@ export const CRASH_REDACTED_ROOM = "[room:removed]";
 export const CRASH_REDACTED_IP = "[ip:removed]";
 /** Class-name fallback when nothing trustworthy can be extracted. */
 export const CRASH_CLASS_FALLBACK = "Error";
+/** Kind fallback for a non-Error value the closed vocabulary cannot name. */
+export const CRASH_KIND_FALLBACK = "Object";
+
+/**
+ * The closed vocabulary a non-Error `class` may ever carry. A hostile
+ * `Symbol.toStringTag` (or any crafted shape) can otherwise smuggle free text
+ * — room ids included — into the class field through
+ * Object.prototype.toString; anything outside this set degrades to the fixed
+ * CRASH_KIND_FALLBACK instead.
+ */
+const KIND_VOCABULARY: ReadonlySet<string> = new Set([
+  "Object",
+  "Array",
+  "String",
+  "Number",
+  "Boolean",
+  "Symbol",
+  "BigInt",
+  "Undefined",
+  "Null",
+  "Function",
+  "Date",
+  "RegExp",
+  "Map",
+  "Set",
+  "WeakMap",
+  "WeakSet",
+  "Promise",
+  "Error",
+]);
 
 /** A room id is 8+ chars of the accepted grammar — so is any other such token. */
 const ROOM_TOKEN_RE = /[A-Za-z0-9_-]{8,}/g;
@@ -109,21 +149,40 @@ const NEWLINE_RE = /\r\n?|\n/g;
  * Build the structured crash line for one fatal event.
  *
  * Total function: every input — including hostile shapes (throwing getters,
- * circular structures, missing names) — produces a well-formed object and
- * never throws, because the two callers run inside a dying process where a
- * throwing formatter would itself be the crash. The event is normalized
- * fail-closed to the more severe spelling when the caller passes something
- * unexpected; the uptime is clamped at 0 and anything non-numeric becomes 0.
+ * circular structures, crafted `Symbol.toStringTag`s, missing names) —
+ * produces a well-formed object and never throws, because the two callers run
+ * inside a dying process where a throwing formatter would itself be the
+ * crash. Every field pipeline has its own guard (the class/name reads, the
+ * message stringification, the stack probe) and the whole body is wrapped one
+ * more time as the belt for a future regression: the fallback object keeps
+ * the same five-field shape, so the caller's line, counter and drain always
+ * run. The event is normalized fail-closed to the more severe spelling when
+ * the caller passes something unexpected; the uptime is clamped at 0 and
+ * anything non-numeric becomes 0.
  */
 export function crashLine(event: CrashEvent, error: unknown, uptimeMs: number): CrashLine {
   const ev: CrashEvent = event === "unhandledRejection" ? "unhandledRejection" : "uncaughtException";
-  return {
-    event: ev,
-    class: classOf(error),
-    message: truncate(redact(wash(messageOf(error))), CRASH_MESSAGE_MAX_CHARS),
-    stack: truncate(stripPaths(wash(firstStackFrame(error))), CRASH_STACK_MAX_CHARS),
-    uptimeS: uptimeS(uptimeMs),
-  };
+  try {
+    return {
+      event: ev,
+      class: classOf(error),
+      // paths are reduced BEFORE redaction so the room/ip passes and the
+      // ceiling see the baselined text
+      message: truncate(redact(stripPaths(wash(messageOf(error)))), CRASH_MESSAGE_MAX_CHARS),
+      stack: truncate(stripPaths(wash(firstStackFrame(error))), CRASH_STACK_MAX_CHARS),
+      uptimeS: uptimeS(uptimeMs),
+    };
+  } catch {
+    // unreachable after the per-field guards — the belt for a future
+    // regression: same shape, no content, the crash still counts and drains
+    return {
+      event: ev,
+      class: CRASH_CLASS_FALLBACK,
+      message: "crash detail unprintable",
+      stack: "",
+      uptimeS: uptimeS(uptimeMs),
+    };
+  }
 }
 
 /** Whole seconds, clamped: a negative or non-numeric input is 0, never -1. */
@@ -136,8 +195,10 @@ function uptimeS(uptimeMs: unknown): number {
  * The error's class name. For Error instances: `name` when it is a clean
  * token, then the constructor's name, then the fixed fallback — never raw
  * free text, so a weird `name` cannot smuggle content into the line. For
- * every other value: the Object.prototype.toString kind, which is exactly
- * the honest answer for `throw "boom"`-style rejects.
+ * every other value: the Object.prototype.toString kind, reduced to the
+ * closed KIND_VOCABULARY — a crafted `Symbol.toStringTag` (or a throwing
+ * one) can never smuggle free text, a room id or a throw through the class
+ * field; anything the vocabulary cannot name degrades to CRASH_KIND_FALLBACK.
  */
 function classOf(error: unknown): string {
   if (error instanceof Error) {
@@ -148,7 +209,24 @@ function classOf(error: unknown): string {
     const ctorName = ctor && typeof ctor.name === "string" ? firstToken(ctor.name) : "";
     return ctorName || CRASH_CLASS_FALLBACK;
   }
-  return Object.prototype.toString.call(error).slice(8, -1) || CRASH_CLASS_FALLBACK;
+  return kindOf(error);
+}
+
+/**
+ * The non-Error kind: guarded like every sibling read (a throwing
+ * `Symbol.toStringTag` getter is caught here, never at the caller), tokenized
+ * by `firstToken` and held to the closed vocabulary, so the field stays a
+ * fixed-vocabulary token in every case.
+ */
+function kindOf(error: unknown): string {
+  let kind = "";
+  try {
+    kind = Object.prototype.toString.call(error).slice(8, -1);
+  } catch {
+    return CRASH_KIND_FALLBACK;
+  }
+  const token = firstToken(kind);
+  return token && KIND_VOCABULARY.has(token) ? token : CRASH_KIND_FALLBACK;
 }
 
 function errorName(error: Error): unknown {

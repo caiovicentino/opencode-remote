@@ -13,7 +13,7 @@ import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
 import { envelopeVerdict } from "./envelope.js";
 import { createShutdown, refuseUpgrade, stopAccepting } from "./shutdown.js";
-import { crashLine, type CrashEvent } from "./crashline.js";
+import { crashLine, CRASH_CLASS_FALLBACK, type CrashEvent } from "./crashline.js";
 import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
@@ -887,7 +887,24 @@ const { shutdown, isShuttingDown } = createShutdown({
 const CRASH_EXIT_CODE = 1;
 let crashHandled = false;
 const onCrash = (event: CrashEvent, error: unknown): void => {
-  const line = crashLine(event, error, Date.now() - m.startedAt);
+  // crashline.crashLine is total by contract (its own body is guarded), but
+  // this handler runs in a dying process where the structured line, the
+  // counter and the drain must run even if the formatter itself ever regressed
+  // — so the call is guarded here too, degrading to the fixed five-field
+  // fallback shape instead of the pre-P2-351 raw crash.
+  let line: ReturnType<typeof crashLine>;
+  const uptimeMs = Date.now() - m.startedAt;
+  try {
+    line = crashLine(event, error, uptimeMs);
+  } catch {
+    line = {
+      event,
+      class: CRASH_CLASS_FALLBACK,
+      message: "crash detail unprintable",
+      stack: "",
+      uptimeS: Math.max(0, Math.round(uptimeMs / 1000)),
+    };
+  }
   try {
     console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", msg: "relay crash", data: line }));
   } catch {
