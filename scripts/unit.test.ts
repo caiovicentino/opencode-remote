@@ -412,6 +412,7 @@ import { mimeFor } from "../apps/web/src/lib/files";
 import { timeAgo, sessionUpdatedTs } from "../apps/web/src/lib/time";
 
 import { sessionTitleOf } from "../apps/web/src/lib/title";
+import { windowTitle, WINDOW_TITLE_MAX } from "../apps/web/src/lib/wintitle";
 
 import { dict, translate } from "../apps/web/src/lib/i18n";
 
@@ -2400,6 +2401,51 @@ check("sessionTitleOf empty title", sessionTitleOf({ title: "" }) === "" && sess
 check("sessionTitleOf missing body", sessionTitleOf(null) === "" && sessionTitleOf(undefined) === "");
 
 check("sessionTitleOf non-string title", sessionTitleOf({ title: 42 }) === "" && sessionTitleOf({}) === "");
+
+
+// --- P3-465: the window title names the open conversation (wintitle.ts) ------
+{
+  const APP = "OpenCode Remote";
+  const table: Array<{ name: string; title: string | null | undefined; want: string }> = [
+    { name: "absent title → bare app name", title: undefined, want: APP },
+    { name: "null title → bare app name", title: null, want: APP },
+    { name: "empty title → bare app name", title: "", want: APP },
+    { name: "whitespace-only title → bare app name", title: "   ", want: APP },
+    { name: "newline and tab are removed", title: "Bom\ndia\tolá", want: `Bomdiaolá — ${APP}` },
+    { name: "repeated spaces join after the control removal", title: "Bom \n dia", want: `Bom dia — ${APP}` },
+    { name: "over-cap title is cut at 60 with an ellipsis", title: "x".repeat(120), want: `${"x".repeat(WINDOW_TITLE_MAX - 1)}… — ${APP}` },
+    { name: "exact-cap title survives untouched", title: "x".repeat(WINDOW_TITLE_MAX), want: `${"x".repeat(WINDOW_TITLE_MAX)} — ${APP}` },
+    { name: "normal title → title, dash, app name", title: "Fix login bug", want: `Fix login bug — ${APP}` },
+  ];
+  for (const tc of table) {
+    check(`wintitle: ${tc.name}`, windowTitle(tc.title, APP) === tc.want);
+  }
+
+  // Purity: the module stays DOM-free and timer-free so the unit battery can
+  // import it directly (comments stripped before the scan).
+  const wintitleSrc = readFileSync(new URL("../apps/web/src/lib/wintitle.ts", import.meta.url), "utf8")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "P3-465: the pure wintitle module touches no DOM and no timer",
+    !wintitleSrc.includes("document") && !wintitleSrc.includes("window.") && !wintitleSrc.includes("setInterval") && !wintitleSrc.includes("setTimeout"),
+  );
+
+  // P3-465: App.tsx writes document.title in exactly ONE effect — the active
+  // title comes from the sessions list and the fallback outside the chat pane
+  // is the bare app name (what index.html's static <title> already said).
+  const appWintitleSrc = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  check("P3-465: document.title is written in exactly one place in App.tsx", (appWintitleSrc.match(/document\.title\s*=/g) ?? []).length === 1);
+  check(
+    "P3-465: outside the conversations pane the title falls back to the bare app name",
+    appWintitleSrc.includes('windowTitle(top === "chat" && session ? known : null, APP_WINDOW_NAME)'),
+  );
+  check(
+    "P3-465: the active title is resolved from the sessions list, refreshed by the active session's idles",
+    appWintitleSrc.includes('const res = await request("GET", "/session");') &&
+      appWintitleSrc.includes('evt.type === "session.idle" && p.sessionID === session'),
+  );
+}
 
 
 // --- approval card preview (P2-004) ------------------------------------------

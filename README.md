@@ -2150,6 +2150,21 @@ an ask is pending — at most once per minute, never carrying the command, the
 path or the conversation title, and clicking it brings the window to the
 front.
 
+**Window title names the conversation (P3-465)**: every window of the app
+reads just "OpenCode Remote" in the OS — Windows Alt+Tab and the taskbar, the
+macOS Window menu, screen readers — with no hint of which conversation is
+open. While a conversation is open in the Conversations pane, the window (and
+the PWA/browser tab) titles itself **Conversation title — OpenCode Remote**;
+outside it (home, another pane on top, the pairing gate) or with no
+conversation open it falls back to the bare app name, exactly the static
+`<title>` the page always had. The conversation's title is resolved from the
+sessions list when the conversation opens — refreshed whenever a turn of the
+active conversation ends, so the name the agent derives from your first
+message lands without re-entering it — control characters are stripped and
+the title is cut at 60 characters with an ellipsis. Nothing changes inside
+the page: Electron passes the renderer's `document.title` through to the
+window.
+
 ```bash
 npm run build --workspace @ocr/web       # build the UI once
 npm run build --workspace @ocr/desktop   # compile the shell (TypeScript main process)
