@@ -127,6 +127,7 @@ import { sanitizeUpdateNotes } from "./updatenotes";
 import { UPDATE_DOWNLOADED_TRAY_LABEL, UPDATE_REMIND_LIMITS, updateReminderPlan, type UpdateOfferRecord } from "./updateremind";
 import { installerNameIsSafe, integrityVerdict, winDownloadDecision } from "./winupdate";
 import { menuSpec, type MenuItemSpec } from "./menu";
+import { dockMenuSpec, hasNewChatFlag, windowsUserTasks } from "./jumplist";
 import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { UPDATE_PROGRESS_LIMITS, updateProgressView, type UpdateProgressView } from "./updateprogress";
@@ -203,6 +204,14 @@ let lastUpdateStatus: UpdateStatus | null = null;
 // the dock badge is (or would be) showing. Exposed via app:unreadBadge for
 // the desktop harness; never derived from the OS itself.
 let lastUnreadBadge = 0;
+// P2-353: the Dock-menu / Jump-List argv path. `mainWindowLoaded` mirrors the
+// current main window's last finished load (reset by every createWindow) so
+// the newChat broadcast only ever lands once the renderer can hear it;
+// `pendingNewChat` holds a request that arrived while the page was still
+// loading (a cold start or a window recreated after a crash) and is flushed
+// by the did-finish-load handler below.
+let mainWindowLoaded = false;
+let pendingNewChat = false;
 // P2-276: the native shell's language (menu bar + tray). Resolved once at
 // boot from the OS locale (rule: no preference yet → the system decides) and
 // re-resolved on every ocr:shell-lang push the renderer sends after that —
@@ -690,6 +699,10 @@ if (!gotLock) {
   });
   app.on("second-instance", (_event, argv) => {
     showMainWindow();
+    // P2-353: the Jump List relaunches the packaged app with its dedicated
+    // flag; the single-instance winner answers with a new conversation — the
+    // send rides the pending flush, only after the renderer finished loading.
+    if (hasNewChatFlag(argv)) requestNewChat();
     // Windows: the OS spawns a second process whose argv carries the URL;
     // the single-instance winner receives it here.
     handleDeepLink(deepLinkFromArgv(argv));
@@ -1763,6 +1776,33 @@ async function onReady(): Promise<void> {
     applicationVersion: app.getVersion(),
   });
 
+  // P2-353: the app icon's native shortcut — a Dock menu on macOS and a Jump
+  // List task on Windows, both pointing at the newChat action the Go menu
+  // already broadcasts over ocr:menu-action (at the pairing gate the
+  // renderer's existing behavior for that action applies — no new path).
+  // Registered ONCE here, with the boot language's labels (P2-276), and NEVER
+  // in a hermetic session (P1-081): a test run must not touch system
+  // surfaces. An unpackaged dev build gets no Jump List — the OS task would
+  // launch a binary the installer never registered.
+  if (!HERMETIC_E2E && process.platform === "darwin" && app.dock) {
+    app.dock.setMenu(Menu.buildFromTemplate(toElectronItems(dockMenuSpec(currentShellLabels()))));
+  }
+  if (!HERMETIC_E2E && process.platform === "win32") {
+    const userTasks = windowsUserTasks(process.execPath, app.isPackaged, currentShellLabels());
+    if (userTasks.length > 0) {
+      app.setUserTasks(
+        userTasks.map((task) => ({
+          title: task.title,
+          description: task.description,
+          program: task.program,
+          arguments: task.args.join(" "),
+          iconPath: process.execPath,
+          iconIndex: 0,
+        })),
+      );
+    }
+  }
+
   // P2-211: the install-location verdict is computed ONCE at boot, reading the
   // running bundle path and the applications-folder signal guarded by method
   // availability — a platform without the signal keeps today's behavior
@@ -2477,6 +2517,13 @@ async function onReady(): Promise<void> {
     coldDeepLink: lastDeepLink !== null,
   });
   log(`[desktop] login launch: ${launchVerdict.action} (${launchVerdict.reason})`);
+
+  // P2-353: the Jump List launches a packaged build with its dedicated flag on
+  // a cold start (the app was closed). The action rides the same pending
+  // flush the second-instance path uses: one newChat broadcast after the
+  // renderer finished loading. requestNewChat itself refuses a hermetic
+  // session (P1-081).
+  if (hasNewChatFlag(process.argv)) requestNewChat();
 
   createWindow({ bootHidden: launchVerdict.action === "tray" });
   startPairingWatcher();
@@ -3616,6 +3663,9 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   // P2-021: track the shell window so showMainWindow() re-shows the hidden
   // one after a close-to-tray instead of spawning duplicates.
   mainWindow = win;
+  // P2-353: the new window has not heard anything yet — the argv paths queue
+  // their newChat broadcast until THIS window's own did-finish-load.
+  mainWindowLoaded = false;
   // P3-008: persist bounds on "close" — it fires both on quit (app.quit()
   // closes every window) and when a previously hidden window is destroyed.
   // Failures are log-only and must never block quitting.
@@ -3786,6 +3836,14 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
     loadFailAttempts = 0;
+    // P2-353: the load that just finished is what unblocks the queued
+    // newChat broadcast — the argv paths set the flag while the page was
+    // still loading, and this is its only flush point.
+    mainWindowLoaded = true;
+    if (pendingNewChat) {
+      pendingNewChat = false;
+      sendMenuAction("newChat");
+    }
     win.webContents.setZoomLevel(zoomLevel);
     // P2-270: the running version is promoted to "healthy" ONLY here — a
     // main-window load that truly finished. One promotion per process is
@@ -3863,6 +3921,28 @@ function sendMenuAction(id: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send("ocr:menu-action", id);
   }
+}
+
+// P2-353: the Dock menu (macOS) and the Jump List (Windows) ask for a new
+// conversation. The Windows task relaunches the app, so the request arrives
+// as argv — in the already-running shell via the second-instance handler, on
+// a cold start via process.argv — while the macOS dock item fires its click
+// in the running app directly. The request shows the window through the
+// existing path and broadcasts newChat over the existing ocr:menu-action
+// channel — but only once the renderer can hear it: a broadcast that lands
+// before the page finished loading is dropped. At the pairing gate the
+// renderer's existing behavior for that action applies (no new path), and a
+// hermetic session (P1-081) never receives the side effect at all.
+function requestNewChat(): void {
+  if (HERMETIC_E2E) return;
+  if (mainWindowLoaded) {
+    showMainWindow();
+    sendMenuAction("newChat");
+    return;
+  }
+  // The renderer has not finished loading (cold start, window recreated
+  // after a crash) — queue the broadcast for the did-finish-load flush.
+  pendingNewChat = true;
 }
 
 // P2-176: the menu lives as pure data in menu.ts (unit-tested, no electron

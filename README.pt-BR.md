@@ -1838,6 +1838,20 @@ boas-vindas). Troque a combinação com `OCR_DESKTOP_QUICK_HOTKEY` (mesmas
 regras do `OCR_DESKTOP_HOTKEY`), o menu Ir mostra o item **Entrada rápida** e
 um segundo toque imediato colapsa numa ação só.
 
+**Menu do Dock e Jump List (P2-353)**: o botão direito no ícone do app agora
+tem o caminho mais rápido para uma conversa. No macOS, o menu de contexto do
+ícone no Dock ganha **Nova conversa**; no Windows, a Jump List do ícone da
+barra de tarefas ganha a mesma entrada (só em builds empacotados — um run de
+dev não registra tarefa nenhuma no sistema). Ambas disparam a mesma ação
+`newChat` que o menu Ir já transmite, então no portão de pareamento vale o
+aviso calmo que o renderer já mostra. Um relançamento pela Jump List com o
+app já aberto — ou uma partida a frio com o flag dedicado `--ocr-new-chat` —
+foca a janela pelo caminho de mostrar janela que já existe e começa a conversa
+só depois que o renderer terminou de carregar, então a ação nunca corre
+contra a página. As duas superfícies registram uma única vez por boot, com os
+rótulos da linguagem da partida, e sessões de teste automatizadas nunca as
+registram.
+
 **Sair pede confirmação quando o celular perderia o acesso (P2-221)**: o item
 **Quit** da bandeja e o **Encerrar OpenCode Remote** do menu do app (ou
 `Cmd+Q`) fazem um quit de verdade com limpeza completa do daemon — e como o
