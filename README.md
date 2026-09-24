@@ -505,7 +505,10 @@ private. That is the product: **local power, remote control, zero trust**.
   artifact cards, status dots) is the same inline-SVG stroke set on top of CSS design tokens;
   every color literal lives in `apps/web/src/tokens.css` (dark + light theme), and
   Settings → Appearance accepts **System/Dark/Light** — System follows the OS
-  `prefers-color-scheme` live, with no reload
+  `prefers-color-scheme` live, with no reload. Native form controls follow the theme too
+  (P3-467): each theme block declares `color-scheme` (dark root, light override) and
+  `index.html` ships the `color-scheme` meta, so select popups, checkboxes, date fields and
+  autofill render in the active scheme instead of the browser's light default
 - **Bilingual UI + keyboard access** — every screen (pairing, chat composer, tool
   activity and diff dialogs) reads from one EN/pt-BR dictionary, dialogs close
   with Esc and trap focus, and the session board is fully reachable by keyboard.

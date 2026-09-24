@@ -556,7 +556,11 @@ remoto, zero confiança**.
 - **Linguagem de ícones consistente** — todos os ícones de chrome (nav desktop, tab bar,
   header do chat, cards de artifact, dots de status) usam o mesmo conjunto inline-SVG sobre
   tokens CSS; zero emoji-como-ícone, e os tokens `--panel`/`--bg2`/`--fg` agora existem de
-  verdade, consertando o light theme no shell desktop
+  verdade, consertando o light theme no shell desktop. Controles nativos de formulário
+  seguem o tema também (P3-467): cada bloco de tema declara `color-scheme` (raiz escura,
+  override claro) e o `index.html` leva a meta `color-scheme` — popups de select, checkboxes,
+  campos de data e o preenchimento automático renderizam no esquema ativo, não no padrão
+  claro do navegador
 - **UI bilíngue + teclado** — todas as telas (pareamento, composer do chat, diálogos de
   atividade e diff) saem de um dicionário único EN/pt-BR; diálogos fecham com Esc e prendem
   o focus, e o painel de sessões é totalmente navegável por teclado. As telas de conexão

@@ -42618,6 +42618,34 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
 }
 
+// --- P3-467: native form controls follow the theme via color-scheme ----------
+{
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", p), "utf8");
+  const tokens = read("tokens.css");
+  // Lesson P3-464: prove structural CSS guarantees by parsing the real
+  // stylesheet — strip comments first so a prose mention of color-scheme
+  // never counts as a declaration.
+  const bare = tokens.replace(/\/\*[\s\S]*?\*\//g, "");
+  const darkBlock = /:root\s*\{([^}]*)\}/.exec(bare)?.[1] ?? "";
+  const lightBlock = /:root\[data-theme="light"\]\s*\{([^}]*)\}/.exec(bare)?.[1] ?? "";
+  const count = (block: string) => (block.match(/\bcolor-scheme\s*:/g) ?? []).length;
+  check(
+    "P3-467: exactly one color-scheme declaration per theme block in tokens.css",
+    darkBlock !== "" && lightBlock !== "" && count(darkBlock) === 1 && count(lightBlock) === 1 && count(bare) === 2,
+  );
+  check(
+    "P3-467: :root is color-scheme dark and the light block is color-scheme light",
+    /color-scheme\s*:\s*dark\s*;/.test(darkBlock) && /color-scheme\s*:\s*light\s*;/.test(lightBlock),
+  );
+  // The meta paints native controls in the authored scheme before the
+  // stylesheet applies (first paint of selects, date fields, autofill).
+  const indexHtml = readFileSync(join(import.meta.dirname, "..", "apps", "web", "index.html"), "utf8");
+  check(
+    "P3-467: index.html carries the dark-light color-scheme meta",
+    /<meta\s+name="color-scheme"\s+content="dark light"\s*\/?>/.test(indexHtml),
+  );
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);

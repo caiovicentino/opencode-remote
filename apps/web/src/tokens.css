@@ -3,6 +3,10 @@
    ladder by P3-083; light values are the tuned per-theme counterparts.
    index.css imports this file first. */
 :root {
+  /* P3-467: dark is the authored scheme. Without color-scheme the browser
+     renders native controls (select popups, checkboxes, date fields,
+     autofill) in the light default no matter what palette follows. */
+  color-scheme: dark;
   /* gray ladder (P3-083): dark hierarchy where every step has a job —
      canvas (app background) < panel (chrome/rails) < raised (cards, bubbles)
      < hover (interactive fill) < line (resting border) < line-strong
@@ -87,6 +91,8 @@
 }
 
 :root[data-theme="light"] {
+  /* P3-467: native controls follow the light scheme here too. */
+  color-scheme: light;
   --bg: #f4f4f5;
   --surface: #ffffff;
   --border: #d4d4d8;
