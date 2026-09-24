@@ -613,6 +613,31 @@ explicando como adicioná-lo à Tela de Início (botão Compartilhar → Adicion
 `?installhint=1` no endereço força o aviso a aparecer para screenshots e
 reprodução de suporte (hatch só de teste; nada é gravado por ele).
 
+### Pça ao navegador para guardar o pareamento (P3-463)
+
+A mesma história de evicção tem uma segunda camada: o app agora **pede ao
+navegador, uma única vez, para persistir o armazenamento**
+(`navigator.storage.persist`), no momento em que um pareamento novo é salvo —
+nunca no boot, nunca numa reconexão, e nunca no app desktop. O pedido é
+best-effort e silencioso: toda falha (API ausente, promise rejeitada,
+resposta malformada) vira `unknown` e nada quebra. O veredito (`granted` /
+`denied` / `unknown`) fica num flag de uma palavra sem nenhuma chave.
+
+Quando o navegador responde **denied**, as Configurações ganham uma linha
+discreta no card Sobre dizendo que o navegador pode apagar o pareamento
+quando faltar espaço e recomendando instalar na Tela de Início — a única
+superfície que fala disso (nenhum banner no chat). Quando um pareamento
+some no boot e um marcador mínimo prova que esse armazenamento já teve um
+(limpezas deliberadas apagam o marcador; o navegador não), a tela de
+pareamento mostra uma linha calma explicando que o navegador apagou os dados
+do site, em vez de fingir um primeiro uso. Uma limpeza completa dos dados do
+site apaga o marcador junto, e nesse caso o app volta à tela de primeiro uso
+como antes.
+
+`?storagepersist=denied` no endereço força o veredito denied para screenshots
+e reprodução de suporte (hatch só de teste; nada é gravado por ele).
+`?pairwiped=1` força a linha de evicção da tela de pareamento do mesmo jeito.
+
 ### Offline no celular (P2-239)
 
 Depois de uma visita com internet a PWA guarda o próprio shell: ao instalar,

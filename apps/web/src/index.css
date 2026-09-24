@@ -1995,6 +1995,18 @@ button.desk-new:disabled {
 .install-hint-dismiss:hover {
   color: var(--fg);
 }
+/* ── P3-463: browser-storage persistence ───────────────────────────────────
+   Two quiet lines for one story: the Settings About card's denied verdict
+   (the one-time ask ran and the browser refused) and the pairing screen's
+   eviction note (the pairing is gone and nobody removed it). Plain muted
+   prose in normal flow — no alert color, no icon, no banner. */
+.storage-persist-hint {
+  line-height: 1.45;
+}
+.pair-storage-wiped {
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
 .sess-menu-scrim {
   position: fixed;
   inset: 0;

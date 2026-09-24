@@ -615,6 +615,31 @@ to add it to the Home Screen (Share button → Add to Home Screen). The hint:
 `?installhint=1` on the address forces the hint to show for screenshots and
 support reproduction (test-only hatch; nothing is persisted by it).
 
+### Ask the browser to keep the pairing (P3-463)
+
+The same eviction story has a second layer: the app now **asks the browser
+once to persist its storage** (`navigator.storage.persist`), at the moment a
+fresh pairing is saved — never at boot, never on a reconnect, and never in
+the desktop app. The ask is best-effort and silent: every failure (API
+missing, promise rejected, malformed answer) degrades to `unknown` and
+nothing breaks. The verdict (`granted` / `denied` / `unknown`) is kept in a
+one-word flag with no key material.
+
+When the browser answers **denied**, Settings gains one discreet line in the
+About card saying the browser may clear the pairing when storage runs low and
+recommending the Home Screen install — the only surface that ever mentions
+it (no banner in the chat). When a pairing disappears at boot and a minimal
+marker proves this storage once held one (deliberate wipes clear the
+marker; the browser cannot), the pairing screen shows a calm line explaining
+that the browser cleared the site's data instead of pretending it is a first
+use. A full wipe of all site data erases the marker too, in which case the
+app falls back to the plain first-use screen as before.
+
+`?storagepersist=denied` on the address forces the denied verdict for
+screenshots and support reproduction (test-only hatch; nothing is persisted
+by it). `?pairwiped=1` forces the pairing screen's eviction line the same
+way.
+
 ### Offline on the phone (P2-239)
 
 After one online visit the PWA keeps its shell: on install the service worker

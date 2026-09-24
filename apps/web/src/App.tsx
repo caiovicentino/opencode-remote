@@ -10,9 +10,20 @@ import {
   parsePairingUri,
   getOrCreateIdentity,
   wipeLocalIdentity,
+  clearPairingExisted,
+  hadPairingExisted,
   type Pairing,
   type Status,
 } from "./lib/client";
+import {
+  STORAGE_PERSIST_KEY,
+  readForcedPairingWiped,
+  readForcedStoragePersist,
+  readStoredStoragePersist,
+  requestStoragePersistence,
+  serializeStoragePersistState,
+  type StoragePersistState,
+} from "./lib/storagepersist";
 import { REAUTH_ERROR, REJECTED_ERROR } from "./lib/reauth";
 import { busyCount, reduceBusy, sendBusyCountToShell, type BusyState } from "./lib/busy";
 import { NotConnected } from "./lib/errors";
@@ -489,6 +500,31 @@ export default function App() {
   });
   const [installHintDismissed, setInstallHintDismissed] = useState(installHintEnv.dismissed);
 
+  // P3-463: the browser-storage persistence verdict. The flag is read once,
+  // here at mount (no per-render storage reads beyond the existing ones),
+  // and refreshed only by the ONE post-pairing ask — every error or missing
+  // API is `unknown` and renders nothing. Documented test-only hatch
+  // (?storagepersist=denied, P2-220 pattern): only the degraded state is
+  // honored, so the Settings line is deterministic in screenshot evidence
+  // without touching any network path; the real verdict always wins once
+  // the ask has run.
+  const [storagePersistOverride] = useState(() =>
+    readForcedStoragePersist(new URLSearchParams(location.search).get("storagepersist")),
+  );
+  // P3-463: the pairing screen's eviction-line hatch — ?pairwiped=1 forces
+  // the calm line for deterministic screenshot evidence; the real marker
+  // logic stays authoritative without it.
+  const [pairWipedForced] = useState(() =>
+    readForcedPairingWiped(new URLSearchParams(location.search).get("pairwiped")),
+  );
+  const [storagePersist, setStoragePersist] = useState<StoragePersistState | null>(() => {
+    try {
+      return readStoredStoragePersist(localStorage.getItem(STORAGE_PERSIST_KEY));
+    } catch {
+      return null;
+    }
+  });
+
   // P2-148: finishing (or skipping) stamps the flag in the renderer's
   // localStorage — no IPC, no main-process change, no second banner.
   function finishWelcome() {
@@ -586,6 +622,18 @@ export default function App() {
         saveState(pairing);
         setMachines(loadPairings());
         void gateEnroll(); // best effort: offer Face ID lock on first pair
+        // P3-463: the ONE storage-persistence ask — only here, at the moment
+        // a fresh pairing is saved, never at boot or on a reconnect. The ask
+        // runs once per storage lifetime (the flag's absence is the guard:
+        // a wiped flag is a wiped storage, and the next pairing asks again)
+        // and only in the PWA — the desktop shell's storage is the shell's
+        // own, no browser ever evicts it. requestStoragePersistence never
+        // throws; `void` is the whole error path.
+        let asked: StoragePersistState | null = null;
+        try {
+          asked = readStoredStoragePersist(localStorage.getItem(STORAGE_PERSIST_KEY));
+        } catch {}
+        if (!desktopBridge() && asked === null) void requestPairingStoragePersistence();
       }
       (window as unknown as { __ocrClient?: OcrClient }).__ocrClient = client;
       clientRef.current = client;
@@ -627,6 +675,20 @@ export default function App() {
     }
   }
 
+  /**
+   * P3-463: the ONE storage-persistence ask, best effort. Called only from
+   * connect()'s fresh-pairing branch (the guard lives there); the classifier
+   * never throws and every failure is `unknown`, so the flag write is the
+   * only cleanup and it is best effort too.
+   */
+  async function requestPairingStoragePersistence() {
+    const verdict = await requestStoragePersistence(navigator.storage);
+    setStoragePersist(verdict);
+    try {
+      localStorage.setItem(STORAGE_PERSIST_KEY, serializeStoragePersistState(verdict));
+    } catch {}
+  }
+
   // Bug 1: the ONE button of the expired card — wipe this device's identity
   // (keys + pairing state, preferences kept) and land on the fresh pairing
   // flow. In the desktop shell the auto-pair re-approves the new identity
@@ -658,7 +720,11 @@ export default function App() {
     clientRef.current?.close();
     clientRef.current = null;
     const room = getActiveRoom();
-    if (room) setMachines(removePairing(room));
+    // P3-463: same rule as forgetMachine — the user is the reason here, so
+    // an emptied list must not leave the eviction marker behind.
+    const rest = room ? removePairing(room) : loadPairings();
+    if (rest.length === 0) clearPairingExisted();
+    if (room) setMachines(rest);
     setActiveRoom(null);
     setEvents([]);
     setError("");
@@ -909,7 +975,12 @@ export default function App() {
   }
 
   function forgetMachine(p: Pairing) {
-    setMachines(removePairing(p.room));
+    const rest = removePairing(p.room);
+    setMachines(rest);
+    // P3-463: a deliberate forget explains its own reason — when the last
+    // pairing leaves, the "browser wiped the data" marker must not survive
+    // to accuse the browser on the next pairing screen.
+    if (rest.length === 0) clearPairingExisted();
     if (getActiveRoom() === p.room) disconnect();
   }
 
@@ -1506,6 +1577,11 @@ export default function App() {
         // consumed once and App resets the tick (no remount replay).
         relayFocusTick={relayFocusTick}
         onRelayFocusConsumed={(tick) => setRelayFocusTick((t) => (t === tick ? 0 : t))}
+        // P3-463: this device's browser-storage persistence verdict — the
+        // About card renders the discreet denied line only when the ask was
+        // denied. The hatch (test-only) overrides it; absent state renders
+        // nothing, so every other surface stays byte for byte.
+        storagePersist={storagePersistOverride ?? storagePersist}
       />
     );
   }
@@ -1834,6 +1910,16 @@ export default function App() {
               // panes' padlocks — one click earlier the gate rail opened them
               // unpaired; the card must not claim they need pairing.
               offlinePanes={!!desktopBridge()}
+              // P3-463: a pairing this storage once held is gone and nobody
+              // removed it — the calm line explains the eviction instead of
+              // pretending this is a first use. ?pairwiped=1 is the documented
+              // test-only hatch (screenshots). Deliberately not passed at the
+              // add-machine call site: adding a machine means a paired session
+              // exists (the picker opened it), so the condition below could
+              // never hold there.
+              storageWiped={
+                pairWipedForced || (hadPairingExisted() && !loadState() && loadPairings().length === 0)
+              }
             />
           )}
         </div>

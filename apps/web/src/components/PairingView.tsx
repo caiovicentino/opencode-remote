@@ -51,9 +51,13 @@ interface Props {
    * agent-down verdict carries the action that fixes its own cause in the
    * same block, instead of leaving recovery behind the header's quiet Voltar. */
   reconnect?: () => Promise<boolean>;
+  /** P3-463: this storage once held a pairing and nobody removed it — the
+   * browser evicted the site's data. The calm line names that instead of
+   * pretending this is a first use. */
+  storageWiped?: boolean;
 }
 
-export default function PairingView({ phase, error, hint, autoRetryMs, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack, offlinePanes, agentDown, reconnect }: Props) {
+export default function PairingView({ phase, error, hint, autoRetryMs, onPair, onRetry, onPairRemote, localMode, preferPaste, getCamAccess, onBack, offlinePanes, agentDown, reconnect, storageWiped }: Props) {
   const t = useT();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -290,6 +294,14 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           block. */}
       <div className="pair-columns">
         <div className="pair-main">
+          {/* P3-463: the eviction line leads — before the intro can promise a
+              first contact, the user learns what actually happened to their
+              pairing. Calm muted prose, no alert color, never a banner. */}
+          {storageWiped && (
+            <p className="muted pair-storage-wiped" role="status">
+              {t("pairStorageWiped")}
+            </p>
+          )}
           {/* EVAL4-F1: the phone (no host section, scan-first) must not read the
               desktop's "pairs with the daemon on this machine" promise.
               P3-427: with the local agent down the intro is dropped entirely —

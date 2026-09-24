@@ -32,7 +32,7 @@ import { allowedUpstreamPath, relativePathVerdict } from "../apps/daemon/src/pat
 import { gateFailFile, mergeConflictBlock } from "../apps/pilot/src/pipeline";
 import { classifyConflictPath, isCommentOnlyHunk, parseConflictedFile, repairPlan, resolveConflictedFile } from "../apps/pilot/src/mergerepair";
 
-import { parsePairingUri, localWsUrl, shouldFailoverToRelay } from "../apps/web/src/lib/client";
+import { parsePairingUri, localWsUrl, shouldFailoverToRelay, PAIRED_BEFORE_KEY } from "../apps/web/src/lib/client";
 
 import { networkReturnAction, NETWORK_RETURN_STALE_MS, type NetworkReturnAction } from "../apps/web/src/lib/netreturn";
 
@@ -456,6 +456,18 @@ import {
   parseInstallHintDismissed,
   serializeInstallHintDismissed,
 } from "../apps/web/src/lib/installhint";
+
+import {
+  readForcedPairingWiped,
+  readForcedStoragePersist,
+  readStoredStoragePersist,
+  requestStoragePersistence,
+  serializeStoragePersistState,
+  STORAGE_PERSIST_KEY,
+  STORAGE_PERSIST_STATES,
+  type StoragePersistState,
+} from "../apps/web/src/lib/storagepersist";
+import { isIdentityStorageKey } from "../apps/web/src/lib/reauth";
 
 import { previewFromEvents, clipPreview } from "../apps/web/src/lib/sessionPreview";
 import {
@@ -14681,6 +14693,140 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     appSrc.includes('t("installHintBody")') && !appSrc.includes("hint.message") && !appSrc.includes("installHint={INSTALL_HINT_MESSAGE}"),
   );
   check("p2-220: App wires navigator.maxTouchPoints into the verdict (iPadOS 13+ Mac UA)", /maxTouchPoints:\s*navigator\.maxTouchPoints/.test(appSrc));
+}
+
+
+// --- P3-463: browser-storage persistence (classifier + flags + source pins) --
+// The PWA's pairing lives in evictable browser storage; before this task the
+// app never asked the browser to persist it. Now: ONE ask, only after a
+// fresh pairing is saved, best-effort, classified into granted/denied/unknown;
+// a denied verdict earns one discreet Settings line; a recognized eviction
+// earns one calm pairing-screen line. No chat banner, ever.
+{
+  // --- classifier truth table (acceptance: API missing / rejected / true / false)
+  const okPersist = (v: boolean) => async () => v;
+  check("p3-463 classifier: persist() true → granted", await requestStoragePersistence({ persist: okPersist(true) }) === "granted");
+  check("p3-463 classifier: persist() false → denied", await requestStoragePersistence({ persist: okPersist(false) }) === "denied");
+  check(
+    "p3-463 classifier: rejecting promise → unknown (never throws)",
+    await requestStoragePersistence({
+      persist: () => Promise.reject(new Error("quota")),
+    }) === "unknown",
+  );
+  check("p3-463 classifier: API absent (null) → unknown", await requestStoragePersistence(null) === "unknown");
+  check("p3-463 classifier: API absent (undefined) → unknown", await requestStoragePersistence(undefined) === "unknown");
+  check("p3-463 classifier: API absent (empty object) → unknown", await requestStoragePersistence({}) === "unknown");
+  check("p3-463 classifier: non-function persist → unknown", await requestStoragePersistence({ persist: 42 as unknown as () => Promise<boolean> }) === "unknown");
+  check(
+    "p3-463 classifier: malformed answer (not boolean) → unknown",
+    await requestStoragePersistence({ persist: (async () => "yes") as unknown as () => Promise<boolean> }) === "unknown",
+  );
+  check(
+    "p3-463 classifier: sync throw inside persist → unknown",
+    await requestStoragePersistence({
+      persist: (() => {
+        throw new Error("boom");
+      }) as unknown as () => Promise<boolean>,
+    }) === "unknown",
+  );
+
+  // --- the verdict flag: closed set, tolerant read, no key material
+  check("p3-463 flag: key is a quiet dotted name (wiped with the pairing)", STORAGE_PERSIST_KEY === "ocr.storagepersist");
+  check("p3-463 flag: absent/null/undefined → null", readStoredStoragePersist(null) === null && readStoredStoragePersist(undefined) === null);
+  check("p3-463 flag: out-of-set value → null", readStoredStoragePersist("maybe") === null && readStoredStoragePersist("") === null);
+  check(
+    "p3-463 flag: every closed-set value round-trips",
+    STORAGE_PERSIST_STATES.every((s) => readStoredStoragePersist(serializeStoragePersistState(s as StoragePersistState)) === s),
+  );
+  check(
+    "p3-463 flag: serialized verdict carries no room/key/relay/scheme",
+    STORAGE_PERSIST_STATES.every((s) => !/room|k=|relay|:\/\//.test(serializeStoragePersistState(s as StoragePersistState))),
+  );
+
+  // --- the test hatch: fail-closed, only the degraded state is honored
+  check("p3-463 hatch: ?storagepersist=denied forces denied", readForcedStoragePersist("denied") === "denied");
+  check("p3-463 hatch: granted is never forceable", readForcedStoragePersist("granted") === null);
+  check("p3-463 hatch: unknown/absent/garbage force nothing", readForcedStoragePersist("unknown") === null && readForcedStoragePersist(null) === null && readForcedStoragePersist("1") === null);
+  check("p3-463 hatch: ?pairwiped=1 forces the eviction line", readForcedPairingWiped("1") === true);
+  check("p3-463 hatch: ?pairwiped other values force nothing", readForcedPairingWiped("0") === false && readForcedPairingWiped(null) === false && readForcedPairingWiped("true") === false);
+
+  // --- the eviction marker: minimal, key-free, wiped by the deliberate wipe
+  check("p3-463 marker: key is a quiet dotted name", PAIRED_BEFORE_KEY === "ocr.pairing.existed");
+  check(
+    "p3-463 marker: the deliberate wipe removes it (dotted namespace rule)",
+    isIdentityStorageKey(PAIRED_BEFORE_KEY) === true && isIdentityStorageKey(STORAGE_PERSIST_KEY) === true,
+  );
+
+  // --- source pins: ONE persist call in apps/web/src, outside boot, after pairing
+  const appSrc = readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8");
+  const mainSrc = readFileSync(new URL("../apps/web/src/main.tsx", import.meta.url), "utf8");
+  const moduleSrc = readFileSync(new URL("../apps/web/src/lib/storagepersist.ts", import.meta.url), "utf8");
+  const clientSrc = readFileSync(new URL("../apps/web/src/lib/client.ts", import.meta.url), "utf8");
+  const settingsSrc = readFileSync(new URL("../apps/web/src/components/SettingsView.tsx", import.meta.url), "utf8");
+  const pairingViewSrc = readFileSync(new URL("../apps/web/src/components/PairingView.tsx", import.meta.url), "utf8");
+  // the ONE-call rule scans the WHOLE web tree, not a sample of files
+  const webSrcRoot = join(import.meta.dirname, "..", "apps", "web", "src");
+  const walkSrc = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walkSrc(join(dir, e.name)) : /\.(ts|tsx|js)$/.test(e.name) ? [readFileSync(join(dir, e.name), "utf8")] : [],
+    );
+  const webSrcFiles = walkSrc(webSrcRoot);
+  const persistCalls = webSrcFiles.flatMap((src) => src.match(/storage\.persist\(/g) ?? []);
+  check("p3-463 source: exactly ONE storage.persist() call exists in apps/web/src", persistCalls.length === 1 && persistCalls[0] === "storage.persist(");
+  check("p3-463 source: the single call lives in the pure module (the funnel)", moduleSrc.includes("storage.persist()") && !appSrc.includes("storage.persist(") && !mainSrc.includes("storage.persist("));
+  check("p3-463 source: no storage.persisted() call anywhere in apps/web/src", webSrcFiles.every((src) => !src.includes("storage.persisted(")));
+  const appCalls = appSrc.match(/requestStoragePersistence\(/g) ?? [];
+  const helperCalls = appSrc.match(/void requestPairingStoragePersistence\(\)/g) ?? [];
+  check("p3-463 source: App calls the ask exactly once (inside the helper)", appCalls.length === 1 && helperCalls.length === 1);
+  const connectAt = appSrc.indexOf("async function connect(");
+  const saveAt = appSrc.indexOf("saveState(pairing)");
+  const persistIfAt = appSrc.indexOf("if (persist) {");
+  const helperCallAt = appSrc.indexOf("void requestPairingStoragePersistence()");
+  check(
+    "p3-463 source: the ask sits inside the fresh-pairing branch, after saveState (never boot)",
+    persistIfAt > -1 && saveAt > persistIfAt && helperCallAt > saveAt && helperCallAt < appSrc.indexOf("(window as unknown as { __ocrClient", saveAt),
+  );
+  check(
+    "p3-463 source: boot never touches the persistence ask",
+    !mainSrc.includes("requestStoragePersistence") && !mainSrc.includes("navigator.storage") && !appSrc.slice(0, connectAt).includes("requestPairingStoragePersistence"),
+  );
+  check("p3-463 source: the ask is guarded to the PWA (desktop shell never asks)", /if \(!desktopBridge\(\) && asked === null\) void requestPairingStoragePersistence\(\);/.test(appSrc));
+  check("p3-463 source: the once-guard reads the live flag, not a stale state", appSrc.includes("asked = readStoredStoragePersist(localStorage.getItem(STORAGE_PERSIST_KEY))"));
+  check("p3-463 source: the verdict is written as one word to the dotted flag", appSrc.includes("localStorage.setItem(STORAGE_PERSIST_KEY, serializeStoragePersistState(verdict))"));
+  check("p3-463 source: the marker is stamped by upsertPairing (every pairing write)", /export function upsertPairing\(p: Pairing\): Pairing\[\] \{[\s\S]{0,400}markPairingExisted\(\);/.test(clientSrc));
+  check("p3-463 source: App forgets clear the marker when the list empties", (appSrc.match(/rest\.length === 0\) clearPairingExisted\(\)/g) ?? []).length === 2);
+
+  // --- Settings: the discreet denied line (About card), nothing else
+  check("p3-463 settings: the line renders only for the denied verdict", settingsSrc.includes('{storagePersist === "denied" && (') && settingsSrc.includes('className="muted storage-persist-hint"') && settingsSrc.includes('t("storagePersistHint")'));
+  check("p3-463 settings: no granted/unknown branch exists (fail-closed silence)", !settingsSrc.includes('storagePersist === "granted"') && !settingsSrc.includes('storagePersist === "unknown"'));
+  check(
+    "p3-463 settings: the verdict reaches the view as a prop, never read from storage here",
+    settingsSrc.includes("storagePersist?: StoragePersistState | null") && !settingsSrc.includes("navigator.storage"),
+  );
+
+  // --- Pairing screen: the calm eviction line, only when the marker fired
+  check("p3-463 pairing screen: the calm line renders only when the marker fired", pairingViewSrc.includes("{storageWiped && (") && pairingViewSrc.includes('className="muted pair-storage-wiped"') && pairingViewSrc.includes('t("pairStorageWiped")'));
+  check("p3-463 pairing screen: App computes the verdict from marker + empty pairing state, or the test hatch", appSrc.includes("storageWiped={") && appSrc.includes("pairWipedForced || (hadPairingExisted() && !loadState() && loadPairings().length === 0)"));
+  check("p3-463 pairing screen: the hatch can only ADD the line (nothing suppresses the marker verdict)", appSrc.includes("pairWipedForced || (hadPairingExisted()") && !appSrc.includes("pairWipedForced &&"));
+  check("p3-463 no banner: the chat and the pairing screen never import the module", !chatViewSource.includes("storagepersist") && !pairingViewSrc.includes("storagepersist"));
+
+  // --- copy: both locales, calm, no alerts
+  for (const lang of ["en", "pt"] as const) {
+    const d = dict[lang] as Record<string, string>;
+    check(
+      `p3-463 i18n ${lang}: both lines exist and are non-empty`,
+      typeof d.storagePersistHint === "string" && d.storagePersistHint.length > 0 && typeof d.pairStorageWiped === "string" && d.pairStorageWiped.length > 0,
+    );
+  }
+  check(
+    "p3-463 i18n pt: the denied line names the browser, the pairing and the Home Screen install",
+    /navegador/i.test(dict.pt.storagePersistHint) && /pareamento/i.test(dict.pt.storagePersistHint) && /Tela de Início/i.test(dict.pt.storagePersistHint),
+  );
+  check(
+    "p3-463 i18n en: the denied line mirrors the pt sentence",
+    /browser/i.test(dict.en.storagePersistHint) && /pairing/i.test(dict.en.storagePersistHint) && /Home Screen/i.test(dict.en.storagePersistHint),
+  );
+  check("p3-463 i18n pt: the wiped line explains the eviction calmly", /navegador/i.test(dict.pt.pairStorageWiped) && /pareamento/i.test(dict.pt.pairStorageWiped));
 }
 
 
@@ -40826,7 +40972,7 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check(
     "P3-453: SettingsView takes the live relay-link verdict as an OPTIONAL prop",
     settingsSrc.includes("relayLink?: { state: string; message: string } | null;") &&
-      settingsSrc.includes("onRelayFocusConsumed, relayLink, redialRelay }: Props"),
+      settingsSrc.includes("onRelayFocusConsumed, relayLink, redialRelay, storagePersist }: Props"),
   );
 
   // 2. the line exists only under the prop gate, inside the relay block, with
@@ -40954,7 +41100,7 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check(
     "P2-340: SettingsView takes the redial handler as an OPTIONAL prop (P3-443)",
     settingsSrc.includes("redialRelay?: () => Promise<string>;") &&
-      settingsSrc.includes("relayLink, redialRelay }: Props"),
+      settingsSrc.includes("relayLink, redialRelay, storagePersist }: Props"),
   );
   const relayCardAt340 = settingsSrc.indexOf("data-relay-setting");
   const lineGateAt340 = settingsSrc.indexOf("{relayLink && (", relayCardAt340);
