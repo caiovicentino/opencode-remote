@@ -1084,6 +1084,7 @@ import { findWindowsInstaller, listProblems, smokeFlags, windowsInstallerProblem
 import { bootVerdict } from "../apps/desktop/scripts/packaged-boot-verdict.mjs";
 import { candidatePaths, isExecutableEntry } from "../apps/desktop/scripts/packaged-boot-layout.mjs";
 import { exitPlan, postVerdictExitCode, runExitPlan } from "../apps/desktop/scripts/packaged-boot-exit.mjs";
+import { BOOT_BUDGET_MS, bootBudgetLine, bootBudgetVerdict } from "../apps/desktop/scripts/bootbudget.mjs";
 import { installerVerdict } from "../apps/desktop/scripts/installer-smoke-verdict.mjs";
 import { dmgVerdict } from "../apps/desktop/scripts/dmg-smoke-verdict.mjs";
 
@@ -42277,6 +42278,165 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
       !jumplistSrc.includes("node:") &&
       !jumplistSrc.includes("setInterval") &&
       !jumplistSrc.includes("setTimeout"),
+  );
+}
+
+// --- P2-354: packaged-boot timing ratchet — bootbudget.mjs --------------------
+
+{
+  const src = (rel: string[]) => readFileSync(join(import.meta.dirname, "..", ...rel), "utf8");
+  const budgetSrc = src(["apps", "desktop", "scripts", "bootbudget.mjs"]);
+  const bootSrc = src(["apps", "desktop", "scripts", "packaged-boot.mjs"]);
+
+  // full verdict table — below the ceiling, at the ceiling, above, zero,
+  // negative, non-finite and unknown platform (the P2-354 closed set)
+  check("P2-354: darwin boot below the ceiling → ok", bootBudgetVerdict("darwin", 1000).state === "ok");
+  check(
+    "P2-354: darwin boot exactly at the ceiling → ok (the boundary is not over-budget)",
+    bootBudgetVerdict("darwin", BOOT_BUDGET_MS.darwin).state === "ok",
+  );
+  check(
+    "P2-354: darwin boot above the ceiling → over-budget",
+    bootBudgetVerdict("darwin", BOOT_BUDGET_MS.darwin + 1).state === "over-budget",
+  );
+  check(
+    "P2-354: over-budget message cites the measured number",
+    (bootBudgetVerdict("darwin", BOOT_BUDGET_MS.darwin + 7).message ?? "").includes(String(BOOT_BUDGET_MS.darwin + 7)),
+  );
+  check(
+    "P2-354: over-budget also cites the ceiling",
+    (bootBudgetVerdict("darwin", BOOT_BUDGET_MS.darwin + 1).message ?? "").includes(String(BOOT_BUDGET_MS.darwin)),
+  );
+  check("P2-354: zero is a valid measurement → ok (finite, non-negative)", bootBudgetVerdict("darwin", 0).state === "ok");
+  check("P2-354: negative measured time → unknown", bootBudgetVerdict("darwin", -1).state === "unknown");
+  check(
+    "P2-354: non-finite measured time → unknown (NaN and both Infinities)",
+    bootBudgetVerdict("darwin", Number.NaN).state === "unknown" &&
+      bootBudgetVerdict("darwin", Number.POSITIVE_INFINITY).state === "unknown" &&
+      bootBudgetVerdict("darwin", Number.NEGATIVE_INFINITY).state === "unknown",
+  );
+  check(
+    "P2-354: missing measured time → unknown (undefined and null)",
+    bootBudgetVerdict("darwin", undefined as unknown as number).state === "unknown" &&
+      bootBudgetVerdict("darwin", null as unknown as number).state === "unknown",
+  );
+  check("P2-354: non-number measured time → unknown", bootBudgetVerdict("darwin", "123" as unknown as number).state === "unknown");
+  check(
+    "P2-354: unknown platform → unknown even with a valid measurement",
+    bootBudgetVerdict("linux", 1000).state === "unknown" &&
+      bootBudgetVerdict("", 1000).state === "unknown" &&
+      bootBudgetVerdict(undefined as unknown as string, 1000).state === "unknown",
+  );
+  check(
+    "P2-354: prototype keys never resolve as budgets (own-property guard)",
+    bootBudgetVerdict("toString", 1000).state === "unknown" && bootBudgetVerdict("constructor", 1000).state === "unknown",
+  );
+  check(
+    "P2-354: unknown verdict keeps what is knowable — budget for a known platform, echo for a valid measurement",
+    bootBudgetVerdict("darwin", undefined as unknown as number).budgetMs === BOOT_BUDGET_MS.darwin &&
+      bootBudgetVerdict("linux", 1000).measuredMs === 1000,
+  );
+  check(
+    "P2-354: every message is non-empty and free of paths, URLs and secrets (P2-201 bar)",
+    [
+      bootBudgetVerdict("darwin", 1000),
+      bootBudgetVerdict("darwin", BOOT_BUDGET_MS.darwin + 1),
+      bootBudgetVerdict("darwin", undefined as unknown as number),
+      bootBudgetVerdict("linux", 1000),
+    ].every((v) => typeof v.message === "string" && v.message.trim().length > 0 && !/[\\/]/.test(v.message) && !/https?:/i.test(v.message)),
+  );
+
+  // the budget table: exactly the two platforms that run the smoke, positive
+  // integer ceilings (darwin from this machine's baseline, win32 documented
+  // generous for the CI runner)
+  const budgetKeys = Object.keys(BOOT_BUDGET_MS);
+  check(
+    "P2-354: the budget table covers exactly darwin and win32 with positive integer ceilings",
+    budgetKeys.length === 2 &&
+      budgetKeys.includes("darwin") &&
+      budgetKeys.includes("win32") &&
+      Number.isSafeInteger(BOOT_BUDGET_MS.darwin) &&
+      BOOT_BUDGET_MS.darwin > 0 &&
+      Number.isSafeInteger(BOOT_BUDGET_MS.win32) &&
+      BOOT_BUDGET_MS.win32 > 0,
+  );
+  check(
+    "P2-354: the win32 ceiling stays above the smoke's own 45s load timeout so the budget is never the deciding failure there",
+    BOOT_BUDGET_MS.win32 > 45_000,
+  );
+
+  // the ratchet line: one format, every run, fail-open on both sides
+  check(
+    "P2-354: the line carries the measured number and the platform ceiling",
+    bootBudgetLine("darwin", 3712) === `packaged-boot boot in 3712ms budget ${BOOT_BUDGET_MS.darwin}ms`,
+  );
+  check(
+    "P2-354: the line keeps its exact format when timing is absent — fail open, never red",
+    bootBudgetLine("darwin", undefined as unknown as number) === `packaged-boot boot in unknown budget ${BOOT_BUDGET_MS.darwin}ms`,
+  );
+  check(
+    "P2-354: the line degrades only the budget side for an unknown platform",
+    bootBudgetLine("linux", 3712) === "packaged-boot boot in 3712ms budget unknown",
+  );
+  check(
+    "P2-354: the line degrades both sides when neither is knowable",
+    bootBudgetLine("linux", undefined as unknown as number) === "packaged-boot boot in unknown budget unknown",
+  );
+
+  // purity: no imports at all, so the unit battery never boots I/O (P2-204 bar)
+  check(
+    "P2-354: bootbudget.mjs is pure (no node: import of any kind)",
+    !/node:/.test(budgetSrc.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "")),
+  );
+
+  // real-source assertions over the REAL packaged-boot.mjs: exactly one
+  // measurement, taken only after load-finished (the canary is injected there)
+  check(
+    "P2-354: the smoke starts the wall-clock exactly once, immediately before the launch that spawns the process",
+    (bootSrc.match(/bootStartedAt = Date\.now\(\);/g) ?? []).length === 1 &&
+      bootSrc.indexOf("bootStartedAt = Date.now();") < bootSrc.indexOf("electron.launch({"),
+  );
+  check(
+    "P2-354: exactly one boot-time endpoint capture exists in the smoke",
+    (bootSrc.match(/bootMeasuredMs = Date\.now\(\) - bootStartedAt;/g) ?? []).length === 1,
+  );
+  check(
+    "P2-354: the endpoint capture is guarded to fire exactly once per run, even with multiple collecting windows",
+    /if \(bootMeasuredMs === null && bootStartedAt !== null\) \{\s*\n\s*bootMeasuredMs = Date\.now\(\) - bootStartedAt;/.test(bootSrc),
+  );
+  check(
+    "P2-354: the capture lives in the canary branch — the canary is only injected after load-finished, so the endpoint is always after it",
+    /if \(msg\.text\(\)\.includes\(CANARY\)\) \{\s*\n\s*facts\.canarySeen = true;[\s\S]*?bootMeasuredMs = Date\.now\(\) - bootStartedAt;/.test(bootSrc) &&
+      bootSrc.indexOf('await page.waitForLoadState("load"') < bootSrc.indexOf("console.error('${CANARY}')"),
+  );
+  check(
+    "P2-354: the ratchet line is built exactly once and printed at most once per process — on all six exit paths",
+    (bootSrc.match(/bootBudgetLine\(/g) ?? []).length === 1 &&
+      /if \(bootTimingPrinted\) return;/.test(bootSrc) &&
+      (bootSrc.match(/printBootTiming\(\);/g) ?? []).length === 6,
+  );
+  check(
+    "P2-354: the watchdog timeout path prints the ratchet line before exiting — a hung boot is still an execution",
+    /watchdog = setTimeout\(\(\) => \{[\s\S]*?printBootTiming\(\);[\s\S]*?process\.exit\(postVerdictExitCode/.test(bootSrc),
+  );
+  check(
+    "P2-354: the uncaught-error path prints the ratchet line before process.exit(1)",
+    /main\(\)\.catch\(\(err\) => \{[\s\S]*?printBootTiming\(\);\s*\n\s*process\.exit\(1\);/.test(bootSrc),
+  );
+  const timingFn = /function printBootTiming\(\) \{[\s\S]*?\n\}/.exec(bootSrc)?.[0] ?? "";
+  check(
+    "P2-354: fail-open — the timing print never touches the exit code and never exits",
+    timingFn.length > 0 && !timingFn.includes("exitCode") && !timingFn.includes("process.exit"),
+  );
+  check(
+    "P2-354: the budget verdict is informational in the smoke — the exit code still comes only from bootVerdict",
+    bootSrc.includes("process.exitCode = verdict.ok ? 0 : 1;") &&
+      !/exitCode\s*=.*budget/.test(bootSrc) &&
+      (bootSrc.match(/bootBudgetVerdict\(/g) ?? []).length === 1,
+  );
+  check(
+    "P2-354: the smoke carries no budget literal — the table has a single source in bootbudget.mjs",
+    bootSrc.includes('from "./bootbudget.mjs"') && !/\b20000\b/.test(bootSrc.replace(/\/\/.*$/gm, "")),
   );
 }
 

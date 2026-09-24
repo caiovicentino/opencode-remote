@@ -906,6 +906,13 @@ bundle once in the PR (`Smoke-boot the packaged app` step, right after the
 inspection smoke) — the same hermetic launch the release workflow performs
 (temp userData, run-own session, no sidecar, Playwright missing fails closed),
 so a package that does not open fails the PR instead of publication day.
+Since P2-354 every run also prints exactly one cold-start ratchet line,
+`packaged-boot boot in Xms budget Yms` — wall-clock from the process spawn
+until load-finished with the console canary seen, next to the per-platform
+ceiling documented in `apps/desktop/scripts/bootbudget.mjs` (darwin baseline
+measured on the dev machine, win32 generous for the CI runner). The spike
+fails open: timing is informational, the exit code still comes only from the
+boot verdict, and nothing gates on time yet.
 Reproduce the same boot locally against an already-built package:
 
     node apps/desktop/scripts/packaged-boot.mjs "apps/desktop/dist/mac-arm64/OpenCode Remote.app"
@@ -947,6 +954,14 @@ Run the boot smoke locally against an already-built package too:
 Set `OCR_PACKAGED_BOOT_SHOT=<path>` to also save a screenshot of the booted
 window (best-effort, never changes the verdict) — the Windows packaging jobs
 do this and upload the PNG as a run artifact (P3-343).
+
+Since P2-354 every boot smoke run also prints exactly one cold-start ratchet
+line, `packaged-boot boot in Xms budget Yms` — wall-clock from the process
+spawn until load-finished with the console canary seen, next to the
+per-platform ceiling documented in `apps/desktop/scripts/bootbudget.mjs`
+(darwin baseline measured on the dev machine, win32 generous for the CI
+runner). The spike fails open: timing is informational, the exit code still
+comes only from the boot verdict, and nothing gates on time yet.
 
 Since P3-348 the script exits deterministically once the verdict is printed:
 on Windows it best-effort `taskkill /T /F`s the whole Electron process tree
