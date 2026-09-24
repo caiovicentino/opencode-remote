@@ -1664,7 +1664,14 @@ volta da suspensão nunca vira enxurrada de log — e cada evento tratado escrev
 exatamente uma linha `[desktop] wake event (…)` com a ação e o motivo.
 Plataformas sem o sinal do sistema seguem como antes, nenhuma sonda periódica
 nova é criada e o pareamento nunca é alterado por um wake: sem re-pareamento,
-sem escrita em allowlist ou no arquivo de estado.
+sem escrita em allowlist ou no arquivo de estado. Desde a P2-349 o daemon
+percebe o wake sozinho quando não há shell para avisá-lo (um boot via linha de
+comando, ou o shell que ainda não subiu): o tick da sonda de upstream de 60s
+nota uma lacuna de relógio acima de três dos próprios intervalos, incrementa
+`ocr_wake_detected_total`, escreve uma linha `wake detected` com a lacuna em
+segundos e antecipa a reconexão do relay pelo exato mesmo portão da P2-327 (o
+backoff de relay-close continua respeitado e o throttle de 10s absorve a
+chamada dupla de shell + daemon sem um segundo socket).
 
 **Manter acordado enquanto o agente trabalha**: a outra metade da história do
 sleep — uma tarefa longa pedida pelo telefone não morre mais porque a máquina

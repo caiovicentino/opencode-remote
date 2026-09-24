@@ -405,6 +405,16 @@ per 10 s. Since P2-339 the same route also anticipates a recorded
 updated the app or the relay is exactly the human action that may shorten
 that wait.
 
+Since P2-349 the daemon detects the wake itself when the shell is not there
+to report it (a CLI boot, or the desktop app that has not come up yet): the
+60 s upstream probe compares each tick against the previous one and, when the
+clock gap exceeds three probe intervals (the machine was suspended and woke),
+the daemon bumps the `ocr_wake_detected_total` metric, logs one `wake
+detected` line with the gap rounded in seconds and anticipates the same
+reconnect wait through the same gate — a relay-close backoff stays honored,
+the 10 s throttle absorbs a second call from the shell without dialing twice,
+and the probe itself continues untouched.
+
 Since P2-340 that human click has a surface: the Settings relay card renders
 a **Reconnect now** button under the live status line whenever the link is
 connecting/reconnecting, refused or incompatible — and, since P2-343, the

@@ -85,6 +85,16 @@ which reuses the exact same wake POST and resolves with a sanitized
 closed-set verdict (redialing / throttled / already-dialing / not-needed /
 unavailable) instead of the raw answer.
 
+Since P2-349 the daemon also detects the wake on its own when no shell is
+there to report it (a CLI boot, or the desktop app that has not come up yet):
+the 60s upstream-probe tick compares each tick against the previous one and,
+when the clock gap exceeds three probe intervals (the process was suspended
+and the machine woke), the daemon logs one `wake detected` line with the gap
+rounded in seconds, bumps the `ocr_wake_detected_total` metric and
+anticipates the pending reconnect wait through the exact same P2-327 gate —
+a `relay-close` floor stays honored and the 10s throttle absorbs the second
+call when the shell's powerMonitor already redialed.
+
 Since P2-303 the `relay` object also carries an additive machine-proxy
 verdict of the dial: `relayProxyState` is `direct` (today's path — no proxy
 variables, a loopback relay, a `NO_PROXY` match or a discarded address) or
