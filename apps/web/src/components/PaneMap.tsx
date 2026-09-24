@@ -56,9 +56,11 @@ export default function PaneMap({ reachable = false, offlinePanes = false }: { r
     { icon: <IconSettings size={14} />, label: t("navSettings"), desc: t("paneMapSettings"), locked: !offlinePanes },
   ];
   return reachable ? (
-    <p className="pane-map-note">{t("paneMapRailNote")}</p>
+    <p className="pane-map-note" data-region="pane-map">
+      {t("paneMapRailNote")}
+    </p>
   ) : (
-    <section className="pane-map" aria-label={t(titleKey)}>
+    <section className="pane-map" data-region="pane-map" aria-label={t(titleKey)}>
       <h2 className="pane-map-title">{t(titleKey)}</h2>
       <ul className="pane-map-list">
         {panes.map((p) => (

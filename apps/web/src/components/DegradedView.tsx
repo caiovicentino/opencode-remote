@@ -155,7 +155,7 @@ export default function DegradedView({ kind, busy, reconnectAttempts, reconnect,
 
   return (
     <div className="screen degraded" data-degraded-kind={busy ? "connecting" : kind}>
-      <header>
+      <header data-region="brand-header">
         {/* P3-373: same glyph language as the welcome wizard — the first
             three screens of the journey share one brand header. */}
         <div className="welcome-mark" aria-hidden="true">

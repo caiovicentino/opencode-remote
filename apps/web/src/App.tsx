@@ -1995,7 +1995,11 @@ export default function App() {
       >
         {mismatchBanner}
         <div className="desk">
-          <aside className="desk-side">
+          {/* P2-355: named layout-shift regions — the containers the explorer
+              hunted as pop-in surfaces carry data-region so the desktop-flow
+              gate can attribute every layout-shift entry by name (see
+              apps/web/src/lib/shiftgate.ts). Invisible to users. */}
+          <aside className="desk-side" data-region="sidebar">
             <div className="desk-side-top">
               {/* P3-380: the primary CTA is inert until pairing succeeds —
                   carry the same hint tooltip as the rail's Conversas slot so
@@ -2218,7 +2222,7 @@ export default function App() {
       )}
       {isDesktop ? (
         <div className="desk">
-          <aside className="desk-side">
+          <aside className="desk-side" data-region="sidebar">
             {/* P2-124: Claude-style shell — primary action + section nav up
                 top, conversations in the middle, account footer pinned down. */}
             <div className="desk-side-top">
