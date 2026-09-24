@@ -94,6 +94,7 @@ import { updateGuard } from "./updateguard";
 import { WAKE_EVENT_TYPES, wakePlan } from "./wakeplan";
 import { parseProxyAddress, proxyPlan, type ProxyPlanVerdict } from "./proxyplan";
 import { proxyApplyDecision, type ProxyApplySnapshot } from "./proxyapply";
+import { proxyAuthVerdict, type ProxyAuthVerdict } from "./proxyauth";
 import { proxySettingFile, readProxyChoice, writeProxyChoice } from "./proxystore";
 import { HOTKEY_QUICK_USER_ENV, HOTKEY_USER_ENV, hotkeyPlan, type HotkeyPlan } from "./hotkey";
 import { initDesktopLog, log, logError } from "./desktop-log";
@@ -293,6 +294,12 @@ let bootProxyOrigin: string = PROXY_ORIGIN_ENVIRONMENT;
 // a keep: restarting the sidecar without need drops the phone's live chat.
 let liveProxyVerdict: ProxyPlanVerdict | null = null;
 let liveProxyRelay: string | null = null;
+// P2-350: the last proxy-auth verdict of this execution, for the diagnostics
+// bundle and the tray's update-error label. null until the shell's `login`
+// listener sees its first challenge — absent means "nothing was seen yet",
+// which must never read as "nothing happened". The verdict text never carries
+// the host, a port, a realm or a credential (the proxyauth.ts boundary).
+let lastProxyAuthVerdict: ProxyAuthVerdict | null = null;
 
 // P2-244: GPU-crash policy state. `gpuDisabledThisBoot` mirrors the boot
 // plan's action so the tray hint can fire once the notification surface is
@@ -459,6 +466,11 @@ function buildDiagnostics(): string {
     // (privacy contract in diagnostics.ts). Same getter the pairing payload
     // already calls; no new computation, no timer.
     sidecarWedge: sidecarWedgeState()?.state ?? null,
+    // P2-350: the last proxy-auth verdict — closed-set state + static phrase
+    // only, never the host, the port or a credential (privacy contract in
+    // diagnostics.ts). null until the shell's `login` watch sees its first
+    // challenge of the session.
+    proxyAuth: lastProxyAuthVerdict ? { state: lastProxyAuthVerdict.state, message: lastProxyAuthVerdict.message } : null,
   }), homedir());
 }
 
@@ -945,6 +957,54 @@ function applyProxyVerdict(): void {
   liveProxyRelay = sidecarRelayProxyFor(verdict, preference, bootProxyOrigin);
   setSidecarRelayProxy(liveProxyRelay);
   applySessionProxy(verdict);
+}
+
+// --- proxy auth verdict (P2-350) -------------------------------------------------
+// A proxy that demands authentication used to kill every request with a raw
+// network error: the shell registered no Electron `login` listener, so each
+// 407 challenge was cancelled by Electron's own default and the reason stayed
+// invisible — the update check read as a dead feed, the Browser pane read as
+// a broken page and no screen ever said the words "proxy authentication".
+// The pure verdict (proxyauth.ts) classifies the challenge from the event's
+// normalized authInfo; the wiring below owns the surfaces. Asking for and
+// storing proxy credentials is OUT OF SCOPE for this slice, so a proxy
+// challenge is cancelled — the same outcome the silent default produced —
+// but now the reason is named in the `proxy auth:` log line, the tray's
+// update error and the diagnostic bundle. No host, no port, no realm and no
+// credential ever reaches any of them.
+
+/** The shell's ONE `login` listener, registered once at boot. Every challenge
+ * ends the same way Electron's no-listener default did — cancelled — so
+ * registering the watch changes no traffic outcome; it changes only how the
+ * reason travels (log, tray label, diagnostics). The callback is called in
+ * EVERY branch right after the documented preventDefault (the Electron docs'
+ * own example shape): an unanswered callback would hang the request far past
+ * the cancellation this shell always produced. */
+function registerProxyAuthWatch(): void {
+  app.on("login", (event, _webContents, _authenticationResponseDetails, authInfo, callback) => {
+    const verdict = proxyAuthVerdict({
+      isProxy: authInfo?.isProxy,
+      scheme: authInfo?.scheme,
+      host: authInfo?.host,
+    });
+    // Exactly one log line per STATE transition — a burst of 407s writes one
+    // line, never a flood. The phrase is static (proxyauth.ts) and carries no
+    // host, port or credential.
+    if (!lastProxyAuthVerdict || lastProxyAuthVerdict.state !== verdict.state) {
+      log(`[desktop] proxy auth: ${verdict.state} (${verdict.message})`);
+      lastProxyAuthVerdict = verdict;
+      // The tray and the Help menu speak the same truth — a state change
+      // while an update failure stands re-words the error label in place.
+      refreshTrayMenu();
+      buildMenu();
+    }
+    // Cancel without credentials: for "proxy-auth-required" this is the
+    // documented out-of-scope outcome; for every other verdict it keeps
+    // today's no-listener byte — Electron's default is to cancel, and the
+    // shell never holds a credential to hand back.
+    event.preventDefault();
+    callback();
+  });
 }
 
 /** The current proxy-setting state for the Settings surface: the stored
@@ -1682,6 +1742,11 @@ async function onReady(): Promise<void> {
   log(`[desktop] keep awake: ${keepAwakeChoice ? "on" : "off"} (stored choice)`);
   buildMenu();
   buildTray();
+  // P2-350: the shell's ONE `login` listener — registered right after the
+  // tray exists and BEFORE the boot update check, so even the very first
+  // request the shell makes (the update feed) already names a 407 as a proxy
+  // challenge in the log, the tray label and the diagnostics bundle.
+  registerProxyAuthWatch();
   // P2-270: the boot-health recovery question — fire-and-forget; the
   // harness-session rule and the verdict itself keep it silent except on a
   // real machine that really needs it.
@@ -3856,7 +3921,12 @@ function currentUpdateLabel(): string | null {
   // progress label replaces the "check for updates" invite that the mere
   // availability status would keep showing for the whole download.
   if (lastUpdateStatus === "update-available" && lastUpdateProgressLabel) return lastUpdateProgressLabel;
-  return lastUpdateStatus === null ? null : updateMenuLabel(lastUpdateStatus);
+  // P2-350: when the proxy-auth verdict is active (the shell saw a proxy ask
+  // for credentials), the check failures name the proxy instead of the
+  // generic text — the same truth the desktop.log `proxy auth:` line speaks.
+  return lastUpdateStatus === null
+    ? null
+    : updateMenuLabel(lastUpdateStatus, lastProxyAuthVerdict?.state === "proxy-auth-required");
 }
 
 function buildMenu(): void {

@@ -316,6 +316,7 @@ import {
   writeProxyChoice,
 } from "../apps/desktop/src/proxystore";
 import { proxyApplyDecision } from "../apps/desktop/src/proxyapply";
+import { proxyAuthVerdict } from "../apps/desktop/src/proxyauth";
 import {
   bodyLimit,
   isBodyLimitError,
@@ -8570,36 +8571,38 @@ check(
   //    pure: the old lines keep their bytes and their order.
   const bare = buildDiagnosticReport(base);
   check(
-    "P2-345: absent rollout/relayLink/sidecarWedge render unknown, one line each",
+    "P2-345: absent rollout/relayLink/sidecarWedge/proxyAuth render unknown, one line each",
     (bare.match(/^update rollout: unknown$/gm) ?? []).length === 1 &&
       (bare.match(/^relay link: unknown$/gm) ?? []).length === 1 &&
-      (bare.match(/^sidecar wedge: unknown$/gm) ?? []).length === 1,
+      (bare.match(/^sidecar wedge: unknown$/gm) ?? []).length === 1 &&
+      (bare.match(/^proxy auth: unknown$/gm) ?? []).length === 1,
   );
   const GUARD_LINE = "update guard: seguir (liberacao)";
   const bareExpected = OLD.replace(
     `${GUARD_LINE}\n`,
-    `${GUARD_LINE}\nupdate rollout: unknown\nrelay link: unknown\nsidecar wedge: unknown\n`,
+    `${GUARD_LINE}\nupdate rollout: unknown\nrelay link: unknown\nsidecar wedge: unknown\nproxy auth: unknown\n`,
   );
   check(
-    "P2-345: the three unknown lines land right after the guard line — every old byte intact",
+    "P2-345: the four unknown lines land right after the guard line — every old byte intact",
     bare === bareExpected,
   );
 
   // 2. Byte-for-byte equality of the old lines over the fixed input: with all
-  //    three new fields populated, removing exactly the three new lines
+  //    four new fields populated, removing exactly the four new lines
   //    reproduces the OLD report byte for byte.
   const full = buildDiagnosticReport({
     ...base,
     rollout: { decision: "adiar", reason: "freio" },
     relayLink: "connected",
     sidecarWedge: "degraded",
+    proxyAuth: { state: "proxy-auth-required", message: proxyAuthVerdict({ isProxy: true }).message },
   });
-  const NEW_LINE_PREFIXES = [/^update rollout: /, /^relay link: /, /^sidecar wedge: /];
+  const NEW_LINE_PREFIXES = [/^update rollout: /, /^relay link: /, /^sidecar wedge: /, /^proxy auth: /];
   const fullLines = full.split("\n");
   const stripped = fullLines.filter((l) => !NEW_LINE_PREFIXES.some((re) => re.test(l)));
   check(
-    "P2-345: byte-for-byte equality — stripping the three new lines reproduces the pre-P2-345 report",
-    stripped.join("\n") === OLD && fullLines.length === OLD.split("\n").length + 3,
+    "P2-345: byte-for-byte equality — stripping the four new lines reproduces the pre-P2-345 report",
+    stripped.join("\n") === OLD && fullLines.length === OLD.split("\n").length + 4,
   );
 
   // 3. Each valid relay-link state rides the report verbatim (the closed set
@@ -8656,15 +8659,22 @@ check(
   );
 
   // 6. The privacy contract holds for the new lines: over EVERY valid
-  //    combination of the three closed sets, no new line carries a port
+  //    combination of the four closed sets, no new line carries a port
   //    digit, a URL colon or a UUID.
   const newLines: string[] = [];
+  const PROXY_AUTH_CASES: Array<{ state: string; message: string }> = [
+    proxyAuthVerdict({ isProxy: true }),
+    proxyAuthVerdict({ isProxy: false }),
+    proxyAuthVerdict({}),
+  ];
   for (const decision of ["oferecer", "adiar"]) {
     for (const reason of ROLLOUT_REASONS) {
       for (const state of LINK_STATES) {
         for (const wedge of WEDGE_KINDS) {
-          for (const l of buildDiagnosticReport({ ...base, rollout: { decision, reason }, relayLink: state, sidecarWedge: wedge }).split("\n")) {
-            if (NEW_LINE_PREFIXES.some((re) => re.test(l))) newLines.push(l);
+          for (const pa of PROXY_AUTH_CASES) {
+            for (const l of buildDiagnosticReport({ ...base, rollout: { decision, reason }, relayLink: state, sidecarWedge: wedge, proxyAuth: pa }).split("\n")) {
+              if (NEW_LINE_PREFIXES.some((re) => re.test(l))) newLines.push(l);
+            }
           }
         }
       }
@@ -8672,7 +8682,7 @@ check(
   }
   check(
     "P2-345: no new line carries a port digit, a URL colon or a UUID (privacy contract)",
-    newLines.length === 2 * ROLLOUT_REASONS.length * LINK_STATES.length * WEDGE_KINDS.length * 3 &&
+    newLines.length === 2 * ROLLOUT_REASONS.length * LINK_STATES.length * WEDGE_KINDS.length * PROXY_AUTH_CASES.length * 4 &&
       newLines.every((l) => !/\d/.test(l)) &&
       newLines.every((l) => !l.includes("://")) &&
       newLines.every((l) => !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(l)),
@@ -37600,6 +37610,183 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   check(
     "P2-307: wiring — o veredito em vigor fica lembrado no processo principal",
     mainSrc.includes("let liveProxyVerdict") && mainSrc.includes("let liveProxyRelay") && mainSrc.includes("liveProxyVerdict = resolved"),
+  );
+}
+
+// --- P2-350: proxy-auth verdict (apps/desktop/src/proxyauth.ts) + wiring ---------
+// A proxy that demands authentication used to die silently: the shell had no
+// Electron `login` listener, so every 407 was cancelled by Electron's default
+// and surfaced as a raw network error — the update check read as a dead feed,
+// the Browser pane as a broken page. The pure verdict classifies the
+// challenge into three closed states; the wiring cancels the challenge
+// (asking for and storing credentials is out of scope) and names the reason
+// in the desktop.log `proxy auth:` line, the tray's update error and the
+// diagnostic bundle.
+{
+  const json = (v: unknown) => JSON.stringify(v);
+
+  // The three documented outputs.
+  const PROXY = proxyAuthVerdict({ isProxy: true, scheme: "basic", host: "proxy.corp" });
+  const NOTPROXY = proxyAuthVerdict({ isProxy: false, scheme: "negotiate", host: "example.com" });
+  const UNKNOWN = proxyAuthVerdict({});
+  check("P2-350: isProxy true → proxy-auth-required", PROXY.state === "proxy-auth-required");
+  check("P2-350: isProxy false → not-proxy", NOTPROXY.state === "not-proxy");
+  check("P2-350: every state carries its own static phrase", new Set([PROXY.message, NOTPROXY.message, UNKNOWN.message]).size === 3);
+
+  // Fail-closed table — every malformed shape is "unknown", never guessed.
+  check(
+    "P2-350: malformed — non-object and missing input become unknown",
+    ["junk", 42, true, [], new Date(), () => 1].map((v) => proxyAuthVerdict(v).state).every((s) => s === "unknown") &&
+      proxyAuthVerdict().state === "unknown" &&
+      proxyAuthVerdict(undefined).state === "unknown" &&
+      proxyAuthVerdict(null).state === "unknown",
+  );
+  check(
+    "P2-350: malformed — a missing or non-boolean isProxy is unknown",
+    proxyAuthVerdict({ scheme: "basic", host: "h" }).state === "unknown" &&
+      ["true", 1, 0, null].every((x) => proxyAuthVerdict({ isProxy: x }).state === "unknown"),
+  );
+  check(
+    "P2-350: malformed — a non-textual scheme or host fails closed to unknown",
+    proxyAuthVerdict({ isProxy: true, scheme: 42 }).state === "unknown" &&
+      proxyAuthVerdict({ isProxy: true, scheme: [] }).state === "unknown" &&
+      proxyAuthVerdict({ isProxy: true, scheme: { bad: 1 } }).state === "unknown" &&
+      proxyAuthVerdict({ isProxy: true, host: {} }).state === "unknown" &&
+      proxyAuthVerdict({ isProxy: true, host: 9 }).state === "unknown",
+  );
+  check(
+    "P2-350: malformed — null scheme/host count as absent, not as garbage",
+    proxyAuthVerdict({ isProxy: true, scheme: null, host: null }).state === "proxy-auth-required" &&
+      proxyAuthVerdict({ isProxy: false, scheme: null, host: null }).state === "not-proxy",
+  );
+
+  // Robustness: nothing is ever thrown.
+  let threw = false;
+  try {
+    for (const input of [NaN, undefined, null, 42, "boom", true, [], new Date(), () => 1, { isProxy: true, scheme: {} }, { isProxy: NaN }]) {
+      proxyAuthVerdict(input);
+    }
+  } catch {
+    threw = true;
+  }
+  check("P2-350: robustness — no input shape ever throws", !threw);
+
+  // Determinism: the same input yields the exact same verdict on every call.
+  check(
+    "P2-350: determinism — the same input yields the exact same verdict twice",
+    json(PROXY) === json(proxyAuthVerdict({ isProxy: true, scheme: "basic", host: "proxy.corp" })) &&
+      json(NOTPROXY) === json(proxyAuthVerdict({ isProxy: false, scheme: "negotiate", host: "example.com" })),
+  );
+
+  // Privacy boundary: no phrase carries the host, a port, a scheme, a realm
+  // or any credential — the same input text never leaks back out.
+  check(
+    "P2-350: privacy — no phrase carries the host, a port, the scheme or a credential",
+    [PROXY, NOTPROXY, UNKNOWN].every(
+      (v) =>
+        !v.message.includes("proxy.corp") &&
+        !v.message.includes("example.com") &&
+        !v.message.includes("basic") &&
+        !v.message.includes("negotiate") &&
+        !/\d/.test(v.message) &&
+        !v.message.includes("://") &&
+        !v.message.includes("@"),
+    ),
+  );
+  check("P2-350: privacy — the phrases are short and pt-BR static", [PROXY, NOTPROXY, UNKNOWN].every((v) => v.message.length > 0 && v.message.length < 140));
+
+  // Module purity — same bar as proxyplan.ts / sidecarwedge.ts.
+  const proxyauthSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "proxyauth.ts"), "utf8");
+  check(
+    "P2-350: purity — proxyauth.ts imports no electron, node:fs, node:child_process, node:net or fetch",
+    !/(^|\n)\s*import[^\n]*(electron|node:fs|node:child_process|node:net|fetch)/.test(proxyauthSrc) && !/^import\b/m.test(proxyauthSrc),
+  );
+  check(
+    "P2-350: purity — the header documents the closed contract and the privacy boundary",
+    proxyauthSrc.includes("CLOSED CONTRACT") && proxyauthSrc.includes("PRIVACY BOUNDARY"),
+  );
+
+  // The real main.ts: exactly ONE `login` listener, registered exactly once,
+  // before the boot update check, with no timer anywhere in the watch.
+  const mainSrc = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check("P2-350: wiring — main.ts registers exactly one app.on('login') listener", mainSrc.split('app.on("login"').length - 1 === 1);
+  check("P2-350: wiring — the watch is registered at exactly one call site", mainSrc.split("registerProxyAuthWatch();").length - 1 === 1);
+  const registerAt = mainSrc.indexOf("registerProxyAuthWatch();");
+  const bootCheckAt = mainSrc.indexOf('runUpdateCheck("boot")');
+  check("P2-350: wiring — the watch exists before the boot update check", registerAt >= 0 && bootCheckAt > registerAt);
+  const fnAt = mainSrc.indexOf("function registerProxyAuthWatch");
+  const fnEnd = fnAt >= 0 ? mainSrc.indexOf("\n}", fnAt) : -1;
+  const fnSlice = fnAt >= 0 && fnEnd > fnAt ? mainSrc.slice(fnAt, fnEnd) : "";
+  check(
+    "P2-350: wiring — the handler feeds the normalized authInfo (isProxy/scheme/host) to the pure verdict",
+    fnSlice.includes("proxyAuthVerdict({") &&
+      fnSlice.includes("isProxy: authInfo?.isProxy") &&
+      fnSlice.includes("scheme: authInfo?.scheme") &&
+      fnSlice.includes("host: authInfo?.host"),
+  );
+  check(
+    "P2-350: wiring — the handler dedupes one `proxy auth:` log line per state transition and refreshes both surfaces",
+    fnSlice.includes("lastProxyAuthVerdict.state !== verdict.state") &&
+      fnSlice.includes("log(`[desktop] proxy auth: ${verdict.state} (${verdict.message})`)") &&
+      fnSlice.includes("refreshTrayMenu();") &&
+      fnSlice.includes("buildMenu();"),
+  );
+  check(
+    "P2-350: wiring — the challenge is cancelled through the callback in every branch, with no timer added",
+    fnSlice.includes("event.preventDefault();") && fnSlice.includes("callback();") && !/setTimeout|setInterval/.test(fnSlice),
+  );
+
+  // The diagnostics bundle: the P2-345 package carries the verdict — state +
+  // static phrase only — and the absent field renders the closed unknown.
+  const diagBase: DiagnosticsInput = {
+    appVersion: "0.2.0",
+    electronVersion: "44.1.1",
+    platform: "darwin arm64",
+    locale: "pt-BR",
+    packaged: true,
+    userData: "/u",
+    daemon: { healthy: true, down: false, reconnecting: false, attempts: 0, port: 8792, portReason: null },
+    logTail: [],
+    sidecarLogTail: [],
+    crashFiles: [],
+    updateStatus: null,
+  };
+  check(
+    "P2-350: diagnostics — the proxy-auth line rides state + static phrase",
+    buildDiagnosticReport({ ...diagBase, proxyAuth: { state: "proxy-auth-required", message: PROXY.message } }).includes(`proxy auth: proxy-auth-required (${PROXY.message})`) &&
+      buildDiagnosticReport({ ...diagBase, proxyAuth: { state: "not-proxy", message: NOTPROXY.message } }).includes(`proxy auth: not-proxy (${NOTPROXY.message})`) &&
+      buildDiagnosticReport({ ...diagBase, proxyAuth: { state: "unknown", message: UNKNOWN.message } }).includes(`proxy auth: unknown (${UNKNOWN.message})`),
+  );
+  check(
+    "P2-350: diagnostics — the absent field renders the closed unknown once",
+    (buildDiagnosticReport(diagBase).match(/^proxy auth: unknown$/gm) ?? []).length === 1,
+  );
+  check(
+    "P2-350: diagnostics — the main.ts mirror feeds the last verdict, at the field that already exists",
+    mainSrc.includes("proxyAuth: lastProxyAuthVerdict ? { state: lastProxyAuthVerdict.state, message: lastProxyAuthVerdict.message } : null"),
+  );
+
+  // The tray's update error names the proxy when the verdict is active — the
+  // two check failures re-word, every other label keeps its byte.
+  check(
+    "P2-350: tray — the active verdict re-words both check failures",
+    updateMenuLabel("feed-unreachable", true) === "Update check failed — proxy authentication required" &&
+      updateMenuLabel("unrecognized-feed", true) === "Update check failed — proxy authentication required",
+  );
+  check(
+    "P2-350: tray — without the verdict every label keeps today's byte",
+    updateMenuLabel("feed-unreachable", false) === "Update check failed — feed unreachable" &&
+      updateMenuLabel("unrecognized-feed", false) === "Update check failed — unrecognized feed" &&
+      updateMenuLabel("feed-unreachable") === updateMenuLabel("feed-unreachable", false) &&
+      updateMenuLabel("unrecognized-feed") === updateMenuLabel("unrecognized-feed", false),
+  );
+  check(
+    "P2-350: tray — the download-failed label is untouched by the verdict",
+    updateMenuLabel("update-download-failed", true) === "Update download failed — will retry",
+  );
+  check(
+    "P2-350: tray — the main.ts label consults the verdict state",
+    mainSrc.includes('updateMenuLabel(lastUpdateStatus, lastProxyAuthVerdict?.state === "proxy-auth-required")'),
   );
 }
 

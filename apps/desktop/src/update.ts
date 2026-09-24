@@ -68,8 +68,17 @@ export type UpdateStatus =
  * helpers in tray.ts so the unit battery can exercise every status. Returns
  * null for "disabled" — with no feed configured the tray must stay exactly
  * as it was before P3-019 (no status item at all).
+ *
+ * P2-350: the additive `proxyAuthRequired` flag — true when the shell's last
+ * proxy-auth verdict is "proxy-auth-required" (proxyauth.ts) — re-words the
+ * two check-failure labels so they name the proxy instead of the generic
+ * feed text a 407 used to masquerade as. Absent/false keeps every label
+ * byte-for-byte what it was before this slice (fail-open to the old text —
+ * the label must never regress on doubt).
  */
-export function updateMenuLabel(status: UpdateStatus): string | null {
+export const PROXY_AUTH_CHECK_LABEL = "Update check failed — proxy authentication required";
+
+export function updateMenuLabel(status: UpdateStatus, proxyAuthRequired = false): string | null {
   switch (status) {
     case "update-available":
       // Not "restart to install": at this point nothing has been downloaded
@@ -96,9 +105,13 @@ export function updateMenuLabel(status: UpdateStatus): string | null {
       // never the path, the URL or the raw error message.
       return "Update download failed — will retry";
     case "unrecognized-feed":
-      return "Update check failed — unrecognized feed";
+      // P2-350: a captive 407 page reaches this status as an unparseable body
+      // — with the proxy-auth verdict active the label names the real fault.
+      return proxyAuthRequired ? PROXY_AUTH_CHECK_LABEL : "Update check failed — unrecognized feed";
     case "feed-unreachable":
-      return "Update check failed — feed unreachable";
+      // P2-350: the proxy 407 surfaces here as a dead feed — with the
+      // proxy-auth verdict active the label names the proxy demand instead.
+      return proxyAuthRequired ? PROXY_AUTH_CHECK_LABEL : "Update check failed — feed unreachable";
     case "disabled":
       return null;
   }

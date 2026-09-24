@@ -19,6 +19,8 @@
 // installation id, the bucket or the percentage, the relay-link line never
 // carries the message, an address, a host, a port or a relay instance id,
 // and the wedge line never carries a path, an identifier or a probe count.
+// Since P2-350 the proxy-auth line never carries the host, a port, a realm
+// or a credential.
 
 /** Last desktop.log lines embedded in the bundle. */
 export const DIAG_LOG_TAIL = 40;
@@ -101,6 +103,11 @@ export interface DiagnosticsInput {
    * NEVER a path, an identifier or a probe count (privacy contract in this
    * header). Optional/additive. */
   sidecarWedge?: string | null;
+  /** P2-350: the last proxy-auth verdict — the closed set of proxyauth.ts
+   * ("proxy-auth-required" | "not-proxy" | "unknown") and its static phrase,
+   * NEVER the host, a port, a realm or a credential (privacy contract in
+   * this header). Optional/additive. */
+  proxyAuth?: { state: string; message: string } | null;
 }
 
 /** Lines of the diagnostic bundle, in display order. */
@@ -151,6 +158,10 @@ export function buildDiagnosticReport(d: DiagnosticsInput): string {
     // closed set of sidecarwedge.ts only; never a path, an identifier or a
     // probe count (header privacy contract).
     `sidecar wedge: ${d.sidecarWedge ?? "unknown"}`,
+    // P2-350: one additive line — the last proxy-auth verdict (state + static
+    // phrase only), never the host, a port, a realm or a credential (header
+    // privacy contract).
+    `proxy auth: ${d.proxyAuth?.state ?? "unknown"}${d.proxyAuth?.message ? ` (${d.proxyAuth.message})` : ""}`,
     `crash files: ${d.crashFiles.length === 0 ? "none" : d.crashFiles.join(", ")}`,
     "--- desktop.log (last lines) ---",
     ...d.logTail.slice(-DIAG_LOG_TAIL),
