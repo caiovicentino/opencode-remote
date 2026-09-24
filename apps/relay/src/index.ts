@@ -13,6 +13,7 @@ import { IpCap, clientIp } from "./ipcap.js";
 import { isValidRoomId, MAX_ROOMS_PER_SOCKET } from "./roomid.js";
 import { envelopeVerdict } from "./envelope.js";
 import { createShutdown, refuseUpgrade, stopAccepting } from "./shutdown.js";
+import { crashLine, CRASH_CLASS_FALLBACK, type CrashEvent } from "./crashline.js";
 import { decideStale } from "./liveness.js";
 import { metricsAuthOk, metricsBinding } from "./metricsbind.js";
 import { relayLimits } from "./limits.js";
@@ -552,6 +553,13 @@ const m = {
   bytesRouted: 0,
   rejects: 0,
   rateLimited: 0,
+  // P2-351: one fatal process event (uncaughtException / unhandledRejection)
+  // increments this exactly once, on the line below the structured crash
+  // object. The process exits 1 seconds later, so in practice the counter is
+  // read back only across restarts by an external scraper's history — it
+  // still publishes as zero on a healthy relay, never omitted, so an alert
+  // distinguishes a healthy process from a missing series.
+  crashesTotal: 0,
   roomsRejected: 0,
   // P2-293: the same refusals re-labeled by reason — each slot is fed at
   // the exact statement below that increments roomsRejected, and nowhere
@@ -609,6 +617,12 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_rejects ${m.rejects}`,
           "# TYPE relay_rate_limited_total counter",
           `relay_rate_limited_total ${m.rateLimited}`,
+          // P2-351: additive fatal-crash counter, published next to the rate
+          // limiter it sits beside in every documented list. Whole counts
+          // only — never a class name, a message, a stack or any crash
+          // detail: those ride the one structured stderr line, not metrics.
+          "# TYPE relay_crashes_total counter",
+          `relay_crashes_total ${m.crashesTotal}`,
           "# TYPE relay_rooms_rejected counter",
           `relay_rooms_rejected ${m.roomsRejected}`,
           // P2-293: one counter per documented room-reject reason, same
@@ -687,6 +701,10 @@ if (METRICS.port && METRICS.problems.length === 0) {
             bytes_routed: m.bytesRouted,
             rejects: m.rejects,
             rate_limited_total: m.rateLimited,
+            // P2-351: additive — same counter the Prometheus text publishes
+            // above, read at scrape time; zero stays zero. A whole count
+            // only: never a crash class, message, stack or any detail.
+            crashes_total: m.crashesTotal,
             rooms_rejected: m.roomsRejected,
             // P2-293: per-reason split of rooms_rejected above (additive,
             // same counters the /healthz breakdown publishes)
@@ -846,6 +864,62 @@ const { shutdown, isShuttingDown } = createShutdown({
   clearTimeout,
 });
 
+// P2-351: the two fatal process events the relay takes over at boot. Before
+// this, one unhandled rejection (the red team's `void handleMessage` class)
+// or one unexpected exception killed the whole multi-tenant process with
+// Node's default raw stack — every room of every tenant went down together
+// and the log carried no structured line, no metric and no explanation.
+// Now each fatal event emits EXACTLY ONE structured line (crashline.ts) on
+// stderr at error level — stderr, because stdout is the provider-retained
+// JSONL stream the metric surfaces complement; a crash line must not depend
+// on the log level gate either, it is the death rattle of the process. Then
+// the SAME P2-145 drain a SIGTERM gets runs — /healthz flips to 503, every
+// ws client is closed with 1001, the listeners stop — and the process exits
+// 1 so the supervisor restarts it; daemons and phones reconnect with
+// backoff. The error is never swallowed and the process never continues in
+// an uncertain state: the first event starts the drain, later events only
+// add their own line and counter increment (calling shutdown again would
+// hit the already-started branch and cut the close frames short). The
+// listeners are installed after the boot preflight on purpose: the preflight
+// is fail-closed with explicit, logged exits of its own, and every event
+// callback (any ws, http or metrics traffic) can only run once this
+// synchronous body has finished — so the serving lifetime is fully covered.
+const CRASH_EXIT_CODE = 1;
+let crashHandled = false;
+const onCrash = (event: CrashEvent, error: unknown): void => {
+  // crashline.crashLine is total by contract (its own body is guarded), but
+  // this handler runs in a dying process where the structured line, the
+  // counter and the drain must run even if the formatter itself ever regressed
+  // — so the call is guarded here too, degrading to the fixed five-field
+  // fallback shape instead of the pre-P2-351 raw crash.
+  let line: ReturnType<typeof crashLine>;
+  const uptimeMs = Date.now() - m.startedAt;
+  try {
+    line = crashLine(event, error, uptimeMs);
+  } catch {
+    line = {
+      event,
+      class: CRASH_CLASS_FALLBACK,
+      message: "crash detail unprintable",
+      stack: "",
+      uptimeS: Math.max(0, Math.round(uptimeMs / 1000)),
+    };
+  }
+  try {
+    console.error(JSON.stringify({ ts: new Date().toISOString(), level: "error", msg: "relay crash", data: line }));
+  } catch {
+    // a broken stderr must never turn the crash into a silent one: the
+    // counter and the drain below still run, and the process still exits 1
+  }
+  m.crashesTotal++;
+  if (!crashHandled) {
+    crashHandled = true;
+    void shutdown(event, CRASH_EXIT_CODE);
+  }
+};
+process.on("uncaughtException", (error) => onCrash("uncaughtException", error));
+process.on("unhandledRejection", (reason) => onCrash("unhandledRejection", reason));
+
 // public liveness probe for the hosted stage (no auth, counters only).
 // Sits on the plain-HTTP request path; the ws upgrade path is handled below.
 // P2-145: while draining it answers 503 {ok:false,draining:true} so the LB
@@ -957,6 +1031,24 @@ server.listen(PORT, () => {
       ? { ratePerMin: WEB_BUDGET.ratePerMin, burst: WEB_BUDGET.burst }
       : undefined,
   });
+  // P2-351: documented test hatch (scripts/relay-crash.test.ts, same
+  // test-only OCR_* policy as the daemon hatches — production never sets it,
+  // and it is not a RELAY_ variable so the P2-263 advisor stays silent). The
+  // value is the error message to plant; `reject:` fires an unhandled
+  // rejection (the discarded-`void`-promise class), `throw:` an uncaught
+  // exception. Both run exactly once, after the listener is up, and exercise
+  // the fatal-event wiring end to end: the structured stderr line, the
+  // relay_crashes_total increment and the exit-1 drain.
+  const hatch = process.env.OCR_RELAY_CRASH_HATCH;
+  if (hatch) {
+    const isThrow = hatch.startsWith("throw:");
+    const isReject = hatch.startsWith("reject:");
+    const message = isThrow ? hatch.slice(6) : isReject ? hatch.slice(7) : hatch;
+    if (isThrow) {
+      throw new Error(message);
+    }
+    void Promise.reject(new Error(message));
+  }
 });
 
 // release the per-IP slot exactly once per admitted socket (close and

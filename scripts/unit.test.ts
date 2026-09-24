@@ -41579,6 +41579,9 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
       "# TYPE relay_bytes_routed counter",
       "# TYPE relay_rejects counter",
       "# TYPE relay_rate_limited_total counter",
+      // P2-351: the fatal-crash counter joined the documented set, right
+      // after the rate limiter it sits beside
+      "# TYPE relay_crashes_total counter",
       "# TYPE relay_rooms_rejected counter",
       "...ROOM_REJECT_REASONS.flatMap(",
       "# TYPE relay_stale_terminated counter",

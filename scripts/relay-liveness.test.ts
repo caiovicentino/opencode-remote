@@ -175,6 +175,9 @@ const P2_294_EXISTING_LINES = [
   "relay_bytes_routed",
   "relay_rejects",
   "relay_rate_limited_total",
+  // P2-351: the fatal-crash counter joined the documented set, right after
+  // the rate limiter it sits beside
+  "relay_crashes_total",
   "relay_rooms_rejected",
   "relay_rooms_rejected_invalid_room_id",
   "relay_rooms_rejected_socket_room_cap",

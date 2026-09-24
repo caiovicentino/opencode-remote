@@ -1961,6 +1961,9 @@ const ROOM_BUDGET_PROM_ORDER = [
   "relay_bytes_routed",
   "relay_rejects",
   "relay_rate_limited_total",
+  // P2-351: the fatal-crash counter joined the documented set, right after
+  // the rate limiter it sits beside
+  "relay_crashes_total",
   "relay_rooms_rejected",
   "relay_rooms_rejected_invalid_room_id",
   "relay_rooms_rejected_socket_room_cap",
@@ -1979,6 +1982,8 @@ const ROOM_BUDGET_JSON_ORDER = [
   "bytes_routed",
   "rejects",
   "rate_limited_total",
+  // P2-351: additive crash counter, same position as its Prometheus twin
+  "crashes_total",
   "rooms_rejected",
   "rooms_rejected_invalid_room_id",
   "rooms_rejected_socket_room_cap",
@@ -2436,6 +2441,8 @@ check(
       ["bytes_routed", "relay_bytes_routed", "counter"],
       ["rejects", "relay_rejects", "counter"],
       ["rate_limited_total", "relay_rate_limited_total", "counter"],
+      // P2-351: additive crash counter, same position as its Prometheus twin
+      ["crashes_total", "relay_crashes_total", "counter"],
       ["rooms_rejected", "relay_rooms_rejected", "counter"],
       ["rooms_rejected_invalid_room_id", "relay_rooms_rejected_invalid_room_id", "counter"],
       ["rooms_rejected_socket_room_cap", "relay_rooms_rejected_socket_room_cap", "counter"],
