@@ -2598,6 +2598,15 @@ a maximized session never comes back as a screen-sized window stuck to the
 desktop. Fullscreen is deliberately not persisted (on macOS it creates its own
 Space; restoring it standalone would be hostile).
 
+**Unplugging a monitor mid-session (P2-352)**: the boot-time validation above
+only runs once, so an external monitor disconnected with the app open used to
+leave the window parked on a screen that no longer exists — clicking the tray
+icon then "showed" a window nobody could see. The shell now listens to the OS
+display events and, the moment the window's screen disappears, re-centers it
+on a visible screen (keeping its size whenever it still fits the remaining
+screen; maximized and fullscreen windows are left alone) with exactly one
+`window rescued` line in `desktop.log` per rescue.
+
 **Text size is remembered too (P2-238)**: the View menu's zoom items
 (**Tamanho padrão**, **Ampliar**, **Reduzir**) adjust the app's text like the
 native roles did (same shortcuts: Cmd/Ctrl+0, Cmd/Ctrl++ , Cmd/Ctrl+-), and

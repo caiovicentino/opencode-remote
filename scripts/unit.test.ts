@@ -1021,10 +1021,12 @@ import { guestAttachDecision, guestNavigationDecision } from "../apps/desktop/sr
 import {
   DEFAULT_WINDOW_BOUNDS,
   loadWindowBounds,
+  rescueBounds,
   saveWindowBounds,
   sanitizeWindowBounds,
   WINDOW_MIN,
   windowStateFile,
+  type DisplayArea,
   type WindowBounds,
 } from "../apps/desktop/src/window-state";
 
@@ -41895,6 +41897,62 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
   check("P2-346 view: App.tsx sanitizes the payload before rendering", appSrc.includes("sanitizeStorageVerdict(pairingState?.storage)") && (appSrc.match(/storage=\{storage\}/g) ?? []).length === 2);
   check("P2-346 view: the phrase wears its own class with the warn tone (state vs action)", cssSrc.includes(".degraded-storage") && /degraded-storage \{[^}]*color: var\(--warn\)/.test(cssSrc));
+}
+
+
+// --- P2-352: the runtime display rescue (window-state.ts rescueBounds) -----------
+{
+  // The spec's table: inside / partially inside / fully outside / display
+  // smaller than the window / empty display list — plus the wiring pins that
+  // read the real main.ts (each OS display event registered exactly once and
+  // no new setInterval introduced).
+  const bigDisplay = [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }];
+  const same = (got: WindowBounds | null, want: WindowBounds | null): boolean =>
+    got === null || want === null
+      ? got === want
+      : got.x === want.x && got.y === want.y && got.width === want.width && got.height === want.height;
+
+  const cases: Array<[string, WindowBounds, DisplayArea[], WindowBounds | null]> = [
+    // Window fully inside the only display: it is already visible — null.
+    ["window inside the only display → null", { x: 100, y: 100, width: 1280, height: 820 }, bigDisplay, null],
+    // One shared pixel column still counts as on-screen (same intersects rule).
+    ["window flush against the display's right edge → null", { x: 1919, y: 100, width: 1280, height: 820 }, bigDisplay, null],
+    // Partially inside: a visible part is enough — never relocated.
+    ["window partially inside (overlaps the right edge) → null", { x: 1800, y: 100, width: 1280, height: 820 }, bigDisplay, null],
+    // Fully outside: the unplugged-monitor scenario — re-centered, size kept.
+    ["window fully outside → centered on the first display, size kept", { x: 3000, y: 100, width: 1280, height: 820 }, bigDisplay, { x: 320, y: 130, width: 1280, height: 820 }],
+    // The external monitor was to the right and is gone: parked bounds on it
+    // get rescued onto the remaining display.
+    ["window parked on the since-removed second display → rescued", { x: 2000, y: 50, width: 1280, height: 820 }, bigDisplay, { x: 320, y: 130, width: 1280, height: 820 }],
+    // Display smaller than the window: the size is capped to the workArea.
+    ["display smaller than the window → size capped to the workArea, centered", { x: 3000, y: 100, width: 1920, height: 1080 }, [{ workArea: { x: 0, y: 0, width: 1440, height: 900 } }], { x: 0, y: 0, width: 1440, height: 900 }],
+    // A screen smaller than WINDOW_MIN: the floor wins (Electron would clamp to
+    // it anyway) — the window hangs off the tiny screen by an equal margin.
+    ["tiny display (below WINDOW_MIN) → the WINDOW_MIN floor wins", { x: 3000, y: 100, width: 1920, height: 1080 }, [{ workArea: { x: 0, y: 0, width: 800, height: 600 } }], { x: -112, y: -20, width: WINDOW_MIN.width, height: WINDOW_MIN.height }],
+    // No display left at all: nowhere to rescue onto — null; the next display
+    // event re-runs the decision.
+    ["empty display list → null", { x: 3000, y: 100, width: 1280, height: 820 }, [], null],
+    // A window with no position cannot prove it is visible anywhere — rescued.
+    ["missing x/y (no position to verify) → rescued", { width: 1280, height: 820 }, bigDisplay, { x: 320, y: 130, width: 1280, height: 820 }],
+    // A garbage size cannot reach intersects() with anything sane — rescued at
+    // the floor instead of staying unusable.
+    ["garbage size (NaN) → rescued at WINDOW_MIN", { x: 3000, y: 100, width: NaN, height: NaN }, bigDisplay, { x: 448, y: 220, width: WINDOW_MIN.width, height: WINDOW_MIN.height }],
+  ];
+  for (const [name, bounds, displays, expected] of cases) {
+    check(`P2-352 rescue: ${name}`, same(rescueBounds(bounds, displays), expected));
+  }
+  check(
+    "P2-352 rescue: the verdict is deterministic — same input, same bounds twice",
+    same(rescueBounds({ x: 3000, y: 100, width: 1280, height: 820 }, bigDisplay), rescueBounds({ x: 3000, y: 100, width: 1280, height: 820 }, bigDisplay)),
+  );
+
+  // Wiring pins over the real main.ts: each OS display event is registered
+  // exactly once and the feature brought no new timer with it.
+  const mainSrc352 = readFileSync(join(import.meta.dirname, "..", "apps", "desktop", "src", "main.ts"), "utf8");
+  check("P2-352 wiring: main.ts registers display-removed exactly once", (mainSrc352.match(/screen\.on\("display-removed"/g) ?? []).length === 1);
+  check("P2-352 wiring: main.ts registers display-metrics-changed exactly once", (mainSrc352.match(/screen\.on\("display-metrics-changed"/g) ?? []).length === 1);
+  check("P2-352 wiring: no new setInterval entered main.ts (the OS event is the only trigger)", (mainSrc352.match(/\bsetInterval\b/g) ?? []).length === 2);
+  check("P2-352 wiring: the rescue applies the pure verdict and logs one line per rescue", /rescueBounds\(win\.getNormalBounds\(\)/.test(mainSrc352) && mainSrc352.includes("[desktop] window rescued"));
 }
 
 if (failures > 0) {

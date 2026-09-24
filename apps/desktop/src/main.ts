@@ -131,7 +131,7 @@ import { contextMenuSpec, SPELLING_SUGGESTIONS_MAX } from "./ctxmenu";
 import { nextCheckDelayMs } from "./updateschedule";
 import { UPDATE_PROGRESS_LIMITS, updateProgressView, type UpdateProgressView } from "./updateprogress";
 import { UPDATE_SPACE_LIMITS, updateSpaceVerdict } from "./updatespace";
-import { loadWindowBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
+import { loadWindowBounds, rescueBounds, saveWindowBounds, WINDOW_MIN, windowStateFile } from "./window-state";
 import { DEFAULT_ZOOM_LEVEL, zoomStartupPlan, zoomVerdict, type ZoomAction } from "./zoomlevel";
 import {
   installFatalErrorHandlers,
@@ -2483,6 +2483,10 @@ async function onReady(): Promise<void> {
   // P2-209: react to the machine's return from sleep / session unlock —
   // registered after the pairing watcher so the probe path already exists.
   registerWakeReaction();
+  // P2-352: the same ready moment registers the display rescue — after the
+  // first createWindow() above, so mainWindow exists before any OS display
+  // event can reach the handler.
+  registerDisplayRescue();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -3449,6 +3453,38 @@ function registerWakeReaction(): void {
     if (eventType === "resume") powerMonitor.on("resume", () => handleWakeEvent("resume"));
     if (eventType === "unlock-screen") powerMonitor.on("unlock-screen", () => handleWakeEvent("unlock-screen"));
   }
+}
+
+// --- display rescue (P2-352) ----------------------------------------------------
+// The boot-time sanitizer (window-state.ts) only sees the displays attached at
+// window creation: unplugging an external monitor with the app open leaves the
+// live window parked on a screen that no longer exists, and the tray click then
+// "shows" a window nobody can see. One registration — never re-registered —
+// watches the two OS display events and applies the pure rescueBounds verdict
+// (window-state.ts) to the shell window, only when it exists and is neither
+// maximized nor fullscreen (those own their geometry; resizing them would fight
+// the owner's choice). No timer and no IPC: the OS event is the only trigger,
+// and each actual rescue writes exactly one desktop.log line.
+function registerDisplayRescue(): void {
+  if (typeof screen?.on !== "function") {
+    log("[desktop] screen module unavailable — display rescue not registered");
+    return;
+  }
+  const rescue = (event: "display-removed" | "display-metrics-changed"): void => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    if (win.isMaximized() || win.isFullScreen()) return;
+    const next = rescueBounds(win.getNormalBounds(), screen.getAllDisplays());
+    if (!next) return;
+    try {
+      win.setBounds(next);
+      log(`[desktop] window rescued (${event})`);
+    } catch (err) {
+      logError("[desktop] window rescue failed:", err);
+    }
+  };
+  screen.on("display-removed", () => rescue("display-removed"));
+  screen.on("display-metrics-changed", () => rescue("display-metrics-changed"));
 }
 
 // P3-009: the packaged app ships build/icon.png inside the asar (files list in
