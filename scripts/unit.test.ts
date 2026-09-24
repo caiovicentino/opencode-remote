@@ -439,6 +439,8 @@ import {
 
 import { WELCOME_DONE, shouldShowWelcome } from "../apps/web/src/lib/welcome";
 
+import { classifyShift, SHIFT_REGIONS, SHIFT_THRESHOLD, type ShiftVerdict } from "../apps/web/src/lib/shiftgate";
+
 import { permissionPreview } from "../apps/web/src/lib/permission";
 
 import { applySessionFilters, isPilotTitle, splitPilotSessions } from "../apps/web/src/lib/sessionFilter";
@@ -13502,7 +13504,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // glyph before the wordmark — the wizard's mark language, nothing per-view.
   for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
     const src = read(join("components", view));
-    const headerAt = src.indexOf("<header>");
+    // P2-355: the header now carries the named layout-shift region — match
+    // the opening tag, not the bare literal.
+    const headerAt = src.indexOf("<header");
     const markAt = src.indexOf('className="welcome-mark"', headerAt);
     const markEnd = src.indexOf("</div>", markAt);
     const wordmarkAt = src.indexOf('className="brand-wordmark"', markAt);
@@ -13737,10 +13741,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const mapSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PaneMap.tsx"), "utf8");
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
   check(
-    "P3-447: the reachable note is a bare <p> outside the .pane-map card",
+    "P3-447: the reachable note is a bare <p> outside the .pane-map card (now carrying the P2-355 named region)",
     mapSrc.includes("return reachable ? (") &&
-      mapSrc.indexOf('<p className="pane-map-note">') > -1 &&
-      mapSrc.indexOf('<p className="pane-map-note">') < mapSrc.indexOf('<section className="pane-map"'),
+      mapSrc.indexOf('<p className="pane-map-note" data-region="pane-map">') > -1 &&
+      mapSrc.indexOf('<p className="pane-map-note" data-region="pane-map">') < mapSrc.indexOf('<section className="pane-map"'),
   );
   check(
     "P3-447: the ceremony branch keeps the full card (border + surface)",
@@ -13834,7 +13838,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 // --- P3-411: the manual ceremony's exit never sits below the fold -------------
 {
   const src = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
-  const headerAt = src.indexOf("<header>");
+  // P2-355: the header carries the named layout-shift region — match the
+  // opening tag, not the bare literal.
+  const headerAt = src.indexOf("<header");
   const backAt = src.indexOf('className="pair-back"', headerAt);
   const headerEnd = src.indexOf("</header>", headerAt);
   check(
@@ -42483,6 +42489,132 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   check(
     "P2-354: the smoke carries no budget literal — the table has a single source in bootbudget.mjs",
     bootSrc.includes('from "./bootbudget.mjs"') && !/\b20000\b/.test(bootSrc.replace(/\/\/.*$/gm, "")),
+  );
+}
+
+// --- P2-355: layout-shift gate (shiftgate.ts) — classifier table, region
+// parity with the real app sources, and the real-beat order assertion ----------
+
+{
+  const k = (v: ShiftVerdict) => v.kind;
+  const okEntry = { name: "sidebar", value: 0.005 };
+
+  // rule 1 — malformed entries ignore, fail-closed: garbage never fabricates
+  // a red verdict and never throws
+  check("P2-355: non-object entry → ignore", k(classifyShift(null, false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: scalar entry → ignore", k(classifyShift(42, false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: array entry → ignore", k(classifyShift([], false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: missing score → ignore", k(classifyShift({ name: "sidebar" }, false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: string score → ignore (no coercion, fail-closed)", k(classifyShift({ name: "sidebar", value: "0.5" }, false, SHIFT_REGIONS)) === "ignore");
+  check(
+    "P2-355: non-finite score → ignore (NaN and both Infinities)",
+    k(classifyShift({ name: "sidebar", value: Number.NaN }, false, SHIFT_REGIONS)) === "ignore" &&
+      k(classifyShift({ name: "sidebar", value: Number.POSITIVE_INFINITY }, false, SHIFT_REGIONS)) === "ignore" &&
+      k(classifyShift({ name: "sidebar", value: Number.NEGATIVE_INFINITY }, false, SHIFT_REGIONS)) === "ignore",
+  );
+  check("P2-355: negative score → ignore", k(classifyShift({ name: "sidebar", value: -0.5 }, false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: non-string region name (number) → ignore", k(classifyShift({ name: 7, value: 0.5 }, false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: object region name → ignore", k(classifyShift({ name: { a: 1 }, value: 0.5 }, false, SHIFT_REGIONS)) === "ignore");
+
+  // rule 2 — hadRecentInput ignores, regardless of size or region
+  check("P2-355: hadRecentInput true → ignore (large score, named region)", k(classifyShift(okEntry, true, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: hadRecentInput truthy (1) → ignore", k(classifyShift(okEntry, 1 as unknown as boolean, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: hadRecentInput false proceeds to the region rules", k(classifyShift(okEntry, false, SHIFT_REGIONS)) === "shift");
+
+  // rule 3 — below the documented threshold ignores, even in a named region
+  check("P2-355: score below the threshold → ignore (named region)", k(classifyShift({ name: "sidebar", value: SHIFT_THRESHOLD - 0.0001 }, false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: zero score → ignore", k(classifyShift({ name: "sidebar", value: 0 }, false, SHIFT_REGIONS)) === "ignore");
+  check("P2-355: exactly at the threshold is NOT below it — a named region fires", k(classifyShift({ name: "sidebar", value: SHIFT_THRESHOLD }, false, SHIFT_REGIONS)) === "shift");
+
+  // rule 4 — region outside the assigned list → unnamed (warn, never red)
+  check("P2-355: unattributed entry (empty name) → unnamed", k(classifyShift({ name: "", value: 0.5 }, false, SHIFT_REGIONS)) === "unnamed");
+  check("P2-355: absent name → unnamed", k(classifyShift({ value: 0.5 }, false, SHIFT_REGIONS)) === "unnamed");
+  check("P2-355: null name → unnamed", k(classifyShift({ name: null, value: 0.5 }, false, SHIFT_REGIONS)) === "unnamed");
+  check("P2-355: unknown region name → unnamed", k(classifyShift({ name: "transcript", value: 0.5 }, false, SHIFT_REGIONS)) === "unnamed");
+  check("P2-355: broken assigned list (non-array) → unnamed, never red", k(classifyShift(okEntry, false, undefined as unknown as readonly string[])) === "unnamed");
+
+  // rule 5 — a named region moved after first paint: the closed verdict
+  // carries the region
+  const hit = classifyShift(okEntry, false, SHIFT_REGIONS);
+  check("P2-355: named shift carries the region name", hit.kind === "shift" && hit.region === "sidebar");
+  check(
+    "P2-355: every assigned region can fire (closed-set sanity over the real list)",
+    SHIFT_REGIONS.every((r) => k(classifyShift({ name: r, value: 0.5 }, false, SHIFT_REGIONS)) === "shift"),
+  );
+  check(
+    "P2-355: the verdict set stays closed — ignore/unnamed/shift, nothing else",
+    k(classifyShift(null, false, SHIFT_REGIONS)) === "ignore" &&
+      k(classifyShift({ name: "sidebar", value: 0.0001 }, false, SHIFT_REGIONS)) === "ignore" &&
+      k(classifyShift({ name: "sidebar", value: SHIFT_THRESHOLD }, false, SHIFT_REGIONS)) === "shift" &&
+      k(classifyShift({ name: "nope", value: 0.5 }, false, SHIFT_REGIONS)) === "unnamed",
+  );
+
+  // purity: no imports at all, no DOM/React identifiers in code — the module
+  // is received as values only (P2-204 bar; spec: "sem React e sem DOM no
+  // import")
+  const shiftSrc = readFileSync(new URL("../apps/web/src/lib/shiftgate.ts", import.meta.url), "utf8");
+  const shiftCode = shiftSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  check(
+    "P2-355: shiftgate.ts is pure — zero imports, no DOM/React identifiers outside comments",
+    !/^import\s/m.test(shiftCode) && !/\bdocument\b|\bwindow\b|\bReact\b|\bHTMLElement\b/.test(shiftCode),
+  );
+
+  // region parity (P2-346/P2-344 lesson): the module's closed list and the
+  // real app sources must name the same set — a rename on either side fails
+  // the battery here instead of silently downgrading named shifts to warnings.
+  const regionSources = ["App.tsx", "components/WelcomeView.tsx", "components/DegradedView.tsx", "components/PairingView.tsx", "components/PaneMap.tsx"].map((rel) =>
+    readFileSync(new URL(`../apps/web/src/${rel}`, import.meta.url), "utf8"),
+  );
+  const attrRegions = new Set<string>();
+  for (const src of regionSources) {
+    for (const m of src.matchAll(/data-region="([^"]+)"/g)) attrRegions.add(m[1]!);
+  }
+  check(
+    "P2-355: SHIFT_REGIONS parity — the app's data-region names and the module list are the same set",
+    attrRegions.size === SHIFT_REGIONS.length && SHIFT_REGIONS.every((r) => attrRegions.has(r)),
+    JSON.stringify([...attrRegions]),
+  );
+
+  // the real beat: read the real desktop-flow source and prove the order the
+  // spec pins — the observer installs right after the open (buffered:true, so
+  // entries fired during load replay from the browser's buffer), the buffer is
+  // read only after the settle and BEFORE the beat's shots.
+  const flowSrc = readFileSync(new URL("../scripts/desktop-flow.test.ts", import.meta.url), "utf8");
+  const iOpen = flowSrc.indexOf('run("local: open (hermetic local-boot launch)"');
+  const iInstall = flowSrc.indexOf("P2-355: install the layout-shift observer (buffered)");
+  const iSkip = flowSrc.indexOf('run("local: skip the first-run welcome"');
+  const iSettle = flowSrc.indexOf("P2-355: settle");
+  const iRead = flowSrc.indexOf("P2-355: read the shift buffer after the settle");
+  const iShot1440 = flowSrc.indexOf("P2-355: 1440x900 shift-gate shot");
+  const iShot390 = flowSrc.indexOf("P2-355: 390 shift-gate shot");
+  check(
+    "P2-355: beat order — open < install < welcome-skip (the observer is right after the open)",
+    iOpen >= 0 && iOpen < iInstall && iInstall < iSkip && iSkip >= 0 && iInstall >= 0,
+  );
+  check(
+    "P2-355: the observer registers with buffered:true so load-time entries replay",
+    /observe\(\{ type: "layout-shift", buffered: true \}\)/.test(flowSrc),
+  );
+  check(
+    "P2-355: beat order — settle < read < shot 1440 < shot 390 (the buffer is read after the settle, before the shots)",
+    iSettle >= 0 && iSettle < iRead && iRead < iShot1440 && iShot1440 < iShot390,
+  );
+  check(
+    "P2-355: the beat fails closed only when the observer does not install",
+    flowSrc.includes("no observer, no verdict") && flowSrc.includes("without an installed observer the beat proves nothing"),
+  );
+  check(
+    "P2-355: the beat classifies every buffered entry with the pure module",
+    flowSrc.includes("classifyShift(") && flowSrc.includes("SHIFT_REGIONS"),
+  );
+  check(
+    "P2-355: unnamed shifts print as warnings, never a red",
+    flowSrc.includes("P2-355: unnamed shifts (warning)"),
+  );
+  check(
+    "P2-355: attribution happens at fire time — the buffer keeps only name+score, never a node",
+    /__ocrShiftBuffer\.push\(\{ name, value: e\.value, input: e\.hadRecentInput === true \}\)/.test(flowSrc) &&
+      /el\.closest\("\[data-region\]"\)/.test(flowSrc),
   );
 }
 

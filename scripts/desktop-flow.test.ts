@@ -35,6 +35,7 @@ import { CLOSE_HINT_LOG } from "../apps/desktop/src/closehint";
 import { shellLabels } from "../apps/desktop/src/shelllang";
 import { RELAY_PROTOCOL_PHRASES } from "../apps/daemon/src/relayprotocol";
 import { RELAY_WIRE_PROTOCOL } from "@ocr/protocol";
+import { classifyShift, SHIFT_REGIONS } from "../apps/web/src/lib/shiftgate";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -188,6 +189,10 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // added the disk-verdict composer beats (the normal-state probes + shots ride
 // the paired local boot; the critical state boots one more hermetic daemon
 // with the OCR_DISK_FULL=1 hatch — the probes poll at 500ms) inside it too.
+// P2-355 added the layout-shift beat (PerformanceObserver with buffered:true
+// installed right after the open, a quiet-poll settle, ONE buffer read
+// classified by the pure shiftgate module, zero named-region shifts required,
+// three evidence shots) inside the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 420_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -2008,6 +2013,57 @@ try {
   // the app lands straight in the chat — mode:"local", uri/qr null, no
   // overlay, no pairing form. The daemon follows the localws.test.ts pattern:
   // HOME=<tmp> (own state file), free port, dead relay — E2E intact.
+  //
+  // P2-355: the same boot also carries the layout-shift beat. The observer
+  // installs right after the open (buffered:true — entries fired during load
+  // replay from the browser's buffer, so load-time pop-ins are seen), the
+  // shell settles, then ONE read classifies every buffered entry with the
+  // pure shiftgate module. Attribution happens at fire time in the page:
+  // data-region on the live node (closest region ancestor first), else a
+  // short selector of the node itself — only name and score cross the IPC
+  // boundary, never a node.
+  const shiftInstallExpr = `(() => {
+    if (typeof PerformanceObserver === "undefined" || !(PerformanceObserver.supportedEntryTypes || []).includes("layout-shift")) return false;
+    const w = window;
+    if (w.__ocrShiftObs) return true;
+    w.__ocrShiftBuffer = [];
+    try {
+      w.__ocrShiftObs = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          let name = "";
+          const sources = e.sources || [];
+          for (const s of sources) {
+            const el = s && s.node;
+            if (!el || el.nodeType !== 1) continue;
+            const region = el.closest ? el.closest("[data-region]") : null;
+            if (region) { name = region.getAttribute("data-region") || ""; break; }
+          }
+          if (!name) {
+            for (const s of sources) {
+              const el = s && s.node;
+              if (!el || el.nodeType !== 1) continue;
+              const tag = (el.tagName || "").toLowerCase();
+              const cls = typeof el.className === "string" && el.className.trim() ? "." + el.className.trim().split(/\\s+/)[0] : "";
+              name = tag + (el.id ? "#" + el.id : cls);
+              break;
+            }
+          }
+          w.__ocrShiftBuffer.push({ name, value: e.value, input: e.hadRecentInput === true });
+        }
+      });
+      w.__ocrShiftObs.observe({ type: "layout-shift", buffered: true });
+      return true;
+    } catch {
+      return false;
+    }
+  })()`;
+  const shiftReadExpr = `(() => {
+    const w = window;
+    const buf = w.__ocrShiftBuffer;
+    const regions = Array.from(new Set(Array.from(document.querySelectorAll("[data-region]")).map((el) => el.getAttribute("data-region") || "").filter(Boolean)));
+    if (w.__ocrShiftObs) { try { w.__ocrShiftObs.disconnect(); } catch (e) {} }
+    return JSON.stringify({ installed: buf !== undefined, entries: buf || [], regions });
+  })()`;
   const localShot = join(shotsDir, "P1-070-local-boot.png");
   const localShot390 = join(shotsDir, "P1-070-local-boot-390.png");
   const daemonHome = mkdtempSync(join(tmpdir(), "ocr-flow-daemon-"));
@@ -2076,6 +2132,19 @@ try {
       const open = run("local: open (hermetic local-boot launch)", ["open"], 45_000, localEnv);
       localBooted = open.ok;
       if (open.ok) {
+        // P2-355: the layout-shift observer installs right after the open,
+        // with buffered:true so entries fired during load (font settling,
+        // late arrivals) still replay from the browser's buffer. Fail-closed:
+        // an observer that cannot install fails the beat instead of proving
+        // nothing.
+        const shiftInstall = run("P2-355: install the layout-shift observer (buffered)", ["ipc", shiftInstallExpr], 15_000, localEnv);
+        if (shiftInstall.ok) {
+          check(
+            "P2-355: observer installed (fail-closed — no observer, no verdict)",
+            shiftInstall.stdout.replace(/"/g, "").trim() === "true",
+            shiftInstall.stdout,
+          );
+        }
         // P2-148: fresh userData boots into the first-run welcome — skip it.
         // The local auto-pair completes in the background either way.
         run("local: skip the first-run welcome", ["click", ".welcome-skip"], 15_000, localEnv);
@@ -2101,6 +2170,78 @@ try {
           (v) => v.includes("paired"),
           localEnv,
         );
+
+        // --- P2-355: the layout-shift guard — the explorer's pop-in hunt as
+        // a deterministic gate. P2-355: settle — the state above is paired,
+        // but async arrivals (the sidebar's session list, pane content) can
+        // still land; poll the buffer's length until it stops growing for two
+        // consecutive probes so the classification sees the settled shell.
+        // Never fails the gate by itself — fail-closed is reserved for a
+        // missing observer.
+        let shiftQuiet = 0;
+        let shiftLast = -1;
+        for (let i = 0; i < 10 && shiftQuiet < 2; i++) {
+          const c = probe(["ipc", "String((window.__ocrShiftBuffer || []).length)"], 15_000, localEnv);
+          const n = c.ok ? Number(c.stdout.replace(/"/g, "").trim()) : Number.NaN;
+          shiftQuiet = Number.isFinite(n) && n === shiftLast ? shiftQuiet + 1 : 0;
+          shiftLast = Number.isFinite(n) ? n : shiftLast;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        // P2-355: read — one read of the buffer (after the settle, before the
+        // shots), then the observer disconnects so the later resize vehicles
+        // (390px remount) never pollute anything.
+        const shiftRead = run("P2-355: read the shift buffer after the settle", ["ipc", shiftReadExpr], 15_000, localEnv);
+        let shiftRaw = shiftRead.stdout.trim();
+        // the ipc result is a JSON-encoded string (the eval returns a JSON
+        // string) — unwrap once, then parse the payload
+        try {
+          shiftRaw = JSON.parse(shiftRaw) as string;
+        } catch {
+          /* already plain */
+        }
+        let shiftParsed: { installed?: boolean; entries?: { name?: unknown; value?: unknown; input?: unknown }[]; regions?: string[] } | null = null;
+        try {
+          shiftParsed = JSON.parse(shiftRaw) as typeof shiftParsed;
+        } catch {
+          shiftParsed = null;
+        }
+        if (shiftRead.ok) {
+          if (!shiftParsed?.installed) {
+            // fail-closed: without an installed observer the beat proves nothing
+            check("P2-355: shift buffer present at read time (fail-closed)", false, shiftRead.stdout);
+          } else {
+            const entries = shiftParsed.entries ?? [];
+            const named: string[] = [];
+            const unnamed: string[] = [];
+            for (const e of entries) {
+              const verdict = classifyShift({ name: e.name, value: e.value }, e.input === true, SHIFT_REGIONS);
+              if (verdict.kind === "shift") named.push(`${verdict.region} ${e.value}`);
+              else if (verdict.kind === "unnamed") unnamed.push(`${String(e.name ?? "?")} ${e.value}`);
+            }
+            check(
+              `P2-355: zero named-region shifts after first paint (${entries.length} entries, regions: ${(shiftParsed.regions ?? []).join(",") || "none"})`,
+              named.length === 0,
+              JSON.stringify(named),
+            );
+            // unnamed shifts print as warnings — real movement outside the
+            // named regions is worth seeing in the gate log, never a red.
+            console.log(
+              `P2-355: unnamed shifts (warning): ${unnamed.length ? unnamed.join(" | ") : "none"}`,
+            );
+            // evidence: the settled shell unchanged (this task touches only
+            // invisible data-region attributes) — desktop, then phone, then the
+            // resize vehicle that restores the desktop width for every later
+            // beat.
+            const shiftShot1440 = join(shotsDir, "P2-355-shiftgate-1440.png");
+            const sh1 = run("P2-355: 1440x900 shift-gate shot", ["shot", shiftShot1440, "1440", "900"], 15_000, localEnv);
+            if (sh1.ok) check("P2-355: 1440x900 shot is a real PNG", pngSize(shiftShot1440).join("x") === "1440x900");
+            const shiftShot390 = join(shotsDir, "P2-355-shiftgate-390.png");
+            const sh2 = run("P2-355: 390 shift-gate shot", ["shot", shiftShot390, "390", "844"], 15_000, localEnv);
+            if (sh2.ok) check("P2-355: 390 shot is a real PNG", pngSize(shiftShot390)[0] === 390);
+            run("P2-355: resize back to desktop width", ["shot", join(shotsDir, "P2-355-resize-1440.png"), "1440", "900"], 15_000, localEnv);
+          }
+        }
+
         const noOverlay = run("local: QR overlay absent", ["ipc", "!!document.querySelector('.pair-overlay')"], 15_000, localEnv);
         if (noOverlay.ok) check("local: .pair-overlay not rendered", /false/.test(noOverlay.stdout));
         const noForm = run("local: pairing form absent", ["ipc", "!!document.querySelector('.pair-submit')"], 15_000, localEnv);

@@ -228,7 +228,7 @@ export default function WelcomeView({ kind, busy, reconnectAttempts, upstream, r
         {/* P3-374: progress reads as part of the brand block — the step
             indicator sits centered under the wordmark instead of one end of a
             sparse space-between row detached from the card it governs. */}
-        <header>
+        <header data-region="brand-header">
           <div className="welcome-mark" aria-hidden="true">
             ✻
           </div>

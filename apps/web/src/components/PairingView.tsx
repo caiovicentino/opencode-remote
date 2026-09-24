@@ -251,7 +251,7 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
   // onPairRemote), so its scan/paste flow is untouched.
   return (
     <div className="screen pair-screen">
-      <header>
+      <header data-region="brand-header">
         {/* P3-373: same glyph language as the welcome wizard — the first
             three screens of the journey share one brand header. */}
         <div className="welcome-mark" aria-hidden="true">

@@ -467,3 +467,26 @@ estado não-ok (`.degraded-storage`, tom warn — P3-371: estado fala warn, a
 ação fica no accent); a paridade do conjunto fechado entre desktop e web é
 pinada por teste que lê as duas fontes reais, e a asserção de fonte prova uma
 sonda só no boot e nenhum setInterval novo.
+P2-355 transformou a caça a olho do explorer (cabeçalho da marca cisalhado,
+linhas da sidebar chegando tarde, mapa de panes saltando) em guarda
+determinística pela Layout Instability API — a técnica do post do Claude
+(how we made claude.ai faster): o módulo puro `apps/web/src/lib/shiftgate.ts`
+(sem React, sem DOM no import) classifica cada entrada como valor — regras
+nesta ordem: entrada malformada ignora em falha fechada, `hadRecentInput`
+ignora, valor abaixo do limiar documentado (`SHIFT_THRESHOLD = 0.001`,
+escala medida: sidebar inteira andando ~5px ≈ 0.001, card empurrado por
+chegada tardia ≈ 0.005 — transform-only e entrada de novo conteúdo nunca
+produzem entrada) ignora, região fora da lista (`SHIFT_REGIONS`:
+brand-header/sidebar/pane-map, atribuída via `data-region` nos contêineres
+que o explorer caçou, paridade pinada por teste contra as fontes reais) vira
+unnamed, e só então shift nomeado; o beat P2-355 do desktop-flow instala um
+PerformanceObserver com `buffered: true` logo após o open (entradas da carga
+voltam do buffer do browser), espera o estado assentado (buffer quieto por
+duas sondas seguidas), lê o buffer UMA vez, roda o classificador em cada
+entrada e prova zero shifts nomeados no main de hoje — unnamed impresso como
+aviso, falha fechada apenas quando o observador não instala; a atribuição de
+região acontece QUANDO a entrada dispara (data-region ou seletor curto do nó
+vivo — só nome e valor entram no buffer, nunca um nó atravessando o IPC) e o
+observador desconecta na leitura, para o remount de 390px nunca poluir o
+buffer; asserção em scripts/unit.test.ts lê o beat real e prova a ordem
+open < install < settle < read < shots.
