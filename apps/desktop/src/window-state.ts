@@ -96,6 +96,44 @@ export function sanitizeWindowBounds(
 }
 
 /**
+ * P2-352: the runtime rescue decision. sanitizeWindowBounds only sees the
+ * displays attached at window creation — a monitor unplugged while the app is
+ * open leaves the live window parked on a screen that no longer exists (the
+ * tray click then "shows" an invisible window). main.ts applies this pure
+ * verdict on the OS display events: a window that still intersects some
+ * attached workArea is left exactly where it is (null — nothing to rescue);
+ * anything else is re-centered on the FIRST display's workArea, keeping the
+ * window's size whenever it still fits and capping it to that area otherwise.
+ * The size never goes below WINDOW_MIN — the BrowserWindow enforces the same
+ * minWidth/minHeight, so a cap below the floor would be silently overridden
+ * anyway; when the remaining screen is smaller than the floor, the floor wins
+ * and the window hangs off that tiny screen by an equal margin on both sides.
+ * A missing/non-finite position (x/y absent or garbage) cannot prove the
+ * window is visible anywhere, so it is treated as off-screen and rescued.
+ * No display left at all (empty list) means nowhere to rescue onto — null
+ * today; the next display event re-runs the decision.
+ * Reuses the same intersects() rule as the boot path: one definition of
+ * "on-screen", no duplicated geometry.
+ */
+export function rescueBounds(bounds: WindowBounds, displays: DisplayArea[]): WindowBounds | null {
+  // noUncheckedIndexedAccess: the first display is typed as possibly absent —
+  // same null for an empty list (nowhere to rescue onto).
+  const first = displays[0];
+  if (!first) return null;
+  const rect = { x: bounds.x ?? NaN, y: bounds.y ?? NaN, width: bounds.width, height: bounds.height };
+  if (displays.some((d) => intersects(d.workArea, rect))) return null;
+  const area = first.workArea;
+  const width = Math.max(WINDOW_MIN.width, Math.min(finite(bounds.width) ? bounds.width : WINDOW_MIN.width, area.width));
+  const height = Math.max(WINDOW_MIN.height, Math.min(finite(bounds.height) ? bounds.height : WINDOW_MIN.height, area.height));
+  return {
+    x: area.x + Math.round((area.width - width) / 2),
+    y: area.y + Math.round((area.height - height) / 2),
+    width,
+    height,
+  };
+}
+
+/**
  * Reads the persisted bounds; every failure (missing file, corrupted JSON,
  * wrong shape) degrades to the default instead of crashing the shell.
  */
