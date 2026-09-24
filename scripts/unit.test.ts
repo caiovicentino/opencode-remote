@@ -42618,6 +42618,162 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
 }
 
+// --- P2-357: main.ts ↔ preload.ts IPC channel parity -------------------------
+// The shell's IPC surface was married only by convention: a channel renamed on
+// one side surfaced as a hung promise or a runtime "No handler registered"
+// error, invisible to the battery. These checks read the REAL sources and pin
+// both directions: renderer→main (ipcMain.handle/on in main.ts vs
+// ipcRenderer.invoke/send in preload.ts) and main→renderer (webContents.send
+// in main.ts vs ipcRenderer.on in preload.ts).
+{
+  // Literal-string channel extraction; the backreference keeps the closing
+  // quote the same as the opening one.
+  const ipcChannelRe = (call: string): RegExp =>
+    new RegExp(`${call.replace(/\./g, "\\.")}\\(\\s*(["'])((?:(?!\\1).)+)\\1`, "g");
+  const ipcChannels = (src: string, call: string): string[] =>
+    [...src.matchAll(ipcChannelRe(call))].map((m) => m[2]!);
+
+  // Pure parity verdict: returns one message per drift so a failure LISTS the
+  // difference instead of just counting. Empty array = parity holds.
+  const ipcParityFindings = (mainSrc: string, preloadSrc: string, exceptions: readonly string[]): string[] => {
+    const findings: string[] = [];
+    const mainHandle = ipcChannels(mainSrc, "ipcMain.handle");
+    const mainOn = ipcChannels(mainSrc, "ipcMain.on");
+    const preloadInvoke = ipcChannels(preloadSrc, "ipcRenderer.invoke");
+    const preloadSend = ipcChannels(preloadSrc, "ipcRenderer.send");
+    const mainPush = ipcChannels(mainSrc, "webContents.send");
+    const preloadOn = ipcChannels(preloadSrc, "ipcRenderer.on");
+
+    const rawServed = new Set([...mainHandle, ...mainOn]);
+    const rawCalled = new Set([...preloadInvoke, ...preloadSend]);
+    const rawPushed = new Set(mainPush);
+    const rawListened = new Set(preloadOn);
+
+    // Fail closed: zero channels on any side means the extraction regex
+    // drifted — never trust an empty parity as a pass.
+    for (const [label, list] of [
+      ["ipcMain.handle (main.ts)", mainHandle],
+      ["ipcMain.on (main.ts)", mainOn],
+      ["ipcRenderer.invoke (preload.ts)", preloadInvoke],
+      ["ipcRenderer.send (preload.ts)", preloadSend],
+      ["webContents.send (main.ts)", mainPush],
+      ["ipcRenderer.on (preload.ts)", preloadOn],
+    ] as const) {
+      if (list.length === 0) {
+        findings.push(`zero channels extracted from ${label} — failing closed (extraction regex drifted; fix the regex instead of trusting an empty parity)`);
+      }
+    }
+
+    const exempt = new Set(exceptions);
+    const served = new Set([...rawServed].filter((c) => !exempt.has(c)));
+    const called = new Set([...rawCalled].filter((c) => !exempt.has(c)));
+
+    const noHandler = [...called].filter((c) => !served.has(c));
+    if (noHandler.length > 0) {
+      findings.push(`invoked by preload with no ipcMain handler in main.ts (hung promise at runtime): ${noHandler.join(", ")}`);
+    }
+    const orphanHandler = [...served].filter((c) => !called.has(c));
+    if (orphanHandler.length > 0) {
+      findings.push(`registered in main.ts but never invoked from preload (dead handler): ${orphanHandler.join(", ")}`);
+    }
+
+    // Electron throws "Attempted to register a second handler" for a repeated
+    // ipcMain.handle on the same channel — catch it here, not at boot.
+    const handleCount = new Map<string, number>();
+    for (const c of mainHandle) handleCount.set(c, (handleCount.get(c) ?? 0) + 1);
+    const duplicated = [...handleCount].filter(([, n]) => n > 1).map(([c]) => c);
+    if (duplicated.length > 0) {
+      findings.push(`registered by two ipcMain.handle calls in main.ts (the second registration throws at boot): ${duplicated.join(", ")}`);
+    }
+
+    const pushed = new Set([...rawPushed].filter((c) => !exempt.has(c)));
+    const listened = new Set([...rawListened].filter((c) => !exempt.has(c)));
+    const pushNoListener = [...pushed].filter((c) => !listened.has(c));
+    if (pushNoListener.length > 0) {
+      findings.push(`pushed via webContents.send in main.ts with no ipcRenderer.on listener in preload.ts (event lost): ${pushNoListener.join(", ")}`);
+    }
+    const listenerNoPush = [...listened].filter((c) => !pushed.has(c));
+    if (listenerNoPush.length > 0) {
+      findings.push(`ipcRenderer.on listener in preload.ts that no webContents.send in main.ts ever fires (dead listener): ${listenerNoPush.join(", ")}`);
+    }
+
+    // A declared exception must name a channel that actually exists on some
+    // side — a typo would silently mask nothing while a real drift could hide
+    // behind it.
+    for (const e of exceptions) {
+      if (!rawServed.has(e) && !rawCalled.has(e) && !rawPushed.has(e) && !rawListened.has(e)) {
+        findings.push(`declared exception "${e}" does not match any real channel on either side (typo? fix the name or remove it)`);
+      }
+    }
+
+    return findings;
+  };
+
+  const mainIpcSrc = readFileSync(new URL("../apps/desktop/src/main.ts", import.meta.url), "utf8");
+  const preloadIpcSrc = readFileSync(new URL("../apps/desktop/src/preload.ts", import.meta.url), "utf8");
+
+  // Exceptions: NONE today — every channel pairs in both directions on the
+  // current main. A future hermetic-only channel goes here, one line each,
+  // with the why inline, e.g.:
+  //   "app:hermeticOnly", // P?-?: test-harness-only channel; never reachable in a production boot
+  const ipcExceptions: readonly string[] = [];
+
+  const ipcDrift = ipcParityFindings(mainIpcSrc, preloadIpcSrc, ipcExceptions);
+  check("P2-357: real main.ts ↔ preload.ts IPC channel parity holds in both directions (renderer→main, main→renderer)", ipcDrift.length === 0);
+  for (const f of ipcDrift) {
+    check(`P2-357: IPC drift — ${f}`, false);
+  }
+
+  // The parity logic above is only trustworthy if it can actually fail: each
+  // in-memory fixture proves one failure mode fires with the message that
+  // names it.
+  const MAIN_FX = `ipcMain.handle("app:ping", h); ipcMain.on("ocr:tick", t); win.webContents.send("ocr:push", d);`;
+  const PRELOAD_FX = `ipcRenderer.invoke("app:ping"); ipcRenderer.send("ocr:tick"); ipcRenderer.on("ocr:push", c);`;
+  const fx = (mainSrc: string, preloadSrc: string, exceptions: readonly string[] = []): string[] =>
+    ipcParityFindings(mainSrc, preloadSrc, exceptions);
+
+  const onlyPreload = fx(MAIN_FX, `${PRELOAD_FX} ipcRenderer.invoke("app:ghost");`);
+  check(
+    "P2-357: fixture — a channel invoked only in preload fails naming it (hung promise)",
+    onlyPreload.length === 1 && onlyPreload[0]?.includes("app:ghost") === true && onlyPreload[0]?.includes("no ipcMain handler") === true,
+  );
+
+  const onlyMain = fx(`${MAIN_FX} ipcMain.handle("app:orphan", h);`, PRELOAD_FX);
+  check(
+    "P2-357: fixture — a handler registered only in main fails naming it (dead handler)",
+    onlyMain.length === 1 && onlyMain[0]?.includes("app:orphan") === true && onlyMain[0]?.includes("never invoked") === true,
+  );
+
+  const duplicated = fx(`${MAIN_FX} ipcMain.handle("app:ping", again);`, PRELOAD_FX);
+  check(
+    "P2-357: fixture — a channel registered by two ipcMain.handle fails naming it",
+    duplicated.length === 1 && duplicated[0]?.includes("app:ping") === true && duplicated[0]?.includes("two ipcMain.handle") === true,
+  );
+
+  const emptyPreload = fx(MAIN_FX, "/* no ipc calls in this source */");
+  check(
+    "P2-357: fixture — an empty extraction side fails closed, naming the side",
+    ["ipcRenderer.invoke", "ipcRenderer.send", "ipcRenderer.on"].every((side) =>
+      emptyPreload.some((f) => f.includes(`zero channels extracted from ${side} (preload.ts)`)),
+    ),
+  );
+
+  const pushNoListen = fx(`${MAIN_FX} win.webContents.send("ocr:lost", d);`, PRELOAD_FX);
+  check(
+    "P2-357: fixture — a webContents.send without a preload listener fails naming the channel",
+    pushNoListen.length === 1 && pushNoListen[0]?.includes("ocr:lost") === true,
+  );
+
+  const listenNoPush = fx(MAIN_FX, `${PRELOAD_FX} ipcRenderer.on("ocr:ghost-listen", c);`);
+  check(
+    "P2-357: fixture — a preload listener nothing pushes to fails naming the channel",
+    listenNoPush.length === 1 && listenNoPush[0]?.includes("ocr:ghost-listen") === true,
+  );
+
+  const excepted = fx(`${MAIN_FX} ipcMain.handle("app:hermetic", h);`, PRELOAD_FX, ["app:hermetic"]);
+  check("P2-357: fixture — a declared exception subtracts its channel from both sides", excepted.length === 0);
+}
+
 if (failures > 0) {
   console.error(`UNIT TESTS FAILED: ${failures}`);
   process.exit(1);
