@@ -186,7 +186,7 @@ const repoRoot = join(import.meta.dirname, "..");
   const r1 = await repriceTaskUSD(store, query);
   check("reprice: the previously unpriced glm-5.3-flash task gets its $ view ($1.40)", r1.changed && r1.repriced === 1 && close(store.taskUSD?.["P3-001"]?.total, 1.4));
   check("reprice: a task with a vanished root session is skipped (never shrinks)", r1.skipped === 1 && store.taskUSD?.["P3-002"]?.total === 0 && store.taskUSD["P3-002"].unpricedTokens === 2_000_000);
-  check("reprice: taskCosts untouched (REPLACE-by-recompute stays with applySessionCosts)", store.taskCosts?.["P3-001"] === 1_000_000 && store.taskCosts["P3-002"] === 2_000_000);
+  check("reprice: a skipped task keeps its recorded tokens; an equal fold leaves them as they were", store.taskCosts?.["P3-001"] === 1_000_000 && store.taskCosts["P3-002"] === 2_000_000);
   check("reprice: ONE batched query for the whole window", asked.length === 3);
   let again = 0;
   const r2 = await repriceTaskUSD(store, async () => {
@@ -194,6 +194,23 @@ const repoRoot = join(import.meta.dirname, "..");
     return {};
   });
   check("reprice: same fingerprint → no-op, no query", !r2.changed && again === 0 && store.taskUSDPricing === r1.fingerprint);
+  // tokens chip and $ tooltip must describe the same sessions: a complete
+  // task gains its descendants in taskCosts too — but a recorded total is
+  // never LOWERED by a re-fold
+  const grow: Parameters<typeof repriceTaskUSD>[0] = {
+    taskCosts: { "P3-010": 1_000_000, "P3-011": 9_000_000 },
+    taskCostSessions: { "P3-010": ["ses_grow00000001"], "P3-011": ["ses_keep00000001"] },
+  };
+  await repriceTaskUSD(grow, async () => ({
+    ses_grow00000001: row("ses_grow00000001"),
+    ses_growkid00001: { id: "ses_growkid00001", parent_id: "ses_grow00000001", tokens_input: 500_000, tokens_output: 0, tokens_cache_read: 0, tokens_cache_write: 0, model: glm },
+    ses_keep00000001: row("ses_keep00000001"),
+  }));
+  check(
+    "reprice: descendants raise taskCosts + taskCache with the $ view",
+    grow.taskCosts?.["P3-010"] === 1_500_000 && grow.taskCache?.["P3-010"]?.input === 1_500_000 && grow.taskUSD?.["P3-010"]?.tokens === 1_500_000,
+  );
+  check("reprice: a re-fold below the recorded total leaves the task untouched (all-or-nothing)", grow.taskCosts?.["P3-011"] === 9_000_000 && grow.taskUSD?.["P3-011"] === undefined);
   const ops = normalizePricingConfig({ selfHosted: { models: ["glm-5.3-flash"], usdPerMTok: { input: 2, output: 2, cacheRead: 2, cacheWrite: 2 } } });
   const r3 = await repriceTaskUSD(store, query, ops);
   check("reprice: a new self-hosted config re-prices and adds opsUSD", r3.changed && close(store.taskUSD?.["P3-001"]?.opsUSD, 2) && store.taskUSDPricing === pricingFingerprint(ops));

@@ -374,10 +374,12 @@ function foldTaskRows(
  * tasks reconciled after the 2026-09-11 model-id rename stay "unpriced"
  * forever otherwise, since done tasks are never reconciled again.
  *
- * Only `taskUSD` is rewritten, and only for tasks whose every root session
- * still has a row: opencode.db may have lost old sessions, and a partial
- * recompute must never shrink a recorded cost. taskCosts/taskCache keep
- * their REPLACE-by-recompute owner (applySessionCosts). One batched query.
+ * Only tasks whose every root session still has a row, and whose re-fold is
+ * not below the recorded total, are touched: opencode.db may have lost old
+ * sessions, and a recompute must never shrink a recorded cost. For those,
+ * taskUSD, taskCosts and taskCache are replaced from the same fold
+ * (descendant sessions included) — the tokens chip and the $ tooltip of one
+ * task describe the same sessions. One batched query.
  */
 export async function repriceTaskUSD(
   store: TaskCostStore,
@@ -396,11 +398,18 @@ export async function repriceTaskUSD(
     const valid = (known ?? []).filter(isSessionId);
     if (!valid.length) continue;
     const fold = foldTaskRows(valid, rows, pricing);
-    if (!fold.complete || !fold.sawRow || fold.total <= 0) {
+    // all-or-nothing per task: a gap in the DB or a re-fold BELOW the recorded
+    // total leaves the task exactly as it was (never shrink, never split the
+    // tokens chip from the $ view)
+    if (!fold.complete || !fold.sawRow || fold.total <= 0 || fold.total < (store.taskCosts?.[task] ?? 0)) {
       skipped++;
       continue;
     }
     store.taskUSD[task] = fold.usd;
+    store.taskCosts ??= {};
+    store.taskCosts[task] = fold.total;
+    store.taskCache ??= {};
+    store.taskCache[task] = { input: fold.input, cacheRead: fold.cacheRead, cacheWrite: fold.cacheWrite };
     repriced++;
   }
   store.taskUSDPricing = fingerprint;
