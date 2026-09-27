@@ -23,7 +23,7 @@ import {
 } from "../apps/web/src/lib/bubbleMerge";
 import { previewFromEvents } from "../apps/web/src/lib/sessionPreview";
 import { consumeSendOnOpen, getDraft, markSendOnOpen, setDraft } from "../apps/web/src/lib/drafts";
-import { SEND_TIMEOUT_MS, sendFailurePlan } from "../apps/web/src/lib/sendfail";
+import { SEND_TIMEOUT_MS, echoIsFresh, sendFailurePlan } from "../apps/web/src/lib/sendfail";
 import {
   AUTO_APPROVED_EVENT,
   AUTO_APPROVE_GRACE_MS,
@@ -143,8 +143,28 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
   check(
     "ChatView: the send failure path consults sendFailurePlan with the echo flag",
     chatSrc.includes("sendFailurePlan({ echoed: echo.echoed, hasText: !!text })") &&
-      chatSrc.includes("if (firstSight && promptEchoRef.current) promptEchoRef.current.echoed = true;"),
+      chatSrc.includes("echoIsFresh(p.info, promptEchoRef.current.sentAt)"),
   );
+  // eval-10 verify round: the echo is only the prompt's OWN receipt — a user
+  // message created before the send (session-switch replay, another device)
+  // must never mark the in-flight prompt delivered and swallow the resend
+  const sentAt = 1_790_000_000_000; // realistic epoch-ms anchor (the client clock)
+  check("echoIsFresh: message created at the send → echo", echoIsFresh({ time: { created: sentAt } }, sentAt));
+  check("echoIsFresh: within the clock-skew tolerance → echo", echoIsFresh({ time: { created: sentAt - 60_000 } }, sentAt));
+  check(
+    "echoIsFresh: a message older than the skew (re-emitted old message) is not the echo",
+    !echoIsFresh({ time: { created: sentAt - 3 * 60_000 } }, sentAt),
+  );
+  check("echoIsFresh: ISO string timestamps parse", echoIsFresh({ time: { created: new Date(sentAt).toISOString() } }, sentAt));
+  check(
+    "echoIsFresh: epoch-seconds timestamps are scaled (never a false 'old')",
+    echoIsFresh({ time: { created: Math.round(sentAt / 1000) } }, sentAt),
+  );
+  check(
+    "echoIsFresh: a missing or unparsable timestamp keeps today's behavior (fail-open, no resend risk)",
+    echoIsFresh({}, sentAt) && echoIsFresh(undefined, sentAt) && echoIsFresh({ time: { created: "not-a-date" } }, sentAt),
+  );
+  check("ChatView: send() stamps the send instant into the echo ref", chatSrc.includes("const echo = { echoed: false, sentAt: Date.now() };"));
 }
 
 // --- 3. r4 PR-B1: the injected artifacts-path line never reaches a bubble -----
@@ -215,6 +235,30 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
   check("queued (offline) bubbles are left to the reconnect flush", keepInflight([], [{ ...inflight, pending: "queued" }]).length === 0);
   check("settled or id-carrying bubbles never survive a history replace", keepInflight([], [{ ...inflight, pending: false }, { ...inflight, messageID: "m9" }]).length === 0);
   check("ChatView's history load goes through keepInflight", chatSrc.includes("setBubbles((cur) => keepInflight(out, cur));"));
+  // eval-10 verify round: an image-only send renders as "[image]" in flight
+  // and as bare image parts in history — one message, two renderings; the
+  // text-only comparison duplicated it whenever the history read landed after
+  // the POST stored the message but before the echo was processed
+  const img = "data:image/png;base64,AAAA";
+  const imgInflight: Bubble = { role: "user", text: "[image]", pending: true };
+  const imgStored: Bubble[] = [{ role: "user", text: "", images: [img], messageID: "m-img" }];
+  check("image-only send already stored → no duplicate bubble", keepInflight(imgStored, [imgInflight]).length === 1);
+  check(
+    "a settled image bubble already on screen means the stored row is the PREVIOUS send (the in-flight one survives)",
+    keepInflight(imgStored, [{ role: "user", text: "", images: [img], messageID: "m-prev" }, imgInflight]).length === 2,
+  );
+  check(
+    "a two-image label only dedupes against a two-image row",
+    keepInflight([{ role: "user", text: "", images: [img, img], messageID: "m2" }], [{ role: "user", text: "[images x2]", pending: true }]).length === 1,
+  );
+  check(
+    "a one-image label never dedupes against a two-image row",
+    keepInflight([{ role: "user", text: "", images: [img, img], messageID: "m2" }], [{ role: "user", text: "[image]", pending: true }]).length === 2,
+  );
+  check(
+    "a stored image row with a caption never swallows the label bubble (texts differ, images are the proof)",
+    keepInflight([{ role: "user", text: "olha", images: [img], messageID: "m3" }], [{ role: "user", text: "[image]", pending: true }]).length === 2,
+  );
 }
 
 // --- 5. approvals never sit invisible ----------------------------------------
@@ -245,11 +289,32 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
   );
   const seen = new Map([["p1", 1_000]]);
   check(
-    "staleAutoAsks: inside the grace → not stale",
+    "staleAutoAsks: inside the grace (clock = the last successful read) → not stale",
     staleAutoAsks(seen, ["p1"], 1_000 + AUTO_APPROVE_GRACE_MS - 1).size === 0,
   );
-  check("staleAutoAsks: at the grace → stale", staleAutoAsks(seen, ["p1"], 1_000 + AUTO_APPROVE_GRACE_MS).has("p1"));
+  check(
+    "staleAutoAsks: a successful read at/after the grace → stale",
+    staleAutoAsks(seen, ["p1"], 1_000 + AUTO_APPROVE_GRACE_MS).has("p1"),
+  );
   check("staleAutoAsks: never-seen id is never stale", staleAutoAsks(seen, ["p2"], 10 ** 12).size === 0);
+  // eval-10 verify round (the S6b repro, pure): the clock is `lastOkFetchAt` —
+  // the instant of the last SUCCESSFUL pending-list read, not wall-clock now.
+  // A re-read that FAILED (phone offline) freezes the clock at the read that
+  // first listed the ask, so an ask the daemon already answered never flashes
+  // as a manual card; and a read OLDER than the ask's first sighting can
+  // never promote it either.
+  check(
+    "staleAutoAsks: a failed re-read (clock frozen at the read that listed the ask) never promotes",
+    staleAutoAsks(seen, ["p1"], 1_000).size === 0,
+  );
+  check(
+    "staleAutoAsks: a read older than the ask's first sighting never promotes",
+    staleAutoAsks(new Map([["p1", 5_000]]), ["p1"], 1_000).size === 0,
+  );
+  check(
+    "staleAutoAsks: the clock reaching the grace after the resync's successful read promotes",
+    staleAutoAsks(seen, ["p1"], 1_000 + AUTO_APPROVE_GRACE_MS + 1).has("p1"),
+  );
   check("AUTO_APPROVE_GRACE_MS leaves the daemon's 2-attempt budget room (5–30 s)", AUTO_APPROVE_GRACE_MS >= 5_000 && AUTO_APPROVE_GRACE_MS <= 30_000);
 
   const ask = { permissionID: "p1", label: "bash" };
@@ -328,12 +393,52 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
     resync.includes("void fetchPendingPermissions();") && resync.includes("void fetchPendingQuestions();"),
   );
   check(
-    "ChatView feeds the stale set to the reconciler only under AutoMode",
-    chatSrc.includes("staleAutoAsks(askSeenRef.current, persistedAsks.map((a) => a.permissionID), askClock)"),
+    "ChatView feeds the stale set to the reconciler only under AutoMode AND only on a live channel",
+    chatSrc.includes('autoMode && connStatus === "paired"') &&
+      chatSrc.includes("staleAutoAsks(askSeenRef.current, persistedAsks.map((a) => a.permissionID), askClock)"),
   );
   check(
     "permission re-fetch is keyed on the newest permission event, not a buffer count",
     chatSrc.includes("}, [permEventKey]);") && !chatSrc.includes("permEventCount"),
+  );
+  // eval-10 verify round: the grace verdict is fail-closed. The old wiring
+  // (`void fetchPendingPermissions(); setAskClock(Date.now())`) decided with
+  // the list it ALREADY had and advanced the clock even when the re-read
+  // failed — a phone offline at the grace showed "O AutoMode não respondeu"
+  // for an ask the daemon had answered 7 s earlier.
+  const graceAt = chatSrc.indexOf("eval-10: AutoMode grace");
+  const graceEnd = chatSrc.indexOf("}, [autoMode, persistedAsks, askClock]);", graceAt) + "}, [autoMode, persistedAsks, askClock]);".length;
+  const graceBlock = chatSrc.slice(graceAt, graceEnd);
+  check(
+    "grace timer re-reads the pending list and does NOT advance the clock itself (the read owns it)",
+    graceBlock.includes("void fetchPendingPermissions();") && !graceBlock.includes("setAskClock(Date.now())"),
+    graceBlock.slice(-400),
+  );
+  const fetchAt = chatSrc.indexOf("async function fetchPendingPermissions(): Promise<boolean>");
+  const tryClose = chatSrc.indexOf("return true;", fetchAt);
+  const fetchBlock = chatSrc.slice(fetchAt, chatSrc.indexOf("}", tryClose) + 1);
+  const catchAt = chatSrc.indexOf("} catch {", fetchAt) + "} catch {".length;
+  const catchBlock = chatSrc.slice(catchAt, chatSrc.indexOf("}", catchAt) + 1);
+  check(
+    "fetchPendingPermissions: only a successful read stamps lastOkFetchAt and reports ok",
+    fetchBlock.includes("setPersistedAsks(") && fetchBlock.includes("setAskClock(Date.now());") && fetchBlock.includes("return true;"),
+    fetchBlock,
+  );
+  check(
+    "fetchPendingPermissions: a failed read never touches the clock (fail-closed)",
+    catchBlock.includes("return false;") && !catchBlock.includes("setAskClock"),
+    catchBlock,
+  );
+  check(
+    "askClock starts at 0 — no stale verdict before the first successful read",
+    chatSrc.includes("const [askClock, setAskClock] = useState(0);"),
+  );
+  check(
+    "autoStale is a baton pass, not an error: plain card, muted role=status note (PRODUCT.md §2)",
+    chatSrc.includes('className="auto-stale-note"') &&
+      chatSrc.includes('role="status"') &&
+      chatSrc.includes('color: "var(--muted-strong)"') &&
+      !chatSrc.includes("p.autoFailed || p.autoStale"),
   );
 }
 
@@ -424,6 +529,41 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
   const keys = ["shareContent", "shareEmpty", "shareExtraPlaceholder", "shareNewSession", "shareOrExisting", "shareSending", "shareSessionTitle", "shareSendFailed", "shareListFailed", "filesTitle", "filesEmpty", "filesListFailed", "filesNoPreview"];
   const missing = keys.filter((k) => !en[k]?.trim() || !pt[k]?.trim() || en[k] === pt[k]);
   check("share/files copy exists in en AND pt, translated", missing.length === 0, missing.join(", "));
+}
+
+// --- 9. contrast: the autoStale support note clears AA in both themes --------
+{
+  // WCAG 2.x relative luminance / contrast ratio, pinned as data: the note is
+  // 0.72rem text on the chat background, so it needs ≥ 4.5:1 (the reviewer
+  // measured 4.39:1 for the old --danger note in the light theme).
+  const tokens = read("apps/web/src/tokens.css");
+  const pick = (token: string) => [...tokens.matchAll(new RegExp(`--${token}: (#[0-9a-fA-F]{6});`, "g"))].map((m) => m[1]);
+  const lin = (c: number) => {
+    const x = c / 255;
+    return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+  };
+  const lum = (hex: string) =>
+    0.2126 * lin(parseInt(hex.slice(1, 3), 16)) + 0.7152 * lin(parseInt(hex.slice(3, 5), 16)) + 0.0722 * lin(parseInt(hex.slice(5, 7), 16));
+  const ratio = (a: string, b: string) => {
+    const l1 = lum(a);
+    const l2 = lum(b);
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+  };
+  const strong = pick("muted-strong");
+  const darkBg = pick("gray-canvas")[0]; // --gray-canvas: the dark --bg
+  const lightBg = pick("bg").at(-1)!; // the light override of --bg
+  check("tokens: --muted-strong is defined for both themes", strong.length === 2, JSON.stringify({ strong, darkBg, lightBg }));
+  const darkRatio = ratio(strong[0]!, darkBg);
+  const lightRatio = ratio(strong[1]!, lightBg);
+  check(
+    "contrast: the autoStale note clears 4.5:1 on the chat background in dark AND light",
+    darkRatio >= 4.5 && lightRatio >= 4.5,
+    `dark ${darkRatio.toFixed(2)}:1, light ${lightRatio.toFixed(2)}:1`,
+  );
+  check(
+    "ChatView renders the autoStale note with the AA token, not --danger",
+    chatSrc.includes('color: "var(--muted-strong)"') && !chatSrc.includes('className="auto-fail-note auto-stale-note"'),
+  );
 }
 
 if (failures) {

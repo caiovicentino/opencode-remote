@@ -26,3 +26,34 @@ export function sendFailurePlan(input: { echoed: boolean; hasText: boolean }): S
   if (input.echoed) return "delivered";
   return input.hasText ? "queue" : "error";
 }
+
+/**
+ * eval-10 verify round: is this user message the echo of the prompt in
+ * flight? Any NEW user-message id used to mark it delivered — but opencode
+ * re-emits old user messages (a session switch replays the conversation) and
+ * prompts can arrive from another device, so a stale sighting swallowed the
+ * resend: the prompt vanished without queue or error. A message counts as
+ * the echo only when it was created at or after the send. `time.created`
+ * travels as epoch ms (the daemon's own parsers bet on ms), seconds are
+ * tolerated, ISO strings parse; a missing or unparsable timestamp keeps the
+ * old behavior (fail-open — never worse than today) instead of risking a
+ * resend that would run the whole turn twice.
+ */
+export const ECHO_CLOCK_SKEW_MS = 2 * 60_000;
+
+export function echoIsFresh(
+  info: { time?: { created?: unknown } } | undefined,
+  sentAt: number,
+): boolean {
+  const raw = info?.time?.created;
+  const ms =
+    typeof raw === "number" && Number.isFinite(raw)
+      ? raw < 1e11
+        ? raw * 1000
+        : raw
+      : typeof raw === "string" && raw
+        ? Date.parse(raw)
+        : NaN;
+  if (!Number.isFinite(ms)) return true;
+  return ms >= sentAt - ECHO_CLOCK_SKEW_MS;
+}

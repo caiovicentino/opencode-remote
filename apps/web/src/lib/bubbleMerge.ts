@@ -111,8 +111,31 @@ export function keepInflight(history: Bubble[], current: Bubble[]): Bubble[] {
       break;
     }
   }
-  const kept = inflight.filter((b) => lastUser?.text !== b.text);
+  const kept = inflight.filter((b) => !storedIsSameSend(lastUser, b, current));
   return kept.length ? [...history, ...kept] : history;
+}
+
+/**
+ * eval-10 verify round: does the history's newest user row already carry this
+ * send? Text prompts match by text (unchanged). An image-only send renders as
+ * "[image]" in flight while the stored row shows the image parts with no text
+ * — the same message in two renderings, matched by the label's image count.
+ * The count match only counts as THIS send when no settled image-only bubble
+ * in `current` already holds it: otherwise the stored row is an earlier send
+ * (e.g. the previous picture) and the in-flight one is a new message that
+ * must survive the replace — never dropped on a guess.
+ */
+export function storedIsSameSend(stored: Bubble | undefined, inflight: Bubble, current: Bubble[]): boolean {
+  if (!stored) return false;
+  if (stored.text === inflight.text) return true;
+  const storedImgs = stored.images?.length ?? 0;
+  if (!storedImgs || stored.text.trim()) return false;
+  const m = /^\[images?(?: x(\d+))?\](?: \[file [^\]]+\])*$/.exec(inflight.text.trim());
+  if (!m) return false;
+  if (storedImgs !== (m[1] ? Number(m[1]) : 1)) return false;
+  return !current.some(
+    (b) => b.role === "user" && b.messageID && (b.images?.length ?? 0) === storedImgs && !b.text.trim(),
+  );
 }
 
 /**

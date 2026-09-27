@@ -48,7 +48,7 @@ import {
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
 import { appendDraft, consumeSendOnOpen, getDraft, setDraft } from "../lib/drafts";
-import { SEND_TIMEOUT_MS, sendFailurePlan } from "../lib/sendfail";
+import { SEND_TIMEOUT_MS, echoIsFresh, sendFailurePlan } from "../lib/sendfail";
 import { firstSentence, pressureLevel } from "../lib/context";
 import { getTtsLang, speakBrief } from "../lib/voice";
 import { deviceTtsAvailable, speakDevice, stopDeviceSpeech } from "../lib/speech";
@@ -1130,7 +1130,10 @@ export default function ChatView({
 
   // P1-082: the daemon's pending list (GET /permission) is the source of truth
   // for actionable approval cards — events only trigger this re-fetch.
-  async function fetchPendingPermissions() {
+  // eval-10 verify round: the read reports whether it SUCCEEDED, and only a
+  // successful read advances the grace verdict's clock (below) — a failed
+  // read never becomes evidence that the AutoMode didn't answer.
+  async function fetchPendingPermissions(): Promise<boolean> {
     try {
       const res = await request("GET", "/permission");
       const list = (Array.isArray(res.body) ? res.body : []) as {
@@ -1147,7 +1150,11 @@ export default function ChatView({
             preview: permissionPreview(x),
           })),
       );
-    } catch {}
+      setAskClock(Date.now());
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // eval-10: same source-of-truth read for agent questions — shared by the
@@ -1231,8 +1238,14 @@ export default function ChatView({
   // asleep never gets one — it stayed suppressed forever (invisibly stuck
   // agent). Each pending ask gets a first-seen stamp on this client's clock;
   // past AUTO_APPROVE_GRACE_MS it surfaces as a manual card.
+  // eval-10 verify round (fail-closed): the verdict is computed against
+  // `lastOkFetchAt` — the instant of the last SUCCESSFUL pending-list read —
+  // never against wall-clock now. While reads fail (phone offline, relay
+  // down) the verdict freezes: an ask the daemon answered meanwhile is never
+  // flashed as a manual card on stale data. The reconnect resync re-reads,
+  // and only that successful read lets the verdict advance.
   const askSeenRef = useRef(new Map<string, number>());
-  const [askClock, setAskClock] = useState(() => Date.now());
+  const [askClock, setAskClock] = useState(0);
   useEffect(() => {
     askSeenRef.current = new Map();
   }, [sessionId]);
@@ -1251,10 +1264,11 @@ export default function ChatView({
     }
     if (due === Infinity) return;
     const timer = setTimeout(() => {
-      // re-read the truth first: an ask the daemon answered meanwhile is
-      // gone from the list and never flashes as a card
+      // re-read the truth first: the clock (lastOkFetchAt) advances ONLY on a
+      // successful read inside fetchPendingPermissions, so an ask the daemon
+      // answered meanwhile is gone from the list and never flashes as a card,
+      // and a failed read leaves the ask suppressed until the resync re-reads.
       void fetchPendingPermissions();
-      setAskClock(Date.now());
     }, Math.max(0, due - Date.now()) + 50);
     return () => clearTimeout(timer);
   }, [autoMode, persistedAsks, askClock]);
@@ -1359,8 +1373,11 @@ export default function ChatView({
   }
 
   // eval-10: delivery proof of the prompt in flight — send() installs a fresh
-  // flag, the stream below flips it on opencode's user-message echo
-  const promptEchoRef = useRef<{ echoed: boolean } | null>(null);
+  // flag, the stream below flips it on opencode's user-message echo. The send
+  // instant rides along: echoIsFresh only counts a user message created at or
+  // after the send, so re-emitted old messages (session switch) or a prompt
+  // sent from another device never swallow the resend (verify round).
+  const promptEchoRef = useRef<{ echoed: boolean; sentAt: number } | null>(null);
 
   // stream: rebuild the tail of the conversation from live part events.
   // user messages echo as parts too — track message roles and only stream
@@ -1380,7 +1397,7 @@ export default function ChatView({
       const p = evt.properties as {
         sessionID?: string;
         status?: { type?: string };
-        info?: { id?: string; role?: string };
+        info?: { id?: string; role?: string; time?: { created?: unknown } };
         part?: { type?: string; text?: string; messageID?: string };
         error?: unknown;
       };
@@ -1392,7 +1409,10 @@ export default function ChatView({
         if (p.info.role === "user") {
           // eval-10: a NEW user message is opencode's receipt of the prompt in
           // flight (opencode re-emits old user messages, e.g. summary updates)
-          if (firstSight && promptEchoRef.current) promptEchoRef.current.echoed = true;
+          // — echoIsFresh only counts one created at or after the send
+          if (firstSight && promptEchoRef.current && echoIsFresh(p.info, promptEchoRef.current.sentAt)) {
+            promptEchoRef.current.echoed = true;
+          }
           // tag the freshly sent user bubble so it becomes rewindable
           setBubbles((b) => {
             let idx = -1;
@@ -1759,12 +1779,15 @@ export default function ChatView({
   // P1-082: actionable cards come from the daemon's pending list; every ask
   // seen in the event buffer that is no longer pending becomes a collapsed
   // resolved line. 10 duplicate events for one request → one card.
+  // eval-10 verify round: the stale verdict only runs on a live channel —
+  // while disconnected the list on screen is stale and the resync re-reads
+  // on reconnect, so a failed connection never manufactures a manual card.
   const { actionable: pending, resolved: resolvedPerms } = reconcilePermissionCards(
     collectPermissionAsks(events.slice(-50), sessionId),
     persistedAsks,
     responded,
     autoMode,
-    autoMode
+    autoMode && connStatus === "paired"
       ? staleAutoAsks(askSeenRef.current, persistedAsks.map((a) => a.permissionID), askClock)
       : undefined,
   );
@@ -2076,7 +2099,7 @@ export default function ChatView({
     // question (override) leaves the composer untouched.
     if (usingComposer) updateInput("");
     const attached = usingComposer ? [...images, ...staged] : staged;
-    const echo = { echoed: false };
+    const echo = { echoed: false, sentAt: Date.now() };
     promptEchoRef.current = echo;
     setBubbles((b) => [
       ...b,
@@ -3344,7 +3367,7 @@ export default function ChatView({
           <div
             key={p.permissionID}
             style={
-              p.autoFailed || p.autoStale
+              p.autoFailed
                 ? {
                     marginBottom: 8,
                     border: "1px solid var(--danger)",
@@ -3406,10 +3429,13 @@ export default function ChatView({
           </p>
         )}
         {pending.some((p) => p.autoStale) && (
+          // eval-10 verify round (PRODUCT.md §2, calma): the grace verdict is a
+          // baton pass, not an error — plain card above, muted note, role=status
+          // (the danger border + role=alert stay reserved for a real autoFailed).
           <p
-            className="auto-fail-note auto-stale-note"
-            role="alert"
-            style={{ color: "var(--danger)", fontSize: "0.72rem", margin: "4px 0" }}
+            className="auto-stale-note"
+            role="status"
+            style={{ color: "var(--muted-strong)", fontSize: "0.72rem", margin: "4px 0" }}
           >
             {t("autoStale", { action: permLabel(pending.find((p) => p.autoStale)?.label) })}
           </p>

@@ -170,17 +170,25 @@ export function reconcilePermissionCards(
  * them. `firstSeen` is the client's own clock (permission ids → ms), so no
  * phone/computer clock skew enters the verdict. Pure: ChatView owns the map
  * and the timer that re-evaluates when the next grace expires.
+ *
+ * eval-10 verify round (fail-closed): `lastOkFetchAt` is the instant of the
+ * last SUCCESSFUL pending-list read, never wall-clock now. A read that
+ * failed (phone offline, relay down) leaves the clock untouched, so an ask
+ * the daemon may have answered meanwhile is never promoted to a manual card
+ * on stale data — the reconnect resync re-reads and only then can the
+ * verdict advance. A read older than the ask's first sighting can also never
+ * promote it (the verdict is only as fresh as its newest successful read).
  */
 export function staleAutoAsks(
   firstSeen: ReadonlyMap<string, number>,
   pendingIds: Iterable<string>,
-  now: number,
+  lastOkFetchAt: number,
   graceMs: number = AUTO_APPROVE_GRACE_MS,
 ): Set<string> {
   const out = new Set<string>();
   for (const id of pendingIds) {
     const seen = firstSeen.get(id);
-    if (seen !== undefined && now - seen >= graceMs) out.add(id);
+    if (seen !== undefined && lastOkFetchAt - seen >= graceMs) out.add(id);
   }
   return out;
 }
