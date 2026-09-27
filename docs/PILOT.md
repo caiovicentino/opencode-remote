@@ -1951,8 +1951,11 @@ até a eval-17 restaurá-la.)
 A bateria `test:unit` é a lista `scripts/unit-suite.txt` (um arquivo por linha,
 na ordem de execução) rodada por `scripts/unit-suite.ts`: mesma semântica da
 antiga cadeia `&&` (para no primeiro vermelho, com o exit code dele), mais uma
-linha `ok i/n <arquivo> (Nms)` por arquivo. Teste novo = uma linha no FIM da
-lista; `.gitattributes` faz `merge=union` nesse arquivo, então dois branches que
+linha `ok i/n <arquivo> (Nms)` por arquivo, tudo sob o HOME descartável de
+`scripts/testhome.ts` (o runner o importa antes do primeiro arquivo; as suítes
+herdam o mesmo `OCR_TEST_HOME`). `--keep-going` roda todos os arquivos e lista
+todas as falhas (diagnóstico local; CI e gate seguem fail-fast). Teste novo =
+uma linha no FIM da lista; `.gitattributes` faz `merge=union` nesse arquivo, então dois branches que
 acrescentam linhas não conflitam mais (a linha única do package.json conflitava
 em quase toda task paralela). Branch cortado antes da troca:
 `npx tsx scripts/unit-suite.ts --fold-chain origin/main` dobra a cadeia antiga

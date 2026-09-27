@@ -939,6 +939,10 @@ A new test is one line appended at the end of that list — never an edit of
 the `test:unit` script — and `.gitattributes` merges the list with
 `merge=union`, so two branches that each add a test no longer conflict. Every
 portable test is in the list too (the Windows job runs a subset, never more).
+The whole battery runs under the throwaway HOME of `scripts/testhome.ts`, so
+no suite can touch your real `~/.opencode-remote`. For local diagnosis,
+`npx tsx scripts/unit-suite.ts --keep-going` runs every file and ends with the
+list of all failures and their rerun commands.
 
 Since P3-352 the run ends in one aggregate job, `ci-gate`, that `needs` every
 other job of `ci.yml`, always runs and turns their results into a single

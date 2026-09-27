@@ -913,7 +913,11 @@ resumo do job). Teste novo é uma linha acrescentada no fim dessa lista — nunc
 uma edição do script `test:unit` — e o `.gitattributes` faz `merge=union` na
 lista, então dois branches que acrescentam testes não conflitam mais. Todo
 teste portátil também está na lista (o job Windows roda um subconjunto, nunca
-mais que isso).
+mais que isso). A bateria inteira roda sob o HOME descartável de
+`scripts/testhome.ts`, então nenhuma suíte toca o seu `~/.opencode-remote` de
+verdade. Para diagnóstico local, `npx tsx scripts/unit-suite.ts --keep-going`
+roda todos os arquivos e termina com a lista de todas as falhas e os comandos
+para rodar cada uma de novo.
 
 **Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
 `package.json` (raiz e `apps/desktop`). O workflow de release roda
