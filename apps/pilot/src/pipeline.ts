@@ -15,6 +15,8 @@ import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } fro
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 import { repairPlan } from "./mergerepair";
+import { actionsIds, bridgeRunId, CI_BRIDGE_MAX_CHARS, CI_RED_STEP, ciFindingBlock, failedLogCommand, summarizeCiFailure, type RedCheck } from "./cibridge";
+import { providerOutage } from "./failureclass";
 /**
  * P2-009 (round 2): single predicate for "UI evidence required", shared by the
  * builder prompt and the gatekeeper so the builder is always asked for exactly
@@ -1304,11 +1306,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; step?: string; tail?: string };
       // P3-355: an "unverified-blocking" carry is not a gatekeeper failure — it
       // samples dropped [BLOCKING] findings the builder must respond to.
+      // eval-03: a "ci-red" carry is the remote CI excerpt of the PR whose
+      // merge was refused (cibridge.ts) — fenced as untrusted text.
       if (prev.task === t.id && prev.tail)
         findings +=
           prev.step === "unverified-blocking"
             ? `[dropped BLOCKING findings from the last review — mechanically unverifiable, but you must respond to each: fix it or restate it with verifiable path:line evidence]\n${prev.tail}\n`
-            : `[previous gatekeeper failure]\n${prev.tail}\n`;
+            : prev.step === CI_RED_STEP
+              ? `${ciFindingBlock(prev.tail)}\n`
+              : `[previous gatekeeper failure]\n${prev.tail}\n`;
     }
   } catch {}
   // P1-079: a context recap recorded by an earlier cycle's checkpoint (or by
@@ -1547,6 +1553,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // per-task diagnostic log: concurrent slots would clobber a shared file
     writeFileSync(join(homedir(), ".opencode-remote/pilot", `builder-${t.id}.log`), build.output);
     emit("phase", { task: t.id, phase: "builder-done", ok: !roundFailed });
+    // eval-03: a round killed by a model-provider outage (the CLI's own
+    // terminal "Error: Cannot connect to API…", failureclass.ts) or by the
+    // opencode API preflight is infra — end the cycle NOW: retrying the next
+    // round at once only dies again (P2-337/338/339 burned rounds 2+3 in 70s)
+    // and the last one used to burn an attempt as "builder did not finish".
+    const outage = roundFailed ? (build.infra === "api-down" ? "opencode API unreachable (preflight)" : providerOutage(build.output)) : null;
+    if (outage) {
+      return { ok: false, detail: `[infra] model provider unreachable (builder round ${round}): ${outage}`, infra: "api-down", ...roundMeta() };
+    }
     if (roundFailed) {
       // P2-013: a failed round (crash/timeout) is exactly when partial work
       // exists — retry within the round budget instead of aborting; the
@@ -1568,8 +1583,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     }
     // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and
     // would never match a bare path — round-2 review caught exactly that.
-    const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
-    const nameOnly = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws }).output;
+    // eval-03: against origin/<base> (fetched by setupTaskBranch), never the
+    // slot's LOCAL main — that ref only moves when this slot merges/blocks, so
+    // a stale one dragged other tasks' apps/web|apps/desktop files into the
+    // diff: the gate demanded UI shots the builder was never asked for (P3-459,
+    // local main 5cc7ae1 vs origin d900e65: 10 UI files) and reviewers read
+    // code that was not the task's. Foreign repos have no `main` at all.
+    const diff = exec(`git diff origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
+    const nameOnly = exec(`git diff --name-only origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
     touchedUi = touchedUiFromDiff(nameOnly);
     // P2-011: UI tasks get visual evidence — per-task, post-deploy shape only
     // (round-3 review: unscoped mtime pick could serve another task's stale
@@ -1700,6 +1721,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       recordGateFail(cfg.stateRoot, state, t.id, gate.step, gate.tail);
       return { ok: false, detail: `gatekeeper rejected at step ${gate.step}: ${gate.tail.slice(-300)}`, ...roundMeta() };
     }
+    // eval-03: a green gate supersedes whatever an earlier round (or cycle)
+    // carried — left on disk, a FIXED failure re-entered the next cycle's
+    // prompt as "[previous gatekeeper failure]" and became the step/tail of
+    // the block lesson and the forensic's "open carryover": P3-401/P3-459 were
+    // filed as "UI task without shot-1440x900" while remote CI was the cause.
+    clearGateFailCarry(cfg.stateRoot, t.id);
 
     // two adversarial reviewers in parallel, isolated contexts
     emit("phase", { task: t.id, phase: "reviewers" });
@@ -1732,6 +1759,16 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         data: { task: t.id, round, secOk: parseVerdict(sec.output) === "APPROVE", qualOk: parseVerdict(qual.output) === "APPROVE" },
       }),
     );
+    // eval-03: a reviewer killed by a provider outage returned no verdict —
+    // an inconclusive review is never an approval and never a merit rejection
+    // (the last round used to burn an attempt as "max review rounds"): infra.
+    const reviewOutage = [sec, qual]
+      .filter((r) => parseVerdict(r.output) === null)
+      .map((r) => (r.infra === "api-down" ? "opencode API unreachable (preflight)" : providerOutage(r.output)))
+      .find(Boolean);
+    if (reviewOutage) {
+      return { ok: false, detail: `[infra] model provider unreachable (reviewers, round ${round}): ${reviewOutage}`, infra: "api-down", ...roundMeta() };
+    }
     const secParsed = parseFindings(sec.output);
     const qualParsed = parseFindings(qual.output);
     // P2-015: reviewers are LLMs — findings citing files/lines that don't exist
@@ -1882,6 +1919,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // P2-125: the failure detail carries the actual gh reason and the
       // structured infra kind (timeout/network) routes through the infra
       // path — no attempt burned, no fever sample, re-scheduled next cycle.
+      // eval-03: a ci-red refusal leaves the red job's excerpt as the carry —
+      // the next cycle's builder gets it as a [BLOCKING] finding, the block
+      // lesson keeps the full job name (step "ci-red").
+      if (!merged.ok && merged.ciFailure) writeCiRedCarry(cfg.stateRoot, t.id, merged.ciFailure);
       if (!merged.ok)
         return { ok: false, detail: `gate green but the PR merge failed: ${merged.detail}`, infra: merged.infra, ...roundMeta() };
     } else {
@@ -2179,6 +2220,32 @@ function writeGateFailCarry(stateRoot: string, taskId: string, step: string, tai
   }
 }
 
+/** eval-03: drop the per-task carry (a green gate superseded it). */
+function clearGateFailCarry(stateRoot: string, taskId: string) {
+  const f = gateFailFile(stateRoot, taskId);
+  if (!f) return;
+  try {
+    rmSync(f, { force: true });
+  } catch {}
+}
+
+/**
+ * eval-03: the ci-red carry — same file and JSON shape as the gatekeeper
+ * carry (so the block lesson, the doctor and the forensic read it unchanged)
+ * but step CI_RED_STEP, its own bound (the summary is already capped and
+ * leads with the headline — a tail slice would cut the job name) and no
+ * gate-fail event (the local gate was green; the dashboard's gate-step
+ * breakdown must not count remote CI).
+ */
+function writeCiRedCarry(stateRoot: string, taskId: string, text: string) {
+  const failFile = gateFailFile(stateRoot, taskId);
+  if (!failFile) return;
+  try {
+    mkdirSync(dirname(failFile), { recursive: true });
+    writeFileSync(failFile, JSON.stringify({ task: taskId, step: CI_RED_STEP, tail: text.slice(0, CI_BRIDGE_MAX_CHARS), at: nowLocalISO() }, null, 2));
+  } catch {}
+}
+
 /**
  * P1-101: the finding block the builder receives when the deterministic gate
  * goes red between rounds — it instructs the fix-first order and carries the
@@ -2216,6 +2283,9 @@ export interface PrMergeOutcome {
   ok: boolean;
   detail: string;
   infra?: InfraFailureKind;
+  /** eval-03: on a ci-red refusal, the bounded remote-CI summary (cibridge.ts)
+   * — headline + the red jobs' relevant log lines; the caller carries it. */
+  ciFailure?: string;
 }
 
 /** Confirmation budget (~5 min, same shape as MERGE_CONFIRM_POLLS in metapush). */
@@ -2263,7 +2333,7 @@ export type MergeReadiness =
   | { verdict: "merge"; detail: string }
   | { verdict: "pending"; detail: string }
   | { verdict: "unknown"; detail: string }
-  | { verdict: "skip"; infra: "conflict" | "ci-red"; detail: string };
+  | { verdict: "skip"; infra: "conflict" | "ci-red"; detail: string; checks?: RedCheck[] };
 
 /** Check-run conclusions / status-context states that mean "CI is red". */
 const CHECK_RED = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]);
@@ -2307,6 +2377,9 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
   const mergeable = typeof s.mergeable === "string" ? s.mergeable : "";
   if (!rollup && !mergeable) return { verdict: "unknown", detail: "snapshot carries neither mergeable nor statusCheckRollup" };
   const red: string[] = [];
+  // eval-03: the red checks' Actions ids (detailsUrl) for the CI bridge —
+  // read from this same snapshot, no extra gh call
+  const redChecks: RedCheck[] = [];
   const pending: string[] = [];
   let green = 0;
   let readable = 0;
@@ -2327,6 +2400,7 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
     }
     if (CHECK_RED.has(outcome)) {
       red.push(`${name}=${outcome}`);
+      redChecks.push({ name, conclusion: outcome, ...(actionsIds(c.detailsUrl) ?? { runId: null, jobId: null }) });
       continue;
     }
     if (!outcome || outcome === "PENDING" || outcome === "EXPECTED") {
@@ -2356,10 +2430,10 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
       // name=CONCLUSION shape of the non-ci-gate path) — no new gh call, and
       // the ci-gate itself is excluded (this sentence already names it).
       const jobs = red.filter((r) => !r.startsWith("ci-gate="));
-      return { verdict: "skip", infra: "ci-red", detail: `CI red: ci-gate aggregate failed${jobs.length ? ` (${jobs.join(", ")})` : ""}` };
+      return { verdict: "skip", infra: "ci-red", detail: `CI red: ci-gate aggregate failed${jobs.length ? ` (${jobs.join(", ")})` : ""}`, checks: redChecks };
     }
   }
-  if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}` };
+  if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}`, checks: redChecks };
   // P3-346: CI is expected on this repo but GitHub reported no check yet —
   // the run is not scheduled, not "green". Never a merge.
   if (opts.ciExpected && readable === 0) return { verdict: "pending", detail: "no checks reported yet — CI expected (workflows trigger on pull_request)" };
@@ -2580,6 +2654,41 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
   return { status: "repaired", sha };
 }
 
+/** eval-03: one `gh pr view --json state,headRefOid` read; null on gh noise
+ * or malformed JSON (callers fail open to their previous behavior). */
+function prHeadSnapshot(io: PrMergeIo, prNumber: number): { state: string; head: string } | null {
+  const view = io.exec(`gh pr view ${prNumber} --json state,headRefOid`);
+  if (!view.ok) return null;
+  try {
+    const snap = JSON.parse(view.output) as { state?: unknown; headRefOid?: unknown };
+    const head = typeof snap.headRefOid === "string" && /^[0-9a-f]{40}$/.test(snap.headRefOid) ? snap.headRefOid : "";
+    return { state: typeof snap.state === "string" ? snap.state : "", head };
+  } catch {
+    return null;
+  }
+}
+
+function staleHeadDetail(prNumber: number, head: string, ours: string): string {
+  const detail = `PR #${prNumber} head is ${head.slice(0, 7)}, not our pushed ${ours.slice(0, 7)} — the branch push did not land; its CI verdict is not this cycle's (retry next cycle)`;
+  console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "merge skipped — PR head is not the pushed sha", data: { pr: prNumber, head: head.slice(0, 7), ours: ours.slice(0, 7) } }));
+  return detail;
+}
+
+/**
+ * eval-03: the CI bridge's I/O half — read the failed jobs' logs of the red
+ * run (`gh run view <run> --log-failed`, digits-only run id) and reduce them
+ * to the bounded summary (cibridge.ts). Fail-open: a gh failure or a check
+ * without Actions ids still yields the red job names ("log unavailable"),
+ * never an exception and never a changed verdict.
+ */
+export function fetchCiFailure(io: PrMergeIo, checks: readonly RedCheck[], context = ""): string | undefined {
+  if (!checks.length) return undefined;
+  const cmd = failedLogCommand(bridgeRunId(checks));
+  const log = cmd ? io.exec(cmd) : null;
+  const note = !cmd ? "no GitHub Actions run id on the red check" : log && !log.ok ? `gh run view failed: ${ghTail(log.output).slice(-160)}` : "";
+  return summarizeCiFailure(checks, log?.ok ? log.output : "", note, context).text;
+}
+
 /**
  * P2-125: create + merge the task PR and CONFIRM it landed with OUR sha as
  * the merged head — the same fail-closed confirmation `armMetaPr` applies to
@@ -2683,15 +2792,27 @@ export async function mergePrForTask(
   }
   if (effective.verdict !== "merge") {
     const infra = readinessInfraKind(effective);
+    // eval-03: a red verdict is only the task's when it is about OUR head. A
+    // refused push (P3-459 cycle 3: GitHub 500 on the branch push) leaves the
+    // PR on the previous cycle's head, whose red CI was then counted as the
+    // third ci-red strike and blocked the task for code this cycle replaced.
+    const head = effective.verdict === "skip" && effective.infra === "ci-red" ? prHeadSnapshot(io, prNumber) : null;
+    if (head?.state === "OPEN" && head.head && head.head !== expectedSha) {
+      return { ok: false, infra: "network", detail: staleHeadDetail(prNumber, head.head, expectedSha) };
+    }
+    const ciFailure =
+      effective.verdict === "skip" && effective.infra === "ci-red"
+        ? fetchCiFailure(io, effective.checks ?? [], `PR #${prNumber} · rejected head ${expectedSha.slice(0, 12)} · branch origin/${args.branch}`)
+        : undefined;
     console.log(
       JSON.stringify({
         ts: nowLocalISO(),
         level: "warn",
         msg: "merge skipped — PR not ready on GitHub",
-        data: { pr: prNumber, verdict: effective.verdict, infra, detail: effective.detail.slice(0, 300) },
+        data: { pr: prNumber, verdict: effective.verdict, infra, detail: effective.detail.slice(0, 300), ...(ciFailure ? { ci: ciFailure.split("\n", 1)[0] } : {}) },
       }),
     );
-    return { ok: false, infra, detail: `PR #${prNumber} not merged (${effective.verdict}): ${effective.detail}` };
+    return { ok: false, infra, detail: `PR #${prNumber} not merged (${effective.verdict}): ${effective.detail}`, ...(ciFailure ? { ciFailure } : {}) };
   }
   // P3-354: a PR merged OUTSIDE the loop (operator, or this task's previous
   // cycle whose --delete-branch then makes the retry push fail the
@@ -2724,6 +2845,12 @@ export async function mergePrForTask(
         infra: "conflict",
         detail: `PR #${prNumber} already MERGED outside the loop (head ${preHead.slice(0, 7)}, our ${expectedSha.slice(0, 7)}) — resyncs next cycle`,
       };
+    }
+    // eval-03: still OPEN on a head we did not push (refused push) — arming
+    // would squash a head this cycle's gate never certified, and the poll
+    // below would then report it as a merit anomaly
+    if (preSnap.state === "OPEN" && preHead && preHead !== expectedSha) {
+      return { ok: false, infra: "network", detail: staleHeadDetail(prNumber, preHead, expectedSha) };
     }
   }
   // --auto only works once branch protection exists; the immediate squash is

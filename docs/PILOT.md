@@ -2016,3 +2016,63 @@ fresco) e o pilot emite evento `alert` + notify do supervisor dizendo que o
 main está vermelho no mesmo check — o próximo ciclo tenta de novo em vez de
 enterrar a task. No máximo um hold por task: no segundo ci-red compartilhado,
 bloqueia como antes.
+
+## Ponte CI → builder e classificação de falhas pela causa real (eval-03)
+
+O forense de 2026-09-24 contou 6 de 7 bloqueios como `infra "ci-red" failed
+3x`. A etiqueta estava certa (o CI remoto estava vermelho), mas quatro defeitos
+em volta dela escondiam a causa e queimavam ciclos inteiros:
+
+- **O builder nunca via o log do CI.** Quando `mergeReadiness` recusa o merge
+  por CI vermelho, `mergePrForTask` agora lê `gh run view <run> --log-failed`
+  (id do run tirado do `detailsUrl` do próprio rollup, só dígitos) e
+  `cibridge.ts` (puro) reduz o log por **relevância**, não por bytes: escopo no
+  step que falhou (último `##[group]Run` antes do `##[error]` do job), primeira
+  linha com forma de causa raiz, blocos de erro com contexto, resumo do harness;
+  linhas `OK`, eventos JSON e saída esperada de checks que passam ("feedhash:
+  FAIL latest.yml") nunca entram. Jobs que o agregado `ci-gate` marca como
+  `WARN … advisory` aparecem numa linha só. O resumo (≤ 60 linhas, ≤ 240
+  caracteres por linha, ≤ 6000 no total, nomes de job completos) vira o carry
+  `gate-fail/<ID>.json` com step `ci-red`, e o próximo ciclo injeta como
+  `[BLOCKING]` cercado por `<<<CI-LOG … CI-LOG>>>`: o log é texto NÃO
+  confiável — ANSI/controle removidos, runs com cara de token redigidos,
+  `PILOT:`/`EVIDENCE:` e os delimitadores neutralizados. A linha 2 nomeia a PR,
+  o head rejeitado e a branch, porque o ciclo seguinte começa numa branch nova.
+  Falha do `gh` nunca muda o veredito (fail-open: o job continua nomeado).
+- **Carry velho.** Um gate vermelho num round corrigido no round seguinte ficava
+  em disco e voltava no próximo ciclo como `[previous gatekeeper failure]`,
+  virando step/tail da lição de bloqueio (P3-401/P3-459 registrados como "UI
+  task without shot-1440x900"). Agora o gate verde apaga o carry.
+- **Head velho contado como strike.** Com o push da branch recusado (P3-459,
+  GitHub 500), a PR ficava no head do ciclo anterior e o CI vermelho dele era
+  o 3º strike. Um `skip/ci-red` sobre um head `OPEN` que não é o nosso agora é
+  infra `network` ("the branch push did not land"), e a pré-sonda nunca arma
+  `gh pr merge` sobre esse head (antes armava e registrava falha de mérito).
+- **Motivo cortado.** A linha do `## Blocked` e a linha da lição cortam em 200
+  caracteres e o boilerplate empurrava os nomes dos jobs para fora ("CI red:
+  ci-ga…"). `infraStarvationReason` agora põe `(red: verify, …)` logo depois da
+  contagem, e um ci-red sem detalhe não sugere mais "unreachable API".
+
+**Queda do provedor de modelo.** O preflight `waitForApi` só vê o `opencode
+serve`; com o provedor fora, o builder morria com o erro terminal da própria
+CLI (`Error: Cannot connect to API: Unable to connect…`), os rounds seguintes
+morriam na hora e o último virava "builder did not finish" — mérito, uma
+tentativa queimada (8 casos, P3-457 bloqueado assim). `failureclass.ts` (puro)
+só reconhece a queda na **última linha não-log** da saída do processo, com
+assinatura de conectividade/disponibilidade do provedor — um erro de stream
+que o SDK recuperou no meio (dezenas de logs que terminam em
+`PILOT:TASK-DONE`) e um finding que cita `ECONNREFUSED` continuam fora. Um
+round de builder (ou revisor sem veredito) morto assim encerra o ciclo como
+infra `api-down`: sem tentativa, sem amostra de febre, fora do streak por task
+(uma queda sistêmica nunca bloqueia tasks uma a uma). O `runSlot` arma um
+hold global de novas picks — 2 min, dobrando a cada queda observada depois do
+hold anterior expirar, teto de 30 min, sem escalar pelos slots que já estavam
+no meio de um round — e um merge zera o hold.
+
+**Diff do round contra `origin/<base>`.** `git diff main...pilot/<ID>` usava o
+`main` LOCAL do slot, que só anda quando aquele slot mergeia ou bloqueia: um
+`main` velho arrastava arquivos `apps/web`/`apps/desktop` de outras tasks para
+o diff (o gate exigia screenshots que o builder nunca teve motivo para fazer, e
+os revisores liam código alheio). O diff e o `nameOnly` que vão ao judge agora
+usam `origin/<base>...pilot/<ID>`. Testes: `scripts/failure-classifier.test.ts`
+(corpus real em `apps/pilot/src/__fixtures__/classifier/`).

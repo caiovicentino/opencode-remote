@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { nowLocalISO } from "./log";
 import { parseFailureLessons, type FailureLesson } from "./failureLessons";
+import { redChecksFromDetail } from "./cired";
 import type { AuditMode, CycleSample, PilotState } from "./state";
 
 /** Sliding-window size for the fever-rate trigger (pipeline cycles). */
@@ -170,11 +171,20 @@ export function sanitizeInfraDetail(raw: unknown): string | null {
 
 /** Human reason recorded on the ## Blocked line / failure lesson. P3-405: the
  * caller attaches the LAST failure detail (sanitized); the generic hypothesis
- * phrase appears only when no useful detail exists. */
+ * phrase appears only when no useful detail exists. eval-03: both consumers
+ * cut at 200 chars (blockTaskEdit, formatFailureLesson) and the boilerplate
+ * pushed the red job names past the cut ("CI red: ci-ga…" in every ci-red
+ * lesson) — for ci-red they now follow the count; and the network-flavored
+ * hypothesis is no longer offered for a red CI (the strategist re-proposed
+ * P3-401 as "blocked only by infra — unreachable API" while its relay-image
+ * job failed on the task's own import). */
 export function infraStarvationReason(kind: InfraFailureKind, n: number, lastDetail?: string | null): string {
   const detail = sanitizeInfraDetail(lastDetail);
-  const why = detail ? ` — last detail: ${detail}` : " (read-only remote, dead gh, or unreachable API?)";
-  return `infra "${kind}" failed ${n}x in a row on this task — treated as a hard failure instead of an endless free retry${why}`;
+  const hypothesis = kind === "ci-red" ? " (remote CI checks red on the task PR)" : " (read-only remote, dead gh, or unreachable API?)";
+  const why = detail ? ` — last detail: ${detail}` : hypothesis;
+  const red = kind === "ci-red" ? redChecksFromDetail(lastDetail) : [];
+  const which = red.length ? ` (red: ${red.join(", ")})` : "";
+  return `infra "${kind}" failed ${n}x in a row on this task${which} — treated as a hard failure instead of an endless free retry${why}`;
 }
 
 /**

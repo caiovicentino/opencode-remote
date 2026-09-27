@@ -13,6 +13,7 @@ import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, bud
 import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDiffCmd, pilotInfraDrifted, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
 import { deploySkipReason } from "./deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
+import { noteProviderOutage, providerHoldRemaining, type ProviderHold } from "./failureclass";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, readyOrphanBlocks, type AddTaskResult, type Task } from "./backlog";
 import { redteamFinding } from "./findingline";
@@ -66,6 +67,9 @@ let lastDistSweep: number | null = null;
 /** Consecutive same-kind deploy refusals (dirty prod, disk, prod ahead) — arms
  * the pending-deploy hold (deploybackoff.ts). In-memory: a restart looks again. */
 let deployBackoff: DeployBackoff | null = null;
+/** eval-03: model-provider outage hold (failureclass.ts) — no new pipeline
+ * picks until it expires. In-memory like deployBackoff: a restart looks again. */
+let providerHold: ProviderHold | null = null;
 /** P1-104: set while the deploy-time self-reload waits for the running slots
  * to drain — no new pipeline picks until the process exits onto the new code
  * (otherwise the eager-fill would instantly refill the slots and the reload
@@ -230,6 +234,7 @@ async function main() {
     if (once && reason === "eager-fill") return;
     if (frozen() || state.auditMode) return;
     if (drainNewPicks || nightlyDrain) return; // P1-104 self-reload / P3-356 nightly window — no new picks
+    if (providerHoldRemaining(providerHold, Date.now()) > 0) return; // eval-03: provider outage backoff
     if (state.tasks + running.size >= cfg.maxTasksPerDay) return;
     try {
       const free = slotNumbers.filter((s) => !running.has(s));
@@ -688,6 +693,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       // P2-334: the shared-defect hold allowance resets on merge
       if (state.taskHolds) delete state.taskHolds[taskKey];
       clearTaskInfraStreak(state, taskKey);
+      providerHold = null; // eval-03: a merge proves the provider answers again
     } else {
       // P1-074: infra noise (API down, spawn error, timeout without output)
       // burns no attempt, adds no fever sample and blocks nothing — it counts
@@ -695,7 +701,20 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       // (P1-094: classified only from the structured result.infra flag — the
       // detail text embeds findings and may legitimately mention infra words)
       const infra = resultInfraKind(result);
-      if (infra) {
+      if (infra === "api-down") {
+        // eval-03: the model provider (or the opencode API) is down — a
+        // systemic condition, not this task's: it never feeds the per-task
+        // streak (three quick outage cycles would block a healthy task) and
+        // holds NEW picks with a doubling backoff instead of letting every
+        // free slot spin up a builder that dies on its first call.
+        const prevHold = providerHold;
+        providerHold = noteProviderOutage(providerHold, Date.now());
+        const wake = recordInfraFailure(state);
+        const holdMin = Math.round(providerHoldRemaining(providerHold, Date.now()) / 60_000);
+        log("warn", "pipeline provider outage — new picks held", { task: task.id, holdMin, holds: providerHold.count, infraFails: state.infraFails, detail: result.detail.slice(0, 200) });
+        if (providerHold !== prevHold) emit("alert", { task: task.id, ok: false, detail: `model provider unreachable — new pipelines held ${holdMin}min (hold #${providerHold.count}); no attempt burned` });
+        if (wake) await runDoctorPass(state);
+      } else if (infra) {
         // mission v2 (hardening b): the SAME infra kind repeating on the same
         // task (read-only foreign remote → push/PR "network" forever) is not
         // noise anymore — at the threshold it is a hard failure: the task is

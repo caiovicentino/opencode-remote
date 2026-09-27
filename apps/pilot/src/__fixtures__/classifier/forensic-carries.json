@@ -1,0 +1,66 @@
+{
+  "carries": {
+    "P3-401": {
+      "task": "P3-401",
+      "step": "evidence",
+      "tail": "UI task without shot-1440x900 path in the EVIDENCE block",
+      "at": "2026-09-10T20:00:39-03:00"
+    },
+    "P3-459": {
+      "task": "P3-459",
+      "step": "evidence",
+      "tail": "UI task without shot-1440x900 path in the EVIDENCE block",
+      "at": "2026-09-23T11:39:38-03:00"
+    },
+    "P3-457": {
+      "task": "P3-457",
+      "step": "desktop-flow",
+      "tail": "arries NO pairing URI (sidecar marker instead)\nOK   P3-407: saved file carries NO planted token and NO home prefix\nOK   P3-407: saved file is still a useful report\nOK   P3-407: success toast is the terminal state\nOK   P3-407: 1440x900 evidence shot\nOK   P3-407: 1440x900 shot is a real PNG\nOK   P3-407: 390 evidence shot\nOK   P3-407: 390 shot is a real PNG\nOK   P2-338: open (hermetic fake-daemon launch)\nOK   P2-338: skip the first-run welcome\nOK   P2-338: open Settings pane\nOK   P2-338: request remote pairing\nOK   P2-338: the overlay names the wire mismatch next to the (still visible) QR\nOK   P2-338: 1440x900 incompatible shot\nOK   P2-338: incompatible 1440x900 shot is a real PNG\nOK   P2-338: 390 incompatible shot\nOK   P2-338: incompatible 390 shot is a real PNG\nOK   no daemon sidecar spawned (hermetic)\n\ndesktop flow duration: 206.2s (budget 420s)\nFAILURES: 3\n   condition never held (12 probes), last value: \"preview\"\n   \"\"\n\n(node:29507) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 exit listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit\n(Use `node --trace-warnings ...` to show where the warning was created)\n",
+      "at": "2026-09-23T10:35:20-03:00"
+    },
+    "P2-357": {
+      "task": "P2-357",
+      "step": "evidence",
+      "tail": "UI task without shot-1440x900 path in the EVIDENCE block",
+      "at": "2026-09-24T03:49:57-03:00"
+    }
+  },
+  "lessons": [
+    {
+      "kind": "failure",
+      "ts": "2026-09-10T20:41:51-03:00",
+      "task": "P3-401",
+      "attempts": 4,
+      "step": "evidence",
+      "findings": "infra \"ci-red\" failed 3x in a row on this task — treated as a hard failure instead of an endless free retry (read-only remote, dead gh, or unreachable API?)",
+      "tail": "UI task without shot-1440x900 path in the EVIDENCE block"
+    },
+    {
+      "kind": "failure",
+      "ts": "2026-09-11T07:08:16-03:00",
+      "task": "P3-415",
+      "attempts": 4,
+      "step": "pipeline",
+      "findings": "infra \"ci-red\" failed 3x in a row on this task — treated as a hard failure instead of an endless free retry — last detail: gate green but the PR merge failed: PR #1131 not merged (skip): CI red: ci-gate aggregate failed (verify=FAILURE, desktop-package-win=FAILURE)",
+      "tail": ""
+    },
+    {
+      "kind": "failure",
+      "ts": "2026-09-23T10:45:44-03:00",
+      "task": "P3-457",
+      "attempts": 4,
+      "step": "desktop-flow",
+      "findings": "builder did not finish (round 3): n    at processTicksAndRejections (native:7:39)\"\n\u001b[91m\u001b[1mError: \u001b[0mCannot connect to API: Unable to connect. Is the computer able to access the url?\ntimestamp=2026-09-23T13:45:28.916Z level=INFO run=0000fixt message=\"disposing instance\" directory=/Users/operator/.opencode-remote/pilot/repo-2\n",
+      "tail": "arries NO pairing URI (sidecar marker instead)\nOK   P3-407: saved file carries NO planted token and NO home prefix\nOK   P3-407: saved file is still a useful report\nOK   P3-407: success toast is the terminal state\nOK   P3-407: 1440x900 evidence shot\nOK   P3-407: 1440x900 shot is a real PNG\nOK   P3-407: 390 evidence shot\nOK   P3-407: 390 shot is a real PNG\nOK   P2-338: open (hermetic fake-daemon launch)\nOK   P2-338: skip the first-run welcome\nOK   P2-338: open Settings pane\nOK   P2-338: request remote pairing\nOK   P2-338: the overlay names the wire mismatch next to the (still visible) QR\nOK   P2-338: 1440x900 incompatible shot\nOK   P2-338: incompatible 1440x900 shot is a real PNG\nOK   P2-338: 390 incompatible shot\nOK   P2-338: incompatible 390 shot is a real PNG\nOK   no daemon sidecar spawned (hermetic)\n\ndesktop flow duration: 206.2s (budget 420s)\nFAILURES: 3\n   condition never held (12 probes), last value: \"preview\"\n   \"\"\n\n(node:29507) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 exit listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit\n(Use `node --trace-warnings ...` to show where the warning was created)\n"
+    },
+    {
+      "kind": "failure",
+      "ts": "2026-09-23T12:14:18-03:00",
+      "task": "P3-459",
+      "attempts": 4,
+      "step": "evidence",
+      "findings": "infra \"ci-red\" failed 3x in a row on this task — treated as a hard failure instead of an endless free retry — last detail: gate green but the PR merge failed: PR #1316 not merged (skip): CI red: ci-gate aggregate failed (verify=FAILURE)",
+      "tail": "UI task without shot-1440x900 path in the EVIDENCE block"
+    }
+  ]
+}
