@@ -187,7 +187,14 @@ function expectJudgeError(name: string, fn: () => unknown, re: RegExp) {
   const inv = judgeInvariantsCommand("/prod checkout", { live: true, loc: deps });
   check("invariants: node + judge tsx + judge invariants.ts, cwd = judge, --live", inv.cwd === j.dir && inv.cmd.startsWith(JSON.stringify(process.execPath)) && inv.cmd.includes(JSON.stringify(join(j.dir, "node_modules", "tsx", "dist", "cli.mjs"))) && inv.cmd.includes(JSON.stringify(join(j.dir, "src", "invariants.ts"))) && inv.cmd.includes('--repo "/prod checkout" --live') && !inv.cmd.includes("npx"), inv.cmd);
   const deploy = src("apps/pilot/src/deploy.ts");
-  check("deploy.ts: both live-invariants runs use judgeInvariantsCommand, none `npx tsx` the judge", (deploy.match(/judgeInvariantsCommand\(cfg\.repo, \{ live: true \}\)/g) ?? []).length === 2 && !/npx tsx \$\{JSON\.stringify\(judgeCli/.test(deploy));
+  // eval-07 resolution: deploy resolves the judge ONCE (rollback-on-unusable
+  // guard) and builds the live-invariants argv from the RESOLVED dir via
+  // judgeInvariantsArgv — tests inject fake dirs that must never be
+  // re-validated. Same C2 guarantee, checkable statically: each call rides a
+  // run() whose cwd is the judge dir, and no `npx tsx` remains.
+  const argvCalls = (deploy.match(/judgeInvariantsArgv\(judgeDir, cfg\.repo, \{ live: true \}\)/g) ?? []).length;
+  const cwdCoupled = (deploy.match(/judgeInvariantsArgv\(judgeDir, cfg\.repo, \{ live: true \}\), \{ cwd: judgeDir/g) ?? []).length;
+  check("deploy.ts: both live-invariants runs build the judge argv from the resolved dir (judgeInvariantsArgv), cwd = judge, none `npx tsx` the judge", argvCalls === 2 && cwdCoupled === 2 && !/npx tsx \$\{JSON\.stringify\(judgeCli/.test(deploy));
 
   // doctor canary
   check("canary: green only on the judge's CANARY OK line", runJudgeCanary({ ...deps, run: () => "OK   x\nCANARY OK\n" }).ok && !runJudgeCanary({ ...deps, run: () => "FAIL x\nCANARY FAILED\n" }).ok);
