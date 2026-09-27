@@ -46,6 +46,10 @@ export const CRASH_LOOP_WINDOW_MS = 15 * 60_000;
 export const DISK_HOLD_ALERT_MS = 60 * 60_000;
 /** …while the newest refusal is at most this old (older = hold is over). */
 export const DISK_HOLD_FRESH_MS = 6 * 60 * 60_000;
+/** The pilot's explicit disk hold (eval-02) re-emits `alert`/`disk-hold` every
+ * 6h while it lasts; an hour of slack before a silent hold counts as over (a
+ * restarted pilot may never emit the matching `disk-resume`). */
+export const DISK_HOLD_EXPLICIT_FRESH_MS = 7 * 60 * 60_000;
 /** A gate-verified merge waiting this long for its deploy pages the operator. */
 export const DEPLOY_LAG_ALERT_MS = 6 * 60 * 60_000;
 /** Read-only GET of the supervisor session at most this often. */
@@ -113,6 +117,9 @@ export interface DiskHold {
   last: number;
   refusals: number;
   detail: string;
+  /** "deploy-guard" = inferred from deploy refusals; "pilot-hold" = the pilot's
+   * explicit disk hold (`alert` events, task "disk", phase disk-hold/resume). */
+  source: "deploy-guard" | "pilot-hold";
 }
 
 export interface PilotSignals {
@@ -202,29 +209,41 @@ export function restartsInWindow(samples: Array<{ at: number; runs: number }>, n
 }
 
 /**
- * The trailing disk-guard hold in the pilot's event feed: refusals
- * (`deploy`/`disk-guard`/ok:false) since the last successful deploy
- * (`deploy`/`done`/ok:true). Null = no hold.
+ * The trailing disk hold in the pilot's event feed. Two sources: deploy
+ * refusals (`deploy`/`disk-guard`/ok:false) since the last successful deploy
+ * (`deploy`/`done`/ok:true), and the pilot's explicit hold (`alert` events
+ * with task "disk": phase "disk-hold" opens or refreshes it, "disk-resume"
+ * clears it — eval-02's shape). Null = no hold.
  */
 export function diskHoldFromEvents(lines: string[]): DiskHold | null {
   // `as` keeps the declared union: CFA would otherwise pin the loop to `null`
   let hold = null as DiskHold | null;
   for (const line of lines) {
-    let e: { type?: unknown; phase?: unknown; ok?: unknown; ts?: unknown; detail?: unknown };
+    let e: { type?: unknown; task?: unknown; phase?: unknown; ok?: unknown; ts?: unknown; detail?: unknown };
     try {
       e = JSON.parse(line) as typeof e;
     } catch {
       continue;
     }
-    if (!e || e.type !== "deploy") continue;
+    if (!e) continue;
     const at = typeof e.ts === "string" ? Date.parse(e.ts) : NaN;
     if (!Number.isFinite(at)) continue;
+    const detail = typeof e.detail === "string" ? e.detail : "";
+    if (e.type === "alert" && e.task === "disk") {
+      if (e.phase === "disk-resume") hold = null;
+      else if (e.phase === "disk-hold") {
+        hold = hold
+          ? { since: hold.since, last: at, refusals: hold.refusals, detail: detail || hold.detail, source: "pilot-hold" }
+          : { since: at, last: at, refusals: 0, detail, source: "pilot-hold" };
+      }
+      continue;
+    }
+    if (e.type !== "deploy") continue;
     if (e.phase === "done" && e.ok === true) hold = null;
     else if (e.phase === "disk-guard" && e.ok === false) {
-      const detail = typeof e.detail === "string" ? e.detail : "";
       hold = hold
-        ? { since: hold.since, last: at, refusals: hold.refusals + 1, detail: detail || hold.detail }
-        : { since: at, last: at, refusals: 1, detail };
+        ? { since: hold.since, last: at, refusals: hold.refusals + 1, detail: detail || hold.detail, source: hold.source }
+        : { since: at, last: at, refusals: 1, detail, source: "deploy-guard" };
     }
   }
   return hold;
@@ -300,12 +319,15 @@ export function livenessVerdict(s: PilotSignals, now: number): LivenessVerdict {
     );
   }
   const hold = s.diskHold;
-  if (hold && now - hold.last <= DISK_HOLD_FRESH_MS && now - hold.since >= DISK_HOLD_ALERT_MS) {
+  const holdFreshMs = hold?.source === "pilot-hold" ? DISK_HOLD_EXPLICIT_FRESH_MS : DISK_HOLD_FRESH_MS;
+  if (hold && now - hold.last <= holdFreshMs && now - hold.since >= DISK_HOLD_ALERT_MS) {
+    const why = hold.detail ? `: ${hold.detail.slice(0, 120)}` : "";
     add(
       "disk-hold",
       1,
-      `deploy segurado pelo disk guard há ${fmtDuration(now - hold.since)} (${hold.refusals} recusa${hold.refusals === 1 ? "" : "s"})` +
-        `${hold.detail ? `: ${hold.detail.slice(0, 120)}` : ""}.`,
+      hold.source === "pilot-hold"
+        ? `o pilot está em disk hold há ${fmtDuration(now - hold.since)}${why}.`
+        : `deploy segurado pelo disk guard há ${fmtDuration(now - hold.since)} (${hold.refusals} recusa${hold.refusals === 1 ? "" : "s"})${why}.`,
     );
   }
   const lag = s.deploy;

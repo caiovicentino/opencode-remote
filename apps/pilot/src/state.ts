@@ -546,7 +546,8 @@ export function startHeartbeat(everyMs = 60_000, touch: () => void = touchHeartb
 /** Injectable seams of the self-watchdog (tests never touch the real heartbeat or exit). */
 export interface WatchdogDeps {
   now?: () => number;
-  readHeartbeat?: () => number;
+  /** Age of the last heartbeat at `now` (NaN when unknown — never an exit). */
+  heartbeatAgeMs?: (now: number) => number;
   touch?: () => void;
   exit?: (code: number) => void;
   schedule?: (fn: () => void, ms: number) => unknown;
@@ -563,7 +564,7 @@ export interface WatchdogDeps {
 export function startWatchdog(maxSilenceMin = 3, deps: WatchdogDeps = {}) {
   const now = deps.now ?? Date.now;
   const touch = deps.touch ?? touchHeartbeat;
-  const readHeartbeat = deps.readHeartbeat ?? (() => Number(readFileSync(HEARTBEAT, "utf8")));
+  const heartbeatAge = deps.heartbeatAgeMs ?? ((at: number) => at - Number(readFileSync(HEARTBEAT, "utf8")));
   const exit = deps.exit ?? ((code: number) => process.exit(code));
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
   const out = deps.out ?? ((line: string) => console.log(line));
@@ -574,7 +575,7 @@ export function startWatchdog(maxSilenceMin = 3, deps: WatchdogDeps = {}) {
     const tickGapMs = at - lastTick;
     lastTick = at;
     try {
-      const silentMs = at - readHeartbeat();
+      const silentMs = heartbeatAge(at);
       const silentMin = silentMs / 60_000;
       const verdict = selfWatchVerdict({ silentMs, tickGapMs, maxSilenceMs: maxSilenceMin * 60_000, intervalMs: WATCHDOG_INTERVAL_MS });
       if (verdict === "blocked") {

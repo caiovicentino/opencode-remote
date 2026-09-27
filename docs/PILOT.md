@@ -2045,7 +2045,7 @@ sonda 30s após o boot, só depois das chaves VAPID):
 | processo | `pilot/pilot.pid` + `kill(pid, 0)` | pid morto + heartbeat velho = `dead`; pid vivo + heartbeat velho = `stalled` |
 | launchd | `launchctl print gui/<uid>/com.ocr.pilot` (só leitura; exit 113 = não carregado) | não carregado + pid morto = `unloaded` (independe do heartbeat) |
 | reinícios | `runs` do launchd em janela de 15 min | ≥ 3 reinícios com exit ≠ 0 = `crash-loop` |
-| disk hold | `events.jsonl`: `deploy`/`disk-guard` desde o último `deploy`/`done` | ≥ 1h segurando (última recusa com < 6h) = `disk-hold` |
+| disk hold | `events.jsonl`: recusas `deploy`/`disk-guard` desde o último `deploy`/`done`, ou o hold explícito do pilot (`alert` com task `disk`, phase `disk-hold`, reemitido a cada 6h, até um `disk-resume`) | ≥ 1h segurando (última recusa com < 6h; hold explícito com evento < 7h) = `disk-hold` |
 | deploy lag | HEAD de `~/.opencode-remote/prod` × `pilot/verified-merges.jsonl` | merge verificado esperando ≥ 6h = `deploy-lag` |
 | supervisor | `GET /session/<supervisorSession>` no opencode (só leitura, a cada 10 min) | 404 `NotFoundError` = `supervisor-missing` |
 
@@ -2146,7 +2146,7 @@ mesmo snapshot (cache de até 15s). Contrato v1 — timestamps em epoch ms,
   "heartbeat": { "at": 1790248033162, "ageMs": 273572000 },
   "process": { "pid": 35139, "alive": false },
   "launchd": { "checked": true, "loaded": false, "state": null, "pid": null, "runs": null, "lastExitCode": null },
-  "disk": { "hold": { "since": 0, "last": 0, "refusals": 69, "detail": "disk low: …" }, "daemon": "ok | low | critical | unknown" },
+  "disk": { "hold": { "since": 0, "last": 0, "refusals": 69, "detail": "disk low: …", "source": "deploy-guard | pilot-hold" }, "daemon": "ok | low | critical | unknown" },
   "deploy": { "prodSha": "1ebbbc1…", "undeployed": 16, "oldestUndeployedAt": 1790189752000 },
   "notify": { "pending": 100, "oldestPendingAt": 0, "lastDeliveredAt": 1789182096751, "supervisor": "ok | missing | unknown | unset" },
   "push": { "subscribers": 0 },

@@ -133,6 +133,26 @@ check(
   hold !== null && hold.refusals === 2 && hold.since === Date.parse("2026-09-23T18:56:00.000Z") && hold.detail.includes("2.1gb"),
 );
 check("disk hold: a later successful deploy clears it", diskHoldFromEvents([...holdLines, ev("2026-09-24T11:00:00.000Z", "done", true)]) === null);
+// eval-02's explicit hold: `alert` events with task "disk" (one per transition + one every 6h)
+const diskAlert = (iso: string, phase: "disk-hold" | "disk-resume", detail = "") =>
+  JSON.stringify({ ts: iso, type: "alert", task: "disk", phase, ok: phase === "disk-resume", detail });
+const explicitHold = diskHoldFromEvents([
+  diskAlert("2026-09-27T10:00:00.000Z", "disk-hold", "free 2.1gb < 5gb"),
+  JSON.stringify({ ts: "2026-09-27T12:00:00.000Z", type: "alert", task: "P2-1", phase: "validateSpec", ok: false }),
+  diskAlert("2026-09-27T16:00:00.000Z", "disk-hold", "free 1.9gb < 5gb"),
+]);
+check(
+  "disk hold: the pilot's explicit hold (alert/disk events) is read and refreshed",
+  explicitHold?.source === "pilot-hold" &&
+    explicitHold.since === Date.parse("2026-09-27T10:00:00.000Z") &&
+    explicitHold.last === Date.parse("2026-09-27T16:00:00.000Z") &&
+    explicitHold.detail.includes("1.9gb"),
+);
+check(
+  "disk hold: disk-resume clears the explicit hold",
+  diskHoldFromEvents([diskAlert("2026-09-27T10:00:00.000Z", "disk-hold"), diskAlert("2026-09-27T11:00:00.000Z", "disk-resume")]) === null,
+);
+check("disk hold: other alert events are not a hold", diskHoldFromEvents([JSON.stringify({ ts: "2026-09-27T10:00:00.000Z", type: "alert", task: "P2-1", phase: "disk-hold" })]) === null);
 
 const vm = (sha: string, iso: string) => JSON.stringify({ sha, task: "T", at: iso });
 const PROD = "1ebbbc1bae45e3900674e9fa2acd7aa623b54b33";
@@ -214,15 +234,26 @@ check(
   livenessVerdict(signals({ restarts: 3, launchd: { checked: true, loaded: true, state: "running", pid: 1, runs: 5, lastExitCode: 0 } }), T0).state === "ok",
 );
 const heldSince = T0 - DISK_HOLD_ALERT_MS - MIN;
-const dh = livenessVerdict(signals({ diskHold: { since: heldSince, last: T0 - 5 * MIN, refusals: 12, detail: "disk low: 2.1gb free (need 5.0gb)" } }), T0);
+const dh = livenessVerdict(signals({ diskHold: { since: heldSince, last: T0 - 5 * MIN, refusals: 12, detail: "disk low: 2.1gb free (need 5.0gb)", source: "deploy-guard" } }), T0);
 check("verdict: disk-guard hold ≥1h = degraded/disk-hold", dh.state === "degraded" && codes(dh) === "disk-hold" && dh.reasons[0]!.detail.includes("12 recusas"));
 check(
   "verdict: a hold whose newest refusal is >6h old is over",
-  livenessVerdict(signals({ diskHold: { since: T0 - 30 * HOUR, last: T0 - 7 * HOUR, refusals: 5, detail: "" } }), T0).state === "ok",
+  livenessVerdict(signals({ diskHold: { since: T0 - 30 * HOUR, last: T0 - 7 * HOUR, refusals: 5, detail: "", source: "deploy-guard" } }), T0).state === "ok",
 );
 check(
   "verdict: a young hold (<1h) does not page yet",
-  livenessVerdict(signals({ diskHold: { since: T0 - 20 * MIN, last: T0 - MIN, refusals: 3, detail: "" } }), T0).state === "ok",
+  livenessVerdict(signals({ diskHold: { since: T0 - 20 * MIN, last: T0 - MIN, refusals: 3, detail: "", source: "deploy-guard" } }), T0).state === "ok",
+);
+const pilotHold = (lastAgo: number) =>
+  livenessVerdict(signals({ diskHold: { since: T0 - 8 * HOUR, last: T0 - lastAgo, refusals: 0, detail: "free 1.9gb < 5gb", source: "pilot-hold" } }), T0);
+check(
+  "verdict: an explicit pilot hold whose 6h re-emission is 30 min late still pages",
+  pilotHold(6.5 * HOUR).state === "degraded" && pilotHold(6.5 * HOUR).reasons[0]!.detail.startsWith("o pilot está em disk hold há 8h"),
+);
+check("verdict: an explicit hold silent for >7h counts as over (restarted pilot, no resume)", pilotHold(7.5 * HOUR).state === "ok");
+check(
+  "verdict: the same 6.5h-old refusal from the deploy guard is already stale (6h window)",
+  livenessVerdict(signals({ diskHold: { since: T0 - 8 * HOUR, last: T0 - 6.5 * HOUR, refusals: 4, detail: "", source: "deploy-guard" } }), T0).state === "ok",
 );
 const dl = livenessVerdict(signals({ deploy: { prodSha: PROD, undeployed: 16, oldestUndeployedAt: T0 - 7 * HOUR } }), T0);
 check("verdict: verified merges waiting ≥6h = deploy-lag", dl.state === "degraded" && codes(dl) === "deploy-lag" && dl.reasons[0]!.detail.startsWith("16 merges"));
@@ -693,7 +724,7 @@ check("selfwatch verdict: unreadable heartbeat (NaN) never exits", selfWatchVerd
   const out: string[] = [];
   startWatchdog(3, {
     now: () => clock,
-    readHeartbeat: () => hb,
+    heartbeatAgeMs: (at) => at - hb,
     touch: () => {
       hb = clock;
     },
