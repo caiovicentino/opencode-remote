@@ -58,7 +58,11 @@ no código do pilot com um check grep-style).
 
 **Runbook do operador (pós-merge)**: ativar a proteção de branch no GitHub para
 `main` — "Require a pull request before merging" + squash merges + as checks
-requeridas do CI existente. Nenhuma mudança de código é necessária: com a
+requeridas do CI existente — **depois** de ligar "Allow auto-merge" no repo
+(`allow_auto_merge`, desligado em 2026-09-27: sem ele, com check requerida
+pendente, o `--auto` e o squash imediato falham e o PR meta fica aberto
+bloqueando todo landing seguinte; comandos exatos em `docs/security.md` §22).
+Nenhuma mudança de código é necessária: com a
 proteção ativa, `gh pr merge --squash --auto` arma o auto-merge e o landing
 confirma o squash via `gh pr view` (estado + headRefOid) dentro do orçamento de
 ~5 min, esperando as checks terminarem (o caminho sem proteção continua

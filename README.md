@@ -931,12 +931,22 @@ the same sub-battery locally on any OS:
 
     npm run test:unit-win
 
+The unit battery itself is `npm run test:unit`: `scripts/unit-suite.ts` runs
+every file listed in `scripts/unit-suite.txt`, in order, stops at the first
+failure with that file's exit code and prints one `ok i/n <file> (Nms)` line
+per file (on CI the per-file table, slowest first, lands in the job summary).
+A new test is one line appended at the end of that list — never an edit of
+the `test:unit` script — and `.gitattributes` merges the list with
+`merge=union`, so two branches that each add a test no longer conflict. Every
+portable test is in the list too (the Windows job runs a subset, never more).
+
 Since P3-352 the run ends in one aggregate job, `ci-gate`, that `needs` every
 other job of `ci.yml`, always runs and turns their results into a single
 verdict (`scripts/cigate.ts`): `verify` and `scope` must succeed, the
 scope-gated jobs may be skipped, anything else is red. It is the one status
 context the `main` branch protection should require — see
-`docs/security.md` §21 for the one-time `gh api` command.
+`docs/security.md` §22 for the one-time `gh api` commands (auto-merge
+first, then the required check).
 
 **Releasing**: a tag `vX.Y.Z` must carry the same version in **both**
 `package.json` files (repo root and `apps/desktop`) plus `apps/web/src/version.ts`.

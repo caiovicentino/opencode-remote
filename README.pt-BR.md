@@ -905,6 +905,16 @@ na máquina de quem usa. Rode a mesma sub-bateria localmente em qualquer SO:
 
     npm run test:unit-win
 
+A bateria de unit em si é o `npm run test:unit`: `scripts/unit-suite.ts` roda
+cada arquivo listado em `scripts/unit-suite.txt`, na ordem, para no primeiro
+vermelho com o exit code dele e imprime uma linha `ok i/n <arquivo> (Nms)` por
+arquivo (no CI a tabela por arquivo, do mais lento ao mais rápido, vai para o
+resumo do job). Teste novo é uma linha acrescentada no fim dessa lista — nunca
+uma edição do script `test:unit` — e o `.gitattributes` faz `merge=union` na
+lista, então dois branches que acrescentam testes não conflitam mais. Todo
+teste portátil também está na lista (o job Windows roda um subconjunto, nunca
+mais que isso).
+
 **Release**: a tag `vX.Y.Z` precisa ter a mesma versão nos **dois**
 `package.json` (raiz e `apps/desktop`). O workflow de release roda
 `scripts/release-preflight.ts` como primeiro passo e bloqueia o release em

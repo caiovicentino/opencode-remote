@@ -336,6 +336,34 @@ identity servers, no accounts.
     It is the single context to require on `main` (operator action, one
     time, after the job has reported at least once):
 
+    ```sh
+    # 1. FIRST allow auto-merge on the repository. The pilot lands every
+    #    meta commit with `gh pr merge --squash --auto`, falling back to an
+    #    immediate squash (apps/pilot/src/metapush.ts). With a required
+    #    check still pending and auto-merge not allowed, BOTH fail: the
+    #    pilot/meta PR stays open and every later landing waits on it
+    #    (waitPendingMetaPr) — mark-done, lessons and refills stall.
+    #    As of 2026-09-27 the repository has allow_auto_merge: false.
+    gh api -X PATCH repos/caiovicentino/opencode-remote -F allow_auto_merge=true
+
+    # 2. THEN require ci-gate, pinned to the GitHub Actions app (15368) so no
+    #    other integration can satisfy it with a commit status; strict=false
+    #    because the pilot never updates a BEHIND branch before merging.
+    gh api -X PATCH repos/caiovicentino/opencode-remote/branches/main/protection/required_status_checks \
+      --input - <<'JSON'
+    {"strict": false, "checks": [{"context": "ci-gate", "app_id": 15368}]}
+    JSON
+
+    # verify / roll back (the same PATCH with "checks": [])
+    gh api repos/caiovicentino/opencode-remote/branches/main/protection/required_status_checks --jq '{strict, checks}'
+    ```
+
+    Every PR the fleet opens reports `ci-gate`: `ci.yml` has no
+    workflow-level `paths` filter, the aggregate runs with `if: always()`,
+    and it was verified on task PRs (`pilot/<ID>`), BACKLOG-only
+    `pilot/meta` PRs and `operator/*` PRs (eval-17, 2026-09-27) — no PR can
+    wait forever on a context that never arrives.
+
 ## Key rotation
 
 Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and
