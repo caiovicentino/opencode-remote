@@ -9,6 +9,7 @@ import { touchHeartbeat, type PilotConfig } from "./state";
 import { notifySupervisor } from "./notify";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "./disk";
 import { judgeInvariantsCommand } from "./judge";
+import { compareProtocolMirror, judgeDriftDetail, readJudgeMirror, showTargetProtocol, type GitRead } from "./judgedrift";
 import {
   defaultLastInstallFile,
   defaultQuarantineFile,
