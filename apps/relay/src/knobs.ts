@@ -36,9 +36,21 @@ export interface RelayKnobs {
   problems: string[];
 }
 
-/** Defaults sized to pass the daemon's worst-case chunked transfer. */
-export const RATE_PER_MIN_DEFAULT = 600;
-export const RATE_BURST_DEFAULT = 1000;
+/**
+ * Per-connection frame budget, sized from measured traffic (eval-13). The
+ * daemon multiplexes every paired phone and every streamed event over ONE
+ * socket: the production relay log recorded it at 1,144 frames in one
+ * second, 22,906 in one minute and 80,949 in five. The previous 600/min +
+ * 1000 burst closed that legitimate daemon 26 times in September (close
+ * 4029, then a 60 s daemon backoff: the phone froze mid-response). Replayed
+ * through this exact bucket, 30,000/min needs a 7,000 burst to close nobody
+ * in the recorded week; 20,000 keeps ~3x headroom for a second phone. One
+ * relay core routes ~50k small frames/s in the one-frame-per-read regime
+ * (docs/RELAY-HOSTING.md, capacity), so one socket at this ceiling costs
+ * ~1% of a core. Every inbound frame is charged, malformed ones included.
+ */
+export const RATE_PER_MIN_DEFAULT = 30_000;
+export const RATE_BURST_DEFAULT = 20_000;
 export const MAX_PER_IP_DEFAULT = 20;
 export const TRUST_PROXY_HOPS_DEFAULT = 0;
 export const PING_INTERVAL_S_DEFAULT = 30;
@@ -59,8 +71,8 @@ export const PING_INTERVAL_S_CEILING = 3_600;
 /**
  * Resolve the tuning knobs from the process env.
  *
- * - RELAY_RATE_PER_MIN: sustained frames/minute per connection, default 600.
- * - RELAY_RATE_BURST: token-bucket burst per connection, default 1000.
+ * - RELAY_RATE_PER_MIN: sustained frames/minute per connection, default 30000.
+ * - RELAY_RATE_BURST: token-bucket burst per connection, default 20000.
  * - RELAY_MAX_PER_IP: live-connection cap per source IP, default 20.
  * - RELAY_TRUST_PROXY_HOPS: trusted proxy layers, default 0 (direct exposure).
  * - RELAY_PING_INTERVAL_S: liveness sweep interval, default 30.

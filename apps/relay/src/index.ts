@@ -85,6 +85,21 @@ import { roomOccupancyCounts } from "./roomoccupancy.js";
  */
 
 const PORT = Number(process.env.RELAY_PORT ?? 8787);
+// eval-13: a log line that cannot be written must never take the router
+// down. With stdout on a file (launchd StandardOutPath, systemd append:) a
+// full disk fails the write with ENOSPC, Node reports it as an 'error' event
+// on the stream, and with no listener that event became an uncaught
+// exception — the production relay.err.log holds two such ENOSPC traces,
+// followed by four more exits with no readable trace.
+// Routing needs no disk: a failed write is only counted (published as
+// relay_log_write_errors_total) and the relay keeps serving. Installed before
+// the first line below is written.
+let logWriteErrors = 0;
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", () => {
+    logWriteErrors++;
+  });
+}
 // P2-177: the log level resolves fail-closed BEFORE anything else logs or
 // listens (same boot shape as the P2-141 limits, the P2-154 TLS pair and the
 // P2-171 knobs). An unknown or non-string RELAY_LOG_LEVEL never falls back
@@ -252,7 +267,8 @@ let lastCertExpiryVerdict: CertExpiryVerdict | undefined = CERT_EXPIRY?.verdict;
 // limits above: a typo, a negative, fractional or zero value (zero is
 // legitimate only for the proxy hops) or a value above the knob's documented
 // ceiling refuses the boot instead of silently serving with the default. An
-// empty env keeps the exact pre-P2-171 values (600/1000/20/0/30).
+// empty env keeps the documented defaults (30000/20000/20/0/30 — the rate
+// pair was resized from 600/1000 by eval-13, see knobs.ts).
 const KNOBS = relayKnobs(process.env);
 if (KNOBS.problems.length > 0) {
   for (const reason of KNOBS.problems) {
@@ -550,6 +566,10 @@ const METRICS = metricsBinding(process.env);
 const m = {
   connectionsTotal: 0,
   framesRouted: 0,
+  // eval-13: frames with content that found nobody else in their room — the
+  // phone talking to a daemon that is on another replica (the P3-401 split)
+  // or offline. A subset of framesRouted; joins (empty payload) never count.
+  framesUnrouted: 0,
   bytesRouted: 0,
   rejects: 0,
   rateLimited: 0,
@@ -611,6 +631,9 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_connections_active ${wss.clients.size}`,
           "# TYPE relay_frames_routed counter",
           `relay_frames_routed ${m.framesRouted}`,
+          // eval-13: additive — the subset of routed frames nobody received
+          "# TYPE relay_frames_unrouted_total counter",
+          `relay_frames_unrouted_total ${m.framesUnrouted}`,
           "# TYPE relay_bytes_routed counter",
           `relay_bytes_routed ${m.bytesRouted}`,
           "# TYPE relay_rejects counter",
@@ -623,6 +646,10 @@ if (METRICS.port && METRICS.problems.length === 0) {
           // detail: those ride the one structured stderr line, not metrics.
           "# TYPE relay_crashes_total counter",
           `relay_crashes_total ${m.crashesTotal}`,
+          // eval-13: additive — log lines the process could not write (full
+          // disk, closed stdout). Zero publishes as zero; a whole count only.
+          "# TYPE relay_log_write_errors_total counter",
+          `relay_log_write_errors_total ${logWriteErrors}`,
           "# TYPE relay_rooms_rejected counter",
           `relay_rooms_rejected ${m.roomsRejected}`,
           // P2-293: one counter per documented room-reject reason, same
@@ -698,6 +725,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
             connections_total: m.connectionsTotal,
             connections_active: wss.clients.size,
             frames_routed: m.framesRouted,
+            frames_unrouted: m.framesUnrouted,
             bytes_routed: m.bytesRouted,
             rejects: m.rejects,
             rate_limited_total: m.rateLimited,
@@ -705,6 +733,8 @@ if (METRICS.port && METRICS.problems.length === 0) {
             // above, read at scrape time; zero stays zero. A whole count
             // only: never a crash class, message, stack or any detail.
             crashes_total: m.crashesTotal,
+            // eval-13: additive — same counter as relay_log_write_errors_total
+            log_write_errors_total: logWriteErrors,
             rooms_rejected: m.roomsRejected,
             // P2-293: per-reason split of rooms_rejected above (additive,
             // same counters the /healthz breakdown publishes)
@@ -1039,7 +1069,14 @@ server.listen(PORT, () => {
   // exception. Both run exactly once, after the listener is up, and exercise
   // the fatal-event wiring end to end: the structured stderr line, the
   // relay_crashes_total increment and the exit-1 drain.
-  const hatch = process.env.OCR_RELAY_CRASH_HATCH;
+  // eval-13: honored only under the test harness marker every relay test
+  // already sets (OCR_E2E_MARKER=1). A copy-pasted hatch in a production env
+  // used to crash-loop the whole multi-tenant process right after each boot;
+  // now it only earns one warn line naming the variable, never its value.
+  const hatch = process.env.OCR_E2E_MARKER === "1" ? process.env.OCR_RELAY_CRASH_HATCH : undefined;
+  if (process.env.OCR_RELAY_CRASH_HATCH && hatch === undefined) {
+    ev("warn", "test crash hatch ignored outside the test harness", { key: "OCR_RELAY_CRASH_HATCH" });
+  }
   if (hatch) {
     const isThrow = hatch.startsWith("throw:");
     const isReject = hatch.startsWith("reject:");
@@ -1115,6 +1152,13 @@ wss.on("connection", (socket: Socket, req) => {
   });
 
   socket.on("message", (data) => {
+    // eval-13: a socket the relay already closed for policy (rate limit, room
+    // full, slow consumer, room budget) gets no more work. ws keeps emitting
+    // the frames that were buffered behind the close, and each one re-ran the
+    // whole path — the production log shows up to eight "rate limited" lines
+    // for one socket within two milliseconds. Frames a peer sent before its
+    // OWN close frame are still delivered: the socket is OPEN until then.
+    if (socket.readyState !== socket.OPEN) return;
     // RT-455: the whole routing path is wrapped so a single malformed frame
     // can never kill the process. An unexpected exception anywhere below
     // closes ONLY this socket (close code 1011) — every other room, tenant
@@ -1127,23 +1171,24 @@ wss.on("connection", (socket: Socket, req) => {
       try {
         parsed = JSON.parse(data.toString());
       } catch {
-        return;
+        parsed = undefined;
       }
       // RT-455: shallow shape gate, at the exact point the old
       // `typeof room/payload` check occupied. `from` and `seq` are
       // attacker-controlled metadata that previously passed unvalidated into
       // JSON.stringify — whose recursion is unbounded — so one deeply nested
       // value threw RangeError and killed the whole relay. The verdict
-      // accepts only the shapes legitimate peers send and drops everything
-      // else silently, the same treatment an invalid JSON frame already got
-      // (and malformed envelopes still cost no rate-limit budget).
+      // accepts only the shapes legitimate peers send; everything else
+      // (invalid JSON included) is dropped silently right after the bucket.
       const v = envelopeVerdict(parsed);
-      if (!v.ok) return;
-      const frame = v.frame;
 
       // token bucket per connection (one device session). Applied to every
       // frame, including joins (payload "") and self-declared room owners —
       // envelope metadata is attacker-controllable and grants nothing.
+      // eval-13: malformed frames (invalid JSON, a refused envelope) cost a
+      // token too — they used to be free, so the bucket bounded only valid
+      // traffic and a socket could make the relay parse garbage at line
+      // rate. Legitimate peers never send them, so this only closes abusers.
       if (RATE_PER_MIN > 0) {
         socket.bucket ??= new TokenBucket(RATE_BURST, RATE_PER_MIN);
         if (!socket.bucket.take()) {
@@ -1151,13 +1196,15 @@ wss.on("connection", (socket: Socket, req) => {
           // identity prefix for triage only — never any payload content
           ev("warn", "rate limited, dropping device", {
             id: socket.id,
-            from: String(frame.from).slice(0, 10),
+            ...(v.ok ? { from: String(v.frame.from).slice(0, 10) } : {}),
             close: RATE_LIMIT_CLOSE,
           });
           socket.close(RATE_LIMIT_CLOSE, "rate limited");
           return;
         }
       }
+      if (!v.ok) return;
+      const frame = v.frame;
 
       // room grammar + per-socket room cap (P2-019): room ids are the only
       // envelope field that allocates relay state, so unvalidated ids let one
@@ -1250,8 +1297,10 @@ wss.on("connection", (socket: Socket, req) => {
       }
       m.framesRouted++;
       m.bytesRouted += frame.payload.length;
+      let recipients = 0;
       for (const t of targets) {
         if (t === socket || t.readyState !== t.OPEN) continue;
+        recipients++;
         // P2-217: backpressure gate — consult the target's own accumulated
         // outgoing bytes BEFORE every send. Only two outcomes exist: queue the
         // frame, or close the slow socket (never a silent drop — the relay is
@@ -1266,6 +1315,7 @@ wss.on("connection", (socket: Socket, req) => {
         }
         t.send(out);
       }
+      if (recipients === 0 && frame.payload !== "") m.framesUnrouted++;
     } catch {
       // RT-455: fail-safe for anything the shape gate cannot foresee — the
       // process never dies because of one frame. One line, socket id only,
