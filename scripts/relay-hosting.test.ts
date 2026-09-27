@@ -1,7 +1,8 @@
 /**
  * Hosted-relay readiness regressions (eval-13), each against real relay
- * subprocesses booted from this checkout (hermetic: throwaway HOME, random
- * ports in 40000-60000, killed by PID):
+ * subprocesses booted from this checkout (hermetic: throwaway HOME, free
+ * ports the kernel assigns to two probe listeners held open at once —
+ * relay and metrics independent —, killed by PID):
  *
  *   1. the per-connection frame budget passes the daemon's measured bursts
  *      (the old 600/min + 1000 burst closed it 26 times in production);
@@ -57,8 +58,29 @@ interface Relay {
   exitCode: () => number | null | undefined;
 }
 
-function startRelay(env: Record<string, string>, opts: { preload?: string; stdoutFd?: number } = {}): Relay {
-  const port = 40_000 + Math.floor(Math.random() * 19_000);
+// eval-13 fix round: two probe listeners held open AT THE SAME TIME so the
+// kernel hands out two distinct free ports — relay and metrics independent,
+// and no EADDRINUSE against another suite's relay or a stray listener (the
+// same EADDRINUSE class the eval-03/eval-17 suites are removing; a CI run of
+// this suite lost the hatch relay's boot to one).
+function freePortPair(): Promise<[number, number]> {
+  const take = (srv: Server) =>
+    new Promise<number>((resolve, reject) => {
+      srv.once("error", reject);
+      srv.listen(0, "127.0.0.1", () => resolve((srv.address() as { port: number }).port));
+    });
+  const a = createServer();
+  const b = createServer();
+  return Promise.all([take(a), take(b)]).then(
+    ([p1, p2]) =>
+      new Promise<[number, number]>((resolve) => {
+        a.close(() => b.close(() => resolve([p1, p2])));
+      }),
+  );
+}
+
+async function startRelay(env: Record<string, string>, opts: { preload?: string; stdoutFd?: number } = {}): Promise<Relay> {
+  const [port, mport] = await freePortPair();
   const home = mkdtempSync(join(tmpdir(), "ocr-relay-hosting-"));
   homes.push(home);
   const argv = ["--import", "tsx/esm", ...(opts.preload ? ["--import", opts.preload] : []), "apps/relay/src/index.ts"];
@@ -69,7 +91,7 @@ function startRelay(env: Record<string, string>, opts: { preload?: string; stdou
       PATH: process.env.PATH ?? "",
       OCR_E2E_MARKER: "1",
       RELAY_PORT: String(port),
-      RELAY_METRICS_PORT: String(port + 1),
+      RELAY_METRICS_PORT: String(mport),
       ...env,
     },
     stdio: ["ignore", opts.stdoutFd ?? "pipe", opts.stdoutFd ?? "pipe"],
@@ -80,7 +102,7 @@ function startRelay(env: Record<string, string>, opts: { preload?: string; stdou
   proc.stderr?.on("data", (c) => (out += String(c)));
   let code: number | null | undefined;
   proc.on("exit", (c) => (code = c));
-  return { port, mport: port + 1, proc, stdout: () => out, exitCode: () => code };
+  return { port, mport, proc, stdout: () => out, exitCode: () => code };
 }
 
 async function healthz(port: number): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -151,8 +173,8 @@ function countMessages(ws: WebSocket): () => number {
   check("control: the old 600/min + 1000 burst refuses the measured one-second peak", oldRefused === 144);
 }
 
-const dflt = startRelay({});
-const strict = startRelay({ RELAY_RATE_PER_MIN: "60", RELAY_RATE_BURST: "5" });
+const dflt = await startRelay({});
+const strict = await startRelay({ RELAY_RATE_PER_MIN: "60", RELAY_RATE_BURST: "5" });
 check("boot: default and strict relays answer /healthz", (await waitUp(dflt)) && (await waitUp(strict)));
 
 {
@@ -241,7 +263,7 @@ check("boot: default and strict relays answer /healthz", (await waitUp(dflt)) &&
     "    s._write = (c, e, cb) => cb(err); s._writev = (c, cb) => cb(err); }",
     "  return r; };",
   ].join("\n");
-  const relay = startRelay({}, { preload: `data:text/javascript,${encodeURIComponent(failWrites)}` });
+  const relay = await startRelay({}, { preload: `data:text/javascript,${encodeURIComponent(failWrites)}` });
   const up = await waitUp(relay);
   // before eval-13 the relay died on the first failed write, so every dial
   // below may fail — that must surface as a failed check, not a crash here
@@ -269,7 +291,7 @@ check("boot: default and strict relays answer /healthz", (await waitUp(dflt)) &&
 // every write of stdout AND stderr fails, from the very first boot line.
 if (existsSync("/dev/full")) {
   const fd = openSync("/dev/full", "w");
-  const relay = startRelay({}, { stdoutFd: fd });
+  const relay = await startRelay({}, { stdoutFd: fd });
   const up = await waitUp(relay);
   check("log errors (/dev/full): the relay boots and serves with every log write failing", up && relay.exitCode() === undefined);
   check("log errors (/dev/full): failures counted", ((await metrics(relay.mport)).log_write_errors_total ?? 0) >= 1);
@@ -280,7 +302,7 @@ if (existsSync("/dev/full")) {
 // --- 4. the crash hatch is inert outside the test harness ---------------------
 {
   const secret = "throw:hatch-value-7f3a";
-  const relay = startRelay({ OCR_E2E_MARKER: "", OCR_RELAY_CRASH_HATCH: secret });
+  const relay = await startRelay({ OCR_E2E_MARKER: "", OCR_RELAY_CRASH_HATCH: secret });
   const up = await waitUp(relay);
   await sleep(600);
   check("hatch: without the harness marker the relay stays up", up && relay.exitCode() === undefined);
@@ -308,8 +330,8 @@ function startBalancer(backends: number[], pick: (requestLine: string, n: number
   return new Promise((resolve) => srv.listen(0, "127.0.0.1", () => resolve({ port: (srv.address() as { port: number }).port, srv })));
 }
 {
-  const a = startRelay({});
-  const b = startRelay({});
+  const a = await startRelay({});
+  const b = await startRelay({});
   check("replicas: both boot", (await waitUp(a)) && (await waitUp(b)));
   const roundRobin = await startBalancer([a.port, b.port], (_line, n) => n % 2);
   // one TCP connection per probe (no keep-alive reuse), like two separate
