@@ -379,7 +379,8 @@ const fake = createHttpServer((req, res) => {
     return;
   }
   res.writeHead(200, { "content-type": "application/json" });
-  if (url.pathname === "/permission") res.end(JSON.stringify(pending));
+  if (req.method === "POST" && url.pathname === "/session") res.end(JSON.stringify({ id: "ses_eval12new", title: "created" }));
+  else if (url.pathname === "/permission") res.end(JSON.stringify(pending));
   else if (url.pathname === "/global/health") res.end(JSON.stringify({ healthy: true, version: "1.18.32" }));
   else res.end("[]");
 });
@@ -450,8 +451,14 @@ type Ev = { type: string; properties?: Record<string, unknown> };
 /** A sealed E2E client on the daemon's local WS (the desktop's transport). */
 class LocalClient {
   events: Ev[] = [];
+  /** seq of every sealed frame, in wire (arrival) order */
+  seqs: number[] = [];
+  /** frames refused by the strict replay guard (seq not above the last one) */
+  dropped = 0;
   private seq = 0;
+  private lastSeq = 0;
   private waiters = new Map<string, (r: OpResponse) => void>();
+  private parts = new Map<string, string[]>();
   private chain: Promise<void> = Promise.resolve();
   private constructor(
     private ws: WebSocket,
@@ -487,20 +494,46 @@ class LocalClient {
     return c;
   }
 
+  // Frames are handled strictly in arrival order with the web client's rule
+  // (apps/web/src/lib/client.ts): a seq not above the last accepted one is
+  // dropped — exactly what turned a daemon-side send inversion into a lost
+  // response or event.
   private async onFrame(raw: string) {
     const frame = JSON.parse(raw) as { from: string; seq?: number; payload: string };
-    const env = await openSealed<{ type: string; res?: OpResponse; event?: Ev }>(frame.payload, this.key, seqAad(frame.from, frame.seq ?? 0));
+    if (typeof frame.seq !== "number") return; // clear controls
+    this.seqs.push(frame.seq);
+    if (frame.seq <= this.lastSeq) {
+      this.dropped++;
+      return;
+    }
+    const env = await openSealed<{
+      type: string;
+      res?: OpResponse;
+      event?: Ev;
+      chunk?: { id: string; status: number; i: number; of: number; part: string };
+    }>(frame.payload, this.key, seqAad(frame.from, frame.seq));
     if (!env) return;
+    this.lastSeq = frame.seq;
     if (env.type === "event" && env.event) this.events.push(env.event);
     if (env.type === "res" && env.res) this.waiters.get(env.res.id)?.(env.res);
+    if (env.type === "res-chunk" && env.chunk) {
+      const c = env.chunk;
+      const parts = this.parts.get(c.id) ?? new Array<string>(c.of).fill("");
+      parts[c.i] = c.part;
+      this.parts.set(c.id, parts);
+      if (parts.every((x) => x !== "")) {
+        this.parts.delete(c.id);
+        this.waiters.get(c.id)?.({ id: c.id, status: c.status, body: JSON.parse(parts.join("")) } as OpResponse);
+      }
+    }
   }
 
-  async op(method: string, path: string, body?: unknown): Promise<OpResponse> {
+  async op(method: string, path: string, body?: unknown, query?: Record<string, string>, timeoutMs = 8000): Promise<OpResponse> {
     const id = crypto.randomUUID();
     const seq = ++this.seq;
-    const payload = await seal({ type: "op", req: { id, method, path, body } }, this.key, seqAad(this.from, seq));
+    const payload = await seal({ type: "op", req: { id, method, path, body, query } }, this.key, seqAad(this.from, seq));
     const res = new Promise<OpResponse>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`op ${method} ${path} timed out`)), 8000);
+      const t = setTimeout(() => reject(new Error(`op ${method} ${path} timed out`)), timeoutMs);
       this.waiters.set(id, (r) => {
         clearTimeout(t);
         this.waiters.delete(id);
@@ -509,6 +542,11 @@ class LocalClient {
     });
     this.ws.send(JSON.stringify({ room: "eval12", from: this.from, seq, payload }));
     return await res;
+  }
+
+  /** clear heartbeat — a live session answers with a SEALED pong (RT-341) */
+  ping() {
+    this.ws.send(JSON.stringify({ room: "eval12", from: this.from, payload: b64(new TextEncoder().encode(JSON.stringify({ type: "ping" }))) }));
   }
 
   async waitEvent(pred: (e: Ev) => boolean, ms: number): Promise<Ev | null> {
@@ -638,10 +676,59 @@ try {
   check("replay: asks no longer pending are dropped before replaying", !c4.events.some((e) => e.type === AUTO_APPROVE_FAILED_EVENT));
   c4.close();
 
+  // ── seal order (eval-14 P1): wire order must be seq order ──
+  // One ~4 MB artifact (9 res-chunks, slow seals) raced by 40 heartbeats
+  // (tiny sealed pongs) and a burst of broadcast events. Before the per-
+  // session send chain, pongs overtook chunks on the wire and the strict
+  // client dropped the lower seq — the artifact never finished.
+  {
+    const bigDir = join(stateDir, "artifacts", "ses_eval12big");
+    mkdirSync(bigDir, { recursive: true });
+    const big = Buffer.alloc(4_000_000);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 31 + 7) & 0xff;
+    writeFileSync(join(bigDir, "big.bin"), big);
+    const c6 = await LocalClient.connect(port, token, identity, "c6");
+    await c6.op("GET", "/__ocr/settings");
+    const bigOp = c6.op("GET", "/__ocr/artifact", undefined, { session: "ses_eval12big", name: "big.bin" }, 20_000).catch((e: Error) => e);
+    for (let i = 0; i < 40; i++) {
+      c6.ping();
+      if (i % 4 === 0) emitEvent({ type: "session.status", properties: { sessionID: "ses_eval12", i } });
+      await sleep(5);
+    }
+    const got = await bigOp;
+    await sleep(500);
+    const inversions = c6.seqs.filter((s, i) => i > 0 && s <= c6.seqs[i - 1]!).length;
+    check("seal order: every sealed frame reaches the wire in seq order", inversions === 0 && c6.dropped === 0, `inversions=${inversions} dropped=${c6.dropped} frames=${c6.seqs.length}`);
+    const data = got instanceof Error ? null : (got.body as { data?: string }).data;
+    check("seal order: a 4 MB artifact raced by pongs and events arrives byte-exact", !!data && Buffer.from(data, "base64").equals(big), got instanceof Error ? got.message : `status=${got.status}`);
+    c6.close();
+  }
+
+  // ── POST /api/session/new (the P1-057 cookie exchange owns POST /api/session) ──
+  {
+    const created = await fetch(`http://127.0.0.1:${port}/api/session/new`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ title: "created" }),
+    });
+    const createdBody = (await created.json().catch(() => ({}))) as { id?: string };
+    check("POST /api/session/new creates a session (SDK createSession)", created.status === 200 && createdBody.id === "ses_eval12new", `status=${created.status} body=${JSON.stringify(createdBody)}`);
+    const cookie = await fetch(`http://127.0.0.1:${port}/api/session`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+    const cookieBody = (await cookie.json().catch(() => ({}))) as { ok?: boolean; expiresAt?: number };
+    check("POST /api/session stays the P1-057 cookie exchange", cookie.status === 200 && cookieBody.ok === true && typeof cookieBody.expiresAt === "number");
+  }
+
   // ── crash scenarios: each one judged on its own boot ──
   const bad = await rawRequest(port, "GET //[ HTTP/1.1\r\nHost: x\r\n\r\n");
   await sleep(400);
   check("malformed request line (`GET //[`) answers 400, daemon alive (main: exit 1)", bad.includes(" 400 ") && alive(daemon!), `status line: ${bad} exit=${daemon!.exitCode}`);
+  await ensureUp();
+  // eval-15: the same crash from ANY web page on the machine — WHATWG keeps
+  // `//a:99999/` as the path of http://127.0.0.1:8792//a:99999/, so a no-cors
+  // fetch sends exactly this request line (no auth, no DNS rebinding).
+  const fromPage = await rawRequest(port, "GET //a:99999/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  await sleep(400);
+  check("web-page reachable target (`GET //a:99999/`) answers 400, daemon alive", fromPage.includes(" 400 ") && alive(daemon!), `status line: ${fromPage} exit=${daemon!.exitCode}`);
   await ensureUp();
 
   const stateBefore = readFileSync(stateFile, "utf8");

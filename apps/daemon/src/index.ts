@@ -3003,7 +3003,23 @@ const SAFE_PAYLOAD = 900_000;
 const CHUNK_BODY = 600_000;
 const MAX_CHUNKS = 512; // ~300MB ceiling on a single response
 
-async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
+// eval-12 (P1, measured by eval-14: out-of-order completions in 50/50
+// trials): the seq used to be taken BEFORE `await seal()`, and concurrent
+// senders — broadcast() never awaits, responses and pongs race — finish
+// WebCrypto out of order. The client's strict replay guard then silently
+// dropped the lower seq: a lost res-chunk was a 60 s request timeout, a lost
+// event a missing update. Every frame of a session now goes through one
+// chain, and the seq is assigned, sealed and sent inside the chained task,
+// so wire order is always seq order (the receiver stays strict).
+const sendChains = new WeakMap<ClientSession, Promise<void>>();
+
+function sealAndSend(session: ClientSession, env: DaemonEnvelope): Promise<void> {
+  const sent = (sendChains.get(session) ?? Promise.resolve()).then(() => sealAndSendNow(session, env));
+  sendChains.set(session, sent.catch(() => {}));
+  return sent;
+}
+
+async function sealAndSendNow(session: ClientSession, env: DaemonEnvelope) {
   // RT-341: heartbeats get their own counter so pong volume never pollutes
   // the response count.
   metrics.inc(
@@ -3024,9 +3040,15 @@ async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
   }
   metrics.inc("ocr_sealed_bytes_total", payload.length);
   if (session.socket.readyState === WebSocket.OPEN) {
-    session.socket.send(
-      JSON.stringify({ room: daemon.room, from: daemon.room, seq, payload } satisfies RelayFrame),
-    );
+    try {
+      session.socket.send(
+        JSON.stringify({ room: daemon.room, from: daemon.room, seq, payload } satisfies RelayFrame),
+      );
+    } catch (err) {
+      // a socket closing under us: this frame is lost like any frame of a
+      // dying socket, but the chain (and the process) keep going
+      log("warn", "sealed send failed", { error: err instanceof Error ? err.name : "unknown" });
+    }
   }
 }
 
@@ -5317,8 +5339,11 @@ end tell`;
       send(200, (await op("GET", "/session")).body);
       return true;
     }
-    if (req.method === "POST" && !seg[2]) {
-      const body = await readJsonBody<{ title?: string }>(req, res, "/api/session");
+    // eval-12: POST /api/session itself is the P1-057 cookie exchange (it
+    // answers above and never reaches here), so creating a session lives at
+    // POST /api/session/new — session ids start with "ses", no collision.
+    if (req.method === "POST" && (!seg[2] || (seg[2] === "new" && !seg[3]))) {
+      const body = await readJsonBody<{ title?: string }>(req, res, "/api/session/new");
       if (body === null) return true;
       send(200, (await op("POST", "/session", { title: body.title })).body);
       return true;
