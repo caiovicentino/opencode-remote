@@ -40,13 +40,81 @@ import { classifyShift, SHIFT_REGIONS } from "../apps/web/src/lib/shiftgate";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 let failures = 0;
+// Beat timing + failure attribution (forensic 2026-09-24, recs 3 and 8).
+// Every check belongs to a beat: the task-id prefix of its name ("P3-407: …"),
+// a "word:" prefix ("local boot: …"), else the last phase() banner. The wall
+// time since the previous check is charged to the beat of the check that
+// closes it, so the table printed at exit sums to the run's elapsed time and
+// answers "which beat ate the 420s budget". Failed checks are re-printed on
+// STDOUT with their beat and detail: the gate concatenates stdout BEFORE
+// stderr, so the console.error details used to land far away from their FAIL
+// line — and the byte-cut gate tail showed neither.
+const BUDGET_WARN_RATIO = 0.8;
+let currentBeat = "setup";
+let currentPhase = "";
+let lastCheckAt = Date.now();
+let lastCheckName = "";
+const beatMs = new Map<string, { ms: number; checks: number }>();
+const failedChecks: { name: string; beat: string; phase: string; atMs: number; detail: string }[] = [];
+function beatOf(name: string): string {
+  return /^((?:P\d|RT)-\d+[a-z]?)\b/.exec(name)?.[1] ?? /^([a-z][a-z -]{2,24}):/.exec(name)?.[1] ?? currentBeat;
+}
 function check(name: string, ok: boolean, detail = "") {
   console.log(`${ok ? "OK  " : "FAIL"} ${name}`);
+  const now = Date.now();
+  const beat = beatOf(name);
+  const slot = beatMs.get(beat) ?? { ms: 0, checks: 0 };
+  slot.ms += now - lastCheckAt;
+  slot.checks++;
+  beatMs.set(beat, slot);
+  lastCheckAt = now;
+  lastCheckName = name;
   if (!ok) {
     failures++;
+    // the banner label only when it belongs to this check's beat (beats
+    // without a phase() banner would otherwise inherit a stale label)
+    failedChecks.push({ name, beat, phase: beat === currentBeat ? currentPhase : "", atMs: now, detail });
     if (detail) console.error("  ", detail);
   }
 }
+let flowReported = false;
+function flowReport(stopped = false): void {
+  if (flowReported) return;
+  flowReported = true;
+  const elapsed = Date.now() - startedAt;
+  const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+  const pct = Math.round((elapsed / DEADLINE_MS) * 100);
+  const beats = [...beatMs.entries()].sort((a, b) => b[1].ms - a[1].ms);
+  console.log(`\ndesktop flow beat timing: ${secs(elapsed)} of the ${DEADLINE_MS / 1000}s budget (${pct}%), ${beats.length} beats; slowest 10:`);
+  for (const [beat, s] of beats.slice(0, 10)) console.log(`  ${secs(s.ms).padStart(7)}  ${beat} (${s.checks} check(s))`);
+  if (elapsed > DEADLINE_MS * BUDGET_WARN_RATIO) {
+    const top = beats.slice(0, 3).map(([b, s]) => `${b} ${secs(s.ms)}`).join(", ");
+    console.log(`WARN desktop-flow budget: ${secs(elapsed)} of ${DEADLINE_MS / 1000}s (${pct}%, warn above ${BUDGET_WARN_RATIO * 100}%) — slowest beats: ${top}`);
+  }
+  if (elapsed >= DEADLINE_MS) {
+    console.log(`desktop flow exceeded the budget during beat ${currentBeat} (last check: ${lastCheckName || "none"})`);
+  }
+  if (stopped) {
+    console.log(`FAIL desktop flow stopped before its end — last check: ${lastCheckName || "none"} (beat ${lastCheckName ? beatOf(lastCheckName) : currentBeat}${currentPhase ? `, last banner "${currentPhase}"` : ""})`);
+  }
+  if (failedChecks.length) {
+    console.log(`FAILED CHECKS (${failedChecks.length}) — the check, the beat it ran in, when, and its detail:`);
+    for (const f of failedChecks.slice(0, 12)) {
+      console.log(`FAIL ${f.name}`);
+      console.log(`     beat ${f.beat}${f.phase ? ` · phase "${f.phase}"` : ""} · at ${secs(f.atMs - startedAt)}`);
+      const lines = f.detail.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3);
+      for (const l of lines) console.log(`     ${l.length > 200 ? `${l.slice(0, 199)}…` : l}`);
+    }
+    if (failedChecks.length > 12) console.log(`(+${failedChecks.length - 12} more failed check(s))`);
+    console.log("");
+  }
+}
+// abnormal exits (budget deadline, failed open, uncaught error) still report
+process.on("exit", () => {
+  try {
+    flowReport(true);
+  } catch {}
+});
 
 // --- ensure build artifacts exist (the gate's npm run build produces both) ---
 const webIndex = join(repoRoot, "apps", "web", "dist", "index.html");
@@ -319,6 +387,8 @@ function reasonOrHintLeaksPaths(v: { reason?: string; hint?: string }): boolean 
  * grew two hermetic boots, so regressions must be attributable per phase. */
 function phase(label: string): void {
   console.log(`--- ${label} (${((Date.now() - startedAt) / 1000).toFixed(1)}s elapsed)`);
+  currentPhase = label;
+  currentBeat = /^((?:P\d|RT)-\d+[a-z]?)\b/.exec(label)?.[1] ?? label;
 }
 
 // --- P1-072: interactive webview against a local fake server -------------------
@@ -5963,6 +6033,7 @@ try {
   check("no daemon sidecar spawned (hermetic)", false, "app desktop.log not found");
 }
 
+flowReport();
 const duration = Date.now() - startedAt;
 console.log(`\ndesktop flow duration: ${(duration / 1000).toFixed(1)}s (budget ${DEADLINE_MS / 1000}s)`);
 console.log(failures === 0 ? "desktop flow: all green" : `FAILURES: ${failures}`);
