@@ -69,9 +69,19 @@ interface PermissionEventProps {
   sessionID?: string;
   id?: string;
   permissionID?: string;
+  /** opencode 1.x `permission.replied` names the ask `requestID` */
+  requestID?: string;
   type?: string;
+  /** opencode 1.x `permission.asked` (PermissionRequest) names the tool here */
+  permission?: string;
   action?: string;
   messageID?: string;
+  tool?: { messageID?: string };
+}
+
+/** eval-10: the "action" fallback (ours and the daemon's) is not a name */
+function named(label: unknown): string | undefined {
+  return typeof label === "string" && label && label !== "action" ? label : undefined;
 }
 
 /**
@@ -92,17 +102,22 @@ export function collectPermissionAsks(
     const type = evt.type.toLowerCase();
     if (!type.includes("permission")) continue;
     const p = (evt.properties ?? {}) as PermissionEventProps;
-    const id = p.permissionID ?? p.id;
+    const id = p.permissionID ?? p.id ?? p.requestID;
     if (!p.sessionID || !id || p.sessionID !== sessionId) continue;
+    const prev = byId.get(id);
+    const reply = type.endsWith(".replied");
     byId.set(id, {
       permissionID: id,
-      // eval-10: reply events (`permission.replied`) carry no type — keep
-      // the label an earlier event taught instead of the "action" fallback
-      label: p.type ?? p.action ?? byId.get(id)?.label ?? "action",
-      messageID: p.messageID,
-      preview: permissionPreview(p),
-      auto: type === "ocr.permission.auto",
-      autoFailed: type === "ocr.permission.autofailed",
+      // eval-10: opencode 1.18 ships the tool as `permission` (no `type`),
+      // its reply event carries no tool at all and the daemon's AutoMode
+      // events say "action" — keep the best name any event taught
+      label: named(p.type) ?? named(p.permission) ?? named(p.action) ?? prev?.label ?? "action",
+      messageID: p.messageID ?? p.tool?.messageID ?? prev?.messageID,
+      preview: permissionPreview(p) ?? prev?.preview,
+      // a reply event (opencode's own `permission.replied`, which trails the
+      // daemon's AutoMode event) only confirms — it keeps who answered
+      auto: reply ? (prev?.auto ?? false) : type === "ocr.permission.auto",
+      autoFailed: reply ? false : type === "ocr.permission.autofailed",
     });
   }
   return [...byId.values()];

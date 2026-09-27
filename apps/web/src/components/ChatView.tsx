@@ -1540,6 +1540,11 @@ export default function ChatView({
   // drop the local ask UI, surface a transient note and move the card to a
   // collapsed "auto-approved" line (the synthetic WS event carries the id).
   const autoSeenRef = useRef<Set<string>>(new Set());
+  // eval-10: the daemon names AutoMode events after the ask's `type`, which
+  // opencode 1.18 no longer sends ("action") — the ask event in the buffer
+  // carries the real tool name (`permission`)
+  const askLabel = (permissionID: string, fallback?: string) =>
+    collectPermissionAsks(events.slice(-50), sessionId).find((a) => a.permissionID === permissionID)?.label ?? fallback;
   const [autoNote, setAutoNote] = useState("");
   useEffect(() => {
     let sawAuto = false;
@@ -1552,7 +1557,7 @@ export default function ChatView({
       sawAuto = true;
       setResponded((prev) => new Set(prev).add(p.permissionID!));
       setPersistedAsks((prev) => prev.filter((x) => x.permissionID !== p.permissionID));
-      setAutoNote(t("autoApproved", { action: permLabel(p.action) }));
+      setAutoNote(t("autoApproved", { action: permLabel(askLabel(p.permissionID, p.action)) }));
     }
     if (sawAuto) {
       // the daemon only auto-approves while AutoMode is on — reflect it
@@ -1580,7 +1585,7 @@ export default function ChatView({
       if (p?.sessionID !== sessionId || !p?.permissionID) continue;
       if (autoFailedRef.current.has(p.permissionID)) continue;
       autoFailedRef.current.add(p.permissionID);
-      setAutoFailNote(t("autoFailed", { action: permLabel(p.action) }));
+      setAutoFailNote(t("autoFailed", { action: permLabel(askLabel(p.permissionID, p.action)) }));
     }
   }, [events, sessionId]);
 
@@ -1959,7 +1964,7 @@ export default function ChatView({
     const perC = qCustom[requestID] ?? {};
     const answers = qs.map((q, i) => {
       const sel = perQ[i] ?? [];
-      if (sel.length === 0 && q.custom && (perC[i] ?? "").trim()) return [(perC[i] ?? "").trim()];
+      if (sel.length === 0 && q.custom !== false && (perC[i] ?? "").trim()) return [(perC[i] ?? "").trim()];
       return sel;
     });
     setQResponded((prev) => new Set(prev).add(requestID));
@@ -3266,7 +3271,7 @@ export default function ChatView({
               const perC = qCustom[qr.requestID] ?? {};
               const allAnswered = qr.questions.every(
                 (q, i) =>
-                  (perQ[i]?.length ?? 0) > 0 || (q.custom && (perC[i] ?? "").trim() !== ""),
+                  (perQ[i]?.length ?? 0) > 0 || (q.custom !== false && (perC[i] ?? "").trim() !== ""),
               );
               return (
                 <div key={qr.requestID} style={{ marginBottom: 12 }}>
@@ -3297,7 +3302,9 @@ export default function ChatView({
                             </span>
                           </label>
                         ))}
-                        {q.custom && (
+                        {/* eval-10: opencode's QuestionInfo.custom defaults to TRUE
+                            when absent — only an explicit false hides the box */}
+                        {q.custom !== false && (
                           <input
                             style={{ marginTop: 4 }}
                             placeholder={t("customAnswer")}

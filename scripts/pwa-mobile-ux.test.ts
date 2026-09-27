@@ -292,6 +292,35 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
     "s1",
   );
   check("resolved line keeps the real label after a type-less reply event", replied[0]?.label === "bash", JSON.stringify(replied));
+  // opencode 1.18.32 wire shapes, read from the binary's schema:
+  // PermissionRequest {id, sessionID, permission, patterns, metadata, always,
+  // tool?: {messageID, callID}} and permission.replied {sessionID, requestID,
+  // reply} — no `type` anywhere, so every event-derived card read "action"
+  // (eval-12: 370 production auto-approvals logged action "action")
+  const real = collectPermissionAsks(
+    [
+      {
+        type: "permission.asked",
+        properties: { id: "per_1", sessionID: "s1", permission: "bash", patterns: ["rm -rf build"], metadata: {}, always: [], tool: { messageID: "msg_1", callID: "c1" } },
+      },
+      { type: "ocr.permission.auto", properties: { sessionID: "s1", permissionID: "per_1", action: "action" } },
+      { type: "permission.replied", properties: { sessionID: "s1", requestID: "per_1", reply: "once" } },
+    ],
+    "s1",
+  );
+  check(
+    "opencode 1.18 permission.asked: the tool name comes from `permission`",
+    real.length === 1 && real[0]?.label === "bash",
+    JSON.stringify(real),
+  );
+  check("opencode 1.18 permission.asked: messageID comes from tool.messageID (diff scoping)", real[0]?.messageID === "msg_1");
+  check("opencode 1.18 permission.asked: preview comes from patterns", real[0]?.preview === "rm -rf build");
+  check("the daemon's \"action\" fallback never overwrites a real tool name", real[0]?.label === "bash");
+  check(
+    "opencode's trailing permission.replied keeps the AutoMode origin (resolved line says auto-approved)",
+    real[0]?.auto === true && reconcilePermissionCards(real, [], new Set(), true).resolved[0]?.origin === "auto",
+    JSON.stringify(real),
+  );
 
   const resync = chatSrc.slice(chatSrc.indexOf("P1-061 stream resync"), chatSrc.indexOf("P1-061 stream resync") + 2_400);
   check(
@@ -340,6 +369,7 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
   check(
     "label-less permission fallback is localized (never a bare English \"action\" in pt)",
     translate("pt", "permGenericAction") === "ação" &&
+      chatSrc.includes('t("autoApproved", { action: permLabel(askLabel(p.permissionID, p.action)) })') &&
       chatSrc.includes("permLabel(r.label)") &&
       chatSrc.includes("permLabel(p.label)") &&
       !chatSrc.includes('p.action ?? "action"'),
@@ -358,6 +388,12 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
     /\.q-opt input\[type="radio"\],\s*\.q-opt input\[type="checkbox"\] \{[^}]*width: 20px/.test(css),
   );
   check("ChatView: options render as .q-opt labels", chatSrc.includes('<label key={o.label} className="q-opt">'));
+  // opencode 1.18 QuestionInfo: `custom` is optional with default TRUE — an
+  // absent field must still offer the free-text answer
+  check(
+    "question card: the custom answer box follows opencode's default (custom !== false)",
+    (chatSrc.match(/q\.custom !== false/g) ?? []).length === 3 && !/q\.custom &&/.test(chatSrc),
+  );
   check(
     "CSS: the rewind chip gets a 44px-tall invisible hit area",
     chatSrc.includes('className="muted msg-rewind"') && /\.msg-rewind::before \{[^}]*inset: -11px -4px/.test(css),
