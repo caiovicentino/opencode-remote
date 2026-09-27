@@ -66,6 +66,18 @@ export const ALIAS_OF_ASSET = "update-mac-arm64.json";
  * even on a slow link, and a hung `gh` must never wedge the operator. */
 export const GH_TIMEOUT_MS = 120_000;
 
+/**
+ * eval-16: the argv of the feed download. `gh release download` takes at most
+ * ONE positional argument (the tag) — asset names must each ride a
+ * `--pattern`. The P3-460 shape (`download <tag> <asset> <asset>…`) made gh
+ * 2.86 exit 1 with "accepts at most 1 arg(s), received 5" on every run, so
+ * the documented suspension command never reached a single feed. Exported so
+ * the test battery pins the shape the real CLI accepts.
+ */
+export function ghDownloadArgs(tag, dir) {
+  return ["release", "download", tag, ...ROLLOUT_FEED_ASSETS.flatMap((name) => ["--pattern", name]), "--dir", dir];
+}
+
 const USAGE =
   "usage: node apps/desktop/scripts/rollout.mjs <tag> <percent>\n" +
   "       e.g. node apps/desktop/scripts/rollout.mjs v0.3.0 40   (gradual rollout 40%)\n" +
@@ -142,7 +154,7 @@ function main() {
   };
   try {
     // 1. download ONLY the four feeds (never the installers) into the temp dir.
-    const download = runGh(["release", "download", cleanTag, ...ROLLOUT_FEED_ASSETS, "--dir", dir], problems, "release download");
+    const download = runGh(ghDownloadArgs(cleanTag, dir), problems, "release download");
     if (!download) {
       failOut("rollout: nothing was uploaded — the release is untouched");
       process.exitCode = 1;

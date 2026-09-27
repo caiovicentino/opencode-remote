@@ -22648,12 +22648,17 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // intent is that the draft only flips public after the CLI verdict.
   const editAt = publishJob.indexOf("--draft=false");
   const pinAt = publishJob.indexOf("Formula/opencode-remote.rb");
+  // eval-16: the pin is attached to the release as an asset (sha256 from the
+  // downloaded tarball) and never pushed to main — branch protection and
+  // P1-076 reject that push, so it now runs before the publish verdict.
   check(
-    "P2-179: the unpublish edit runs after the CLI verdict, and the Formula pin (sha256 from the downloaded tarball) after publication",
+    "P2-179: the unpublish edit runs after the CLI verdict, and the Formula pin (sha256 from the downloaded tarball) is attached as an asset, never pushed",
     editAt > cliAt &&
-      pinAt > editAt &&
+      pinAt > -1 &&
       publishJob.includes("gh release download") &&
-      publishJob.includes("shasum -a 256"),
+      publishJob.includes("shasum -a 256") &&
+      publishJob.includes("formula-pin/opencode-remote.rb --clobber") &&
+      !publishJob.includes("git push"),
   );
 }
 
