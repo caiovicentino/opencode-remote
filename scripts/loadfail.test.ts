@@ -102,7 +102,9 @@ const rec = (code = -6, description = "ERR_FILE_NOT_FOUND", address = "file:///A
   const failAt = src.indexOf('win.webContents.on("did-fail-load"');
   const finishAt = src.indexOf('win.webContents.on("did-finish-load"');
   check("wiring: the listener is bound to the main window's webContents", failAt >= 0);
-  check("wiring: the counter resets on every successful load", finishAt > failAt && src.slice(finishAt, finishAt + 200).includes("loadFailAttempts = 0"));
+  // eval-11: the window grew to fit the error-page guard (scripts/loadwatch.test.ts)
+  // that must run before the reset.
+  check("wiring: the counter resets on every successful load", finishAt > failAt && src.slice(finishAt, finishAt + 700).includes("loadFailAttempts = 0"));
   check("wiring: the retry reloads through the same webContents.reload() path", src.slice(failAt, src.indexOf("loadUi(win)", failAt)).includes("win.webContents.reload()"));
   const lines = src.split("\n").filter((l) => l.includes("loadFail") || l.includes("load watch") || l.includes("did-fail-load"));
   check("wiring: no periodic timer in the load-fail lines", lines.every((l) => !l.includes("setInterval")));

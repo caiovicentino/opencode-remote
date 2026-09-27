@@ -315,6 +315,22 @@ elsewhere inside the 8792–8796 span — like before the fallback existed. If
 that port is busy, the child dies with the familiar "address in use" error
 and the P2-140 diagnosis explains it; no other port is ever picked.
 
+**One daemon per identity (eval-11).** On a Mac where `deploy/install.sh`
+installed the launchd daemon (`~/Library/LaunchAgents/com.ocr.daemon.plist`),
+the app no longer starts a second daemon just because the launchd one has not
+bound :8792 yet — the login race that used to split one identity across two
+daemons (the launchd one on the real relay but without its API, the app's own
+on the loopback relay, so the pairing QR pointed the phone at itself). At boot
+the app waits up to 30s for the managed daemon to answer and adopts it the
+moment it does (`[desktop] managed daemon: …` then `daemon port 8792 (reused)`);
+only when it never answers does the app start its own
+(`managed daemon did not answer within 30s — starting the app's own daemon`).
+The wait never applies to Windows/Linux, to a custom
+`OCR_DAEMON_METRICS_PORT`, or to harness sessions. A fresh install needs no
+outside help either: the app's first health probe is what makes a new daemon
+mint its `apiToken`, so the app adopts or confirms it within a second or two
+instead of waiting out the 30s health timeout and reporting it as down.
+
 ## Pointing the desktop app at a hosted relay (P2-187)
 
 The local relay (`ws://127.0.0.1:8787`) only serves the machine running the

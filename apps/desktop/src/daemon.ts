@@ -15,6 +15,7 @@ import { planSidecarWedge, type SidecarWedgeVerdict } from "./sidecarwedge";
 import { sanitizeRelayProtocolState, type RelayLinkFacts } from "./relaylink";
 import { candidatePorts, pickDaemonPort, type DaemonPortReason } from "./daemonport";
 import { DEFAULT_RELAY_URL } from "./relaysetting";
+import { MANAGED_DAEMON_POLL_MS, managedDaemonPlan, managedDaemonPlistPath } from "./manageddaemon";
 
 // Single source of truth for the daemon API port: the desktop polls the exact
 // port the spawned child binds. OCR_DAEMON_METRICS_PORT is the desktop-facing
@@ -84,7 +85,9 @@ async function resolveDaemonPortOnce(): Promise<void> {
     // the walk stops at the first free port — so restricting the probe to the
     // preferred port would buy nothing against a deliberate mimic (same-user
     // processes can read the 0600 state file anyway) while regressing adoption.
-    (p) => healthOnce(p, sidecar.token),
+    // eval-11: provesIdentity also adopts a daemon whose token did not exist
+    // yet (minted on the identity probe's own nudge).
+    (p) => provesIdentity(p),
   );
   resolvedPort = pick.port;
   resolvedReason = pick.reason;
@@ -269,7 +272,8 @@ export function readDaemonState(): { apiToken?: string; room?: string; ecdhPub?:
  */
 export async function healthOnce(port: number, token: string | null): Promise<boolean> {
   // No token, no identity check: a bare 200 proves nothing about who answers.
-  // Callers keep polling until the 0600 state file yields one.
+  // Callers keep polling until the 0600 state file yields one (a fresh
+  // identity gets it through nudgeTokenMint below).
   if (token === null) return false;
   const url = `http://127.0.0.1:${port}/api/health`;
   try {
@@ -286,6 +290,93 @@ export async function healthOnce(port: number, token: string | null): Promise<bo
   } catch {
     return false;
   }
+}
+
+/**
+ * eval-11: the daemon mints its apiToken lazily, on its first /api request
+ * (authorized() → apiToken() in apps/daemon/src/index.ts). healthOnce never
+ * sends anything without a token, so nothing ever asked a fresh daemon
+ * anything: measured on the real shell + bundled daemon with a fresh HOME, the
+ * first window waited out the whole HEALTH_TIMEOUT_MS (30.9s) and the shell
+ * then reported its own healthy sidecar as down forever (the token never
+ * appeared). This ONE unauthenticated GET — no credential rides it — is the
+ * nudge that makes the token appear in the 0600 state file. It is sent only
+ * while that file already holds a daemon identity (room) without a token:
+ * a state with no identity (the harness's "{}" state, a machine that never
+ * ran a daemon) has no daemon to nudge, so no request leaves the shell.
+ */
+async function nudgeTokenMint(port: number): Promise<void> {
+  const state = readDaemonState();
+  if (!state || typeof state.room !== "string" || typeof state.apiToken === "string") return;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    await res.body?.cancel();
+  } catch {
+    /* nobody answering yet — the caller keeps polling */
+  }
+}
+
+/**
+ * Identity proof for the adoption decisions (eval-11): the authenticated
+ * health check with the shell's token — and, when the shell had no token yet,
+ * the mint nudge plus ONE re-read of the 0600 state file. Without it, a live
+ * daemon with a fresh identity (a launchd install nobody queried yet, a
+ * sidecar orphaned by a crash before its first poll) could never be adopted
+ * and the walk shadowed it with a second daemon on the SAME identity. The
+ * token still only ever reaches a responder that reproduced the daemon's 401
+ * challenge first (healthOnce).
+ */
+async function provesIdentity(port: number): Promise<boolean> {
+  if (await healthOnce(port, sidecar.token)) return true;
+  if (sidecar.token !== null) return false;
+  await nudgeTokenMint(port);
+  const minted = readApiToken();
+  if (minted === null) return false;
+  sidecar.token = minted;
+  return healthOnce(port, minted);
+}
+
+/**
+ * eval-11: poll the managed daemon's port until it proves its identity or the
+ * grace runs out (manageddaemon.ts decides whether to wait at all). Every
+ * probe goes through provesIdentity, so a managed daemon with a fresh identity
+ * mints its token on the first nudge and is adopted on the same probe.
+ * Exported for scripts/sidecar-adoption.test.ts (late-binding fake daemon).
+ */
+export async function awaitManagedDaemon(port: number, graceMs: number): Promise<boolean> {
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (await provesIdentity(port)) return true;
+    await new Promise((r) => setTimeout(r, MANAGED_DAEMON_POLL_MS));
+  }
+  return false;
+}
+
+/**
+ * eval-11: consult the pure plan (manageddaemon.ts) with the real facts and,
+ * when it says wait, give the launchd-managed daemon its grace. On success
+ * the managed port becomes the session's port (logged like the walk's own
+ * verdict) and the caller adopts; otherwise the caller starts its own daemon,
+ * with the reason in the log. Used by the boot and by restartDaemon.
+ */
+async function adoptManagedDaemonWithinGrace(): Promise<boolean> {
+  const managed = managedDaemonPlan({
+    platform: process.platform,
+    harnessSession: !!process.env.OCR_DESKTOP_SESSION,
+    stateFileOverride: process.env.OCR_DAEMON_STATE_FILE !== undefined,
+    preferredPort: DAEMON_METRICS_PORT,
+    plistInstalled: existsSync(managedDaemonPlistPath(homedir())),
+  });
+  if (managed.action !== "wait") return false;
+  log(`[desktop] managed daemon: ${managed.reason}`);
+  if (await awaitManagedDaemon(DAEMON_METRICS_PORT, managed.graceMs)) {
+    resolvedPort = DAEMON_METRICS_PORT;
+    resolvedReason = "reused";
+    log(`[desktop] daemon port ${resolvedPort} (reused) — managed daemon answered within the grace`);
+    return true;
+  }
+  log(`[desktop] managed daemon did not answer within ${Math.round(managed.graceMs / 1000)}s — starting the app's own daemon`);
+  return false;
 }
 
 export interface HealthWaitOptions {
@@ -431,9 +522,13 @@ export async function waitForDaemonHealth(opts: HealthWaitOptions = {}): Promise
   while (Date.now() < deadline) {
     // The child we spawned is gone — no point waiting out the full timeout.
     if (sidecar.spawned && sidecar.exited) return false;
-    // Fresh install: the daemon generates its first token on the very poll
-    // below, so keep re-reading while we have none (memoized once found).
-    if (token === null) token = readApiToken();
+    // Fresh install: the daemon generates its first token on its first /api
+    // request, so nudge it (eval-11: nothing else ever asks) and keep
+    // re-reading while we have none (memoized once found).
+    if (token === null) {
+      await nudgeTokenMint(port);
+      token = readApiToken();
+    }
     if (await healthOnce(port, token)) {
       // P2-321: our own child proved healthy — start (or keep) watching it for
       // a wedge. Adopted daemons (spawned=false) stay with the reconnect watchdog.
@@ -459,8 +554,12 @@ export function getPairUrl(): string | null {
   // the pairing URI at boot. Recover it from the daemon log (same machine).
   try {
     const log = readFileSync(join(homedir(), ".opencode-remote", "logs", "daemon.log"), "utf8");
-    const m = log.match(PAIR_URL_RE);
-    return m ? m[0] : null;
+    // eval-11: the LAST URI printed is the running daemon's — the log keeps
+    // every boot of the day, and an earlier boot may carry an older relay
+    // address (the operator's rotated log held loopback-relay URIs from
+    // boots before the plist had RELAY_URL).
+    const all = log.match(new RegExp(PAIR_URL_RE.source, "g"));
+    return all?.[all.length - 1] ?? null;
   } catch {
     return null;
   }
@@ -514,8 +613,9 @@ export async function startDaemonSidecar(
   // post-spawn health wait — no TOCTOU on a token rotated between the two.
   sidecar.token = readApiToken();
   // P2-143: pick the port once, before any adoption/spawn decision. With a
-  // null token the healthOnce injection always answers false (no identity
-  // proof, no adoption), so the walk degrades to preferred/fallback/none.
+  // null token the identity probe adopts only a daemon whose mint nudge put a
+  // token into the state file (provesIdentity); anything else is no proof, so
+  // the walk degrades to preferred/fallback/none.
   const firstResolution = resolvedPort === null;
   await resolveDaemonPortOnce();
   const port = activeDaemonPort();
@@ -523,11 +623,18 @@ export async function startDaemonSidecar(
   // the authenticated probe (a "reused" verdict IS the proof); an anonymous
   // squatter can never adopt. Later calls re-probe on the resolved port —
   // the state file/responder may have changed under us — same as pre-P2-143.
-  const reuse =
+  let reuse =
     (firstResolution && resolvedReason === "reused") ||
-    (!firstResolution && sidecar.token !== null && (await healthOnce(port, sidecar.token)));
+    (!firstResolution && (await provesIdentity(port)));
+  // eval-11: nobody answered — but a launchd-managed daemon installed for this
+  // identity may simply not have bound its port YET (the login race measured
+  // on 14/09, 15/09, 17/09 and 20/09: the app's sidecar grabbed :8792 10–19s
+  // before launchd's daemon, which then ran with no API while the app's own
+  // daemon dialed the default loopback relay). The pure plan decides whether
+  // that daemon gets a bounded grace before a second daemon is started.
+  if (!reuse && firstResolution) reuse = await adoptManagedDaemonWithinGrace();
   if (reuse) {
-    log(`[desktop] daemon already running on :${port} — reusing it`);
+    log(`[desktop] daemon already running on :${activeDaemonPort()} — reusing it`);
     sidecar.reused = true; // enables the daemon.log pair-URI fallback
     // P1-053: an adopted daemon is not our child — track its health forever
     // instead of relying on the (hosted-only) respawn budget.
@@ -1123,6 +1230,16 @@ export async function restartDaemon(): Promise<boolean> {
       sidecar.reused = true;
       // Adopted again → re-arm the infinite reconnect watchdog (P1-053) and
       // stand the wedge prober down (P2-321: not our child anymore).
+      disarmWedgeProbe();
+      startReconnectWatchdog();
+      return true;
+    }
+    // eval-11: the same rule as the boot — a launchd-managed daemon that
+    // KeepAlive is bringing back (ThrottleInterval 10s) gets the grace
+    // before a click on "Restart daemon" / "Reconectar agora" starts a second
+    // daemon on its identity.
+    if (await adoptManagedDaemonWithinGrace()) {
+      sidecar.reused = true;
       disarmWedgeProbe();
       startReconnectWatchdog();
       return true;
