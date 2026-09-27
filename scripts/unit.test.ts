@@ -24172,15 +24172,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // a backlog without ## Ready is tolerated (empty report, no throw)
   check("P2-341: a backlog without ## Ready is tolerated (empty report, no throw)", JSON.stringify(readyOrphanBlocks("# B\n\n## Done\n- [x] (P2-001) [P2] Old — done\n")) === JSON.stringify({ count: 0, starts: [] }));
 
-  // the REAL BACKLOG.md of this repo: the rot is real and gets flagged
+  // the REAL BACKLOG.md of this repo: this check used to PIN the rot
+  // (count > 0), which made cleaning the backlog a red battery — eval-06
+  // removed the debris and the check now guards the clean queue instead
+  // (line-level guard: scripts/backlog-integrity.test.ts)
   const realBacklog = readFileSync(join(import.meta.dirname, "..", "BACKLOG.md"), "utf8");
   const realScan = readyOrphanBlocks(realBacklog);
-  check(
-    "P2-341: the real BACKLOG.md of this repo reports orphan blocks",
-    realScan.count > 0 && realScan.starts.length === realScan.count && realScan.starts.every((n, i) => Number.isInteger(n) && n > 0 && (i === 0 || n > realScan.starts[i - 1]!)),
-  );
-  const realLines = realBacklog.split("\n");
-  check("P2-341: every reported orphan start line fails the same validator on the real file", realScan.starts.every((n) => !isValidTaskLine((realLines[n - 1] ?? "").trim())));
+  check("P2-341: the real BACKLOG.md of this repo reports zero orphan blocks", realScan.count === 0 && realScan.starts.length === 0, JSON.stringify(realScan));
 
   // index.ts wiring: runDoctorPass calls the scanner and the block TEXT never
   // reaches the log — only the count and the start lines, deduped by count
