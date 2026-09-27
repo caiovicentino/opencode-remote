@@ -700,6 +700,42 @@ if (!WIN) {
   console.log("OK  read-only boot (skipped on Windows: POSIX modes)");
 }
 
+// ─── PWA origin (deploy/pwa-server.mjs): hardening headers on every answer ──
+{
+  const dist = join(scratch, "dist");
+  mkdirSync(join(dist, "assets"), { recursive: true });
+  writeFileSync(join(dist, "index.html"), "<html>ocr-pwa</html>");
+  writeFileSync(join(dist, "assets", "app-B3iKfWlp.js"), "console.log(1)");
+  const pwaPort = await freePort();
+  const pwa = spawn(process.execPath, [join(REPO, "deploy", "pwa-server.mjs")], {
+    env: { ...process.env, PWA_PORT: String(pwaPort), PWA_DIST_DIR: dist, PWA_HOST: "127.0.0.1" },
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  const base = `http://127.0.0.1:${pwaPort}`;
+  let up = false;
+  for (let i = 0; i < 50 && !up; i++) {
+    up = await fetch(`${base}/healthz`).then((r) => r.ok).catch(() => false);
+    if (!up) await sleep(100);
+  }
+  check("pwa-server: up on an ephemeral port", up);
+  const hardened = (r: Response) =>
+    r.headers.get("x-content-type-options") === "nosniff" &&
+    r.headers.get("x-frame-options") === "DENY" &&
+    r.headers.get("referrer-policy") === "no-referrer";
+  const answers: Array<[string, Response]> = [
+    ["GET / (the shell)", await fetch(`${base}/`)],
+    ["HEAD /", await fetch(`${base}/`, { method: "HEAD" })],
+    ["hashed asset", await fetch(`${base}/assets/app-B3iKfWlp.js`)],
+    ["/healthz", await fetch(`${base}/healthz`)],
+    ["404", await fetch(`${base}/nope`)],
+    ["405", await fetch(`${base}/`, { method: "POST" })],
+  ];
+  for (const [what, r] of answers) check(`pwa-server: ${what} carries nosniff + DENY framing + no-referrer`, hardened(r), `status=${r.status}`);
+  check("pwa-server: no CSP (a srcdoc artifact would inherit it)", answers.every(([, r]) => r.headers.get("content-security-policy") === null));
+  check("pwa-server: caching contract unchanged", answers[0]![1].headers.get("cache-control") === "no-cache" && (answers[2]![1].headers.get("cache-control") ?? "").includes("immutable"));
+  pwa.kill("SIGTERM");
+}
+
 for (const res of sse) res.end();
 fake.closeAllConnections();
 fake.close();
