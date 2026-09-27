@@ -194,6 +194,24 @@ identity servers, no accounts.
 - Malicious image attachments are downscaled and re-encoded by the browser
   canvas before reaching the daemon; session history is rendered as text
   with sandboxed iframes for HTML previews.
+- PDF previews (artifact viewer, file card) render in an iframe WITHOUT a
+  `sandbox` attribute on purpose (eval-12): Chromium refuses to run its PDF
+  viewer inside any sandboxed frame — the old `allow-same-origin` frame
+  rendered a blank pane on the desktop (Electron 44, `ERR_BLOCKED_BY_CLIENT`)
+  and a blocked page in Chrome. The containment is the blob type instead: the
+  client pins it to exactly `application/pdf` from the same kind that picks
+  the frame (never from a declared MIME), so the frame can only ever host the
+  browser's out-of-process PDF viewer — measured: an HTML payload inside such
+  a blob never executes in the app's origin.
+- Any local process could stop the daemon without a token (eval-12): its
+  loopback HTTP listener is async, and one malformed request line (`GET //[`
+  makes `new URL()` throw) or a throwing route (an unreadable state file under
+  the Bearer check) became an unhandled rejection that killed the process.
+  Unparseable targets now answer `400`, every other throw is contained per
+  request (`500`, error name only, `ocr_api_handler_errors_total`), and a
+  failing stdout/stderr (disk full, closed pipe) is absorbed and counted in
+  `ocr_log_write_errors_total` instead of crashing on an unhandled `'error'`
+  event.
 - The daemon executes whatever opencode's permission system allows. The
   remote adds a biometric gate on top — approvals should still be read:
   the approval card previews the first lines of the requested

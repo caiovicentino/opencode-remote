@@ -46,7 +46,19 @@ import {
 } from "./handoff.js";
 import { allowedUpstreamPath, relativePathVerdict } from "./pathguard.js";
 import { IdempotencyCache } from "./idempotency.js";
+import {
+  AUTO_APPROVE_FAILED_EVENT,
+  AUTO_APPROVED_EVENT,
+  AutoFailLedger,
+  approveAttemptVerdict,
+  autoFailPush,
+  notFoundOutcome,
+  permissionEventFacts,
+  PERMISSION_LABEL_FALLBACK,
+  type AutoFailEntry,
+} from "./automode.js";
 import { writeStateAtomic } from "./statefile.js";
+import { crashSummary } from "./crashsummary.js";
 import { pushSubscriptionVerdict, redactPushEndpoint } from "./pushsubs.js";
 import { identityVerdict, quarantineName } from "./identityfile.js";
 import {
@@ -484,8 +496,12 @@ async function loadIdentity(): Promise<DaemonIdentity> {
   }
 
   // P2-165: atomic write — the identity must survive a power loss mid-write.
+  // eval-12: only when this boot changed it (first run, v1→v2 migration). An
+  // unchanged file needs no write — every writer serializes the same way —
+  // and on a full disk the unconditional rewrite made each launchd restart
+  // die with "fatal ENOSPC" before serving a single read (prod 04/09, 08/09).
   const serialized = JSON.stringify(raw, null, 2);
-  writeStateAtomic(STATE_FILE, serialized);
+  if (serialized !== content) writeStateAtomic(STATE_FILE, serialized);
   assertPrivateMode(STATE_FILE);
   persistIdentityBackup(serialized);
 
@@ -3368,6 +3384,7 @@ async function autoApprove(sessionID: string, permissionID: string, action: stri
   for (let attempt = 1; attempt <= 2; attempt++) {
     // P1-093: keep the gate fast — one retry after ~500ms, nothing longer
     if (attempt > 1) await new Promise((r) => setTimeout(r, 500));
+    let status: number | null = null;
     try {
       const res = await fetch(
         new URL(`/session/${sessionID}/permissions/${permissionID}`, OPENCODE_URL),
@@ -3380,17 +3397,21 @@ async function autoApprove(sessionID: string, permissionID: string, action: stri
           body: JSON.stringify({ response: "once" }),
         },
       );
-      if (!res.ok) {
-        lastError = `HTTP ${res.status}`;
-        continue;
-      }
+      status = res.status;
+      if (!res.ok) lastError = `HTTP ${res.status}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+    const verdict = approveAttemptVerdict(status);
+    if (verdict === "approved") {
+      autoFailLedger.clear(permissionID);
       log("info", "permission auto-approved", { sessionID, permissionID, action, attempt });
       audit("permission.auto", { sessionID, permissionID, action });
       broadcast({
         type: "event",
         event: {
           id: randomUUID(),
-          type: "ocr.permission.auto",
+          type: AUTO_APPROVED_EVENT,
           properties: { sessionID, permissionID, action },
         },
       });
@@ -3400,21 +3421,77 @@ async function autoApprove(sessionID: string, permissionID: string, action: stri
         });
       }
       return;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+    }
+    if (verdict === "not-found") {
+      // eval-12: 404 = no longer pending here. Answered elsewhere → nothing
+      // to alarm about; still listed → the approve route itself is broken,
+      // and repeating the same POST cannot help.
+      if (notFoundOutcome(await pendingPermissions(), permissionID) === "resolved-elsewhere") {
+        log("info", "auto-approve skipped — ask already resolved", { sessionID, permissionID, action });
+        return;
+      }
+      break;
     }
   }
   autoApproved.delete(permissionID);
   log("warn", "auto-approve failed after retry", { sessionID, permissionID, action, error: lastError });
   audit("permission.auto.failed", { sessionID, permissionID, action, error: lastError });
-  broadcast({
+  const failure: AutoFailEntry = { sessionID, permissionID, action, error: lastError, at: Date.now() };
+  autoFailLedger.record(failure);
+  broadcast(autoFailedEnvelope(failure, false));
+  // eval-12: the owner turned AutoMode on because they are away — a live
+  // broadcast alone reached nobody. Degrade to the manual path's push.
+  if (appSettings.notify.permission) {
+    const push = autoFailPush(action, machineName);
+    void pushToSubscribers(push.title, push.body, { url: `#/session/${sessionID}` });
+  }
+}
+
+// eval-12: AutoMode failures still pending, replayed once to every client
+// after its handshake (see replayAutoFailures) until opencode reports the
+// reply — a phone asleep during the broadcast must still get a manual card.
+const autoFailLedger = new AutoFailLedger();
+// Sessions whose replay is due on their first sealed op: the client seals
+// only after it processed the handshake confirm, so the replay can never race
+// the confirm (an early sealed frame would be dropped as a non-confirm).
+const autoFailReplayDue = new WeakSet<ClientSession>();
+
+function autoFailedEnvelope(e: AutoFailEntry, replayed: boolean): DaemonEnvelope {
+  return {
     type: "event",
     event: {
       id: randomUUID(),
-      type: "ocr.permission.autoFailed",
-      properties: { sessionID, permissionID, action, error: lastError },
+      type: AUTO_APPROVE_FAILED_EVENT,
+      properties: {
+        sessionID: e.sessionID,
+        permissionID: e.permissionID,
+        action: e.action,
+        error: e.error,
+        ...(replayed ? { replayed: true } : {}),
+      },
     },
-  });
+  };
+}
+
+/** opencode's pending asks (`GET /permission` rows), or null when unreadable. */
+async function pendingPermissions(): Promise<unknown> {
+  try {
+    const res = await fetch(new URL("/permission", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+      signal: AbortSignal.timeout(5_000),
+    });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function replayAutoFailures(session: ClientSession): Promise<void> {
+  if (autoFailLedger.size === 0) return;
+  // asks answered while nobody listened are dropped first; an unreadable
+  // list keeps everything (fail-closed toward a visible card)
+  autoFailLedger.retainPending(await pendingPermissions());
+  for (const e of autoFailLedger.live(Date.now())) await sendToSession(session, autoFailedEnvelope(e, true));
 }
 
 async function forwardEvents() {
@@ -3455,21 +3532,20 @@ async function forwardEvents() {
             if (!evt.type || evt.type === "server.connected") continue;
 
             // notable events become push notifications
-            const t = evt.type.toLowerCase();
             const sessionID = ((evt.properties ?? {}) as { sessionID?: string }).sessionID ?? "";
-            const permProps = (evt.properties ?? {}) as {
-              type?: string;
-              id?: string;
-              permissionID?: string;
-            };
-            const permId = permProps.permissionID ?? permProps.id ?? "";
-            const isAsk = t.includes("permission") && !t.includes("response") && !t.includes("revoke");
-            if (isAsk && sessionID && permId && appSettings.autoMode) {
-              void autoApprove(sessionID, permId, permProps.type ?? "action");
-            } else if (t.includes("permission") && appSettings.notify.permission) {
+            // eval-12: pure classification (automode.ts). A reply
+            // (`permission.replied`) is never an ask — it used to push a
+            // second "Approve needed" after every answer — and it resolves a
+            // recorded AutoMode failure.
+            const perm = permissionEventFacts(evt.type, evt.properties);
+            if (perm.kind === "reply") {
+              if (perm.permissionID) autoFailLedger.clear(perm.permissionID);
+            } else if (perm.kind === "ask" && sessionID && perm.permissionID && appSettings.autoMode) {
+              void autoApprove(sessionID, perm.permissionID, perm.label);
+            } else if (perm.kind === "ask" && appSettings.notify.permission) {
               void pushToSubscribers(
                 "Approve needed",
-                `opencode wants to ${permProps.type ?? "perform an action"} on ${machineName}`,
+                `opencode wants to ${perm.label === PERMISSION_LABEL_FALLBACK ? "perform an action" : perm.label} on ${machineName}`,
                 {
                   url: sessionID ? `#/session/${sessionID}` : "#/",
                   evt,
@@ -3631,6 +3707,9 @@ async function handleSealedFrame(frame: RelayFrame & { seq: number }, ws: WebSoc
   }
   session.lastSeq = seq;
   session.lastSeen = Date.now();
+  // eval-12: first op of this handshake — pending AutoMode failures ride
+  // to this client once (autoFailReplayDue explains why not at confirm).
+  if (autoFailReplayDue.delete(session)) void replayAutoFailures(session).catch(() => {});
   metrics.inc("ocr_ops_total");
   await proxy(envelope.req, frame.from)
     .then((res) => {
@@ -3842,6 +3921,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         lastSeen: Date.now(),
         local: localSockets.has(ws),
       });
+      autoFailReplayDue.add(sessions.get(frame.from)!);
       log("info", "client paired", {
         fp: pubFingerprint(accepted.clientPub),
         activeSessions: sessions.size,
@@ -3977,6 +4057,20 @@ const { shutdown, isShuttingDown } = createShutdown({
 });
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
+// eval-12: a stray exception or rejection still ends the daemon (relay
+// P2-351 policy: a supervisor restart beats half-updated state), but as one
+// structured line + the SIGTERM drain (clients get close 1001) + exit 1 —
+// not a raw stack without timestamp. Known benign classes are contained
+// before this: stdio write errors (stdioguard.ts), a throwing HTTP route
+// (metrics.ts backstop) and a throwing frame handler (onSocketMessage).
+process.on("uncaughtException", (err: unknown) => {
+  log("error", "daemon crash", crashSummary("uncaughtException", err));
+  void shutdown("uncaughtException", 1);
+});
+process.on("unhandledRejection", (reason: unknown) => {
+  log("error", "daemon crash", crashSummary("unhandledRejection", reason));
+  void shutdown("unhandledRejection", 1);
+});
 // P2-315: the desktop shell's stop request arrives over the spawn IPC channel
 // (a local socketpair/named pipe — no port, no network listener). Windows has
 // no real signals, so this is what makes the shell's quit graceful there:

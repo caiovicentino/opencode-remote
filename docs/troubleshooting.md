@@ -222,10 +222,22 @@ no-secrets path, same as ad-hoc on macOS).
 ```
 curl 127.0.0.1:8787/healthz            # relay, public (safe for LB health checks): {ok,version,uptimeS,rooms,roomsRejected}
 curl 127.0.0.1:5173/healthz            # PWA origin (com.ocr.pwa, loopback only): {ok,service}
+curl 127.0.0.1:8792/healthz            # daemon liveness, unauthenticated, loopback only: {ok,service}
 curl 127.0.0.1:8792/metrics            # daemon, localhost only, JSON
 curl '127.0.0.1:8792/metrics?format=prom'
 curl 127.0.0.1:8790/metrics            # relay, localhost only, same contract
 ```
+
+The daemon's rich health (`/api/health`) needs the Bearer token; any other
+unknown path — `/health` included — answers an empty `404`. Two daemon
+counters on `/metrics` flag trouble that no longer takes the process down
+(eval-12): `ocr_api_handler_errors_total` (a loopback request whose handler
+threw — answered `500`, logged with the error name only) and
+`ocr_log_write_errors_total` (a stdout/stderr write that failed — disk full,
+closed pipe — absorbed instead of an `Unhandled 'error' event` crash). A
+genuinely fatal exception still exits the daemon (exit code `1`, restarted by
+launchd/the desktop shell) but first writes one `daemon crash` line with the
+error name and first stack frame, and drains its sockets like `SIGTERM`.
 
 ## Document → PDF conversion unavailable (P2-231)
 
