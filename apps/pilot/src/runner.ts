@@ -156,10 +156,14 @@ export function logLineStripper(): { push: (chunk: string) => string; flush: () 
 /**
  * eval-18: the `created` log line of a ROOT session. A subagent's line
  * carries `parentID=ses_…` and never matches, so the first hit is the run's
- * own session — authoritative, unlike a `ses_…` seen on stdout: opencode
- * prints tool OUTPUT to stdout, and an agent that greps a test fixture
- * (`ses_abc123456`) or a reviewer quoting one used to become that "session"
- * (4 fixture ids sat in state.taskCostSessions, 2026-09-24).
+ * own session — authoritative, unlike a `ses_…` seen on stdout: an agent that
+ * greps a test fixture (`ses_abc123456`) or a reviewer quoting one used to
+ * become that "session" (4 fixture ids sat in state.taskCostSessions,
+ * 2026-09-24). Premise is ORDERING, not stream purity: opencode 1.18.32's UI
+ * module writes log lines (and tool output) to stderr, and the root session's
+ * `created` line is emitted BEFORE the first tool runs — so the first match is
+ * the run's own session (verified over the 224 builder logs: 144 with exactly
+ * one root line, 80 resumes with none, none with two).
  */
 const ROOT_CREATED_RE = /^timestamp=\S+ level=[A-Z]+ .*\bmessage=created id=(ses_[A-Za-z0-9]+) .*\bparentID=undefined\b/;
 
@@ -340,9 +344,10 @@ export async function runAgent(
     const errScan = idScanner();
     const errStrip = stripLogs ? logLineStripper() : null;
     // eval-18: with --print-logs the root `created` line is the authority;
-    // a resumed run (-s) IS that session. Only without either does the
-    // legacy stdout-first scan decide.
-    const rootScan = opts.printLogs || opts.sessionCapture ? rootSessionScanner() : null;
+    // a resumed run (-s) IS that session — the scanner has nothing to add, so
+    // it is skipped entirely (its whole stderr sweep would be discarded).
+    // Only without either does the legacy stdout-first scan decide.
+    const rootScan = !opts.sessionId && (opts.printLogs || opts.sessionCapture) ? rootSessionScanner() : null;
     const sessionOf = (scanned: string | undefined) => opts.sessionId ?? rootScan?.id() ?? scanned;
     // P1-035: the self-watchdog must be fed even when the agent stays silent
     // on stdout (a slow strategist/researcher/redteam used to starve the

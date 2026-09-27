@@ -352,7 +352,12 @@ function foldTaskRows(
     const model = normalizeSessionModel(r.model);
     const cols = (perModel[model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     cols.input += r.tokens_input || 0;
-    // eval-18: reasoning is generated output — billed at the output rate
+    // eval-18: reasoning is generated output — billed at the output rate.
+    // Caveat: providers that ALREADY include reasoning inside tokens_output
+    // (AI SDK/OpenAI-style) would be counted twice. As of 2026-09-27 no
+    // session in the fleet reports tokens_reasoning alongside a
+    // tokens_output that already contains it (0/1014), so the fold is exact;
+    // revisit if a provider starts emitting both.
     cols.output += (r.tokens_output || 0) + (r.tokens_reasoning || 0);
     cols.cacheRead += r.tokens_cache_read || 0;
     cols.cacheWrite += r.tokens_cache_write || 0;

@@ -149,18 +149,24 @@ export function normalizePricingConfig(raw: unknown): PricingConfig | undefined 
   if (!finitePos(s.usdPerHour) || !finitePos(s.mtokPerHour)) return undefined;
   const w = tokenColsOr(s.weights, DEFAULT_COMPUTE_WEIGHTS)!;
   const perWeighted = s.usdPerHour / s.mtokPerHour; // USD per weighted MTok
+  // both inputs are finite and positive, but the QUOTIENT (and each weighted
+  // column) can still overflow to Infinity (e.g. usdPerHour: 1e308 with
+  // mtokPerHour: 1e-10) — and an Infinity rate used to be persisted as null
+  // taskUSD (verifier round 2). Derive, then refuse anything not finite.
+  const derived: TokenCols = {
+    input: w.input * perWeighted,
+    output: w.output * perWeighted,
+    cacheRead: w.cacheRead * perWeighted,
+    cacheWrite: w.cacheWrite * perWeighted,
+  };
+  if (!Object.values(derived).every(Number.isFinite)) return undefined;
   return {
     selfHosted: {
       models,
       basis: "gpuHour",
       usdPerHour: s.usdPerHour,
       mtokPerHour: s.mtokPerHour,
-      usdPerMTok: {
-        input: w.input * perWeighted,
-        output: w.output * perWeighted,
-        cacheRead: w.cacheRead * perWeighted,
-        cacheWrite: w.cacheWrite * perWeighted,
-      },
+      usdPerMTok: derived,
     },
   };
 }
@@ -244,6 +250,11 @@ export function taskCostUSD(perModel: Record<string, TokenCols>, pricing?: Prici
   let opsUSD = 0;
   let opsTokens = 0;
   const selfHosted = pricing?.selfHosted;
+  // accept BOTH id forms: bare ids from the DB (`normalizeSessionModel`) and
+  // the `provider/model` shape `opencode models` prints (used in mission.json)
+  // — matching raw strings only used to leave opsUSD silently at $0 (verifier
+  // round 2). The node serves by model id, so the suffix decides.
+  const selfHostedIds = selfHosted ? new Set(selfHosted.models.map((m) => m.slice(m.lastIndexOf("/") + 1))) : null;
   for (const [model, cols] of Object.entries(perModel ?? {})) {
     const c = cols ?? ({} as Partial<TokenCols>);
     const counted: TokenCols = {
@@ -254,7 +265,7 @@ export function taskCostUSD(perModel: Record<string, TokenCols>, pricing?: Prici
     };
     const colTotal = counted.input + counted.output + counted.cacheRead + counted.cacheWrite;
     tokens += colTotal;
-    if (selfHosted?.models.includes(model)) {
+    if (selfHostedIds?.has(model)) {
       opsUSD += priceCols(counted, selfHosted.usdPerMTok);
       opsTokens += colTotal;
     }

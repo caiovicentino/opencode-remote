@@ -1047,8 +1047,12 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
     `--print-logs` e remove as linhas de log do `output`, então os parsers
     leem exatamente o texto de antes. O id vem da linha `message=created …
     parentID=undefined` (sessão raiz) ou do próprio `-s` numa retomada — nunca
-    mais do primeiro `ses_…` do stdout, onde o opencode imprime saída de
-    ferramenta: um reviewer citando a fixture `ses_abc123456` virava "sessão"
+    mais do primeiro `ses_…` do stdout: a premissa é de ORDEM, não de fluxo.
+    O opencode 1.18.32 imprime log (e saída de ferramenta) no stderr (o módulo
+    de UI usa `process.stderr.write`); a linha `created` da raiz sai ANTES de
+    qualquer ferramenta e o primeiro match vence (224 builder logs: 144 com
+    exatamente 1 linha raiz, 80 retomadas com 0, nenhum com 2) — um reviewer
+    citando a fixture `ses_abc123456` não vira mais "sessão"
     da task (4 ids de fixture em `taskCostSessions`), e o mesmo caminho podia
     entregar um id falso ao `-s` do builder. Subagentes (`task` tool do opencode)
     vivem em sessões filhas — o `tokensSql` agora percorre `parent_id`

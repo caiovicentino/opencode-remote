@@ -709,6 +709,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       task.id,
       checkTaskTokenBudget(state, task.id, impact.tokens, normalizeTokenBudget(cfg.tokenBudgetPerTask), {
         outcome: result.ok ? "merged" : result.detail,
+        ok: result.ok,
       }),
     );
     state.tasks++;

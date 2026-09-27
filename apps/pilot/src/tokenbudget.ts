@@ -34,6 +34,9 @@ export interface BudgetVerdict {
   alert: boolean;
   level: number;
   detail: string;
+  /** The task's real pipeline outcome, carried so the supervisor notify
+   * does not mislabel a merged task as a failure (verifier round 2). */
+  ok?: boolean;
 }
 
 /**
@@ -48,7 +51,7 @@ export function checkTaskTokenBudget(
   taskId: string,
   tokens: number,
   budget: number,
-  context: { outcome?: string } = {},
+  context: { outcome?: string; ok?: boolean } = {},
 ): BudgetVerdict {
   const level = budgetLevel(tokens, budget);
   const already = store.tokenBudgetAlerts?.[taskId] ?? 0;
@@ -58,7 +61,7 @@ export function checkTaskTokenBudget(
   const ratio = (tokens / budget).toFixed(1);
   const outcome = context.outcome ? ` — last: ${context.outcome.replace(/\s+/g, " ").trim().slice(0, 110)}` : "";
   const detail = `task ${taskId} used ${fmtTokens(tokens)} tokens (budget ${fmtTokens(budget)}, ${ratio}x)${outcome}`;
-  return { alert: true, level, detail: detail.slice(0, 220) };
+  return { alert: true, level, detail: detail.slice(0, 220), ok: context.ok ?? false };
 }
 
 /**
@@ -81,6 +84,8 @@ export function raiseTokenBudgetAlert(
     emitEvent("alert", { task: taskId, phase: "token-budget", ok: false, detail: verdict.detail });
   } catch {}
   try {
-    void Promise.resolve(notify(taskId, false, verdict.detail)).catch(() => {});
+    // the task's real outcome, never a hardcoded false: a merged task that
+    // crossed the budget must not read as "pilot falhou em …" in the chat
+    void Promise.resolve(notify(taskId, verdict.ok ?? false, verdict.detail)).catch(() => {});
   } catch {}
 }
