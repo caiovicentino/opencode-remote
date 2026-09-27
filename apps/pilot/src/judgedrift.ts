@@ -48,14 +48,8 @@ export function loadTypescript(): Ts | null {
   return tsCache;
 }
 
-/**
- * Leaf-token stream of what a TypeScript module executes. Literals are
- * normalized to their cooked value (quote style never counts); a comma right
- * before a closing bracket is dropped (trailing-comma formatting). Null when
- * the compiler is unavailable.
- */
-export function runtimeTokens(src: string, ts: Ts | null = loadTypescript()): string[] | null {
-  if (!ts) return null;
+/** Parse what a TypeScript module executes: types erased by the compiler. */
+function emittedJs(src: string, ts: Ts): TsApi.SourceFile {
   const js = ts.transpileModule(src, {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
@@ -66,7 +60,11 @@ export function runtimeTokens(src: string, ts: Ts | null = loadTypescript()): st
     reportDiagnostics: false,
     fileName: "mirror.ts",
   }).outputText;
-  const sf = ts.createSourceFile("mirror.js", js, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+  return ts.createSourceFile("mirror.js", js, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
+}
+
+/** Leaf tokens under `root`, normalized (see runtimeTokens). */
+function leafTokens(ts: Ts, sf: TsApi.SourceFile, root: TsApi.Node): string[] {
   const out: string[] = [];
   const visit = (node: TsApi.Node): void => {
     const kids = node.getChildren(sf);
@@ -84,8 +82,44 @@ export function runtimeTokens(src: string, ts: Ts | null = loadTypescript()): st
     }
     for (const k of kids) visit(k);
   };
-  visit(sf);
+  visit(root);
   return out.filter((t, i) => !(t === "," && [")", "]", "}"].includes(out[i + 1] ?? "")));
+}
+
+/**
+ * Leaf-token stream of what a TypeScript module executes. Literals are
+ * normalized to their cooked value (quote style never counts); a comma right
+ * before a closing bracket is dropped (trailing-comma formatting). Null when
+ * the compiler is unavailable.
+ */
+export function runtimeTokens(src: string, ts: Ts | null = loadTypescript()): string[] | null {
+  if (!ts) return null;
+  const sf = emittedJs(src, ts);
+  return leafTokens(ts, sf, sf);
+}
+
+/**
+ * The same runtime tokens grouped by top-level symbol (function, class,
+ * const/let, `export { … }`, import) — what an operator needs to hear when
+ * the mirror drifts ("clientHello, serverAccept changed"), not a token index.
+ * Anonymous top-level statements are keyed by position. Null without a compiler.
+ */
+export function runtimeSymbols(src: string, ts: Ts | null = loadTypescript()): Map<string, string[]> | null {
+  if (!ts) return null;
+  const sf = emittedJs(src, ts);
+  const out = new Map<string, string[]>();
+  sf.statements.forEach((st, i) => {
+    let key = `statement#${i}`;
+    if ((ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st)) && st.name) key = st.name.text;
+    else if (ts.isVariableStatement(st)) {
+      const names = st.declarationList.declarations.map((d) => (ts.isIdentifier(d.name) ? d.name.text : "…"));
+      key = names.join(",");
+    } else if (ts.isImportDeclaration(st) && ts.isStringLiteral(st.moduleSpecifier)) key = `import ${st.moduleSpecifier.text}`;
+    else if (ts.isExportDeclaration(st)) key = `export#${i}`;
+    while (out.has(key)) key = `${key}'`;
+    out.set(key, leafTokens(ts, sf, st));
+  });
+  return out;
 }
 
 export type ProtocolDriftState = "match" | "drift" | "no-target" | "no-mirror" | "unknown";
@@ -95,6 +129,12 @@ export interface ProtocolDrift {
   detail: string;
   /** For "drift": the first differing window, judge side vs target side. */
   diff?: { judge: string; target: string };
+  /** For "drift": top-level symbols whose runtime code differs. */
+  changed?: string[];
+  /** For "drift": symbols only the judge's copy defines (removed upstream). */
+  onlyInJudge?: string[];
+  /** For "drift": symbols only the target defines (new upstream). */
+  onlyInTarget?: string[];
 }
 
 function tokenWindow(tokens: string[], at: number): string {
@@ -125,10 +165,23 @@ export function compareProtocolMirror(mirrorSrc: string | null, targetSrc: strin
   let i = 0;
   while (i < n && a[i] === b[i]) i++;
   if (i === n && a.length === b.length) return { state: "match", detail: `runtime-identical (${a.length} tokens; comments/types ignored)` };
+  const sa = runtimeSymbols(mirrorSrc, ts);
+  const sb = runtimeSymbols(targetSrc, ts);
+  const changed = sa && sb ? [...sa.keys()].filter((k) => sb.has(k) && sa.get(k)!.join("\u0000") !== sb.get(k)!.join("\u0000")) : [];
+  const onlyInJudge = sa && sb ? [...sa.keys()].filter((k) => !sb.has(k)) : [];
+  const onlyInTarget = sa && sb ? [...sb.keys()].filter((k) => !sa.has(k)) : [];
+  const named = [
+    changed.length ? `changed: ${changed.join(", ")}` : "",
+    onlyInTarget.length ? `new upstream: ${onlyInTarget.join(", ")}` : "",
+    onlyInJudge.length ? `gone upstream: ${onlyInJudge.join(", ")}` : "",
+  ].filter(Boolean);
   return {
     state: "drift",
-    detail: `runtime drift at token ${i} of ${b.length}`,
+    detail: `runtime drift${named.length ? ` — ${named.join("; ")}` : ""} (first at token ${i} of ${b.length})`,
     diff: { judge: tokenWindow(a, i) || "(end of file)", target: tokenWindow(b, i) || "(end of file)" },
+    changed,
+    onlyInJudge,
+    onlyInTarget,
   };
 }
 

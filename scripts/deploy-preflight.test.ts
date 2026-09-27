@@ -68,6 +68,7 @@ import {
   parseLaunchctlList,
   realIo,
   render,
+  resolveProdRepo,
   tasksDiedMidPipeline,
   verdict,
   type PreflightEnv,
@@ -233,6 +234,14 @@ const tmp = mkdtempSync(join(tmpdir(), "ocr-deploy-preflight-"));
   check("drift: a string literal change counts", compareProtocolMirror(`const A = "ocr-hello";`, `const A = "ocr-hello2";`).state === "drift");
   const real = compareProtocolMirror(PRE_RT390, CURRENT_CRYPTO);
   check("drift: the real pre-RT-390 protocol (the judge pinned on 09-05) drifts from packages/protocol", real.state === "drift", JSON.stringify(real));
+  check(
+    "drift: the drift names the symbols — RT-390 (clientHello, serverAccept), RT-424 (seqAad changed, frameSeq new upstream)",
+    ["clientHello", "serverAccept", "seqAad"].every((k) => real.changed?.includes(k)) && (real.onlyInTarget ?? []).includes("frameSeq") && real.detail.includes("changed: ") && real.detail.includes("new upstream: frameSeq"),
+    JSON.stringify(real),
+  );
+  const symbolic = compareProtocolMirror(base, rt390);
+  check("drift: a one-function change names exactly that function", JSON.stringify(symbolic.changed) === JSON.stringify(["hello"]) && symbolic.onlyInJudge?.length === 0);
+  check("drift: a symbol removed upstream is named on the judge side", (compareProtocolMirror(`${base}\nexport const X = 1;`, base).onlyInJudge ?? []).includes("X"));
   // the judge's current copy differs only in ASCII-only comments and a narrower
   // caps type — rebuild that shape from the real file: must stay a match
   const asciiNarrow = CURRENT_CRYPTO.replace(/[→—±≥]/g, "-").replace("caps?: { transcribe?: boolean; tts?: boolean },", "caps?: { transcribe?: boolean },");
@@ -434,6 +443,53 @@ const cfgOf = (repo: string): PilotConfig => ({
   ].join("\n");
   check("preflight: tasks started after the last boot without a result died mid-pipeline", tasksDiedMidPipeline(log).join(",") === "P2-356,P2-357");
   check("preflight: the real invalid mission.json shape is explained", missionReason('{"models":{"builder":"b200x4/glm-5.3-flash"}}').includes("falta v:1") && missionReason(null).startsWith("ausente"));
+}
+
+// ── 6b. preflight: read-only by construction (source shape + real plutil) ────
+{
+  const src = readFileSync(join(ROOT, "scripts", "pilot-preflight.ts"), "utf8");
+  const drift = readFileSync(join(ROOT, "apps", "pilot", "src", "judgedrift.ts"), "utf8");
+  // `plutil -extract` WITHOUT `-o -` rewrites the plist in place (the 09-27
+  // 12:08 incident turned com.ocr.pilot.plist into 81 bytes of JSON)
+  const plutilCalls = src.match(/run\("plutil",\s*\[[^\]]*\]/g) ?? [];
+  check("read-only: every plutil call writes to stdout (-o -)", plutilCalls.length > 0 && plutilCalls.every((c) => /"-o",\s*"-"/.test(c)), plutilCalls.join(" | "));
+  const writers = /\b(writeFileSync|appendFileSync|mkdirSync|rmSync|renameSync|unlinkSync|copyFileSync|writeFile|appendFile|mkdtempSync)\b/;
+  check("read-only: the preflight and judgedrift.ts never call an fs write API", !writers.test(src) && !writers.test(drift));
+  check(
+    "read-only: the preflight never goes through a normalize-and-save state path",
+    !/\b(loadState|saveState|doctorState|runDoctor|normalizePilotState|touchHeartbeat|emit|notifySupervisor)\(/.test(src),
+  );
+  check("read-only: git never fetches and the git reader always carries --no-optional-locks", !/"fetch"/.test(src) && /io\.run\("git", \["--no-optional-locks", \.\.\.args\]/.test(src) && /"--no-optional-locks", \.\.\.args/.test(drift));
+
+  // real plutil against a COPIED plist fixture (macOS only)
+  const plistHome = join(tmp, "plist-home");
+  const agents = join(plistHome, "Library", "LaunchAgents");
+  mkdirSync(agents, { recursive: true });
+  const plist = join(agents, "com.ocr.pilot.plist");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>OCR_PILOT_REPO</key>\n    <string>/tmp/fixture prod repo</string>\n  </dict>\n  <key>Label</key>\n  <string>com.ocr.pilot</string>\n  <key>ProgramArguments</key>\n  <array><string>/opt/homebrew/bin/node</string><string>apps/pilot/src/index.ts</string></array>\n</dict>\n</plist>\n`;
+  writeFileSync(plist, xml);
+  const past = new Date(Date.now() - 3_600_000);
+  utimesSync(plist, past, past);
+  const before = statSync(plist);
+  if (process.platform === "darwin") {
+    const resolved = resolveProdRepo(plistHome, realIo(), undefined);
+    const after = statSync(plist);
+    check("read-only: resolveProdRepo reads OCR_PILOT_REPO from the launchd plist via real plutil", resolved === "/tmp/fixture prod repo", resolved);
+    check(
+      "read-only: the plist is byte-, size- and mtime-identical after the real plutil extraction",
+      readFileSync(plist, "utf8") === xml && after.size === before.size && after.mtimeMs === before.mtimeMs,
+    );
+    // control: the incident's shape (`-extract <key> json` WITHOUT `-o -`)
+    // rewrites the file in place — proof that the assertion above would catch
+    // the regression (measured: `raw` alone prints to stdout, `json` rewrites)
+    const control = join(agents, "control.plist");
+    writeFileSync(control, xml);
+    execFileSync("plutil", ["-extract", "ProgramArguments", "json", control], { stdio: "ignore" });
+    check("read-only (control): plutil -extract <key> json without -o - DOES rewrite the plist", readFileSync(control, "utf8") !== xml);
+  } else {
+    console.log("OK   read-only: real plutil fixture skipped (plutil is macOS-only)");
+  }
+  check("read-only: OCR_PILOT_REPO in the environment wins without touching the plist", resolveProdRepo(plistHome, realIo(), "/env/repo") === "/env/repo" && statSync(plist).mtimeMs === before.mtimeMs);
 }
 
 function goodFacts(): PreflightFacts {
