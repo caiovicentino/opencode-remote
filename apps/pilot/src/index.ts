@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, repoSlug, type MissionSpec } from "./mission";
+import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, repoSlug, standalonePins, type MissionSpec } from "./mission";
 import { CI_RED_CONCLUSIONS, CI_RED_KIND, ciRedStarvationPlan, redChecksFromDetail } from "./cired";
 import { emit } from "./events";
 import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
@@ -125,8 +125,8 @@ async function main() {
   const missionBoot = readMission();
   const bootMissionHash = missionBoot.hash;
   activeMission = missionBoot.spec;
-  if (missionBoot.raw !== null && !activeMission) {
-    log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})");
+  if (missionBoot.verdict.kind === "invalid") {
+    log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})", { reason: missionBoot.verdict.reason });
   }
   if (activeMission) {
     logMissionLoaded(activeMission);
@@ -152,7 +152,11 @@ async function main() {
   activeMissionKey = missionKey;
   cfg.stateRoot = slotRoot;
   cfg.missionKey = missionKey ?? undefined;
-  cfg.missionModels = activeMission?.models;
+  // eval-06: a models-only mission.json pins the DEFAULT mission's roles —
+  // roles pilot.json tierB routes to tier B keep that route (standalonePins)
+  const pins = missionBoot.verdict.kind === "pins" ? standalonePins(missionBoot.verdict.models, cfg.models?.tierB) : null;
+  if (pins) log("info", "mission.json holds model pins only — default mission kept", { applied: pins.applied ?? {}, shadowedByTierB: pins.shadowed });
+  cfg.missionModels = activeMission?.models ?? pins?.applied;
   // P2-341: the doctor pass reads the queue backlog the scheduler trusts —
   // the boot-resolved repo + base branch (git show origin/<base>:BACKLOG.md),
   // never a slot worktree. Top-level runDoctorPass has no cfg in scope, so

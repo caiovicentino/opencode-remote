@@ -320,7 +320,14 @@ um); `repoUrl` só vale no formato `https://github.com/<org>/<repo>(.git)?`.
 **`models` (opcional, v2)**: `{ "<papel>": "<provider/modelo>" }` com papel em
 `strategist | researcher | builder | reviewer | scribe` (subconjunto
 permitido; papel desconhecido ou id malformado **invalida o arquivo inteiro**
-— `parseMissionModels`, fail-closed). O id é o que `opencode models` imprime;
+— `parseMissionModels`, fail-closed). Um arquivo **só com `models`** (sem
+`prompt`/`repoUrl`, `v` ausente ou 1) não é missão nem lixo (eval-06,
+`classifyMissionFile`): o boot loga `mission.json holds model pins only`,
+mantém a missão padrão e aplica os pins como padrão de tier A; papel que o
+`pilot.json` já manda pro tier B (`models.tierB`, hoje o `strategist`) fica no
+tier B — a tabela do operador vence um arquivo de pins sem missão, e numa
+missão completa a precedência v2 segue igual (`standalonePins`). Arquivo
+inválido agora loga o motivo (`reason`). O id é o que `opencode models` imprime;
 o protocolo manda o agente só gravar id que verificou nessa saída e listar as
 opções quando o usuário pergunta ("quais modelos?"). Escrita atômica 0600
 (tmp + `chmod 600` + `mv`, o mesmo contrato do `daemon.json`). **Encerrar a
@@ -1197,6 +1204,17 @@ e logados em `apps/pilot/src/doctor.ts`:
   leitura — backlog inválido é reportado (log warn + exit 1), nunca auto-editado;
   mais de um cabeçalho `## Blocked` gera **aviso** sem invalidar o arquivo
   (P2-142: a próxima escrita do stop-loss colapsa tudo num único cabeçalho);
+  desde a eval-06 o boot e o CLI validam a **fonte do scheduler** —
+  `git show origin/<base>:BACKLOG.md` após um fetch best-effort (o campo
+  `source` do log diz qual; ref ilegível cai no working tree com aviso), e não
+  mais o working tree do checkout de produção, que é o snapshot do sha
+  **deployado** (era por isso que o log dizia `taskCount: 1` a cada boot); o
+  scan de estrutura é **por linha** (`backlogShapeIssues`): toda linha de
+  `## Ready` precisa ser task que o scheduler agenda (prosa solta e itens
+  `[x]` viram problema com `ID@linha`), `## Done` só guarda `[x]` e
+  `## Blocked` só guarda `[ ]`; e task aberta (Ready/Blocked) com commit de
+  trabalho `pilot(<ID>): …` já no `origin/<base>` (fora `mark done`/`block
+  after`) vira **aviso** com o sha — o caso de PR bloqueado mergeado à mão;
 - **`branches`** — deleta branches locais `pilot/*` **sem PR aberto**; fail-safe:
   só deleta com `gh` respondendo (PR aberto, gh indisponível, branch checked-out
   ou de task com tentativa viva no breaker — preservada para retry, P1-060 —
@@ -1217,6 +1235,21 @@ agenda) com uma linha no log (`doctor: ready orphan blocks`) e um evento
 entre passes; o texto do bloco nunca é logado). É somente relatório — o
 operador limpa esses blocos à mão ou os reescreve como linha de tarefa; o
 pilot nunca edita o arquivo sozinho.
+
+**Catraca dos escritores do backlog** (eval-06): `markDone`, `blockTask`,
+`addTask` e `appendReadyLines` escrevem só por `writeChecked` (`backlog.ts`),
+que recusa — não grava nada — uma edição que **introduza** linha que não seja
+task sob `## Ready` (comparação de multiconjunto: sujeira antiga nunca trava
+uma edição legítima, a edição só pode manter ou encolher). Foi assim que cinco
+achados de red team (RT-341/390/424/439/453) apodreceram em Ready: o fluxo
+pré-P2-336 escrevia os parágrafos abaixo de uma task de uma linha e o
+`markDone` levava só a primeira linha pro Done. `appendReadyLines` e o store
+de refill pendente revalidam cada linha com `isValidTaskLine`; `markDone` sem
+`## Done` responde `missing` sem gravar (antes a task sumia); o resumo do
+stop-loss perde sequências ANSI e bytes de controle. O
+`scripts/backlog-integrity.test.ts` (fim da cadeia `test:unit`) valida o
+`BACKLOG.md` **real** do repo: zero problema de estrutura, validador do doctor
+verde e toda task da fila válida pro validador de landing.
 
 O boot do pilot roda o pass completo (refs/state/backlog/branches em cada slot,
 log `doctor: <cmd>` no JSONL) — falha do doctor nunca impede o pipeline de subir.

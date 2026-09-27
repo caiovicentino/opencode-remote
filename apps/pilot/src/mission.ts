@@ -136,6 +136,69 @@ export function parseMissionSpec(raw: string | null | undefined): MissionSpec | 
   return spec;
 }
 
+/**
+ * eval-06: what a raw mission.json IS, for the boot log and the pins path.
+ * parseMissionSpec stays the strict MISSION parser (the daemon card reads it);
+ * this adds the one shape it rejects on purpose but that is not garbage: a
+ * file holding only a valid `models` block (`v` absent or 1, no prompt, no
+ * repoUrl) — fleet-wide model pins for the DEFAULT mission. The runtime file
+ * of 2026-09-11 has exactly that shape and was logged "present but invalid"
+ * at every boot while its pins were dropped without a word. `invalid` now
+ * always carries the reason. Never throws.
+ */
+export type MissionFileVerdict =
+  | { kind: "absent" }
+  | { kind: "mission"; spec: MissionSpec }
+  | { kind: "pins"; models: MissionModels }
+  | { kind: "invalid"; reason: string };
+
+export function classifyMissionFile(raw: string | null | undefined): MissionFileVerdict {
+  if (typeof raw !== "string") return { kind: "absent" };
+  if (!raw.trim()) return { kind: "invalid", reason: "empty file" };
+  const spec = parseMissionSpec(raw);
+  if (spec) return { kind: "mission", spec };
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return { kind: "invalid", reason: "not valid JSON" };
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return { kind: "invalid", reason: "not a JSON object" };
+  const m = obj as { v?: unknown; prompt?: unknown; repoUrl?: unknown; models?: unknown };
+  if (m.v !== undefined && m.v !== 1) return { kind: "invalid", reason: `unsupported version (expects "v": 1)` };
+  const models = parseMissionModels(m.models);
+  if (!models.ok) return { kind: "invalid", reason: models.reason };
+  const prompt = typeof m.prompt === "string" ? m.prompt.trim() : "";
+  const hasRepo = m.repoUrl !== undefined && m.repoUrl !== null && m.repoUrl !== "";
+  if (prompt.length > MISSION_PROMPT_MAX) return { kind: "invalid", reason: `prompt longer than ${MISSION_PROMPT_MAX} chars` };
+  if (hasRepo && !validRepoUrl(m.repoUrl)) return { kind: "invalid", reason: "repoUrl is not https://github.com/<org>/<repo>" };
+  if (prompt || hasRepo) return { kind: "invalid", reason: `missing "v": 1` };
+  if (models.models) return { kind: "pins", models: models.models };
+  return { kind: "invalid", reason: "needs a prompt and/or repoUrl (or a models block of model pins)" };
+}
+
+/**
+ * eval-06: the pins of a models-only file, as the DEFAULT mission applies
+ * them. They stand in for the tier-A default; a role that pilot.json
+ * `models.tierB` already routes to tier B keeps that route — the operator's
+ * standing tier table wins over a mission-less pins file (a full mission
+ * keeps its v2 precedence in runAgentForRole). Pure.
+ */
+export function standalonePins(
+  pins: MissionModels | undefined,
+  tierB: Partial<Record<string, string>> | undefined,
+): { applied?: MissionModels; shadowed: MissionModelRole[] } {
+  const applied: MissionModels = {};
+  const shadowed: MissionModelRole[] = [];
+  for (const role of MISSION_MODEL_ROLES) {
+    const id = pins?.[role];
+    if (!id) continue;
+    if (tierB?.[role]) shadowed.push(role);
+    else applied[role] = id;
+  }
+  return Object.keys(applied).length ? { applied, shadowed } : { shadowed };
+}
+
 /** Model the mission pins for a role, or undefined (fleet default). */
 export function missionModelFor(spec: Pick<MissionSpec, "models"> | null | undefined, role: MissionModelRole): string | undefined {
   return spec?.models?.[role];
@@ -185,6 +248,8 @@ export interface MissionRead {
   raw: string | null;
   spec: MissionSpec | null;
   hash: string | undefined;
+  /** eval-06: absent / mission / pins-only / invalid (with the reason). */
+  verdict: MissionFileVerdict;
 }
 
 /** Read + parse + hash the mission file. Never throws. */
@@ -195,7 +260,7 @@ export function readMission(file = MISSION_FILE, read: (f: string) => string = (
   } catch {
     raw = null;
   }
-  return { raw, spec: parseMissionSpec(raw), hash: missionHash(raw) };
+  return { raw, spec: parseMissionSpec(raw), hash: missionHash(raw), verdict: classifyMissionFile(raw) };
 }
 
 /** Structural fs subset the atomic writer touches (tests inject fakes). */
