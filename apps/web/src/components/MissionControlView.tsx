@@ -53,6 +53,8 @@ export function tunnelApi(request: TunnelRequest): DaemonApiFn {
       res = await request("GET", "/__ocr/pilot-forensic", undefined, task ? { task } : undefined);
     } else if (seg[1] === "pilot-mission" && (method ?? "GET") === "GET") {
       res = await request("GET", "/__ocr/pilot-mission");
+    } else if (seg[1] === "pilot-status" && (method ?? "GET") === "GET") {
+      res = await request("GET", "/__ocr/pilot-status");
     } else if (seg[1] === "mission" && method === "DELETE") {
       res = await request("DELETE", "/__ocr/mission");
     } else {
@@ -120,6 +122,98 @@ export function formatMissionModels(models: Record<string, string> | undefined |
     .filter(([, m]) => typeof m === "string" && m)
     .map(([r, m]) => `${r}=${m}`)
     .join(", ");
+}
+
+/**
+ * eval-19: the daemon's fleet status digest (GET /api/pilot-status; the phone
+ * reads the sealed /__ocr/pilot-status). Only the fields this pane renders.
+ */
+export interface FleetStatusView {
+  installed: boolean;
+  pilot: { state: "alive" | "stale" | "down" | "absent"; heartbeatAgeMs: number | null; since: string | null; silentForMs?: number | null };
+  deploy: { behind: number | null; pendingSince: string | null; hold: { reason: string; count: number } | null };
+  disk: { freeBytes: number | null; minFreeBytes: number };
+  queue: { ready: number; blocked: number };
+  cost: { week: { merges: number; tokens: number; usd: number | null; unpricedTokens: number } };
+  alerts: { undelivered: number };
+  attention: { kind: string; level: "critical" | "warn" }[];
+}
+
+/** One line of the fleet strip: an attention item or the all-clear. */
+export interface FleetLine {
+  key: string;
+  level: "critical" | "warn" | "ok";
+  text: string;
+}
+
+/** Compact span: 40s · 12min · 5.0h · 3.2d. */
+export function fmtSpan(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}min`;
+  if (ms < 48 * 3_600_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+  return `${(ms / 86_400_000).toFixed(1)}d`;
+}
+
+/** Bytes as GB with one decimal (the deploy guard's own unit). */
+export function fmtGB(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return "—";
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+/** Token counts: 845k · 12.3M · 1.3B. */
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  return `${Math.max(1, Math.round(n / 1e3))}k`;
+}
+
+/**
+ * eval-19: a "running" card of a pilot that is down is not running — the
+ * forensic cards of P2-356/P2-357 said "running · ETA 0s" for days after the
+ * process died on 24/09. Only a verdict of "down" re-labels; unknown keeps
+ * the forensic status as-is.
+ */
+export function cardDisplayStatus(
+  status: SessionCard["status"],
+  pilot: FleetStatusView["pilot"]["state"] | undefined,
+): SessionCard["status"] | "stalled" {
+  return status === "running" && pilot === "down" ? "stalled" : status;
+}
+
+/** The strip's lines: every attention flag in the digest's order, or the all-clear. */
+export function fleetLines(s: FleetStatusView, t: TFn): FleetLine[] {
+  if (!s.installed) return [];
+  const out: FleetLine[] = [];
+  for (const f of s.attention ?? []) {
+    let text = "";
+    // silence counts from the pilot's last sign of life (a pid-dead verdict
+    // dates it from the last recorded activity, not a foreign heartbeat touch)
+    const silent = s.pilot.silentForMs ?? s.pilot.heartbeatAgeMs;
+    if (f.kind === "pilot-down") text = t("fleetPilotDown", { span: fmtSpan(silent), when: fmtDateTime(s.pilot.since ?? undefined) || "—" });
+    else if (f.kind === "pilot-stale") text = t("fleetPilotStale", { span: fmtSpan(silent) });
+    else if (f.kind === "deploy-lag") text = t("fleetProdBehind", { n: s.deploy.behind ?? 0, when: fmtDateTime(s.deploy.pendingSince ?? undefined) || "—" });
+    else if (f.kind === "deploy-hold" && s.deploy.hold) {
+      const back = s.deploy.hold.reason === "disk-guard" && s.disk.freeBytes !== null && s.disk.freeBytes >= s.disk.minFreeBytes;
+      text = back
+        ? t("fleetDeployHoldResolved", { reason: s.deploy.hold.reason, free: fmtGB(s.disk.freeBytes) })
+        : t("fleetDeployHold", { reason: s.deploy.hold.reason });
+    } else if (f.kind === "disk-low") text = t("fleetDiskLow", { free: fmtGB(s.disk.freeBytes), min: fmtGB(s.disk.minFreeBytes) });
+    else if (f.kind === "alerts-undelivered") text = t("fleetAlerts", { n: s.alerts.undelivered });
+    if (text) out.push({ key: f.kind, level: f.level, text });
+  }
+  if (out.length === 0 && s.pilot.state === "alive") {
+    out.push({ key: "ok", level: "ok", text: s.deploy.behind === 0 ? `${t("fleetPilotAlive")} · ${t("fleetProdCurrent")}` : t("fleetPilotAlive") });
+  }
+  return out;
+}
+
+/** The strip's quiet facts line: queue, disk, week cost (never a fake $0). */
+export function fleetFacts(s: FleetStatusView, t: TFn): string {
+  const w = s.cost.week;
+  const cost = w.usd !== null ? `US$ ${w.usd.toFixed(2)}` : w.tokens > 0 ? t("fleetCostUnpriced", { tokens: fmtTokens(w.tokens) }) : "0";
+  return t("fleetFacts", { ready: s.queue.ready, blocked: s.queue.blocked, free: fmtGB(s.disk.freeBytes), cost });
 }
 
 type KindFilter = "all" | "decision" | "gate" | "deploy" | "review";
@@ -223,6 +317,11 @@ export default function MissionControlView({
   // Self-serve mission: undefined = not loaded yet, null = none set.
   const [mission, setMission] = useState<MissionSpecView | null | undefined>(undefined);
   const [modelSubs, setModelSubs] = useState<ModelSubstitutionView[]>([]);
+  // eval-19: fleet status digest (liveness, deploy lag/hold, disk, cost, alerts)
+  const [fleet, setFleet] = useState<FleetStatusView | null>(null);
+  // eval-19: the pilot.json mission the fleet actually runs when mission.json
+  // holds no valid spec — the card used to say "no mission" meanwhile
+  const [legacyMission, setLegacyMission] = useState("");
   // Mission v2 clear path: two-click confirm ("End mission" → "Confirm") so a
   // stray click never deletes the mission; the status line reports the result.
   const [clearArmed, setClearArmed] = useState(false);
@@ -270,6 +369,7 @@ export default function MissionControlView({
       const { json } = await decode(await daemonApi({ path: "/api/pilot-mission" }));
       const spec = json?.spec as MissionSpecView | null | undefined;
       setMission(spec && typeof spec === "object" ? spec : null);
+      setLegacyMission(!(spec && typeof spec === "object") && typeof json?.mission === "string" ? json.mission.trim() : "");
       const subs = json?.modelSubstitutions;
       setModelSubs(Array.isArray(subs) ? (subs as ModelSubstitutionView[]) : []);
     } catch {
@@ -279,6 +379,17 @@ export default function MissionControlView({
       if (prePairing) setMission(null);
     }
   }, [daemonApi, prePairing]);
+
+  const loadFleet = useCallback(async () => {
+    if (!daemonApi) return;
+    try {
+      const { json } = await decode(await daemonApi({ path: "/api/pilot-status" }));
+      if (json && typeof json.installed === "boolean" && Array.isArray(json.attention)) setFleet(json as unknown as FleetStatusView);
+    } catch {
+      // best-effort: an older daemon has no digest route and a dead one is
+      // already reported by the cards' guided down state — keep the last view
+    }
+  }, [daemonApi]);
 
   const loadTimeline = useCallback(async (task: string) => {
     if (!daemonApi) return;
@@ -298,12 +409,14 @@ export default function MissionControlView({
     if (!daemonApi) return;
     void loadCards();
     void loadMission();
+    void loadFleet();
     const iv = setInterval(() => {
       void loadCards();
       void loadMission();
+      void loadFleet();
     }, 6_000);
     return () => clearInterval(iv);
-  }, [daemonApi, loadCards, loadMission]);
+  }, [daemonApi, loadCards, loadMission, loadFleet]);
 
   useEffect(() => {
     if (selected) void loadTimeline(selected);
@@ -317,12 +430,13 @@ export default function MissionControlView({
       await Promise.all([
         loadCards(),
         loadMission(),
+        loadFleet(),
         selected ? loadTimeline(selected) : Promise.resolve(),
       ]);
     } finally {
       setRetrying(false);
     }
-  }, [loadCards, loadMission, loadTimeline, selected]);
+  }, [loadCards, loadMission, loadFleet, loadTimeline, selected]);
 
   async function takeover(task: string) {
     if (!daemonApi) return;
@@ -445,9 +559,16 @@ export default function MissionControlView({
         /* P3-446: behind the gate the chat is the pane that needs
             pairing — the empty card points at the after-pairing world
             instead of the unreachable "define it in the chat". */
-        <p className="mission-active-note">
-          {mission === null ? t(prePairing ? "missionActiveNonePrePairing" : "missionActiveNone") : "…"}
-        </p>
+        legacyMission ? (
+          <>
+            <p className="mission-active-text" data-mission-legacy>{legacyMission}</p>
+            <p className="mission-active-src">{t("missionLegacySource")}</p>
+          </>
+        ) : (
+          <p className="mission-active-note">
+            {mission === null ? t(prePairing ? "missionActiveNonePrePairing" : "missionActiveNone") : "…"}
+          </p>
+        )
       )}
       {clearStatus && <p className="mission-active-status">{clearStatus}</p>}
     </div>
@@ -478,6 +599,20 @@ export default function MissionControlView({
           </button>
         )}
       </header>
+      {fleet?.installed && !prePairing && (phone || view === "forensic") && (
+        // eval-19: the pane used to list a dead pilot's cards as "running" with
+        // no word about the pilot, the deploy lag, the disk hold or the alerts
+        // nobody received — the digest's attention flags lead the pane now.
+        <section className="fleet-strip" aria-label={t("fleetTitle")} data-fleet={fleet.attention[0]?.level ?? "ok"}>
+          {fleetLines(fleet, t).map((l) => (
+            <p key={l.key} className={`fleet-line fleet-${l.level}`} data-kind={l.key}>
+              <span className="fleet-dot" aria-hidden="true" />
+              {l.text}
+            </p>
+          ))}
+          <p className="fleet-facts">{fleetFacts(fleet, t)}</p>
+        </section>
+      )}
       {phone && <p className="muted mission-phone-intro">{t("missionPhoneIntro")}</p>}
       {error && phone && <p className="mission-error">{t("missionLoadFailed")}</p>}
       {loadFailed && !phone && (
@@ -539,8 +674,8 @@ export default function MissionControlView({
             >
               <div className="mission-card-top">
                 <span className="mission-id">{c.id}</span>
-                <span className={`mission-st st-${c.status}`}>
-                  {t(`missionSt_${c.status}`)}
+                <span className={`mission-st st-${cardDisplayStatus(c.status, fleet?.pilot.state)}`}>
+                  {t(`missionSt_${cardDisplayStatus(c.status, fleet?.pilot.state)}`)}
                 </span>
               </div>
               <div className="mission-title">{c.title}</div>
@@ -551,7 +686,7 @@ export default function MissionControlView({
                 <span>{t("missionEffort")} {fmtDur(c.effortMin !== null ? c.effortMin * 60_000 : null, t)}</span>
                 <span>·</span>
                 <span>{t("missionRounds", { n: c.rounds ?? 0 })}</span>
-                {c.status === "running" && c.etaMs !== null && (
+                {cardDisplayStatus(c.status, fleet?.pilot.state) === "running" && c.etaMs !== null && (
                   <>
                     <span>·</span>
                     <span>{t("missionEta")} {fmtDur(c.etaMs, t)}</span>

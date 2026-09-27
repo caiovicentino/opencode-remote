@@ -473,6 +473,20 @@ elapsed), never a guarantee; `effortMin` is wall-clock agent time. The desktop
 app renders this feed in the **Mission Control** pane (⌘6); agents can reuse
 the same endpoints via the SDK/curl.
 
+### Fleet status digest and live stream (eval-19, P2-110)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/pilot-status` | one-glance fleet digest (also sealed as `/__ocr/pilot-status` for the phone): `pilot` (`state` alive/stale/down/absent, `heartbeatAgeMs`, `since`, `silentForMs`, `reason`, `pid`, `pidAlive`, `lastEventAt`), `deploy` (`prodSha`, `mainSha`, `behind` = commits on origin/main not in production, `pendingSince`, `fetchedAt`, `hold` = the guard refusing the pending deploy with `reason`/`detail`/`count`/`until`), `disk` (`freeBytes`/`totalBytes` of the production volume, `minFreeBytes` = the deploy guard floor), `queue` (`ready`/`blocked`/`misplaced` from origin/main's BACKLOG.md), `cost` (`day`/`week`: `merges`, `tokens`, `usd` or `null` when nothing was priced, `unpricedTokens`), `alerts` (`undelivered` supervisor notifications, `lastDeliveredAgeMs`) and `attention[]` (`{kind, level}` most severe first: `pilot-down`, `pilot-stale`, `deploy-hold`, `disk-low`, `deploy-lag`, `alerts-undelivered`). `installed:false` on machines that never ran the pilot — every surface hides the digest there |
+| GET | `/api/pilot-stream` | Server-Sent Events for the dashboard: `snapshot` (last 200 events + the digest) once per connection, `pilot` (one frame per new `events.jsonl` line, id = its `ts`), `status` (the digest every 15 s). Auth is the `ocr_session` cookie minted by `POST /api/session` — `EventSource` cannot send headers and the token never goes in a URL. At most 8 clients (503 + `retry-after` beyond); a client that cannot drain for 5 s is dropped; gauge `ocr_pilot_stream_clients` |
+| GET | `/api/pilot-events?since=<ISO>&limit=<n>` | the dashboard feed; `since` returns only events strictly newer than the instant, `limit` caps the tail (default 200, max 1000) — the cheap fallback poll |
+
+Liveness counts from the heartbeat the pilot writes on every loop pass; a
+recorded pid that stays dead for more than 90 s marks the pilot down even
+while something else keeps the heartbeat file fresh (dated from the last
+`events.jsonl` activity). `/api/pilot-ready` reads the queue from origin/main's
+BACKLOG.md (the production checkout's copy lags by the whole deploy lag).
+
 ### Session handoff to Terminal (RT-439)
 
 `POST /__ocr/handoff` with `{ sessionId }` opens Terminal.app attached to

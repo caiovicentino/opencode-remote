@@ -852,6 +852,18 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   idade do último aviso realmente entregue ao supervisor ("último aviso
   entregue há N min" no tooltip, via `pilot/notify-last` + `notifyLastMs` em
   `/api/pilot-events`).
+- **Status da frota (eval-19)**: `GET /api/pilot-status` (e o selado
+  `/__ocr/pilot-status` no celular) resume o que exige o operador — piloto
+  vivo/sem sinal/parado (heartbeat + pid; pid morto por >90s derruba mesmo com
+  heartbeat fresco), produção N commits atrás do origin/main e desde quando,
+  deploy retido (guard + backoff), disco vs o piso de 5 GB do deploy, fila do
+  origin/main, custo 24h/7d (tokens; US$ só quando precificado) e avisos ao
+  supervisor não entregues. O dashboard mostra chips clicáveis (drill-down) e
+  as linhas PROD/DISCO/CUSTO 7D no HUD; o Mission Control (desktop e celular)
+  abre com a faixa "Status da frota" e marca como `interrompida` a task que
+  dizia `rodando` com o piloto parado. `GET /api/pilot-stream` (SSE, cookie
+  `ocr_session`) entrega eventos em ~100 ms e o digest a cada 15 s; sem ele o
+  dashboard segue no poll de 2 s.
 - **Chip AUDIT MODE**: quando o circuit breaker de febre (P2-032) pausa a fila,
   um chip vermelho no topo do painel mostra o motivo e, no tooltip, o resumo
   do `buildDiagnosis` (api + top steps + top tasks) persistido em
