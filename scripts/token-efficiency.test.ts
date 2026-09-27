@@ -16,6 +16,7 @@
  * drive a fake child over PassThrough streams, nothing is spawned or bound.
  * Run: npx tsx scripts/token-efficiency.test.ts
  */
+import "./testhome"; // throwaway HOME before any pilot module loads (testhome.ts)
 import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
