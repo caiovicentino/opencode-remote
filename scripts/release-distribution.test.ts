@@ -381,6 +381,19 @@ function jobBlock(name: string): string {
   );
   check("eval-16: the default path writes the publish command to the job summary", publish.includes('>> "$GITHUB_STEP_SUMMARY"'));
   check("eval-16: no step of release.yml pushes to any branch", !/\bgit push\b/.test(codeOnly(releaseYml)));
+  // eval-15 note: npm ci / npx run third-party lifecycle scripts in jobs that
+  // hold contents: write — the token must not sit in .git/config. No job uses
+  // git credentials (gh gets GH_TOKEN through env), so every checkout drops them.
+  const checkouts = releaseYml.split("\n").flatMap((line, i, all) =>
+    line.includes("uses: actions/checkout@") ? [all.slice(i + 1, i + 6).join("\n")] : [],
+  );
+  check(
+    "eval-16: every release.yml checkout sets persist-credentials: false, and no step runs an authenticated git command",
+    checkouts.length === 7 &&
+      checkouts.every((next) => /^\s+persist-credentials: false$/m.test(next)) &&
+      !/\bgit (push|fetch|pull|remote|config)\b/.test(codeOnly(releaseYml)),
+    `checkouts=${checkouts.length}`,
+  );
   check(
     "eval-16: the pinned formula is attached as a release asset",
     publish.includes("gh release upload \"$GITHUB_REF_NAME\" formula-pin/opencode-remote.rb --clobber"),

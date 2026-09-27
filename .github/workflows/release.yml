@@ -34,6 +34,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       # P2-130: tag and the two package.json versions must agree BEFORE anything
       # is published — a drifting version produces a latest-mac.yml whose
@@ -113,6 +118,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -364,6 +374,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -550,6 +565,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - name: Verify the published release carries every platform asset
         env:
@@ -577,6 +597,11 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - name: Compute image references
         id: refs
@@ -658,6 +683,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - name: Verify the update feeds point at this release's artifacts
         env:
@@ -741,6 +771,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       # P2-186: make every download verifiable. The job downloads the release's
       # own assets back, hashes each file with node (sha256), builds the
