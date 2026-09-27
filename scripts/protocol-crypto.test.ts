@@ -21,10 +21,12 @@ import {
   acceptPayload,
   b64,
   clientHello,
+  exportPkcs8,
   frameSeq,
   fromB64,
   helloNonce,
   HELLO_NONCE_BYTES,
+  importPrivateIdentity,
   newIdentity,
   openSealed,
   rejectPayload,
@@ -376,6 +378,23 @@ function randomJson(depth = 0): unknown {
   check(
     "serverAccept: swapping the clear clientPub is refused",
     (await serverAccept({ ...hello, clientPub: stranger.publicKey }, daemon)) === null,
+  );
+}
+
+// --- 4b. documented limitation: no forward secrecy (docs/security.md) --------
+// Pinned on purpose: whoever holds the daemon's long-term key (daemon.json or
+// any copy) plus a RECORDED hello re-derives that session's key and reads
+// its recorded frames. Handshake v3 (ephemeral keys) must flip this check —
+// and the threat note with it.
+{
+  const pkcs8 = await exportPkcs8(daemon);
+  const stolen = await importPrivateIdentity(daemon.publicKey, pkcs8);
+  const { hello, sessionKey } = await clientHello(daemon.publicKey, client);
+  const recorded = await seal({ type: "op", req: { id: "past" } }, sessionKey, seqAad("client1", 3));
+  const rederived = await serverAccept(hello, stolen);
+  check(
+    "threat model: no forward secrecy — daemon key + recorded hello decrypt a past frame (documented)",
+    rederived !== null && (await openSealed(recorded, rederived.sessionKey, seqAad("client1", 3))) !== null,
   );
 }
 
