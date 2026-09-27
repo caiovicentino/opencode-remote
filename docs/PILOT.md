@@ -609,6 +609,11 @@ problema, sem enviar nada. Rodar na raiz do checkout de produção (o `gh`
 resolve o repo pelo remote do diretório corrente) com o `gh` autenticado
 (`GH_TOKEN` ou `gh auth login`).
 
+Funciona também sobre o release ainda em draft (eval-16: cada feed vai por
+`--pattern`; o formato antigo, com os nomes como argumentos posicionais, o
+`gh` recusava sempre). Cortar, conferir e publicar um release — e a
+assinatura antes do primeiro — está em `docs/RELEASING.md`.
+
 ## Budgets e kill switch
 
 - `~/.opencode-remote/pilot.json` (opcional): `maxTasksPerDay` (6), `maxDeploysPerDay` (6),
