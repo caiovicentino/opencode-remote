@@ -96,7 +96,7 @@ fallback de merge local.
 | `builder` | implementa a task em branch `pilot/<id>`, commita | 45 min |
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
-| `scribe` | após o merge: destila até 3 lições do diff (P1-075: só o diff — findings de review não entram no prompt) → `docs/EXPERIENCE.md` | 10 min |
+| `scribe` | após o merge: destila 0–2 lições do diff (P1-075: só o diff — findings de review não entram no prompt; eval 05: até 200 caracteres, vê as lições já guardadas mais próximas para não repeti-las) → `docs/EXPERIENCE.md` | 10 min |
 | `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida e pousa via PR `pilot/meta` com guard) | 25 min |
 | `red team` (1x/dia, janela reservada 02:00–04:00 — P3-356) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
@@ -715,11 +715,15 @@ intacto). Bloco opcional:
   que o critério de aceitação pede.
 - **Forensic semanal**: na passada noturna (janela reservada ou primeira
   ocorrência >= 2h ocioso do dia — P3-356/P1-095), um agente analisa as últimas
-  100 failure lessons (`lessons.jsonl`), os carryovers de gate-fail e o
+  100 failure lessons (`lessons.jsonl` — só tasks bloqueadas de verdade, uma
+  linha por task; lições arquivadas nunca entram), os carryovers de gate-fail e o
   `git log -50` e escreve a taxonomia de falhas (padrões, causas raiz,
   recomendações) em `~/.opencode-remote/pilot/forensic-latest.md` + digest no
   telefone. Guard próprio de 7 dias (`state.forensicLast`, persistido **antes**
-  do run); falha é best-effort e nunca bloqueia o loop. O relatório chega ao
+  do run; eval 05: preservado na virada de dia do `loadState` junto com
+  `redteamLast`/`researchLast`/`explorerLast`/`mergesSinceCorpus`/`auditDiagnosis`
+  — antes todo boot em outro dia descartava essas guardas e o forensic semanal
+  rodava de novo); falha é best-effort e nunca bloqueia o loop. O relatório chega ao
   disco pelo runner (stdout), nunca por write direto do agente fora do workspace.
 
 ## Tarefas long-horizon — campo size (P1-060)
@@ -1294,9 +1298,11 @@ sem spec.
 - O `builderPrompt` referência o spec: "read it FIRST ... do not delete or
   rewrite the spec" — desvios precisam ser justificados no commit.
 - **Planner enxerga as lições (P2-042)**: o `plannerPrompt` injeta o mesmo
-  contexto de experiência do builder/strategist — top-5 lições do IER
-  (`pickRelevantLessons`, keyword-match contra título+spec da task) e as 10
-  failure lessons mais recentes (`~/.opencode-remote/pilot/lessons.jsonl`).
+  contexto de experiência do builder/strategist — até 5 lições do IER
+  (`pickRelevantLessons`, match pesado por raridade contra título+spec da task)
+  e as 5 failure lessons de tasks bloqueadas mais próximas da task
+  (`~/.opencode-remote/pilot/lessons.jsonl`; eval 05 — o strategist segue com as
+  10 mais recentes).
   Assim o spec de P0/P1 já nasce ciente dos padrões que bloquearam tasks
   anteriores; sem nenhum match, o prompt fica limpo (blocos vazios).
 - O reviewer de **quality** ganha o critério explícito "does the diff fulfill
@@ -1609,32 +1615,54 @@ lições de engenharia de uma linha, no formato `- When <situação>, do <ação
 seção `## Lessons`. Três peças:
 
 1. **SCRIBE (pós-merge)**: logo depois que o gatekeeper mergea, um agent lê o diff
-   da task + os findings de review (já endereçados) e **saída** de 1-3 lições no
-   formato acima — o agent nunca edita o arquivo direto: o runner valida o formato,
-   deduplica contra o que já existe, appenda (máx. 3 por merge) e pousa o commit
+   da task e **saída** de 0-2 lições no formato acima (eval 05: no máximo 200
+   caracteres antes da tag `(fonte:)`, sem convenções que o repo já aplica em
+   todo lugar; "nenhuma lição" é resposta válida). O prompt carrega as lições já
+   guardadas mais próximas do diff (`lessonsNearDiff`: caminhos tocados + linhas
+   adicionadas) para o scribe não reescrevê-las — repetir uma delas literalmente
+   a **renova**. O agent nunca edita o arquivo direto: o runner valida o formato,
+   corta texto longo em fronteira de palavra (teto 240), deduplica contra o que já
+   existe, appenda (máx. 2 novas por merge) e pousa o commit
    `pilot(scribe): N lesson(s) from <ID>` via **PR `pilot/meta`** (P1-076), com
    retry do landing inteiro para lidar com scribes concorrentes de slots paralelos.
+   Uma lição que chega de novo (chave igual ou paráfrase, Jaccard >= 0.3) não é
+   duplicada nem descartada: a redação nova **substitui** a antiga no fim do
+   arquivo, então a poda por idade preserva o que continua sendo reaprendido.
    Falha do scribe nunca falha o pipeline
    (o merge já aconteceu); é log + evento `scribe-done`.
-2. **Injeção nos prompts**: `builderPrompt` e o prompt do strategist recebem o
-   **top-5 de lições relevantes** — keyword-match (tokenizado, stopword-filtered)
-   do título (peso 2) + spec (peso 1) da task contra o texto da lição, empate
-   resolvido pela mais recente primeiro. Task sem overlap de keywords não recebe
-   lição nenhuma (nada é injetado à força).
+2. **Injeção nos prompts**: `builderPrompt`, `plannerPrompt` e o prompt do
+   strategist recebem **até 5 lições relevantes**: cada palavra em comum com a
+   task vale pela sua raridade no arquivo (idf; título pesa 2, spec 1), o
+   boilerplate de spec (`evidence`, `apps`, `unit`, `typecheck`, `src`, `test`,
+   `build`, `real`… — presente em 53–78% das tasks) não conta, a lição precisa
+   de >= 2 palavras em comum e de pontuação mínima (2,5× o idf de uma palavra
+   única), e uma paráfrase de lição já escolhida não entra de novo. Sem lição
+   relevante, nada é injetado. Medição (eval 05, replay dos últimos 60 merges
+   contra o EXPERIENCE.md que cada builder viu): o match antigo (`score > 0`)
+   enchia os 5 slots em 58/60 tasks com as mesmas lições "hub" (duas delas em
+   23/60 prompts); o novo injeta 3,3 lições em média (−32% de texto), nenhuma em
+   10/60, e numa amostra rotulada de 12 tasks a fração de lições relevantes
+   subiu de ~5% para ~15% (relevantes+parciais: 23% → 41%).
 3. **Manutenção noturna (red team)**: no pass noturno (primeira janela >= 2h
    ocioso do dia), além da caça a
    buracos de segurança, o pilot **deduplica e poda** `docs/EXPERIENCE.md`
-   quando ele passa de **60 lições** — dedupe por chave normalizada (case/
+   quando ele passa de **150 lições** (eval 05: com 60, ~27 merges/dia × 3
+   lições enchiam o arquivo em menos de um dia — a poda cortava 47–92 lições por
+   noite e a vida mediana de uma lição era 27h; no replay do stream real do
+   scribe a política nova dá ~68h) — dedupe por chave normalizada (case/
    pontuação/provenance-insensitive, vence a ocorrência mais recente) **e, desde
-   P1-075, dedupe semântico** (Jaccard >= 0.6 sobre os tokens da lição, só para
-   pares com >= 5 tokens) — e poda para as 60 mais recentes, com commit+push
+   P1-075, dedupe semântico** (Jaccard >= 0.3 sobre os tokens da lição, só para
+   pares com >= 5 tokens; calibrado em 3 snapshots reais: todos os 16 pares
+   >= 0,30 eram a mesma lição reescrita, e o antigo 0,6 nunca disparava) — e poda
+   para as 150 mais recentes, com commit+push
    `pilot(redteam): experience maintenance`. A manutenção roda **antes** do
    agent de redteam, sob guard própria (`expMaintLast`): falha/crash do agent
    não perde mais o dia. Na poda, lições de **harness** (vocabulário do
    pipeline: pilot/pipeline/builder/reviewer/scribe/gate/backlog/planner/slot…)
    cujo `(fonte: ID)` já está em `## Done` são **arquivadas** — viram uma linha
-   `step:"archived"` em `~/.opencode-remote/pilot/lessons.jsonl` (fora de todo
-   worktree) em vez de serem apagadas; lições de código de produto têm
+   `kind:"experience-archived"` (`{ts, task, lesson}`) em
+   `~/.opencode-remote/pilot/lessons.jsonl` (fora de todo worktree) em vez de
+   serem apagadas; lições de código de produto têm
    prioridade e nunca são arquivadas (acima do cap, cai primeiro a harness, e
    dentro da classe a mais antiga).
 
@@ -1659,12 +1687,39 @@ duplicam entradas, e `findings` nunca repete o conteúdo de `tail` no caminho de
 re-bloqueio (que resume pelo step). O prompt do **strategist** recebe as **10
 lições de falha mais recentes** num bloco `FAILURE LESSONS` na hora de
 criar/refinar tasks, para não re-propor padrões que já queimaram o orçamento de
-tentativas. P1-075: lições de experiência **arquivadas** pela manutenção
-noturna (`step: "archived"`) também pousam nesse jsonl, mas prefill no máximo
-**3 dos 10 slots** do bloco — falhas reais de task bloqueada mantêm o resto.
-O pipeline também instrumenta o efeito da injeção de lições: cada resultado de
-pipeline é dobrado em `state.lessonImpact` (coortes *with/without lessons*:
-merges, rounds totais e tokens totais) e logado como `lesson impact`.
+tentativas; o do **planner** recebe as 5 mais próximas da task (palavras
+informativas em comum com título+spec; recência desempata). Eval 05 (forensic
+2026-09-24, rec. 6): entram **só tasks bloqueadas de verdade** (`attempts > 0`),
+**uma linha por task** (re-bloqueio fica com a mais nova), e o filtro roda
+**antes** da janela de recência. Antes disso o jsonl de produção tinha 192 linhas
+`kind:"failure"`/`step:"archived"` (lições de SUCESSO arquivadas pela manutenção
+noturna, P1-075) contra 15 bloqueios reais, e o bloco que planner e strategist
+viam era 3 lições arquivadas e **nenhuma** falha real; o diagnóstico do doctor
+listava `archived(182)` como passo de falha e tasks mergeadas como
+"rejeitadas". Arquivadas agora têm kind próprio (`experience-archived`) e nunca
+entram em leitor de falha (as 192 linhas legadas são filtradas). A linha do
+prompt compacta o boilerplate do stop-loss (`infra "ci-red" 3x in a row: <último
+detalhe>` — o nome do job de CI deixa de ser cortado), usa só as linhas de falha
+da cauda (sem `OK …`, eventos JSON nem códigos ANSI) e mostra o título da task
+quando a linha o tem (`title`, gravado a partir deste eval).
+O pipeline também registra, **de forma descritiva**, a injeção de lições: cada
+resultado de pipeline é dobrado em `state.lessonImpactV2` (coortes *with/without
+lessons*: runs, merges, rounds e tokens) e logado como `lesson impact`. Limites
+(eval 05, `apps/pilot/src/lessonimpact.ts`): as coortes **não são aleatórias** —
+o matcher decide quem recebe lição a partir do texto da task, então a diferença
+entre elas não prova que lições ajudam ou atrapalham. A v1 (até 2026-09-27)
+somava o total **vitalício** de tokens da task a cada run (1,70× inflado em 568
+runs: 6,45 bi registrados contra 3,80 bi reais) e jogava runs que nem chegaram
+ao builder (8 falhas de planner) na coorte *without* — que tinha só 3 merges,
+todos de tasks RT. A contabilidade nova vive em `state.lessonImpactV2`: soma o
+delta de tokens de cada run, conta `runs`, deixa runs sem rodada de builder em
+`untreated`, carimba `since` e sobrevive à virada da meia-noite. O registro v1
+(`state.lessonImpact`) fica **congelado** — nunca é reescrito nem migrado, então
+um rollback para código antigo continua achando os dois intactos. Uma afirmação
+causal exige holdout aleatório: com a
+variância medida (CV 0,89 em rounds/merge, 1,14 em tokens/merge), detectar 20%
+de efeito com 80% de poder pede ~311 merges por braço em rounds (~511 em
+tokens), ou seja, semanas de holdout — decisão do operador, ainda não ligada.
 
 ## RESEARCHER role (daily frontier scan)
 
