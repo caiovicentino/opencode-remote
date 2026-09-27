@@ -23,6 +23,7 @@ import {
   blockTask,
   blockTaskEdit,
   introducesReadyDebris,
+  isBookkeepingSubject,
   isValidTaskLine,
   markDone,
   parseBacklog,
@@ -44,6 +45,8 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 const root = join(import.meta.dirname, "..");
+/** Source files read for shape pins, newline-normalized. */
+const source = (...parts: string[]) => readFileSync(join(root, ...parts), "utf8").replace(/\r\n/g, "\n");
 const withTmp = (fn: (dir: string) => void) => {
   const dir = mkdtempSync(join(tmpdir(), "backlog-integrity-"));
   try {
@@ -143,7 +146,7 @@ check("ratchet: prose under ## Done is not the queue's business", !introducesRea
 // every fs write of backlog.ts goes through the ratchet (seedBacklogSkeleton
 // only creates structure): a new writer cannot bypass it by accident
 {
-  const src = readFileSync(join(root, "apps", "pilot", "src", "backlog.ts"), "utf8");
+  const src = source("apps", "pilot", "src", "backlog.ts");
   const writes = src.match(/writeFileSync\(/g) ?? [];
   check("ratchet: backlog.ts has exactly two writeFileSync calls (writeChecked + skeleton seed)", writes.length === 2, `found ${writes.length}`);
   for (const fn of ["markDone", "blockTask", "addTask", "appendReadyLines"]) {
@@ -272,6 +275,15 @@ withTmp((dir) => {
   check("doctor: the legacy call (no base) keeps reading the working tree", doctorBacklog(dir).source === "working tree" && doctorBacklog(dir).taskCount === 1);
 });
 
+check(
+  "isBookkeepingSubject: mark done / block after are bookkeeping, task work is not",
+  isBookkeepingSubject("pilot(P3-457): block after 4 failed attempts (#1312)") &&
+    isBookkeepingSubject("pilot(P2-355): mark done (#1386)") &&
+    isBookkeepingSubject("pilot(P3-354): mark done (empty-diff self-heal)") &&
+    !isBookkeepingSubject("pilot(P3-401): opaque instanceId on relay /healthz (#1067)") &&
+    !isBookkeepingSubject("pilot(P2-500): mark doneness of the widget (#1)") &&
+    !isBookkeepingSubject("pilot(scribe): 3 lesson(s) from P3-467 (#1392)"),
+);
 {
   const log = [
     "1111111\tpilot(P3-600): mark done (empty-diff self-heal)",
@@ -283,7 +295,7 @@ withTmp((dir) => {
   check("mergedOpenTasks: bookkeeping subjects are never work; open ids with work are reported", JSON.stringify(merged) === JSON.stringify([{ id: "P2-501", sha: "3333333" }]), JSON.stringify(merged));
 }
 {
-  const src = readFileSync(join(root, "apps", "pilot", "src", "doctor.ts"), "utf8");
+  const src = source("apps", "pilot", "src", "doctor.ts");
   const boot = src.slice(src.indexOf("export function runDoctor("), src.indexOf("function safe("));
   check("doctor: the boot pass validates the queue ref (base branch), not the working tree", boot.includes('doctorBacklog(cfg.repo, { base: cfg.baseBranch ?? "main" })'));
 }
@@ -329,7 +341,7 @@ withTmp((dir) => {
     const v = classifyMissionFile(raw);
     check(`mission verdict: ${name} → invalid with the reason`, v.kind === "invalid" && v.reason.includes(reason), JSON.stringify(v));
   }
-  const idx = readFileSync(join(root, "apps", "pilot", "src", "index.ts"), "utf8");
+  const idx = source("apps", "pilot", "src", "index.ts");
   check("mission wiring: the invalid boot line carries the reason", idx.includes("{ reason: missionBoot.verdict.reason }"));
   check("mission wiring: pins feed cfg.missionModels only when no mission is active", idx.includes("cfg.missionModels = activeMission?.models ?? pins?.applied") && idx.includes("standalonePins(missionBoot.verdict.models, cfg.models?.tierB)"));
 }
@@ -348,7 +360,7 @@ withTmp((dir) => {
   check("real BACKLOG.md: the doctor validator is green with no warnings", diag.ok && diag.warnings.length === 0, JSON.stringify({ problems: diag.problems, warnings: diag.warnings }));
   const tasks = parseBacklog(real);
   check("real BACKLOG.md: every queued task passes the landing validator (P2-341 scan agrees)", tasks.every((t) => isValidTaskLine(t.line)) && readyOrphanBlocks(real).count === 0, JSON.stringify(readyOrphanBlocks(real)));
-  check("real BACKLOG.md: no control bytes anywhere", !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(real));
+  check("real BACKLOG.md: no control bytes anywhere (tab/newline/CR aside)", !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(real));
 }
 
 if (failures) {

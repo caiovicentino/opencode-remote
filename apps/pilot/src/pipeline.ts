@@ -3,7 +3,7 @@ import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, cachedExec, exec, runAgent, runAgentForRole, runStepWithRetry, rerunKey, type AgentIds, type RerunResults } from "./runner";
 import { nowLocalISO } from "./log";
-import { markDone, type Task } from "./backlog";
+import { isBookkeepingSubject, markDone, type Task } from "./backlog";
 import { landMetaCommit, metaIo } from "./metapush";
 import { emit } from "./events";
 import { clearGuardRejections, raiseGuardAlert } from "./guardalert";
@@ -2941,11 +2941,15 @@ function headSha(ws: string): string {
 export function taskMergedIn(ws: string, id: string, base = "main"): boolean {
   if (!TASK_ID_RE.test(id)) return false;
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --oneline`, {
+  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --format=%s`, {
     cwd: ws,
     allowFail: true,
   });
-  return r.ok && r.output.trim().length > 0;
+  // eval-06: the pilot's own `mark done` / `block after N failed attempts`
+  // commits share the prefix but carry no work — a blocked task moved back to
+  // ## Ready must not read as merged (the empty-diff self-heal would mark it
+  // done and a P0/P1 would skip its planner)
+  return r.ok && r.output.split("\n").some((s) => s.trim() !== "" && !isBookkeepingSubject(s));
 }
 
 /**

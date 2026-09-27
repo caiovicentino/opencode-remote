@@ -2757,6 +2757,16 @@ try {
     taskMergedIn(pilotRepo, "P0-$(touch boom)") === false && !existsSync(join(pilotRepo, "boom")),
   );
   check("taskMergedIn rejects ids with shell metacharacters", taskMergedIn(pilotRepo, "P0-1'; ls") === false);
+  // eval-06: the pilot's own bookkeeping shares the prefix but is not work —
+  // origin/main carries `pilot(P3-457): block after 4 failed attempts (#1312)`
+  // and nothing else for P3-457, which made a requeued P3-457 read as merged
+  g("git commit -q --allow-empty -m 'pilot(P3-457): block after 4 failed attempts (#1312)'");
+  g("git commit -q --allow-empty -m 'pilot(P3-457): mark done (empty-diff self-heal)'");
+  g("git update-ref refs/remotes/origin/main HEAD");
+  check("taskMergedIn: block/mark-done bookkeeping alone is not a merge (eval-06)", taskMergedIn(pilotRepo, "P3-457") === false);
+  g("git commit -q --allow-empty -m 'pilot(P3-457): rollout percent in the release feed (#1400)'");
+  g("git update-ref refs/remotes/origin/main HEAD");
+  check("taskMergedIn: a work commit next to the bookkeeping counts (eval-06)", taskMergedIn(pilotRepo, "P3-457") === true);
 } catch (e) {
   check(`taskMergedIn test env failed: ${String(e)}`, false);
 } finally {

@@ -24,7 +24,7 @@ import { nowLocalISO } from "./log";
 import { exec } from "./runner";
 import { emit } from "./events";
 import { notifySupervisor } from "./notify";
-import { backlogShapeIssues, blockedTaskIds, loadBacklog, parseBacklog, type BacklogShapeIssue } from "./backlog";
+import { backlogShapeIssues, blockedTaskIds, isBookkeepingSubject, loadBacklog, parseBacklog, type BacklogShapeIssue } from "./backlog";
 import { bareTaskId } from "./mission";
 import {
   loadConfig,
@@ -169,9 +169,6 @@ function citeIssues(issues: BacklogShapeIssue[], max = 8): string {
   return issues.length > max ? `${parts.join(", ")}, …` : parts.join(", ");
 }
 
-/** The pilot's own bookkeeping subjects — never evidence that task work landed. */
-const META_SUBJECT_RE = /^pilot\([^)]+\): (?:mark done\b|block after \d+ failed attempts)/;
-
 /**
  * eval-06: open tasks (## Ready / ## Blocked) whose work already reached the
  * base branch. The operator hand-merged four blocked PRs (P3-371 #1038,
@@ -187,7 +184,7 @@ export function mergedOpenTasks(md: string, log: string): { id: string; sha: str
     if (tab < 0) continue;
     const subject = row.slice(tab + 1);
     const m = /^pilot\(((?:P\d|RT)-\d{3})\): /.exec(subject);
-    if (!m || META_SUBJECT_RE.test(subject) || work.has(m[1]!)) continue;
+    if (!m || isBookkeepingSubject(subject) || work.has(m[1]!)) continue;
     work.set(m[1]!, row.slice(0, tab).trim());
   }
   const open = [...parseBacklog(md).map((t) => t.id), ...blockedTaskIds(md)];

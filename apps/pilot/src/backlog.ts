@@ -126,6 +126,16 @@ export function doneTaskIds(md: string): Set<string> {
   return out;
 }
 
+/**
+ * eval-06: the pilot's own bookkeeping subjects on a task id — `pilot(<ID>):
+ * mark done` (plus the empty-diff self-heal variant) and `pilot(<ID>): block
+ * after N failed attempts`. They record status, never the task's work, so
+ * merged-work checks (taskMergedIn, the doctor) must not count them.
+ */
+export function isBookkeepingSubject(subject: string): boolean {
+  return /^pilot\([^)]+\): (?:mark done\b|block after \d+ failed attempts)/.test(subject.trim());
+}
+
 /** eval-06: ids of the open `- [ ] (ID)` items under every ## Blocked section
  * (the doctor's merged-work check). Pure: parses the md string. */
 export function blockedTaskIds(md: string): Set<string> {
