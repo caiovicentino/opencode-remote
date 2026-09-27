@@ -8,7 +8,7 @@ import { captureUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig } from "./state";
 import { notifySupervisor } from "./notify";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "./disk";
-import { resolveJudge } from "./judge";
+import { judgeInvariantsCommand } from "./judge";
 import {
   defaultLastInstallFile,
   defaultQuarantineFile,
@@ -536,8 +536,10 @@ export async function deploy(
   }
 
   // live invariants against production (replay, tunnel, state perms)
-  const judgeCli = `${resolveJudge().dir}/src/invariants.ts`;
-    const inv = exec(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+  // the judge's own node + tsx by absolute path, cwd = judge: `npx tsx` with
+  // cwd = the prod checkout resolved tsx from the audited repo (C2, P1-056)
+  const judgeInv = judgeInvariantsCommand(cfg.repo, { live: true });
+    const inv = exec(judgeInv.cmd, { cwd: judgeInv.cwd, timeoutMin: 5, allowFail: true });
   if (!inv.ok) {
     await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
     return { ok: false, rolledBack: true, detail: "live invariants failed" };
@@ -557,8 +559,8 @@ export async function deploy(
     heartbeat: touchHeartbeat,
     live: () => {
       touchHeartbeat(); // before: the exec below blocks the loop for minutes
-      const judgeCli2 = `${resolveJudge().dir}/src/invariants.ts`;
-      const r = exec(`npx tsx ${JSON.stringify(judgeCli2)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+      const judgeInv2 = judgeInvariantsCommand(cfg.repo, { live: true });
+      const r = exec(judgeInv2.cmd, { cwd: judgeInv2.cwd, timeoutMin: 5, allowFail: true });
       touchHeartbeat(); // after: the watchdog timer fires as soon as the loop unblocks
       return r;
     },
