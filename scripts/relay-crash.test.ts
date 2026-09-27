@@ -9,6 +9,7 @@
  * Run: npx tsx scripts/relay-crash.test.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { freePortPairSync, freePortSync } from "./testports";
 import { readFileSync } from "node:fs";
 import { get } from "node:http";
 import { join } from "node:path";
@@ -415,7 +416,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function startCrashRelay(env: Record<string, string>) {
-  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  const port = freePortSync();
   const proc: ChildProcess = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),
     env: {
@@ -527,7 +528,7 @@ const waitExit = (proc: ChildProcess, ms = 20_000) =>
 
 // 3c. a healthy relay publishes the crash counter as zero, next to the rate limiter
 {
-  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  const port = freePortPairSync();
   const mport = port + 1;
   const proc: ChildProcess = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),

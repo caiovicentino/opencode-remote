@@ -8,6 +8,7 @@
  * Run: npx tsx scripts/relay-liveness.test.ts
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { freePortPairSync } from "./testports";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { get } from "node:http";
 import { join } from "node:path";
@@ -51,7 +52,7 @@ check("liveness: only the stale peer is returned", survivors.length === 1 && sur
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function startRelay(env: Record<string, string>) {
-  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  const port = freePortPairSync(); // relay on port, metrics on port + 1
   const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),
     env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(port + 1), OCR_E2E_MARKER: "1" },

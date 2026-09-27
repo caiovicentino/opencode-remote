@@ -67,8 +67,16 @@ class FakeChild extends EventEmitter implements ExitingChild {
   check("slow exit: the promise does NOT resolve before the real exit", early === "still-pending");
   const res = await pending;
   const wall = Date.now() - t0;
-  check(`slow exit: waitedMs >= 1500 (got ${res.waitedMs})`, res.waitedMs >= 1500);
-  check("slow exit: wall clock agrees with the measured wait", wall >= 1500);
+  // A node timer may fire a millisecond "early" against Date.now() (libuv
+  // arms it from its cached loop time), and CI read 1499 three times in 34h
+  // (runs 35875927674, 35896898507, 35936398492). The claim under test is
+  // "waits for the real exit, far past the old fixed 1s sleep": a 20ms slack
+  // keeps it. The measured value stays out of the check name so the OK line
+  // is identical on every run (the evidence gate compares pasted lines).
+  const floorMs = 1500 - 20;
+  check(`slow exit: waitedMs >= ${floorMs}`, res.waitedMs >= floorMs);
+  if (res.waitedMs < floorMs) console.error(`   waitedMs was ${res.waitedMs}`);
+  check("slow exit: wall clock agrees with the measured wait", wall >= floorMs);
   check("slow exit: resolved without SIGKILL escalation", res.forced === false);
   check("slow exit: no extra signal was sent", child.kills.length === 0);
 }

@@ -6,6 +6,7 @@
  */
 import { createServer, get, type IncomingMessage, type Server } from "node:http";
 import { spawn } from "node:child_process";
+import { freePortPairSync } from "./testports";
 import net from "node:net";
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2073,7 +2074,7 @@ check(
 
 {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  const port = freePortPairSync(); // relay on port, metrics on port + 1
   const mport = port + 1;
   const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),

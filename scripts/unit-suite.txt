@@ -85,3 +85,4 @@ scripts/traystatus.test.ts
 scripts/updateremind.test.ts
 scripts/updateprogress.test.ts
 scripts/updatespace.test.ts
+scripts/testports.test.ts
