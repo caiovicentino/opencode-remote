@@ -112,7 +112,7 @@ import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, isSidecarStopMessage, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
-import { HelloSeen, helloFreshness, helloVerdict } from "./helloguard.js";
+import { HELLO_MAX_SKEW_MS, HelloSeen, helloFreshness, helloVerdict } from "./helloguard.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { relayDialVerdict, type RelayDialKind } from "./relaydialerror.js";
@@ -3865,7 +3865,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       const helloNonce =
         typeof maybeControl.hello.nonce === "string" ? maybeControl.hello.nonce : "";
       const verdict = helloVerdict(helloFreshness(accepted.ts, Date.now()), () =>
-        helloSeen.admit(helloNonce, Date.now()),
+        helloSeen.admit(helloNonce, Date.now(), HELLO_MAX_SKEW_MS, accepted.ts),
       );
       if (verdict !== "accept") {
         const device = attributeAuthFailure(accepted.clientPub);

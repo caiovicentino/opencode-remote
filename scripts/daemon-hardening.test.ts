@@ -46,6 +46,7 @@ import { installStdioGuard } from "../apps/daemon/src/stdioguard";
 import { crashSummary } from "../apps/daemon/src/crashsummary";
 import { MAX_ARTIFACT_BYTES, listArtifacts, readArtifact } from "../apps/daemon/src/artifacts";
 import { createShutdown } from "../apps/daemon/src/shutdown";
+import { HELLO_MAX_SKEW_MS, HelloSeen, helloFreshness } from "../apps/daemon/src/helloguard";
 
 setTimeout(() => {
   console.error("daemon-hardening test timed out (global 150s)");
@@ -255,6 +256,33 @@ if (!WIN) {
   check("artifacts: the 5MB cap still answers too-large", !big.ok && big.reason === "too-large");
 } else {
   console.log("OK  artifact symlink checks (skipped on Windows: symlinks need admin)");
+}
+
+// ─── 1e. hello nonce retention covers the token's whole freshness window ───
+// (routed from eval-14) A token stamped by a client clock δ ahead stays fresh
+// until ts + skew, but its nonce used to expire skew after ADMISSION — the
+// identical hello was accepted again inside (t0 + skew, t0 + skew + δ].
+{
+  const t0 = 1_800_000_000_000;
+  const ahead = t0 + 4 * 60_000; // client clock 4 min ahead
+  const seen = new HelloSeen();
+  check("nonce retention: first hello is new", seen.admit("n-ahead", t0, HELLO_MAX_SKEW_MS, ahead) === "new");
+  check("nonce retention: replay inside the daemon window is refused", seen.admit("n-ahead", t0 + 60_000, HELLO_MAX_SKEW_MS, ahead) === "replay");
+  const late = t0 + HELLO_MAX_SKEW_MS + 1_000;
+  check(
+    "nonce retention: a replay after skew but while the token is still fresh is refused (main: accepted)",
+    helloFreshness(ahead, late) === "fresh" && seen.admit("n-ahead", late, HELLO_MAX_SKEW_MS, ahead) === "replay",
+  );
+  const over = ahead + HELLO_MAX_SKEW_MS + 1;
+  check("nonce retention: ends once the token can no longer be fresh", helloFreshness(ahead, over) === "stale" && seen.admit("n-ahead", over, HELLO_MAX_SKEW_MS, ahead) === "new");
+  const behind = new HelloSeen();
+  behind.admit("n-behind", t0, HELLO_MAX_SKEW_MS, t0 - 4 * 60_000);
+  check("nonce retention: a past ts never shortens the daemon-clock window", behind.admit("n-behind", t0 + HELLO_MAX_SKEW_MS - 1, HELLO_MAX_SKEW_MS, t0 - 4 * 60_000) === "replay");
+  const legacy = new HelloSeen();
+  legacy.admit("n-legacy", t0);
+  check("nonce retention: calls without ts keep the old window", legacy.admit("n-legacy", t0 + HELLO_MAX_SKEW_MS + 1) === "new");
+  const idx = readFileSync(join(REPO, "apps/daemon/src/index.ts"), "utf8");
+  check("pin: the handshake passes the token ts to the nonce cache", idx.includes("helloSeen.admit(helloNonce, Date.now(), HELLO_MAX_SKEW_MS, accepted.ts)"));
 }
 
 // ─── 2. AutoMode — pure rules ───────────────────────────────────────────────

@@ -122,6 +122,9 @@ identity servers, no accounts.
   within ±300 000 ms (±5 min) of the daemon's clock, and the hello nonce is
   admitted at most once per window (in-memory cache, newest 4096 nonces,
   pruned every check; at the cap the newcomer is refused, never the oldest).
+  A nonce is kept until its token can no longer be fresh — `max(now, ts) +
+  5 min`, so a client clock running ahead cannot outlive its own dedupe entry
+  (eval-12; the ts only ever extends retention, capped at 2 × the skew).
   Both refusals answer with a `session-reauth-required` control instead of a
   silent drop, are counted in `ocr_hello_rejected_total`, and never touch the
   live session's replay guard (`lastSeq`). Residual limitation: the nonce
