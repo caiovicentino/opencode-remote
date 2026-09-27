@@ -11,6 +11,7 @@
  * drift on either side fails here, not in the owner's hands.
  * Run: npx tsx scripts/convosearch.test.ts
  */
+import "./testhome"; // throwaway HOME before any app module loads (testhome.ts)
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
