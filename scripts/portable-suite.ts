@@ -68,6 +68,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "idempotency.test.ts",
   "installloc.test.ts",
   "instances.test.ts",
+  "lessons-governance.test.ts",
   "loadfail.test.ts",
   "modelrevalidate.test.ts",
   "notify.test.ts",
