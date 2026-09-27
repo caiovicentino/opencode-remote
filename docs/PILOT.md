@@ -564,8 +564,19 @@ mergeadas pelo workflow sem intervenção humana.
    tipo estreitado não contam; o RT-390 conta) o deploy também é recusado, sem
    quarentena e sem budget — era exatamente o incidente 10/09→22/09 (judge
    pinado antes do RT-390, live invariants falhando e **quarentenando SHAs
-   bons** por 12 dias). Um notify por recusa distinta. Reparo: sincronizar a
-   cópia do judge, commitar no repo do judge e re-pinar `judge.json`. Alvo sem
+   bons** por 12 dias). Um notify por recusa distinta; a mensagem nomeia os
+   símbolos que mudaram (`changed: clientHello, serverAccept`) e carrega os
+   passos exatos do reparo para o SHA recusado: (1) `git -C <prod> show
+   <sha>:packages/protocol/src/crypto.ts > ~/.opencode-remote/judge/src/protocol.ts`,
+   (2) revisar `git -C ~/.opencode-remote/judge diff` (área de crypto, protegida
+   pela constituição), (3) `cd ~/.opencode-remote/judge && npm run typecheck &&
+   npm test`, (4) commitar no repo do judge, (5) re-pinar `judge.json` com o novo
+   HEAD, (6) `npx tsx scripts/pilot-preflight.ts` — o pending deploy tenta de novo
+   sozinho. É intencional que QUALQUER mudança de runtime em
+   `packages/protocol/src/crypto.ts` pare os deploys até esse reparo, mesmo quando
+   o hello antigo do judge ainda seria aceito (ex.: nonce canônico do hello): um
+   `serverAccept` mais estrito com o cliente inalterado é exatamente o formato do
+   incidente de 22/09, e compatibilidade não é decidível mecanicamente. Alvo sem
    `packages/protocol` (repo estrangeiro) não tem o que espelhar; comparação
    impossível (sem compilador) segue em fail-open com warn. O judge é resolvido
    uma vez após a mutação e reusado pelas re-execuções do soak; se ficar

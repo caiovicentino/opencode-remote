@@ -59,7 +59,7 @@ import {
 } from "../apps/pilot/src/deployguard";
 import { DEPLOY_ROLLBACK_HOLD_MS, noteDeployRollback, rollbackHoldRemaining } from "../apps/pilot/src/deploybackoff";
 import { doctorJudge, doctorRefs, doctorTierBRoles, runDoctorGuards, TIER_B_ROLES, TIER_B_ROLES_EXHAUSTIVE, type RunFn } from "../apps/pilot/src/doctor";
-import { compareProtocolMirror, inspectJudge, loadTypescript, realGitRead, runtimeTokens, TARGET_PROTOCOL_PATH } from "../apps/pilot/src/judgedrift";
+import { compareProtocolMirror, inspectJudge, judgeRepinSteps, loadTypescript, realGitRead, runtimeTokens, TARGET_PROTOCOL_PATH } from "../apps/pilot/src/judgedrift";
 import type { PilotConfig } from "../apps/pilot/src/state";
 import {
   collectFacts,
@@ -325,6 +325,37 @@ const cfgOf = (repo: string): PilotConfig => ({
   const staleJudge = { resolve: () => ({ dir: judgeDir, pin: judgePin }) };
   const refusal = judgeGuardDetail(prodDir, c2, staleJudge) ?? "";
   check("judge guard: the pre-RT-390 mirror vs an RT-390 target refuses with the repair", refusal.startsWith("judge drift:") && refusal.includes("re-pin judge.json") && refusal.includes("deploy refused, prod untouched"));
+  check(
+    "judge guard: the refusal names the symbols and carries the exact copy-pasteable re-vendor + re-pin steps for THIS target",
+    refusal.includes("changed: seqAad, clientHello, serverAccept; new upstream: frameSeq") &&
+      refusal.includes(`show ${c2.slice(0, 7)}:packages/protocol/src/crypto.ts > ~/.opencode-remote/judge/src/protocol.ts`) &&
+      refusal.includes("npm run typecheck && npm test") &&
+      refusal.includes("> ~/.opencode-remote/judge.json") &&
+      refusal.includes("the pending deploy retries by itself"),
+    refusal,
+  );
+  check(
+    "judge guard: a prod path with spaces is quoted in the steps",
+    judgeRepinSteps("/Volumes/SSD Major/prod", "abc1234")[0]!.startsWith('git -C "/Volumes/SSD Major/prod" show abc1234:'),
+  );
+  // PR #1394's shape (eval-14, canonical hello nonce): serverAccept gets
+  // stricter and clientHello is refactored, while the old client's nonce stays
+  // canonical — the old judge might still pass, but a stricter server is the
+  // 09-22 incident's shape, so the guard refuses until re-vendor + re-pin
+  const stricter = CURRENT_CRYPTO.replace(
+    "const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));",
+    "const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(HELLO_NONCE_BYTES)));",
+  ).replace(
+    "    const sessionKey = await deriveAesKey(\n      daemonIdentity.privateKey,\n      hello.clientPub,\n      fromB64(hello.nonce),\n    );",
+    "    const salt = helloNonce(hello.nonce);\n    if (!salt) return null;\n    const sessionKey = await deriveAesKey(daemonIdentity.privateKey, hello.clientPub, salt);",
+  ) + "\nexport const HELLO_NONCE_BYTES = 16;\nexport function helloNonce(raw: unknown): Uint8Array | null {\n  if (typeof raw !== \"string\" || raw.length !== 24) return null;\n  const salt = fromB64(raw);\n  return salt.length === HELLO_NONCE_BYTES && b64(salt) === raw ? salt : null;\n}\n";
+  const pr1394 = compareProtocolMirror(CURRENT_CRYPTO, stricter);
+  check(
+    "judge guard: the #1394 shape (stricter serverAccept + helloNonce) is a drift naming clientHello, serverAccept and the new symbols",
+    stricter !== CURRENT_CRYPTO && pr1394.state === "drift" && JSON.stringify(pr1394.changed) === JSON.stringify(["clientHello", "serverAccept"]) &&
+      (pr1394.onlyInTarget ?? []).includes("HELLO_NONCE_BYTES") && (pr1394.onlyInTarget ?? []).includes("helloNonce"),
+    JSON.stringify(pr1394),
+  );
   check("judge guard: a target on the judge's own protocol passes", judgeGuardDetail(prodDir, c1, staleJudge) === null);
   const unusable = judgeGuardDetail(prodDir, c2, {
     resolve: () => {

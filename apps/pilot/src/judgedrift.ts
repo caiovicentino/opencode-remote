@@ -254,15 +254,47 @@ export function showTargetProtocol(repo: string, rev: string, git: GitRead = rea
 }
 
 /**
- * The operator-facing sentence for a drift: what breaks, why it is not the
- * merge's fault, and the exact repair. Shared by the deploy guard, the doctor
- * and the preflight so the three never disagree.
+ * The exact operator repair for a drifted mirror, as copy-pasteable commands:
+ * vendor the target's protocol into the judge, review, test, commit, re-pin,
+ * verify. `repo` is the production checkout that holds `target` (the pilot
+ * already fetched it); a path with spaces is quoted.
  */
-export function judgeDriftDetail(pin: string | null, target: string, drift: ProtocolDrift): string {
+export function judgeRepinSteps(repo: string, target: string): string[] {
+  const judge = "~/.opencode-remote/judge";
+  const q = (p: string) => (/\s/.test(p) ? `"${p}"` : p);
+  return [
+    `git -C ${q(repo)} show ${target}:${TARGET_PROTOCOL_PATH} > ${judge}/${JUDGE_PROTOCOL_REL.split("\\").join("/")}`,
+    `git -C ${judge} diff   # review: protocol/crypto is constitution-protected`,
+    `cd ${judge} && npm run typecheck && npm test`,
+    `git -C ${judge} commit -qam "protocol: mirror ${TARGET_PROTOCOL_PATH}@${target}"`,
+    `printf '{"pin": "%s"}\\n' "$(git -C ${judge} rev-parse HEAD)" > ~/.opencode-remote/judge.json   # re-pin judge.json`,
+    "npx tsx scripts/pilot-preflight.ts   # 'judge × protocolo do alvo' must read match",
+  ];
+}
+
+/**
+ * The operator-facing message for a drift: what differs, why it blocks, and
+ * the exact repair. Shared by the deploy guard (`refusing`), the doctor and
+ * the preflight so the three never disagree. The first sentence stays short —
+ * the feed caps event details at 220 chars; the log and the supervisor notify
+ * carry the full steps.
+ */
+export function judgeDriftDetail(
+  pin: string | null,
+  target: string,
+  drift: ProtocolDrift,
+  opts: { repo?: string; refusing?: boolean } = {},
+): string {
   const who = `pinned judge ${pin ? pin.slice(0, 8) : "?"}`;
   const what =
     drift.state === "no-mirror"
-      ? `${who} has no protocol mirror`
-      : `${who} protocol mirror != ${TARGET_PROTOCOL_PATH} at ${target} (${drift.detail})`;
-  return `judge drift: ${what} — the live invariants would fail and quarantine a good sha; sync ~/.opencode-remote/judge/${JUDGE_PROTOCOL_REL} with ${TARGET_PROTOCOL_PATH}, commit in the judge repo and re-pin judge.json`;
+      ? `${who} has no protocol mirror (${TARGET_PROTOCOL_PATH} at ${target})`
+      : `${who} vendors a protocol that differs at runtime from ${TARGET_PROTOCOL_PATH} at ${target} (${drift.detail})`;
+  const effect = opts.refusing
+    ? "deploy refused, prod untouched, no budget spent — the live invariants that close every deploy cannot be trusted to pass against this protocol (09-10→09-22: 58 good shas quarantined)"
+    : "every deploy of this target is refused until the judge is re-vendored and re-pinned — the live invariants cannot be trusted to pass against this protocol";
+  const steps = judgeRepinSteps(opts.repo ?? "~/.opencode-remote/prod", target)
+    .map((s, i) => `(${i + 1}) ${s}`)
+    .join(" ");
+  return `judge drift: ${what}; ${effect}. Re-vendor + re-pin judge.json, then the pending deploy retries by itself: ${steps}`;
 }

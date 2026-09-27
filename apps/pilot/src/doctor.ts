@@ -553,7 +553,7 @@ export function doctorJudge(repo: string, base = "main", deps: JudgeDoctorDeps =
   );
   if (drift.state === "drift" || drift.state === "no-mirror") {
     const window = drift.diff ? ` [judge: ${drift.diff.judge} | target: ${drift.diff.target}]` : "";
-    return { ok: false, changed: false, detail: `${judgeDriftDetail(insp.pin, target, drift)}${window}` };
+    return { ok: false, changed: false, detail: `${judgeDriftDetail(insp.pin, target, drift, { repo })}${window}` };
   }
   return { ok: true, changed: false, detail: `${insp.detail}; protocol vs ${target}: ${drift.state} (${drift.detail})` };
 }

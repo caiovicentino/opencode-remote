@@ -40,6 +40,7 @@ import { doctorTierBRoles } from "../apps/pilot/src/doctor";
 import {
   compareProtocolMirror,
   inspectJudge,
+  judgeRepinSteps,
   JUDGE_PROTOCOL_REL,
   TARGET_PROTOCOL_PATH,
   type GitRead,
@@ -608,8 +609,8 @@ export function evaluate(f: PreflightFacts): PreflightCheck[] {
       id: "judge-drift",
       status: "fail",
       title: "judge × protocolo do alvo",
-      detail: `a cópia vendorizada do judge (${JUDGE_PROTOCOL_REL}) diverge em runtime de ${TARGET_PROTOCOL_PATH} em ${drifted.map((x) => x.target).join(", ")} (${d.drift.detail})${win} — as live invariants falhariam e quarentenariam SHAs bons (incidente 10/09→22/09)`,
-      fix: `sincronizar ~/.opencode-remote/judge/${JUDGE_PROTOCOL_REL} com ${TARGET_PROTOCOL_PATH}, commitar no repo do judge e re-pinar judge.json`,
+      detail: `a cópia vendorizada do judge (${JUDGE_PROTOCOL_REL}) diverge em runtime de ${TARGET_PROTOCOL_PATH} em ${drifted.map((x) => x.target).join(", ")} (${d.drift.detail})${win} — as live invariants podem falhar e quarentenar SHAs bons (incidente 10/09→22/09: 58 SHAs); com o judge-guard em prod, todo deploy desse alvo é recusado até re-vendorizar + re-pinar`,
+      fix: `re-vendorizar + re-pinar: ${judgeRepinSteps(f.prodRepo, d.target).map((step, i) => `(${i + 1}) ${step}`).join(" ")}`,
     });
   } else if (unknown.length) {
     add({ id: "judge-drift", status: "warn", title: "judge × protocolo do alvo", detail: unknown[0]!.drift.detail });

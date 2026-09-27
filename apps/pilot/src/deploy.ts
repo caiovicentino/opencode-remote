@@ -401,7 +401,7 @@ export function judgeGuardDetail(
   const drift = compareProtocolMirror((deps.readMirror ?? readJudgeMirror)(judge.dir), targetSrc);
   if (drift.state === "drift" || drift.state === "no-mirror") {
     log("warn", "judge guard: protocol mirror drift", { pin: judge.pin.slice(0, 8), target: sha.slice(0, 7), ...drift });
-    return `${judgeDriftDetail(judge.pin, sha.slice(0, 7), drift)} — deploy refused, prod untouched`;
+    return judgeDriftDetail(judge.pin, sha.slice(0, 7), drift, { repo, refusing: true });
   }
   if (drift.state === "unknown") log("warn", "judge guard: protocol comparison unavailable — proceeding (fail-open)", { detail: drift.detail });
   return null;
