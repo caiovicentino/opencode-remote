@@ -41,10 +41,11 @@
  * runner's spawn semantics and the merge=union list merge on Windows too).
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
+import { seconds, stepSummaryMarkdown, type FileTiming } from "./unit-suite";
 
 export const PORTABLE_TESTS: readonly string[] = [
   "boothealth.test.ts",
@@ -161,20 +162,40 @@ function cli(): number {
   }
   const repoRoot = resolve(here, "..");
   const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  for (const file of PORTABLE_TESTS) {
+  // Same per-file timing lines as the unit battery (scripts/unit-suite.ts),
+  // and the same job-summary table on CI.
+  const timings: FileTiming[] = [];
+  const started = performance.now();
+  let failed: { index: number; label: string; code: number } | undefined;
+  for (const [index, file] of PORTABLE_TESTS.entries()) {
     const full = join(here, file);
     if (!existsSync(full)) {
       console.error(`portable-suite: FAIL ${file} — file missing on disk`);
       return 1;
     }
     console.log(`portable-suite: run ${file}`);
+    const t0 = performance.now();
     const res = spawnSync(process.execPath, [tsxEntry, full], { cwd: repoRoot, stdio: "inherit" });
+    const ms = Math.round(performance.now() - t0);
+    timings.push({ label: `scripts/${file}`, ms, ok: res.status === 0 });
     if (res.status !== 0) {
-      console.error(`portable-suite: FAIL ${file}`);
-      return 1;
+      console.error(`portable-suite: FAIL ${file} (${ms}ms)`);
+      failed = { index, label: `scripts/${file}`, code: res.status ?? 1 };
+      break;
+    }
+    console.log(`portable-suite: ok ${file} (${ms}ms)`);
+  }
+  const summary = process.env.GITHUB_STEP_SUMMARY;
+  if (summary) {
+    try {
+      const result = { code: failed?.code ?? 0, timings, failed };
+      appendFileSync(summary, stepSummaryMarkdown(result, PORTABLE_TESTS.length, "Portable battery (scripts/portable-suite.ts)"));
+    } catch {
+      // best-effort: the job summary never flips the verdict
     }
   }
-  console.log(`portable-suite: OK ${PORTABLE_TESTS.length} file(s)`);
+  if (failed) return 1;
+  console.log(`portable-suite: OK ${PORTABLE_TESTS.length} file(s) in ${seconds(Math.round(performance.now() - started))}`);
   return 0;
 }
 

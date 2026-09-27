@@ -220,6 +220,11 @@ const C: SuiteEntry = { file: "scripts/c.test.ts", args: [] };
   check("summary: every file, slowest first", md.indexOf("scripts/b.test.ts") < md.indexOf("scripts/a.test.ts") && md.includes("all 2 file(s) passed"));
   const mdRed = stepSummaryMarkdown({ code: 3, timings: [{ label: "scripts/a.test.ts", ms: 10, ok: false }], failed: { index: 0, label: "scripts/a.test.ts" } }, 2);
   check("summary: a failure names the file and the exit code", mdRed.includes("FAILED at `scripts/a.test.ts` (exit 3)") && mdRed.includes("1/2 file(s) ran"));
+  check(
+    "summary: the unit list titles it by default, the portable suite passes its own title",
+    md.startsWith(`### Unit battery (${UNIT_SUITE_LIST}) — per-file timings`) &&
+      stepSummaryMarkdown({ code: 0, timings: [] }, 0, "Portable battery (scripts/portable-suite.ts)").startsWith("### Portable battery (scripts/portable-suite.ts) — per-file timings"),
+  );
 }
 
 // --- a real run through tsx in a throwaway repo -------------------------------------

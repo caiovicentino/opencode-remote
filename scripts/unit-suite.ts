@@ -289,12 +289,12 @@ export function runUnitSuite(entries: readonly SuiteEntry[], deps: SuiteRunDeps)
 }
 
 /** Markdown for $GITHUB_STEP_SUMMARY: every file that ran, slowest first. */
-export function stepSummaryMarkdown(result: SuiteRunResult, listed: number): string {
+export function stepSummaryMarkdown(result: SuiteRunResult, listed: number, title = `Unit battery (${UNIT_SUITE_LIST})`): string {
   const total = result.timings.reduce((sum, t) => sum + t.ms, 0);
   const verdict = result.failed ? `FAILED at \`${result.failed.label}\` (exit ${result.code})` : `all ${listed} file(s) passed`;
   const rows = [...result.timings].sort((a, b) => b.ms - a.ms || a.label.localeCompare(b.label));
   return [
-    "### Unit battery (scripts/unit-suite.txt) — per-file timings",
+    `### ${title} — per-file timings`,
     "",
     `${verdict} · ${result.timings.length}/${listed} file(s) ran · ${seconds(total)} in test files`,
     "",
