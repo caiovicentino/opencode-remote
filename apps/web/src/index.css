@@ -5859,3 +5859,9 @@ button.desk-new:disabled {
   position: absolute;
   inset: -11px -4px;
 }
+
+/* eval-10 (eval-20 finding): the recents row reserves the pin toggle's lane —
+   the absolute 44px pin painted over the ellipsized title at 390px */
+.drawer-recent-item .drawer-recent {
+  padding-right: calc(44px + var(--space-2));
+}

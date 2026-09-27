@@ -395,6 +395,10 @@ const tEn = (k: string, v?: Record<string, string | number>) => translate("en", 
     (chatSrc.match(/q\.custom !== false/g) ?? []).length === 3 && !/q\.custom &&/.test(chatSrc),
   );
   check(
+    "CSS: drawer recents reserve the pin's 44px lane (title never under the pin)",
+    /\.drawer-recent-item \.drawer-recent \{\s*padding-right: calc\(44px \+ var\(--space-2\)\);\s*\}/.test(css),
+  );
+  check(
     "CSS: the rewind chip gets a 44px-tall invisible hit area",
     chatSrc.includes('className="muted msg-rewind"') && /\.msg-rewind::before \{[^}]*inset: -11px -4px/.test(css),
   );
