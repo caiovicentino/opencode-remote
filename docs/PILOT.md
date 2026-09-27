@@ -969,9 +969,10 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
     (as quatro colunas ou nada). `mtokPerHour` = Σ(coluna × peso) de TODO
     tráfego do nó numa janela ÷ horas de relógio da janela (amortiza a
     ociosidade que o operador paga). Bloco inválido = ausente. Mudou o preço?
-    O boot re-precifica a janela de `taskUSD` uma vez (`task usd repriced`,
-    fingerprint em `state.taskUSDPricing`; só reescreve `taskUSD` e só quando
-    todas as sessões-raiz da task ainda existem no `opencode.db`).
+    O boot re-precifica a janela uma vez (`task usd repriced`, fingerprint em
+    `state.taskUSDPricing`): tudo-ou-nada por task — `taskUSD`, `taskCosts` e
+    `taskCache` saem do mesmo fold (subagentes inclusos) só quando todas as
+    sessões-raiz ainda existem no `opencode.db` e o total não diminui.
   - *Contrato de campo* (`state.taskUSD[id]`, lido pelo dashboard):
     `total`/`tierA`/`tierB`/`unpricedTokens`/`tokens` = visão BYOK de lista,
     semântica P2-113 intacta; **novos e opcionais** `opsUSD` (US$ que o
