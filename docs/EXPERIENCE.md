@@ -1,10 +1,11 @@
 # Experience memory (IER)
 
 Lições destiladas pelo pipeline (role SCRIBE) após cada merge bem-sucedido.
-Cada lição é uma linha `- When <situação>, do <ação> (fonte: <ID>)`. Os prompts
-de planner, builder e strategist recebem o top-5 de lições relevantes (keyword-match,
-mais recentes primeiro); o red team noturno deduplica e poda acima de
-60 lições.
+Cada lição é uma linha `- When <situação>, do <ação> — <porquê> (fonte: <ID>)`. Os prompts
+de planner, builder e strategist recebem até 5 lições relevantes (palavras em comum com a
+task pesadas pela raridade; nenhuma quando nada é relevante); uma lição aprendida de novo
+é renovada no lugar de duplicada, e a manutenção noturna deduplica e poda acima de
+150 lições.
 
 ## Lessons
 - When a second surface shows the same live connection verdict as an existing screen, reuse that screen's i18n keys, the verdict's own static message and its warn class, and expose a copy-independent `data-*` state attribute for the harness… (fonte: P3-453)

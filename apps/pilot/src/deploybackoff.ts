@@ -50,3 +50,40 @@ export function deployBackoffRemaining(b: DeployBackoff | null, now: number): nu
   if (!b || b.until <= 0) return 0;
   return Math.max(0, b.until - now);
 }
+
+// ── Rollback hold: no new information, no new attempt ────────────────────────
+
+/**
+ * After a rolled-back deploy the pending path used to fire again on the very
+ * next idle cycle, walking down to the next-newest verified sha with nothing
+ * learned: 2026-09-11 08:33/08:39/08:44 burned three deploys (and quarantined
+ * three good shas) on the same environmental failure. The pending path now
+ * holds until NEW information arrives — a merge the gatekeeper recorded after
+ * the rollback (possibly the fix) — or this long passes.
+ */
+export const DEPLOY_ROLLBACK_HOLD_MS = 2 * 60 * 60_000;
+
+export interface RollbackHold {
+  /** Sha whose deploy rolled back (quarantined by deploy()). */
+  sha: string;
+  /** Newest gate-verified merge recorded when the rollback happened. */
+  tip: string | null;
+  /** Epoch ms after which the pending path may try again regardless. */
+  until: number;
+}
+
+export function noteDeployRollback(sha: string, verifiedTip: string | null, now: number, holdMs = DEPLOY_ROLLBACK_HOLD_MS): RollbackHold {
+  return { sha, tip: verifiedTip, until: now + holdMs };
+}
+
+/**
+ * Milliseconds the pending path must still hold after a rollback (0 = free):
+ * released early the moment the verified list's tip moves (a new merge landed).
+ * The merge path (launchDeploy) never consults it — a fresh merge IS the new
+ * information.
+ */
+export function rollbackHoldRemaining(h: RollbackHold | null, verifiedTipNow: string | null, now: number): number {
+  if (!h) return 0;
+  if (verifiedTipNow !== h.tip) return 0;
+  return Math.max(0, h.until - now);
+}

@@ -6,9 +6,10 @@
  * session ids and file names are single safe path segments, and the resolved
  * absolute path must stay inside ARTIFACTS_ROOT.
  */
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, readSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { accessibleDownloadPath, openContainedFile, resolveDownloadRoots } from "./downloadpath.js";
 
 export const ARTIFACTS_ROOT = resolve(homedir(), ".opencode-remote", "artifacts");
 
@@ -78,6 +79,13 @@ export function listArtifacts(sessionId?: string, root: string = ARTIFACTS_ROOT)
   for (const sid of sessions) {
     if (!validSegment(sid)) continue;
     if (sessionId && sid !== sessionId) continue;
+    // eval-12: a symlinked session DIRECTORY is never followed — readdir
+    // used to list whatever it pointed at (and readArtifact served it)
+    try {
+      if (!lstatSync(join(root, sid)).isDirectory()) continue;
+    } catch {
+      continue;
+    }
     let dirents: import("node:fs").Dirent[] = [];
     try {
       dirents = readdirSync(join(root, sid), { withFileTypes: true });
@@ -174,11 +182,34 @@ export function readArtifact(
   if (!abs.startsWith(base + "/")) return { ok: false, reason: "invalid" }; // defense in depth
   try {
     // lstat: a symlink pointing outside the root must not be served
-    const st = lstatSync(abs);
-    if (!st.isFile()) return { ok: false, reason: "missing" };
-    if (st.size > MAX_ARTIFACT_BYTES) return { ok: false, reason: "too-large" };
-    return { ok: true, data: readFileSync(abs) };
+    if (!lstatSync(abs).isFile()) return { ok: false, reason: "missing" };
   } catch {
     return { ok: false, reason: "missing" };
+  }
+  // eval-12: lstat only judges the LAST component — a symlinked session
+  // directory still led anywhere on disk. Same admission RT-466 gave the
+  // downloads: the REAL path must stay inside the real root, reopened with
+  // O_NOFOLLOW + re-checked, and only the size fstat reported is read (a file
+  // growing between the check and the read can no longer blow past the cap).
+  const roots = resolveDownloadRoots([base]);
+  const real = accessibleDownloadPath(abs, roots);
+  if (real === null) return { ok: false, reason: "invalid" };
+  const fd = openContainedFile(real, roots);
+  if (fd === null) return { ok: false, reason: "missing" };
+  try {
+    const size = fstatSync(fd).size;
+    if (size > MAX_ARTIFACT_BYTES) return { ok: false, reason: "too-large" };
+    const data = Buffer.alloc(size);
+    let off = 0;
+    while (off < size) {
+      const n = readSync(fd, data, off, size - off, off);
+      if (n === 0) break;
+      off += n;
+    }
+    return { ok: true, data: off === size ? data : data.subarray(0, off) };
+  } catch {
+    return { ok: false, reason: "missing" };
+  } finally {
+    closeSync(fd);
   }
 }

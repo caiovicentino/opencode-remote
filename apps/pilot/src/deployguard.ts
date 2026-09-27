@@ -307,3 +307,130 @@ export function installModeFor(currentHash: string, saved: LastInstall | null): 
   if (!LOCK_HASH_RE.test(currentHash)) return "ci";
   return saved?.sha256 === currentHash ? "fast" : "ci";
 }
+
+// ── Catch-up plan: bounded steps + an explicit list of what ships ────────────
+
+/**
+ * A deploy that ships at least this many gate-verified merges is a CATCH-UP:
+ * it gets the reinforced soak (deploy.ts) and announces its plan. The 22/09
+ * and 24/09 outages both ended with prod 17+ merges behind origin/main — one
+ * deploy would have shipped all of them behind a 2-minute soak.
+ */
+export const CATCHUP_MIN_TASKS = 2;
+/**
+ * Most verified merges a single step ships while the range is CLEAN (no
+ * quarantined sha inside it): a failure then quarantines one step and names
+ * at most this many suspects, and every earlier step stays live.
+ */
+export const CATCHUP_STEP_TASKS = 4;
+/** Soak floor (minutes) for a catch-up deploy — 10 checks, so the reinforced
+ * lane's live-invariant reruns (every 5th check) and rate window both engage. */
+export const CATCHUP_SOAK_MIN = 10;
+/** Cap on the first-parent walk from origin/<base> down to prod. */
+export const MAX_PLAN_COMMITS = 500;
+
+export interface DeployPlan {
+  /** Sha production runs (pre-deploy HEAD). */
+  prod: string;
+  /** Newest deployable sha (the legacy single-jump target); null = nothing deployable. */
+  newest: string | null;
+  /** This deploy's target: `newest`, or the last merge of a bounded step. */
+  target: string | null;
+  /** Verified, non-quarantined merges between prod (excl.) and `newest`
+   * (incl.), oldest first — everything still to ship. */
+  pending: VerifiedMerge[];
+  /** Slice of `pending` this deploy ships (oldest first, ends at `target`). */
+  step: VerifiedMerge[];
+  /** Quarantined shas inside the range: never a target, but their code rides
+   * along in every descendant (a later merge supersedes, P2-058). */
+  skipped: QuarantinedSha[];
+  /** True when `step` stops short of `newest` (bounded catch-up step). */
+  stepped: boolean;
+  /** False when prod is not on the walked first-parent history (operator
+   * reset, diverged prod): the plan falls back to the legacy newest target
+   * and the direction guard has the last word. */
+  anchored: boolean;
+}
+
+/**
+ * Pure plan for the next deploy. `history` is origin/<base>'s first-parent
+ * history, newest first (object ids; anything else is skipped, P1-060).
+ * `newest` keeps pickDeployableSha's exact semantics. When prod sits on that
+ * history, everything between them is enumerated and, while the range carries
+ * no quarantined sha, a large range ships in bounded oldest-first steps of
+ * `stepTasks` merges. A range that already holds a failure (quarantined sha)
+ * targets `newest` directly — the fix-forward rule: every later step would
+ * carry the failed change anyway, and only the newest merge can carry its fix.
+ */
+export function planDeploy(
+  history: string[],
+  prod: string,
+  verified: VerifiedMerge[],
+  quarantine: QuarantinedSha[],
+  stepTasks = CATCHUP_STEP_TASKS,
+): DeployPlan {
+  const newest = pickDeployableSha(history, verified, quarantine);
+  const base: DeployPlan = { prod, newest, target: newest, pending: [], step: [], skipped: [], stepped: false, anchored: false };
+  if (!newest || !SHA_RE.test(prod)) return base;
+  const walked = history.slice(0, MAX_PLAN_COMMITS);
+  const prodAt = walked.findIndex((sha) => sha === prod || (sha.startsWith(prod) && prod.length >= 7));
+  const newestAt = walked.indexOf(newest);
+  if (prodAt < 0) return base;
+  if (newestAt < 0 || newestAt >= prodAt) {
+    // prod already at/after the newest deployable sha — nothing to ship
+    return { ...base, target: null, anchored: true };
+  }
+  const byVerified = new Map(verified.map((v) => [v.sha, v]));
+  const byQuarantine = new Map(quarantine.map((q) => [q.sha, q]));
+  const pending: VerifiedMerge[] = [];
+  const skipped: QuarantinedSha[] = [];
+  // oldest first: from just above prod up to (and including) newest
+  for (let i = prodAt - 1; i >= newestAt; i--) {
+    const sha = walked[i]!;
+    if (!SHA_RE.test(sha)) continue;
+    const q = byQuarantine.get(sha);
+    if (q) {
+      skipped.push(q);
+      continue;
+    }
+    const v = byVerified.get(sha);
+    if (v) pending.push(v);
+  }
+  const size = Math.max(1, Math.floor(stepTasks));
+  const stepped = skipped.length === 0 && pending.length > size;
+  const step = stepped ? pending.slice(0, size) : pending;
+  return {
+    prod,
+    newest,
+    target: step.at(-1)?.sha ?? newest,
+    pending,
+    step,
+    skipped,
+    stepped,
+    anchored: true,
+  };
+}
+
+/** Ids of a merge list, bounded for single-line log/event text. */
+export function planTaskIds(merges: VerifiedMerge[], max = 12): string {
+  const ids = merges.map((m) => m.task || m.sha.slice(0, 7));
+  return ids.length > max ? `${ids.slice(0, max).join(", ")} +${ids.length - max} more` : ids.join(", ");
+}
+
+/**
+ * One-line, human summary of what a deploy ships — the explicit "what is
+ * going live" record the catch-up announces (log, event, supervisor notify).
+ */
+export function planSummary(plan: DeployPlan): string {
+  const target = plan.target?.slice(0, 7) ?? "none";
+  const from = plan.prod.slice(0, 7);
+  if (!plan.anchored) return `deploy ${from} → ${target}: prod not on origin first-parent history — single jump, contents not enumerated`;
+  if (!plan.target) return `prod ${from} is current — nothing verified to ship`;
+  const remaining = plan.pending.length - plan.step.length;
+  const head = plan.stepped
+    ? `catch-up step: ${plan.step.length} of ${plan.pending.length} verified merges (${from} → ${target}), ${remaining} remain after this step`
+    : `deploy ${from} → ${target}: ${plan.step.length} verified merge(s)`;
+  const ships = plan.step.length ? ` — ships ${planTaskIds(plan.step)}` : "";
+  const riders = plan.skipped.length ? ` — carries ${plan.skipped.length} quarantined merge(s): ${plan.skipped.map((q) => q.task || q.sha.slice(0, 7)).join(", ")}` : "";
+  return `${head}${ships}${riders}`;
+}
