@@ -33,6 +33,7 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
   delete process.env[k];
 }
 
+import "./testhome"; // throwaway HOME + launchd shim before any pilot module loads
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
