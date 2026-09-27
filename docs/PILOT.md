@@ -1872,6 +1872,148 @@ threshold, notify e emit são injetáveis (`DeployOpts`) — a bateria de eval
 (`scripts/unit.test.ts`) testa o abort com threshold mockado provando que ele
 acontece antes do `npm ci`.
 
+## Disco: hold, retenção e VACUUM (eval-02, 27/09)
+
+**Por quê.** Em 24/09, das 04:20 às 07:40, o volume de `~/.opencode-remote` (e, na
+época, do `opencode.db`) chegou a 0 bytes. O disk guard do deploy recusou por 12h
+(85 recusas desde 23/09 15:56), mas nada parava os 8 slots. Depois disso, toda
+escrita virou fatal: `pilot fatal … ENOSPC … pilot.pid` a cada relaunch do
+KeepAlive (~14×, com 30s de ThrottleInterval). O `saveState` do caminho de crash
+lançou ENOSPC e pulou o cool-down (763 re-picks do mesmo task em ~2min). O
+heartbeat falhava em silêncio até o watchdog matar o loop. A queda de 12/09 → 22/09
+foi da mesma classe.
+
+**Disk hold** (`apps/pilot/src/diskhold.ts`). Em todo tick, antes de qualquer
+trabalho, o loop faz `statfs` de cada volume que a frota escreve: estado do pilot,
+checkout de prod, o `opencode.db` **resolvido** (symlink para o SSD desde 24/09) e
+o temp. O **pior** volume decide o nível:
+
+| nível | entra | sai (histerese) | efeito |
+|---|---|---|---|
+| `low` | < 10 GiB | ≥ 12 GiB → ok | sem picks novos, sem nightly/aux; pipelines em voo terminam; deploy segue com o guard de 5 GiB |
+| `critical` | < 5 GiB, ou uma escrita falhou com ENOSPC (mín. 10 min) | ≥ 7 GiB → low | nada novo, sem deploy; o loop só sonda, varre espaço (dist + artefatos) e alimenta o heartbeat |
+
+Cada transição gera **um** alerta: log `disk hold` / `disk hold released`, evento
+`alert` (`task: "disk"`), `notifySupervisor("pilot-disk")` e um push `💾 Pilot …`
+com `digest` ligado. Enquanto o hold durar, sai um lembrete a cada 6h: em 12/09 um
+único sinal perdido virou 10 dias parados. O seam é único (`diskAlert`); o dono da
+entrega de alertas pode repontá-lo. Quando o espaço volta, o backoff do pending deploy é zerado (sem
+esperar 30min). Se nenhum volume puder ser lido, o nível não muda: nunca entra em
+hold por falta de evidência e nunca sai dele pelo mesmo motivo.
+
+**Nunca crash-loop.**
+- **Boot gate:** a escrita do pidfile espera (sem crash) enquanto o disco está
+  critical; um ENOSPC nela força o hold.
+- **Caminho de crash:** o `runSlot`, o fim do deploy e o contador de deploy usam
+  `saveStateSafe`, que nunca lança. O estado em memória segue autoritativo e o
+  próximo save tenta de novo.
+- **ENOSPC fora de await:** uma rejeição não tratada com ENOSPC vira hold em vez de
+  derrubar o processo. Outros erros continuam fatais (crash-only).
+- **`main()` morto por ENOSPC:** o processo espera o espaço voltar e sai **uma**
+  vez.
+- **Watchdog:** julga o batimento **em memória** (`heartbeatAgeMs`). O arquivo
+  `pilot/heartbeat` continua sendo o sinal externo (dashboard), gravado
+  best-effort.
+
+As listas do deploy guard (`verified-merges.jsonl`, `quarantine.jsonl`,
+`last-install.json`) agora são gravadas com tmp + rename: um ENOSPC no meio da
+escrita não trunca mais a quarentena.
+
+**Hatches** (os mesmos do daemon): `OCR_DISK_FULL=1` força critical e
+`OCR_DISK_OK=1` força ok (FULL vence); `OCR_DISK_HOLD_TICK_MS` encurta o tick em
+testes. `scripts/pilot-diskfull.test.ts` sobe o entrypoint real com HOME
+temporário e `OCR_DISK_FULL=1`. Com `OCR_REAL_ENOSPC=1` (macOS), o teste repete o
+cenário num volume HFS+ de 16 MB realmente cheio e prova o resume automático num
+sparse de 8 GiB (~3,6 GB de backing temporário).
+
+**Retenção de artefatos** (automática, em `apps/pilot/src/retention.ts`: de hora
+em hora junto do sweep de dist; num hold critical, na entrada e de hora em hora
+enquanto ele durar). Cada regra
+mantém um piso dos N mais novos, apaga o que passou da idade e aplica um teto de
+contagem. Arquivo com menos de 1h nunca é tocado; subdiretórios e symlinks nunca
+casam.
+
+| regra | onde | piso | idade | teto |
+|---|---|---|---|---|
+| builder-logs | `pilot/builder-*.log` | 50 | 30d | 200 |
+| stray-logs | `pilot/p<N>-*.log`, `last-builder-output*.log` | 0 | 14d | 20 |
+| shots-builder | `pilot/shots/builder/*` (só arquivos) | 100 | 30d | 400 |
+| shots-explorer | `pilot/shots/explorer/*.png` | 120 | 45d | 400 |
+| tmp | `pilot/tmp/*` | 0 | 7d | 100 |
+| client-logs | `pilot/client-logs/*.txt` | 20 | 30d | 100 |
+
+`pilot/shots/*.png` continua com o teto de 20 do `shot.ts` (P2-011). Aquela
+passada só conhece `.png`, por isso o css/html de `shots/builder` acumulava.
+Manual: `npx tsx apps/pilot/src/retention.ts artifacts` (dry-run) /
+`… --apply`.
+
+**Retenção de sessões do opencode** (opt-in, CLI, **dry-run por padrão**). Medido
+read-only em 27/09: o `opencode.db` tem 87 GB, `page_count` 21,3M × 4 KiB,
+`freelist_count` 0 e `auto_vacuum` 0 (NONE). ~90% dele é a tabela `event`, e cada
+`message.updated` regrava os `summary.diffs[*].patch` da sessão inteira (até
+5 MB/evento no pilot). As sessões dos clones do pilot somam ~28–31 GB. O resto é
+de outros projetos do dono (`/Volumes/SSD Major/wow` ≈ 47 GB), fora do alcance
+desta ferramenta.
+
+Contrato do opencode 1.18.32, verificado num `opencode serve` hermético:
+- `GET /session?directory=D` lista só D, do mais novo para o mais antigo, e
+  **limita a 100 por padrão**. Por isso a ferramenta passa `limit=10000` e marca
+  listagens truncadas.
+- `scope=project` alarga para todos os clones do mesmo repositório, inclusive o
+  do dono, e **nunca é usado**.
+- `DELETE /session/<id>` apaga em cascata filhos, mensagens, parts e o event log.
+  **Ignora `directory`**, então a posse é checada do lado do cliente: diretório
+  exatamente igual a um clone do pilot (`repo-<n>`, clones de missão,
+  `repo-explorer`, `repo` legado), só raízes (o filho vai junto), idade = update
+  mais novo da árvore inteira, ids canônicos, teto por execução (`--max`, padrão
+  500), pausa entre deletes e trilha JSONL em `pilot/retention-audit.jsonl`, mais
+  `pilot-retention` no `audit.log`.
+
+Com o opencode no ar e o pilot parado ou ocioso:
+
+```sh
+npx tsx apps/pilot/src/retention.ts sessions --days 14          # dry-run: 582 raízes (~11–13 GB) em 27/09
+npx tsx apps/pilot/src/retention.ts sessions --days 14 --apply  # apaga + audita
+# --days 3 alcança 1000 raízes (~27–28 GB) em 27/09
+```
+
+**VACUUM, a realidade.** O delete só devolve páginas ao freelist **interno**: o
+arquivo continua com 87 GB, e o crescimento seguinte reusa esse espaço antes de
+crescer (28 GB ≈ 4–7 dias de frota). Para encolher o arquivo:
+- `VACUUM` no lugar exige acesso exclusivo e reescreve tudo. Precisa de ~2× o
+  tamanho do banco: um temp do tamanho do banco em `SQLITE_TMPDIR`/`TMPDIR`
+  (**disco interno por padrão, 78 GB livres < 87 GB, o que levaria a um novo
+  ENOSPC**) mais o WAL no SSD.
+- **Recomendado:** `VACUUM INTO` numa conexão **read-only**, com o opencode
+  parado. Isso grava uma cópia compacta (≈ dados vivos) direto no SSD, sem temp no
+  disco interno e já no modo INCREMENTAL. Num banco de teste isso foi verificado:
+  cópia com metade das páginas, `quick_check` ok, `auto_vacuum` 2 e origem
+  byte-idêntica. Depois é trocar os arquivos, levando `-wal`/`-shm` junto com o
+  antigo. Daí em diante, `PRAGMA incremental_vacuum` devolve o espaço liberado sem
+  reescrita total.
+
+```sh
+# 0) retenção primeiro (precisa do opencode no ar); depois o DONO para só o opencode
+#    (o daemon fala com ele pela API e nunca abre o banco)
+launchctl bootout gui/$(id -u)/com.ocr.opencode
+D="/Volumes/SSD Major/opencode_data"
+sqlite3 -readonly "$D/opencode.db" "PRAGMA auto_vacuum=INCREMENTAL; VACUUM INTO '$D/opencode.compact.db'"
+sqlite3 -readonly "$D/opencode.compact.db" "PRAGMA quick_check; PRAGMA auto_vacuum"   # ok / 2
+cd "$D" && mv opencode.db opencode.db.pre-vacuum \
+  && for x in -wal -shm; do [ -e "opencode.db$x" ] && mv "opencode.db$x" "opencode.db.pre-vacuum$x"; done \
+  && mv opencode.compact.db opencode.db
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ocr.opencode.plist   # ou: launchctl load -w <plist>
+# conferidas as sessões no app: rm "$D"/opencode.db.pre-vacuum*   (devolve os 87 GB antigos)
+```
+
+**Rotação de logs** (`deploy/rotate-logs.sh`, launchd `com.ocr.logrotate` às
+03:07). Cada log é tratado isoladamente: um log que não se consegue arquivar não
+aborta mais a rodada. O arquivo vivo só é truncado depois que a cópia `.gz` foi
+gravada. Arquivos antigos em texto puro são comprimidos, e o prune é **por log**,
+pelos 5 mais novos por mtime. O `sort -r` antigo mantinha os 5 caminhos
+lexicograficamente maiores somando todos os logs, e apagava um arquivo do daemon
+mais novo que os do relay.
+
 ## Deploy só de SHA verificado + quarentena (P2-058, 02/09)
 
 Antes o `deploy()` aceitava qualquer HEAD de `origin/main`: um push direto em
