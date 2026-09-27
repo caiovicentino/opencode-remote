@@ -88,6 +88,7 @@ export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "routines.test.ts", cause: "network-port" },
   { file: "unit.test.ts", cause: "network-port" },
   { file: "daemon-hardening.test.ts", cause: "long-lived-child" },
+  { file: "judge-bridge.test.ts", cause: "chmod" },
 ];
 
 /**
