@@ -797,6 +797,7 @@ async function runScribe(
     timeoutMin: 10,
     label: `scribe-${t.id}`,
     onStdout: agentStream("scribe"),
+    sessionCapture: true, // eval-18: attribute the scribe's tokens to the task
     missionModels: cfg.missionModels,
   });
   trackSession?.(out.sessionId);
@@ -1480,6 +1481,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
           timeoutMin: CONTEXT_RECAP_TIMEOUT_MIN,
           label: `recap-${t.id}-r${round}`,
           onStdout: stream,
+          sessionCapture: true, // eval-18: attribute the recap's tokens to the task
         });
         trackSession(out.sessionId);
         return parseRecap(out.output);
@@ -1712,6 +1714,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `sec-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: reviewer tokens were never attributed
         missionModels: cfg.missionModels,
       }),
       runAgentForRole("reviewer", reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, reviewDiff, uiShot, specFile, incrementalFrom), {
@@ -1719,6 +1722,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: reviewer tokens were never attributed
         missionModels: cfg.missionModels,
       }),
     ]);
@@ -1796,6 +1800,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `esc-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: tier-A fallback session gets attributed
         models: cfg.models,
         marker: ESCALATION_MARKER,
       });

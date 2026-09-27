@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkS
 import { join, dirname } from "node:path";
 import { nowLocalISO } from "./log";
 import { homedir } from "node:os";
-import type { TaskUsd } from "./pricing";
+import { normalizePricingConfig, type PricingConfig, type TaskUsd } from "./pricing";
 import type { MissionModels } from "./mission";
 import type { InfraFailureKind } from "./audit";
 
@@ -37,6 +37,12 @@ export interface PilotConfig {
    * (origin/HEAD detection in missionrepo.ts). Undefined = `main` (this repo);
    * every origin/<base> read (queue, task branches, merges) derives from it. */
   baseBranch?: string;
+  /** eval-18: self-hosted ops pricing (pricing.ts normalizePricingConfig) —
+   * absent = no `opsUSD` in taskUSD, the BYOK list view is unchanged. */
+  pricing?: PricingConfig;
+  /** eval-18: per-task token budget for the alert (tokenbudget.ts); 0
+   * disables it. Always set after normalizePilotConfig. */
+  tokenBudgetPerTask?: number;
 }
 
 // ── P1-059: tiered cognition (strong models plan/judge, flash executes) ──────
@@ -101,6 +107,17 @@ export const DEFAULTS: PilotConfig = {
   stateRoot: join(homedir(), ".opencode-remote", "pilot"),
 };
 
+/** eval-18: default per-task token budget for the alert (tokenbudget.ts) —
+ * ≈ p95 of per-task totals over the 200-task rolling window (p50 7.9M ·
+ * p90 31.7M · p95 43.0M · max 85.7M, state.json 2026-09-24). */
+export const DEFAULT_TOKEN_BUDGET_PER_TASK = 40_000_000;
+
+/** pilot.json `tokenBudgetPerTask`: finite ≥ 0 wins (0 disables the alert);
+ * absent or garbage falls back to the default. */
+export function normalizeTokenBudget(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : DEFAULT_TOKEN_BUDGET_PER_TASK;
+}
+
 /** P1-006: scheduler slot count — 1 (serial, default) up to a hard cap of 8. */
 export function clampSlots(n: unknown): number {
   const v = Number(n);
@@ -137,6 +154,12 @@ export function normalizePilotConfig(raw: Record<string, unknown>): PilotConfig 
   // typo'd key from pilot.json must never reach `origin/${base}` shell
   // interpolations when no foreign mission runs
   delete cfg.baseBranch;
+  // eval-18: tolerant like `models` — an invalid pricing block behaves as
+  // absent (no ops view), a garbage budget falls back to the default
+  const pricing = normalizePricingConfig(cfg.pricing);
+  if (pricing) cfg.pricing = pricing;
+  else delete cfg.pricing;
+  cfg.tokenBudgetPerTask = normalizeTokenBudget(cfg.tokenBudgetPerTask);
   return cfg;
 }
 
@@ -242,8 +265,15 @@ export interface PilotState {
   taskCache?: Record<string, { input: number; cacheRead: number; cacheWrite: number }>;
   /** P2-113: task id → BYOK list-price dollar view of the task's token
    * columns (see pricing.ts). Product transparency for BYOK users — NOT the
-   * operator's own ops cost. Same lifetime/prune semantics as taskCosts. */
+   * operator's own ops cost. Same lifetime/prune semantics as taskCosts.
+   * eval-18: `opsUSD`/`opsTokens` carry the operator's own self-hosted cost
+   * when pilot.json configures `pricing.selfHosted` (field contract in
+   * docs/PILOT.md). */
   taskUSD?: Record<string, TaskUsd>;
+  /** eval-18: pricingFingerprint() taskUSD was last (re)priced with. */
+  taskUSDPricing?: string;
+  /** eval-18: task id → highest token-budget multiple already alerted. */
+  tokenBudgetAlerts?: Record<string, number>;
   /** P1-078: slot number → provider prefix-cache breakdown of the most recent
    * task reconciled in that slot (live window, replaced per task). Proof
    * surface for the slot-affinity/stagger effect; best-effort like taskCache. */
@@ -330,6 +360,17 @@ function normalizeTaskHolds(v: unknown): Record<string, number> {
   return out;
 }
 
+/** eval-18: tolerant parse of the budget alert levels — positive integers
+ * only, garbage dropped, never crash. */
+function normalizeBudgetAlerts(v: unknown): Record<string, number> | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const out: Record<string, number> = {};
+  for (const [task, n] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof n === "number" && Number.isFinite(n) && n >= 1) out[task] = Math.floor(n);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** P1-075: tolerant parse of the lesson-impact cohorts — garbage → undefined. */
 function normalizeLessonImpact(v: unknown): LessonImpact | undefined {
   if (!v || typeof v !== "object") return undefined;
@@ -378,6 +419,10 @@ export function loadState(file = STATE_FILE): PilotState {
       taskCache: s.taskCache && typeof s.taskCache === "object" ? s.taskCache : {},
       // P2-113: dollar view backfilled for legacy files, never crash
       taskUSD: s.taskUSD && typeof s.taskUSD === "object" ? s.taskUSD : {},
+      // eval-18: re-price fingerprint + budget alert levels are lifetime
+      // records like taskUSD — the midnight rollover must not re-arm alerts
+      taskUSDPricing: typeof s.taskUSDPricing === "string" ? s.taskUSDPricing : undefined,
+      tokenBudgetAlerts: normalizeBudgetAlerts(s.tokenBudgetAlerts),
       // P1-078: per-slot cache breakdown backfilled for legacy files
       slotCache: s.slotCache && typeof s.slotCache === "object" ? s.slotCache : {},
       // P1-095: idle-window trigger + nightly skip record survive midnight (the
