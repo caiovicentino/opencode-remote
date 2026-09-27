@@ -78,7 +78,10 @@ export default function ShortcutsSheet() {
     cardRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Esc closes the topmost surface only: stopping here (document)
+        // keeps the chat's find bar (a window listener) open underneath
         e.preventDefault();
+        e.stopPropagation();
         setOpen(false);
       }
     };

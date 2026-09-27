@@ -327,6 +327,11 @@ check("sheet: every shortcut belongs to a rendered group", SHORTCUTS.every((s) =
   );
   const app = src("apps/web/src/App.tsx");
   check("wiring: the paired shell mounts the shortcuts sheet once", (app.match(/<ShortcutsSheet \/>/g) ?? []).length === 1);
+  const sheet = src("apps/web/src/components/ShortcutsSheet.tsx");
+  check(
+    "wiring: the sheet's Esc stops at document, so the chat find bar (window listener) stays open underneath",
+    sheet.includes('document.addEventListener("keydown", onKey)') && sheet.includes("e.stopPropagation();"),
+  );
 }
 
 if (failures > 0) {
