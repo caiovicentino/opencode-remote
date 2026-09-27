@@ -251,6 +251,76 @@ function jobBlock(name: string): string {
   rmSync(releaseDir, { recursive: true, force: true });
 }
 
+// --- 3b. P3-457 end to end: a gradual rollout survives the release's own checks
+{
+  // update-feed.mjs writes the percentage (P3-458), the release-feeds job's
+  // verifiers (feed-consistency.ts, feedhash.ts) must accept the additive
+  // fields, and rollout.mjs (section 3) moves it afterwards — together the
+  // "fraction of the machines" and "suspend without deleting assets" of P3-457.
+  const dir = mkdtempSync(join(tmpdir(), "release-dist-p3457-"));
+  const mac = join(dir, "mac");
+  const win = join(dir, "win");
+  mkdirSync(mac);
+  mkdirSync(win);
+  writeFileSync(join(mac, "OpenCode-Remote-0.3.0-arm64.zip"), "zip-arm");
+  writeFileSync(join(mac, "OpenCode-Remote-0.3.0-x64.zip"), "zip-x64");
+  writeFileSync(
+    join(mac, "latest-mac.yml"),
+    "version: 0.3.0\nfiles:\n  - url: OpenCode-Remote-0.3.0-x64.zip\n    sha512: abc\n    size: 7\npath: OpenCode-Remote-0.3.0-x64.zip\nsha512: abc\nreleaseDate: '2026-09-27T12:00:00.000Z'\n",
+  );
+  const exe = "OpenCode-Remote-Setup-0.3.0.exe";
+  writeFileSync(join(win, exe), "exe-bytes");
+  const { createHash } = await import("node:crypto");
+  const exeSha = createHash("sha512").update(readFileSync(join(win, exe))).digest("base64");
+  writeFileSync(
+    join(win, "latest.yml"),
+    `version: 0.3.0\nfiles:\n  - url: ${exe}\n    sha512: ${exeSha}\n    size: 9\npath: ${exe}\nsha512: ${exeSha}\nreleaseDate: '2026-09-27T12:00:00.000Z'\n`,
+  );
+  const feedScript = join(repoRoot, "apps", "desktop", "scripts", "update-feed.mjs");
+  const env = { ...process.env, ROLLOUT_PERCENT: "20", GITHUB_REF_NAME: "v0.3.0" };
+  const macRun = spawnSync(process.execPath, [feedScript, "--dist", mac], { encoding: "utf8", env });
+  const winRun = spawnSync(process.execPath, [feedScript, "--staging-yml", "--dist", win], { encoding: "utf8", env });
+  const arm = existsSync(join(mac, "update-mac-arm64.json")) ? readFileSync(join(mac, "update-mac-arm64.json"), "utf8") : "";
+  check(
+    "P3-457: ROLLOUT_PERCENT=20 lands in the mac JSON feeds and in latest.yml",
+    macRun.status === 0 && winRun.status === 0 && /"rolloutPercent": 20/.test(arm) && /^stagingPercentage: 20$/m.test(readFileSync(join(win, "latest.yml"), "utf8")),
+    `${macRun.stderr}${winRun.stderr}`,
+  );
+  const assets = [
+    "OpenCode-Remote-0.3.0-arm64.dmg",
+    "OpenCode-Remote-0.3.0-x64.dmg",
+    "OpenCode-Remote-0.3.0-arm64.zip",
+    "OpenCode-Remote-0.3.0-x64.zip",
+    exe,
+    "latest-mac.yml",
+    "latest.yml",
+    "update-mac.json",
+    "update-mac-arm64.json",
+    "update-mac-x64.json",
+  ].join("\n");
+  const consistency = spawnSync(
+    process.execPath,
+    [tsxEntry, join(repoRoot, "scripts", "feed-consistency.ts"), "v0.3.0", join(mac, "update-mac.json"), join(win, "latest.yml"), join(mac, "update-mac-arm64.json"), join(mac, "update-mac-x64.json")],
+    { cwd: repoRoot, encoding: "utf8", input: assets },
+  );
+  check(
+    "P3-457: the release-feeds consistency check accepts the additive rollout fields",
+    consistency.status === 0 && consistency.stdout.includes("feed-consistency: OK v0.3.0"),
+    `${consistency.status} ${consistency.stdout}${consistency.stderr}`,
+  );
+  const hashInput = JSON.stringify({
+    feeds: [{ label: "latest.yml", yml: readFileSync(join(win, "latest.yml"), "utf8") }],
+    measured: [{ fileName: exe, sha512: exeSha, size: 9 }],
+  });
+  const hash = spawnSync(process.execPath, [tsxEntry, join(repoRoot, "scripts", "feedhash.ts")], { cwd: repoRoot, encoding: "utf8", input: hashInput });
+  check(
+    "P3-457: the release-feeds digest check accepts a latest.yml carrying stagingPercentage",
+    hash.status === 0 && hash.stdout.includes("feedhash: OK"),
+    `${hash.status} ${hash.stdout}${hash.stderr}`,
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
 // --- 4. release.yml wiring -----------------------------------------------------
 {
   check(
