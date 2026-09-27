@@ -1,1 +1,2 @@
 * text=auto eol=lf
+scripts/unit-suite.txt merge=union

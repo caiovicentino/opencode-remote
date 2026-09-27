@@ -1,0 +1,67 @@
+# The unit battery (`npm run test:unit` → scripts/unit-suite.ts): one test
+# file per line, run in this order; the first failing file stops the battery.
+#
+# Adding a test: APPEND one line at the END — `scripts/<topic>.test.ts`,
+# optionally followed by --flags passed to the file. Never edit the test:unit
+# script in package.json. .gitattributes merges this file with merge=union, so
+# two branches that each append a line merge without a conflict; a line that
+# lands twice fails the battery with a "listed twice" message — keep one.
+scripts/unit.test.ts
+scripts/preview.test.ts
+scripts/message-paging.test.ts
+scripts/bubble-merge.test.ts
+scripts/chatfind.test.ts
+scripts/thinking.test.ts
+scripts/composer.test.ts
+scripts/daemonrestart.test.ts
+scripts/home.test.ts
+scripts/i18n-emoji.test.ts
+scripts/voice.test.ts
+scripts/voiceloop.test.ts
+scripts/idempotency.test.ts
+scripts/context-checkpoint.test.ts
+scripts/relay-ratelimit.test.ts
+scripts/relay-healthz.test.ts
+scripts/relay-ipcap.test.ts
+scripts/relay-rooms.test.ts
+scripts/relay-envelope.test.ts
+scripts/relay-liveness.test.ts
+scripts/relay-crash.test.ts
+scripts/relay-knobnames.test.ts
+scripts/relay-alertrules.test.ts
+scripts/desktop-log.test.ts
+scripts/diagredact.test.ts
+scripts/instances.test.ts
+scripts/dist-smoke.test.ts
+scripts/sidecar-log.test.ts
+scripts/client-ready.test.ts
+scripts/pwa-watch.test.ts
+scripts/permission-cards.test.ts
+scripts/artifact-auto.test.ts
+scripts/qr-feed.test.ts
+scripts/qr-wait.test.ts
+scripts/paircode.test.ts
+scripts/pairempty.test.ts
+scripts/reauth.test.ts
+scripts/workflow-yaml.test.ts
+scripts/release-watch.test.ts
+scripts/e2e-orphans.test.ts
+scripts/relay-backoff.test.ts
+scripts/relay-proxy.test.ts
+scripts/release-preflight.test.ts
+scripts/artifactbudget.test.ts
+scripts/electron-vuln.test.ts
+scripts/desktop-update.test.ts --unit-only
+scripts/degraded-retry.test.ts
+scripts/degraded-theme.test.ts
+scripts/gate-wordmark.test.ts
+scripts/gate-queue.test.ts
+scripts/notify.test.ts
+scripts/opencodebin.test.ts
+scripts/modelrevalidate.test.ts
+scripts/pane-back.test.ts
+scripts/pane-icons.test.ts
+scripts/handoff.test.ts
+scripts/download-path.test.ts
+scripts/unit-suite.test.ts
+scripts/testhome.test.ts

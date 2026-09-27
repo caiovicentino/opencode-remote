@@ -33,10 +33,12 @@
  *
  * Everything listed below is pure node: fs, os and path only — no Electron,
  * no socket, no chmod, no spawn, no listen — so the same files pass on any
- * OS and double as the portable path-logic regression net. One exception:
- * testhome.test.ts spawns two short-lived node children (no listen, nothing
- * kept alive) to prove the test-HOME sandbox (USERPROFILE on Windows) in a
- * fresh process.
+ * OS and double as the portable path-logic regression net. Two deliberate
+ * exceptions spawn short-lived children (never a server, nothing kept
+ * alive): testhome.test.ts (two node children, proving the test-HOME
+ * sandbox — USERPROFILE on Windows — in a fresh process) and
+ * unit-suite.test.ts (node/tsx and git children, pinning the unit-battery
+ * runner's spawn semantics and the merge=union list merge on Windows too).
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
@@ -95,6 +97,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "testhome.test.ts",
   "thinking.test.ts",
   "traystatus.test.ts",
+  "unit-suite.test.ts",
   "updateremind.test.ts",
   "updateprogress.test.ts",
   "updatespace.test.ts",
