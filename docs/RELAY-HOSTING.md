@@ -149,7 +149,7 @@ trusted LAN/VPN without a proxy is the opt-in:
 | `RELAY_WEB_BURST` | `60` | Token-bucket burst for the static route, per client identity — how many back-to-back requests a cold page load may cost before throttling. Ceiling `10000`; invalid values **refuse the boot** (fail-closed) exactly like the rate knob. |
 
 The relay also accepts `RELAY_RATE_PER_MIN` and `RELAY_RATE_BURST`
-(per-connection token bucket, defaults `30000` and `20000`, ceilings `60000`
+(per-connection token bucket, defaults `45000` and `1500`, ceilings `60000`
 and `100000`) and `RELAY_PING_INTERVAL_S` (stale-socket sweep, default `30`,
 ceiling `3600`). The rate defaults are sized from measured daemon traffic —
 see the next section — so leave them alone unless you have a specific abuse
@@ -165,10 +165,10 @@ one frame per streamed event). The previous defaults — 600 frames/min with a
 (`rate limited, dropping device`, all with the daemon's own sender prefix);
 each close is `4029`, after which the daemon waits at least 60 s before
 redialing, so the phone froze in the middle of a response. Replayed through
-the relay's own bucket arithmetic, `30000`/min needs a 7,000 burst to close
-nobody in the recorded week; the `20000` default keeps roughly three times
-that for a second connected phone (every phone multiplies the daemon's
-frames).
+the relay's own bucket arithmetic, **`45000`/min with a `1500` burst closes
+nobody in the recorded week**: the recorded peak second (1,144) fits the
+burst, and the sustained rate carries the rest of the daemon's shape. The
+burst stays at the old scale on purpose — see "What it costs" below.
 
 Two properties changed with it:
 
@@ -184,11 +184,29 @@ Two properties changed with it:
 
 What it costs: at the measured single-core capacity (the capacity reference
 section below — about 50,000 small frames per second when each read carries
-one frame), one socket at the sustained ceiling is about 1% of a core, and an
-address holding the full `RELAY_MAX_PER_IP` of 20 sockets about 20%. Lower
-`RELAY_MAX_PER_IP` on a public host with no NAT'd offices behind it if that
-share is too generous; the new `RelayRateLimited` alert says when legitimate
-traffic starts touching the ceiling.
+one frame), one socket at the sustained ceiling is about 1.5% of a core, and
+an address holding the full `RELAY_MAX_PER_IP` of 20 sockets about 30%.
+Sustained CPU is only half of it, though: the **burst is the queue one
+flooding socket can build before the relay cuts it**, and queued frames hold
+the event loop in front of everyone else's. Measured under a two-address
+blast (20 emitting sockets per address reconnecting when closed) with a
+victim pinging 100×/s, the victim's p50 stayed at **36–254 ms** across
+repeated runs at the shipped `45000`/min + `1500` default — **325–1,738 ms**
+with the 20,000 burst an earlier draft of this budget used, and 18–110 ms at
+the old 600/1000 (both endpoints scale with machine load; the burst is the
+constant). That is why the burst is small and the daemon's headroom comes
+from the sustained rate instead. In the paced regime the same budget carries
+200 sockets across 10 addresses at 480 frames/s each (44,000 frames/s,
+~0.6 core) with zero closes and a victim p50 of ~2 ms — and that is exactly
+the gap: nothing bounds those 200 sockets in aggregate. Still true and still
+unbounded: frames per IP have **no aggregate budget** — 20 sockets burst
+independently, and a legitimate daemon reconnecting after a `4029` pays a
+60 s backoff (the reconnect cost) before its next burst. Do not announce
+multi-tenant hosting on a single relay process until that per-IP aggregate
+exists (see the open findings); lower `RELAY_MAX_PER_IP` on a public host
+with no NAT'd offices behind it if that share is too generous, and the
+`RelayRateLimited` alert says when legitimate traffic starts touching the
+ceiling.
 
 ### Tuning knobs are fail-closed too (P2-171)
 
@@ -309,7 +327,12 @@ exits with no readable trace; the failure was reproduced on a full disk
 image. Now a log line that cannot be written is only counted — the
 additive `relay_log_write_errors_total` counter (`log_write_errors_total` in
 the JSON body), watched by the `RelayLogWriteErrors` alert — and the relay
-keeps routing with its log silenced until the process restarts.
+keeps routing. The silence is not permanent: once the write succeeds again
+(disk space freed, stdout restored), the log resumes on its own — measured
+under an injected ENOSPC that was later released, the next lines came out
+uncounted — and the counter sums **every** lost line, not just the first
+failure (171 lines were lost in one run against a real `RLIMIT_FSIZE`-bound
+file).
 
 ### Backpressure: the relay closes who does not read (P2-217)
 
@@ -1041,16 +1064,27 @@ minutes, therefore fires on a perfectly healthy relay and says nothing about
 divergent replicas behind one address. Do not load it.
 
 The symptom that does discriminate is a frame with content that found
-nobody: `relay_frames_unrouted_total` (`frames_unrouted` in the JSON body)
-counts every non-join frame whose room held no other live peer — the phone's
-hello landing on a replica that does not hold its daemon, or a phone talking
-to a daemon that is offline. It is a subset of `relay_frames_routed`, and on
-a healthy relay it stays near the handful of frames a daemon sends right
-after its last phone closed. A sustained rise against your own baseline, with
-a stable `relay_connections_active` (the peers stay connected, they just
+nobody — **counted by sender class** (eval-13 correction: the relay is blind
+to a peer leaving, so the daemon itself also lands in the unrouted counter
+whenever a phone closes mid-response). `relay_frames_unrouted_total`
+(`frames_unrouted` in the JSON body) counts only frames from a sender that
+is **not** the room's owner identity (`from !== room`): the phone's hello
+landing on a replica that does not hold its daemon, or a phone talking to a
+daemon that is offline. It is a subset of `relay_frames_routed`, and on a
+healthy relay it stays in the tens to a few hundreds **per day** (measured
+over the recorded production week: 44–347/day). The daemon's own
+mid-response tail is published beside it as
+`relay_frames_unrouted_owner_total` (`frames_unrouted_owner`) — on the same
+healthy relay that one climbs by thousands to tens of thousands per day
+(~99,000 of the 811,663 recorded frames, or 12%, were owner frames finding
+nobody), so **never alert on it**; it is lifecycle noise, not a trap signal.
+A sustained rise in the non-owner counter against your own baseline, with a
+stable `relay_connections_active` (the peers stay connected, they just
 never meet), means phones are talking to no one: confirm with the
 two-minute `instanceId` test above — alternating ids prove the replica split, identical
-ids point at daemons that are offline or stuck. `scripts/relay-hosting.test.ts`
+ids point at daemons that are offline or stuck — and with the
+`RelayDuplicateOwner` alert the relay now raises when two live sockets hold
+one room's owner identity. `scripts/relay-hosting.test.ts`
 reproduces the split end to end with two real replicas behind a round-robin
 balancer: the pair never meets, the probe shows two ids, and the phone's
 replica counts the unrouted hello. These series are observation only —
@@ -1079,6 +1113,12 @@ any path. So:
    (SIGTERM → P2-145): a hash change only affects NEW connections, and a
    daemon still connected to its old replica would miss its phone until it
    reconnects.
+4. One caveat about protocol probing: the daemon's
+   wire-protocol mismatch probe (P2-335) fetches `/healthz` at the **root**
+   of the relay address. With URI hashing that lands on whichever replica
+   owns `/healthz`, not on the tenant's replica — informational only (the
+   verdict degrades to `unknown` and the reconnect loop's own behavior is
+   unchanged), but worth knowing when you read that state in `/api/health`.
 
 The same test file proves the recipe with the real relay: behind a
 path-hashing balancer the daemon and the phone dialing
@@ -1150,10 +1190,13 @@ above. Both publish zero on a healthy relay, never omitted.
 Two additive counters joined the surface in eval-13, both published as zero
 on a healthy relay and never omitted: `relay_frames_unrouted_total`
 (`frames_unrouted` in the JSON, right after `frames_routed`) — the subset of
-routed frames whose room held no other live peer, see the one-replica section
-above — and `relay_log_write_errors_total` (`log_write_errors_total`, right
-after the crash counter) — log lines the process could not write (full disk,
-closed stdout), counted instead of killing the relay.
+routed frames whose room held no other live peer, **counting only senders
+that are not the room's owner** (the daemon's own mid-response tail rides
+the sibling `relay_frames_unrouted_owner_total` / `frames_unrouted_owner`,
+see the one-replica section above) — and `relay_log_write_errors_total`
+(`log_write_errors_total`, right after the crash counter) — log lines the
+process could not write (full disk, closed stdout), counted instead of
+killing the relay.
 
 The fatal-crash counter rides the same surface (P2-351): `relay_crashes_total`
 in the Prometheus text format and `crashes_total` in the JSON, published right

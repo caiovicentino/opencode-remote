@@ -267,7 +267,7 @@ let lastCertExpiryVerdict: CertExpiryVerdict | undefined = CERT_EXPIRY?.verdict;
 // limits above: a typo, a negative, fractional or zero value (zero is
 // legitimate only for the proxy hops) or a value above the knob's documented
 // ceiling refuses the boot instead of silently serving with the default. An
-// empty env keeps the documented defaults (30000/20000/20/0/30 — the rate
+// empty env keeps the documented defaults (45000/1500/20/0/30 — the rate
 // pair was resized from 600/1000 by eval-13, see knobs.ts).
 const KNOBS = relayKnobs(process.env);
 if (KNOBS.problems.length > 0) {
@@ -573,7 +573,14 @@ const m = {
   // eval-13: frames with content that found nobody else in their room — the
   // phone talking to a daemon that is on another replica (the P3-401 split)
   // or offline. A subset of framesRouted; joins (empty payload) never count.
+  // eval-13 correction: the relay is blind to a peer leaving, so the OWNER's
+  // own frames (from === room) also land here whenever a phone closes
+  // mid-response — production logged ~99k owner-unrouted frames in the
+  // recorded week, thousands a day on a healthy relay. Only a NON-owner
+  // frame that found nobody is the "phone talking to nobody" symptom the
+  // doc promises, so the owner share is published beside it, never inside it.
   framesUnrouted: 0,
+  framesUnroutedOwner: 0,
   bytesRouted: 0,
   rejects: 0,
   rateLimited: 0,
@@ -639,9 +646,15 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_connections_active ${wss.clients.size}`,
           "# TYPE relay_frames_routed counter",
           `relay_frames_routed ${m.framesRouted}`,
-          // eval-13: additive — the subset of routed frames nobody received
+          // eval-13: additive — the subset of routed frames nobody received.
+          // Counted by sender class: a frame from the room's owner identity
+          // is the daemon streaming into a room that just lost its phone
+          // (thousands a day on a healthy relay), so only NON-owner frames
+          // count here; the owner share rides the next line.
           "# TYPE relay_frames_unrouted_total counter",
           `relay_frames_unrouted_total ${m.framesUnrouted}`,
+          "# TYPE relay_frames_unrouted_owner_total counter",
+          `relay_frames_unrouted_owner_total ${m.framesUnroutedOwner}`,
           "# TYPE relay_bytes_routed counter",
           `relay_bytes_routed ${m.bytesRouted}`,
           "# TYPE relay_rejects counter",
@@ -741,6 +754,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
             connections_active: wss.clients.size,
             frames_routed: m.framesRouted,
             frames_unrouted: m.framesUnrouted,
+            frames_unrouted_owner: m.framesUnroutedOwner,
             bytes_routed: m.bytesRouted,
             rejects: m.rejects,
             rate_limited_total: m.rateLimited,
@@ -1365,7 +1379,12 @@ wss.on("connection", (socket: Socket, req) => {
         }
         t.send(out);
       }
-      if (recipients === 0 && frame.payload !== "") m.framesUnrouted++;
+      if (recipients === 0 && frame.payload !== "") {
+        // the owner split: from === room is the daemon (the same metadata the
+        // duplicate-owner signal reads); everything else is a phone or peer
+        if (frame.from === frame.room) m.framesUnroutedOwner++;
+        else m.framesUnrouted++;
+      }
     } catch {
       // RT-455: fail-safe for anything the shape gate cannot foresee — the
       // process never dies because of one frame. One line, socket id only,

@@ -124,7 +124,7 @@ function countMessages(ws: WebSocket): () => number {
 // --- 1. the frame budget passes measured daemon bursts ------------------------
 {
   const k = relayKnobs({});
-  check("defaults: 30000 frames/min sustained and a 20000 burst", k.ratePerMin === 30_000 && k.rateBurst === 20_000);
+  check("defaults: 45000 frames/min sustained and a 1500 burst", k.ratePerMin === 45_000 && k.rateBurst === 1_500);
   check(
     "defaults: the exported constants are what an empty env resolves",
     k.ratePerMin === RATE_PER_MIN_DEFAULT && k.rateBurst === RATE_BURST_DEFAULT && k.problems.length === 0,
@@ -156,20 +156,51 @@ const strict = startRelay({ RELAY_RATE_PER_MIN: "60", RELAY_RATE_BURST: "5" });
 check("boot: default and strict relays answer /healthz", (await waitUp(dflt)) && (await waitUp(strict)));
 
 {
-  // a daemon-shaped storm: one socket, from === room, 3,000 frames back to back
+  // a daemon-shaped storm: one socket, from === room, replaying the recorded
+  // production peak — 1,144 frames in one second (relay.log, 2026-08-30..09-06)
   const room = `hostingstorm${Date.now()}`;
   const listener = await open(`ws://127.0.0.1:${dflt.port}`);
   listener.send(JSON.stringify({ room, from: "phone-1", payload: "" }));
   const got = countMessages(listener);
   await sleep(150);
   const daemon = await open(`ws://127.0.0.1:${dflt.port}`);
-  const closed = closeCode(daemon, 4_000);
-  for (let i = 0; i < 3_000; i++) daemon.send(JSON.stringify({ room, from: room, payload: `f${i}` }));
-  for (let i = 0; i < 40 && got() < 3_000; i++) await sleep(100);
-  check("storm: all 3,000 daemon frames reach the phone at the default budget", got() === 3_000, got());
+  const closed = closeCode(daemon, 8_000);
+  for (let i = 0; i < 1_144; i++) {
+    daemon.send(JSON.stringify({ room, from: room, payload: `f${i}` }));
+    await sleep(1);
+  }
+  for (let i = 0; i < 60 && got() < 1_144; i++) await sleep(100);
+  check("storm: the recorded peak second (1,144 frames) reaches the phone at the default budget", got() === 1_144, got());
   check("storm: the daemon socket is never closed for rate", (await closed) === -1);
-  daemon.terminate();
+  // the healthy-relay baseline for the unrouted split: with the phone gone,
+  // the daemon's mid-response tail finds nobody — owner frames land in
+  // frames_unrouted_owner_total and never in the phone-symptom counter
   listener.terminate();
+  await sleep(250);
+  const tailBefore = await metrics(dflt.mport);
+  for (let i = 0; i < 5; i++) daemon.send(JSON.stringify({ room, from: room, payload: `tail${i}` }));
+  await sleep(400);
+  const tailAfter = await metrics(dflt.mport);
+  check(
+    "unrouted: the daemon's tail into an empty room counts as owner, not as the phone symptom",
+    (tailAfter.frames_unrouted_owner ?? 0) - (tailBefore.frames_unrouted_owner ?? 0) === 5 &&
+      (tailAfter.frames_unrouted ?? 0) - (tailBefore.frames_unrouted ?? 0) === 0,
+    {
+      before: tailBefore.frames_unrouted,
+      after: tailAfter.frames_unrouted,
+      beforeOwner: tailBefore.frames_unrouted_owner,
+      afterOwner: tailAfter.frames_unrouted_owner,
+    },
+  );
+  daemon.terminate();
+  // control: the same relay still closes a glued flood — the 1500 burst is
+  // the queue one abusive socket may build before the cut
+  const blast = await open(`ws://127.0.0.1:${dflt.port}`);
+  const blastClosed = closeCode(blast, 3_000);
+  const blastRoom = `hostingblast${Date.now()}`;
+  for (let i = 0; i < 3_000; i++) blast.send(JSON.stringify({ room: blastRoom, from: "phone-2", payload: `p${i}` }));
+  check("storm: a glued 3,000-frame flood still closes at the default (4029)", (await blastClosed) === 4029);
+  blast.terminate();
 }
 
 // --- 2. malformed frames cost a token; a closed socket gets no more work ------

@@ -20596,9 +20596,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   const empty = relayKnobs({});
   check(
-    "P2-171: empty env → exactly the documented defaults (30000/20000/20/0/30 — rate pair resized by eval-13) with zero problems",
-    empty.ratePerMin === 30_000 &&
-      empty.rateBurst === 20_000 &&
+    "P2-171: empty env → exactly the documented defaults (45000/1500/20/0/30 — rate pair resized by eval-13) with zero problems",
+    empty.ratePerMin === 45_000 &&
+      empty.rateBurst === 1_500 &&
       empty.maxPerIp === 20 &&
       empty.trustProxyHops === 0 &&
       empty.pingIntervalS === 30 &&
@@ -20615,8 +20615,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-171: blank values are the only present-case that keeps the default without a problem",
     blank.problems.length === 0 &&
-      blank.ratePerMin === 30_000 &&
-      blank.rateBurst === 20_000 &&
+      blank.ratePerMin === 45_000 &&
+      blank.rateBurst === 1_500 &&
       blank.maxPerIp === 20 &&
       blank.trustProxyHops === 0 &&
       blank.pingIntervalS === 30,
@@ -20733,7 +20733,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const fallback = relayKnobs({ RELAY_RATE_PER_MIN: "abc" });
   check(
     "P2-171: a problem knob resolves to the documented default (the boot refuses anyway)",
-    fallback.ratePerMin === 30_000,
+    fallback.ratePerMin === 45_000,
   );
 }
 

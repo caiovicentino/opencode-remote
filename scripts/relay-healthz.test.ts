@@ -1958,8 +1958,11 @@ const ROOM_BUDGET_PROM_ORDER = [
   "relay_connections_total",
   "relay_connections_active",
   "relay_frames_routed",
-  // eval-13: the unrouted subset of routed frames joined the documented set
+  // eval-13: the unrouted subset of routed frames joined the documented set,
+  // split by sender class (owner = the daemon streaming into a room that
+  // just lost its phone; non-owner = the phone symptom)
   "relay_frames_unrouted_total",
+  "relay_frames_unrouted_owner_total",
   "relay_bytes_routed",
   "relay_rejects",
   "relay_rate_limited_total",
@@ -1987,6 +1990,7 @@ const ROOM_BUDGET_JSON_ORDER = [
   "frames_routed",
   // eval-13: same position as its Prometheus twin
   "frames_unrouted",
+  "frames_unrouted_owner",
   "bytes_routed",
   "rejects",
   "rate_limited_total",
@@ -2455,6 +2459,7 @@ check(
       ["frames_routed", "relay_frames_routed", "counter"],
       // eval-13: additive unrouted subset, right after its parent counter
       ["frames_unrouted", "relay_frames_unrouted_total", "counter"],
+      ["frames_unrouted_owner", "relay_frames_unrouted_owner_total", "counter"],
       ["bytes_routed", "relay_bytes_routed", "counter"],
       ["rejects", "relay_rejects", "counter"],
       ["rate_limited_total", "relay_rate_limited_total", "counter"],

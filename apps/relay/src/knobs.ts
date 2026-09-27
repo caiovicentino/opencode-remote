@@ -43,14 +43,25 @@ export interface RelayKnobs {
  * second, 22,906 in one minute and 80,949 in five. The previous 600/min +
  * 1000 burst closed that legitimate daemon 26 times in September (close
  * 4029, then a 60 s daemon backoff: the phone froze mid-response). Replayed
- * through this exact bucket, 30,000/min needs a 7,000 burst to close nobody
- * in the recorded week; 20,000 keeps ~3x headroom for a second phone. One
- * relay core routes ~50k small frames/s in the one-frame-per-read regime
- * (docs/RELAY-HOSTING.md, capacity), so one socket at this ceiling costs
- * ~1% of a core. Every inbound frame is charged, malformed ones included.
+ * through this exact bucket, 45,000/min + 1,500 closes nobody in the
+ * recorded week — the recorded peak second (1,144) fits the burst, and the
+ * sustained rate carries the rest of the daemon's shape.
+ *
+ * The burst stays at the old scale on purpose: it is the queue a flooding
+ * socket can build before the relay cuts it, and queue latency is what the
+ * other tenants of a hosted relay feel. Measured under a two-address blast
+ * (20 emitting sockets per address reconnecting when closed) with a victim
+ * pinging 100×/s, the victim's p50 stayed at 36–254 ms across repeated runs
+ * here — 325–1,738 ms with the 20,000 burst this replaces, 18–110 ms at the
+ * old 600/1000 default (both endpoints scale with machine load; the burst is
+ * the constant). One relay core routes ~50k small frames/s in the
+ * one-frame-per-read regime (docs/RELAY-HOSTING.md, capacity), so one socket
+ * at the sustained ceiling costs ~1.5% of a core. Every inbound frame is
+ * charged, malformed ones included. An aggregate per-IP frame budget remains
+ * a follow-up before any multi-tenant announcement.
  */
-export const RATE_PER_MIN_DEFAULT = 30_000;
-export const RATE_BURST_DEFAULT = 20_000;
+export const RATE_PER_MIN_DEFAULT = 45_000;
+export const RATE_BURST_DEFAULT = 1_500;
 export const MAX_PER_IP_DEFAULT = 20;
 export const TRUST_PROXY_HOPS_DEFAULT = 0;
 export const PING_INTERVAL_S_DEFAULT = 30;
@@ -71,8 +82,8 @@ export const PING_INTERVAL_S_CEILING = 3_600;
 /**
  * Resolve the tuning knobs from the process env.
  *
- * - RELAY_RATE_PER_MIN: sustained frames/minute per connection, default 30000.
- * - RELAY_RATE_BURST: token-bucket burst per connection, default 20000.
+ * - RELAY_RATE_PER_MIN: sustained frames/minute per connection, default 45000.
+ * - RELAY_RATE_BURST: token-bucket burst per connection, default 1500.
  * - RELAY_MAX_PER_IP: live-connection cap per source IP, default 20.
  * - RELAY_TRUST_PROXY_HOPS: trusted proxy layers, default 0 (direct exposure).
  * - RELAY_PING_INTERVAL_S: liveness sweep interval, default 30.

@@ -172,8 +172,10 @@ const P2_294_EXISTING_LINES = [
   "relay_connections_total",
   "relay_connections_active",
   "relay_frames_routed",
-  // eval-13: the unrouted subset of routed frames joined the documented set
+  // eval-13: the unrouted subset of routed frames joined the documented set,
+  // split by sender class (owner = the daemon's mid-response tail)
   "relay_frames_unrouted_total",
+  "relay_frames_unrouted_owner_total",
   "relay_bytes_routed",
   "relay_rejects",
   "relay_rate_limited_total",
