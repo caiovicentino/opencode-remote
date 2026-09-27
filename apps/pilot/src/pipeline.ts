@@ -1556,8 +1556,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // eval-03: a round killed by a model-provider outage (the CLI's own
     // terminal "Error: Cannot connect to API…", failureclass.ts) or by the
     // opencode API preflight is infra — end the cycle NOW: retrying the next
-    // round at once only dies again (P2-337/338/339 burned rounds 2+3 in 70s)
-    // and the last one used to burn an attempt as "builder did not finish".
+    // round at once only dies again (2026-09-23 ~01:24: P2-337/338/339 each
+    // lost a round, the immediate retry died ~70s later, and all three burned
+    // an attempt as "builder did not finish" within 25s).
     const outage = roundFailed ? (build.infra === "api-down" ? "opencode API unreachable (preflight)" : providerOutage(build.output)) : null;
     if (outage) {
       return { ok: false, detail: `[infra] model provider unreachable (builder round ${round}): ${outage}`, infra: "api-down", ...roundMeta() };
