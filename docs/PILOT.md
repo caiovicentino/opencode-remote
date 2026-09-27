@@ -980,8 +980,10 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
    mesmo, sempre vazio) — e, com slots ocupados, **espera drenar** (P1-104): novos picks
    são suspensos, o reload só sai com 0 slots rodando (pipeline sempre termina — task
    timeout), nunca no meio de um builder round; sai com `process.exit(0)` (log já flushado,
-   sem órfão) e o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem
-   sinal → exit → KeepAlive ressozinho
+   sem órfão) e o KeepAlive reassume no código novo; heartbeat + watchdog — 3 min sem
+   sinal → exit → KeepAlive ressozinho (eval-01: um tick atrasado — loop bloqueado por
+   chamada síncrona como o `execFileSync` do judge gate, ou máquina dormindo — rearma o
+   heartbeat em vez de matar os slots em voo; log `watchdog: event loop was blocked`)
 4. **Processo stale (P3-101)**: o loop guarda o HEAD do repo de produção capturado no boot
    (`bootHead`) e, num momento 100% ocioso (nenhum slot rodando, nenhum deploy em voo),
    reexecuta `git rev-parse HEAD`; se driftou (`headDrifted`), sai com `exit(0)` e o

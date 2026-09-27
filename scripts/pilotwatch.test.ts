@@ -8,6 +8,7 @@
  * Hermetic: no network, no real launchctl, no writes outside memory.
  * Run: npx tsx scripts/pilotwatch.test.ts
  */
+import "./testhome"; // throwaway HOME before any pilot module loads (testhome.ts)
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
@@ -51,6 +52,8 @@ import {
   sanitizeRelayBody,
   type FallbackItem,
 } from "../apps/daemon/src/pilotnotify";
+import { WATCHDOG_INTERVAL_MS, selfWatchVerdict } from "../apps/pilot/src/selfwatch";
+import { startWatchdog } from "../apps/pilot/src/state";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -674,6 +677,46 @@ function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: n
   check("sw: a pilot page re-alerts even when it replaces an older one (renotify)", shown[0]?.opts.renotify === true);
   check("sw: routine pushes keep the shared tag without renotify", shown[1]?.opts.tag === "opencode-remote" && shown[1]?.opts.renotify === false);
   check("sw: deep link still resolved against the scope", shown[1]?.opts.data?.url === "https://phone.example/#/s/1");
+}
+
+// ── the pilot's own self-watchdog: a blocked loop is not a hung loop ────────
+check("selfwatch verdict: fresh heartbeat, on-time tick = ok", selfWatchVerdict({ silentMs: 10_000, tickGapMs: MIN, maxSilenceMs: 3 * MIN, intervalMs: WATCHDOG_INTERVAL_MS }) === "ok");
+check("selfwatch verdict: stale heartbeat, on-time tick = exit", selfWatchVerdict({ silentMs: 4 * MIN, tickGapMs: MIN, maxSilenceMs: 3 * MIN, intervalMs: WATCHDOG_INTERVAL_MS }) === "exit");
+check("selfwatch verdict: overdue tick (loop blocked / machine slept) = blocked", selfWatchVerdict({ silentMs: 6 * MIN, tickGapMs: 6 * MIN, maxSilenceMs: 3 * MIN, intervalMs: WATCHDOG_INTERVAL_MS }) === "blocked");
+check("selfwatch verdict: a tick slightly late (<2 intervals) is still judged normally", selfWatchVerdict({ silentMs: 4 * MIN, tickGapMs: 119_000, maxSilenceMs: 3 * MIN, intervalMs: WATCHDOG_INTERVAL_MS }) === "exit");
+check("selfwatch verdict: unreadable heartbeat (NaN) never exits", selfWatchVerdict({ silentMs: NaN, tickGapMs: MIN, maxSilenceMs: 3 * MIN, intervalMs: WATCHDOG_INTERVAL_MS }) === "ok");
+{
+  let clock = T0;
+  let hb = T0;
+  let tick: () => void = () => {};
+  const exits: number[] = [];
+  const out: string[] = [];
+  startWatchdog(3, {
+    now: () => clock,
+    readHeartbeat: () => hb,
+    touch: () => {
+      hb = clock;
+    },
+    exit: (code) => exits.push(code),
+    schedule: (fn) => {
+      tick = fn;
+      return 0;
+    },
+    out: (line) => out.push(line),
+  });
+  clock += MIN;
+  hb = clock - 10_000; // the main loop is feeding the heartbeat
+  tick();
+  check("selfwatch: a healthy tick stays quiet", exits.length === 0);
+  clock += 6 * MIN; // judgeGate's execFileSync held the loop for 6 min (24/09 04:19 shape)
+  tick();
+  check("selfwatch: the overdue tick after a 6-min sync call re-arms instead of exit(1)", exits.length === 0 && hb === clock);
+  check("selfwatch: the re-arm is logged", out.some((l) => l.includes("event loop was blocked") && l.includes('"blockedS":360')));
+  for (let i = 0; i < 4; i++) {
+    clock += MIN; // on-time ticks, but nothing feeds the heartbeat: a real stall
+    tick();
+  }
+  check("selfwatch: a stale heartbeat with on-time ticks still exits once", exits.length === 1 && exits[0] === 1 && out.some((l) => l.includes("heartbeat stale")));
 }
 
 if (failures) {

@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import type { TaskUsd } from "./pricing";
 import type { MissionModels } from "./mission";
 import type { InfraFailureKind } from "./audit";
+import { WATCHDOG_INTERVAL_MS, selfWatchVerdict } from "./selfwatch";
 
 export interface PilotConfig {
   repo: string; // production checkout (runs the services)
@@ -542,17 +543,49 @@ export function startHeartbeat(everyMs = 60_000, touch: () => void = touchHeartb
   };
 }
 
-/** Self-watchdog: exits the process if the heartbeat went silent. KeepAlive restarts it. */
-export function startWatchdog(maxSilenceMin = 3) {
-  touchHeartbeat();
-  setInterval(() => {
+/** Injectable seams of the self-watchdog (tests never touch the real heartbeat or exit). */
+export interface WatchdogDeps {
+  now?: () => number;
+  readHeartbeat?: () => number;
+  touch?: () => void;
+  exit?: (code: number) => void;
+  schedule?: (fn: () => void, ms: number) => unknown;
+  out?: (line: string) => void;
+}
+
+/**
+ * Self-watchdog: exits the process if the heartbeat went silent. KeepAlive restarts it.
+ * eval-01: a tick that arrives late means the event loop was blocked by a sync
+ * call (the judge gate's execFileSync) or the machine slept — the process is
+ * alive, so the heartbeat is re-armed instead of killing every in-flight slot
+ * (selfwatch.ts). A stale heartbeat with on-time ticks still exits as before.
+ */
+export function startWatchdog(maxSilenceMin = 3, deps: WatchdogDeps = {}) {
+  const now = deps.now ?? Date.now;
+  const touch = deps.touch ?? touchHeartbeat;
+  const readHeartbeat = deps.readHeartbeat ?? (() => Number(readFileSync(HEARTBEAT, "utf8")));
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
+  const out = deps.out ?? ((line: string) => console.log(line));
+  touch();
+  let lastTick = now();
+  schedule(() => {
+    const at = now();
+    const tickGapMs = at - lastTick;
+    lastTick = at;
     try {
-      const last = Number(readFileSync(HEARTBEAT, "utf8"));
-      const silentMin = (Date.now() - last) / 60_000;
-      if (silentMin > maxSilenceMin) {
-        console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "watchdog: heartbeat stale, exiting for KeepAlive restart", data: { silentMin } }));
-        process.exit(1);
+      const silentMs = at - readHeartbeat();
+      const silentMin = silentMs / 60_000;
+      const verdict = selfWatchVerdict({ silentMs, tickGapMs, maxSilenceMs: maxSilenceMin * 60_000, intervalMs: WATCHDOG_INTERVAL_MS });
+      if (verdict === "blocked") {
+        touch();
+        out(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "watchdog: event loop was blocked — heartbeat re-armed, not exiting", data: { blockedS: Math.round(tickGapMs / 1000), silentMin } }));
+        return;
+      }
+      if (verdict === "exit") {
+        out(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "watchdog: heartbeat stale, exiting for KeepAlive restart", data: { silentMin } }));
+        exit(1);
       }
     } catch {}
-  }, 60_000);
+  }, WATCHDOG_INTERVAL_MS);
 }
