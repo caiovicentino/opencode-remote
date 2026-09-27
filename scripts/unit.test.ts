@@ -41099,10 +41099,13 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
 
   // Source pins over the real index.ts (lesson P3-409): the hold branch is
   // structurally before the block landing, and the main read degrades to [].
+  // eval fixround: the api-down cap (eval-03) added an earlier, legitimate
+  // attempt-pin + blockAndPush of its own — scope the search to AFTER the
+  // hold branch, the invariant being tested is exactly that.
   const idx334 = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
   const holdAt = idx334.indexOf('if (plan.action === "hold") {');
-  const pinAt = idx334.indexOf("state.taskAttempts[taskKey] = Math.max");
-  const pushAt = idx334.indexOf("await blockAndPush(taskCfg, state, task, attempts, reason, true)");
+  const pinAt = idx334.indexOf("state.taskAttempts[taskKey] = Math.max", holdAt);
+  const pushAt = idx334.indexOf("await blockAndPush(taskCfg, state, task, attempts, reason, true)", holdAt);
   check("P2-334: wiring — the hold branch precedes the attempt pin and the block landing (blockAndPush unreachable from the hold path)", holdAt !== -1 && pinAt !== -1 && pushAt !== -1 && holdAt < pinAt && holdAt < pushAt);
   const holdBody = idx334.slice(holdAt, idx334.indexOf("} else {", holdAt));
   check("P2-334: hold branch — no blockAndPush, no attempt pinning, holds counted, alert + supervisor notify", !holdBody.includes("blockAndPush") && !holdBody.includes("maxAttemptsPerTask") && holdBody.includes("recordTaskHold(state, taskKey)") && holdBody.includes('emit("alert"') && holdBody.includes("notifySupervisor"));
