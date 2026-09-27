@@ -6,6 +6,7 @@ import { notifySupervisor } from "./notify";
 import { isMissionModelRole, type MissionModelRole, type MissionModels } from "./mission";
 import { fetchAvailableModels, pickMissionModel } from "./modelcatalog";
 import { clearModelSubstitution, defaultModelSubstitutionsFile, recordModelSubstitution } from "./modelsubst";
+import { scrubPrompt } from "./sanitize";
 
 export interface RunResult {
   ok: boolean;
@@ -244,7 +245,9 @@ export async function runAgent(
     if (opts.printLogs) args.push("--print-logs"); // exposes the session id for context-cache resumes
     if (opts.sessionId) args.push("-s", opts.sessionId);
     if (opts.model) args.push("--model", opts.model); // one argv entry, no shell
-    args.push(prompt);
+    // eval-15: NUL/control chars, ANSI escapes, invisible text and credential
+    // shapes never reach the agent (one argv entry — spawn throws on a NUL)
+    args.push(scrubPrompt(prompt));
     const spawnFn = opts.spawnImpl ?? spawn;
     const child = spawnFn("opencode", args, {
       cwd: opts.cwd,
@@ -466,7 +469,7 @@ export async function runTierB(
       output += c.toString();
     });
     child.stdin.on("error", () => {}); // early exit → EPIPE on the prompt write
-    child.stdin.write(prompt);
+    child.stdin.write(scrubPrompt(prompt)); // eval-15: same scrub as runAgent
     child.stdin.end();
     child.on("exit", (code) => {
       finish({ ok: !timedOut && code === 0, output, timedOut, taskIds: [] });

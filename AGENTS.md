@@ -81,10 +81,16 @@ If you are asked to change anything that
 the constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
 the commit message. Never commit secrets. Always document user-visible changes.
 
-## Memória do projeto (LER PRIMEIRO)
+## Memória do projeto (LER PRIMEIRO — só o operador in-chat)
 
 Histórico completo de trabalho, regras do usuário, avaliação de maturidade e backlog:
-`~/.opencode-remote/memory.md` — leia antes de qualquer tarefa neste repo.
+`~/.opencode-remote/memory.md` — o operador in-chat lê antes de qualquer tarefa neste repo.
+Agentes do Pilot (builder, reviewers, planner, scribe, strategist, researcher,
+red team, explorer, forensic, fable) NUNCA leem esse arquivo nem nada de
+`~/.opencode-remote/` fora do próprio clone (daemon.json, logs, judge, estado do
+pilot): o contexto deles ingere conteúdo não confiável e segue para o provedor
+do modelo. O sandbox do workspace nega esses caminhos (eval-15,
+`apps/pilot/src/sandboxpolicy.ts`); evidência de UI vai em `pilot/shots/`.
 Regras rápidas: memórias (`~/.opencode-remote/memory.md`) NUNCA são comitadas;
 fuso GMT-3; só reiniciar daemon/relay se o Caio pedir; checar `git log`
 antes de assumir HEAD (um agente in-chat também commita neste repo).

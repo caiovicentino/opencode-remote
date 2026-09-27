@@ -11,12 +11,14 @@
 import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { agentStream, exec, runAgentForRole } from "./runner";
+import { agentStream, exec, runAgentForRole, type RunResult } from "./runner";
 import { nowLocalISO } from "./log";
 import { emit } from "./events";
 import { digest } from "./push";
 import { defaultLessonsFile, formatFailureLesson, readRecentFailureLessons } from "./failureLessons";
 import { saveState, type PilotConfig, type PilotState } from "./state";
+import { fenceUntrusted } from "./sanitize";
+import { writeAuxSandboxConfig, writeSandboxConfig } from "./pipeline";
 
 export const FORENSIC_MARKER = "FORENSIC:DONE";
 export const FORENSIC_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -75,6 +77,10 @@ export function listGateFails(dir: string, max = 100): GateFailSummary[] {
   return out;
 }
 
+/** eval-15: the evidence blocks quote gate tails, reviewer findings and
+ * builder-authored commit subjects — fenced as data for the forensic agent. */
+const FORENSIC_EVIDENCE = "failure record of the pipeline (agent findings, gate output, commit subjects) — analyze it";
+
 /** Pure prompt builder so the eval battery can pin the forensic contract. */
 export function forensicPrompt(lessons: string, gateFails: GateFailSummary[], gitLog: string): string {
   return `You are the FORENSIC agent of the opencode-remote autonomous pipeline (weekly run).
@@ -92,13 +98,13 @@ Rules:
 - Do not read files outside your workspace; everything you need is in this prompt.
 
 FAILURE LESSONS — the most recent blocked tasks (chronological):
-${lessons || "(none recorded)"}
+${fenceUntrusted("failure lessons", lessons, { purpose: FORENSIC_EVIDENCE }) || "(none recorded)"}
 
 OPEN GATE FAILURES (per-task carryover files):
-${gateFails.length ? gateFails.map((f) => `- ${f.task}: ${f.step || "unknown step"}`).join("\n") : "(none)"}
+${gateFails.length ? fenceUntrusted("gate carryovers", gateFails.map((f) => `- ${f.task}: ${f.step || "unknown step"}`).join("\n"), { purpose: FORENSIC_EVIDENCE }) : "(none)"}
 
 RECENT MERGES (git log --oneline -50):
-${gitLog || "(unavailable)"}
+${fenceUntrusted("merge log", gitLog, { purpose: FORENSIC_EVIDENCE }) || "(unavailable)"}
 
 Your LAST line must be exactly: ${FORENSIC_MARKER}`;
 }
@@ -130,18 +136,27 @@ export async function runForensic(cfg: PilotConfig, st: PilotState): Promise<voi
     const gateFails = listGateFails(join(cfg.stateRoot ?? join(homedir(), ".opencode-remote/pilot"), "gate-fail"));
     const gitLog = exec("git log --oneline -50", { cwd: cfg.workspace, allowFail: true }).output;
     log("info", "weekly forensic starting", { lessons: lessons ? lessons.split("\n").length : 0, gateFails: gateFails.length });
-    const r = await runAgentForRole(
-      "forensic",
-      forensicPrompt(lessons, gateFails, gitLog),
-      {
-        cwd: cfg.workspace,
-        timeoutMin: 20,
-        label: "forensic",
-        onStdout: agentStream("forensic"),
-        models: cfg.models,
-        marker: FORENSIC_MARKER,
-      },
-    );
+    // eval-15 (P1-057 class): the forensic ingests builder-authored failure
+    // text — its tier-A fallback runs text-only like the other aux agents
+    // (the nightly pass had just written the full workspace config)
+    writeAuxSandboxConfig(cfg.workspace);
+    let r: RunResult;
+    try {
+      r = await runAgentForRole(
+        "forensic",
+        forensicPrompt(lessons, gateFails, gitLog),
+        {
+          cwd: cfg.workspace,
+          timeoutMin: 20,
+          label: "forensic",
+          onStdout: agentStream("forensic"),
+          models: cfg.models,
+          marker: FORENSIC_MARKER,
+        },
+      );
+    } finally {
+      writeSandboxConfig(cfg.workspace);
+    }
     const report = extractReport(r.output);
     if (!report) {
       log("warn", "forensic produced no report", { ok: r.ok, timedOut: r.timedOut });

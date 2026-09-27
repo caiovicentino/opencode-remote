@@ -1723,6 +1723,46 @@ explorer, fable); landing com zero linhas aplicadas aborta. Os blocos de texto l
 antigos que já estavam em `## Ready` não são limpos por nenhuma task — ficam para o
 operador.
 
+## Sandbox do workspace e fronteira de prompt (eval-15)
+
+Builder, reviewers, planner, explorer (e o fallback tier A do fable) continuam com
+ferramentas completas **dentro do clone**, mas o `opencode.json` que
+`writeSandboxConfig` grava agora vem de `workspacePermission`
+(`apps/pilot/src/sandboxpolicy.ts`): `external_directory` nega tudo fora do clone
+exceto `~/.opencode-remote/pilot/shots/`, `pilot/tmp/` e os diretórios temporários
+(`/tmp`, `/private/tmp`, `/var/folders`), e o `bash` nega os comandos que alcançam
+produção ou o estado do Mac (`launchctl`, `tailscale`, `pkill`/`killall` por padrão —
+mate o PID que você mesmo subiu —, `tccutil`, `security`, `osascript`, `sudo`,
+`crontab`, `ssh`/`scp`, `git push`, escritas via `gh`/`npm`; `gh run view`,
+`gh pr view` e `gh api` GET seguem liberados para logs de CI). Motivo, medido nos
+`builder-*.log` de produção: builders de 27 tasks leram `memory.md`, imprimiram o
+`daemon.json` de produção com a chave privada E2E (`ecdhPriv`) no output, leram o
+`daemon.log` com a URI de pareamento e, em 23/09 (P2-347), um probe com `pkill`
+derrubou o daemon de produção. A política foi verificada contra o binário real do
+opencode num harness hermético (HOME descartável + provedor falso roteirizado):
+14/14 chamadas com o resultado esperado; a política antiga deixava todas passarem.
+Limite honesto: é o portão de ferramentas do opencode — um programa que o agente
+escreve e executa (node/python) não passa por ele; isolamento de verdade exige
+sandbox do SO ou usuário dedicado (decisão do operador). O forensic agora roda com a
+config aux (texto apenas) no fallback tier A.
+
+Todo prompt passa por `scrubPrompt` (`apps/pilot/src/sanitize.ts`) no ponto de spawn
+(`runAgent`/`runTierB`): remove escapes ANSI e caracteres de controle (um NUL numa
+cauda de gate fazia o `spawn` rejeitar o argv e derrubava a rodada — e cada rodada
+seguinte, via carryover), torna visíveis caracteres invisíveis/bidi/tags Unicode
+(`⟦invisible U+XXXX⟧`) e redige formatos de credencial (tokens GitHub/npm/Anthropic/
+OpenAI/AWS, blocos PEM, JWT, Bearer, `?token=`, URIs de pareamento, literais
+`"apiToken": "…"`). É identidade em texto comum, então os prefixos cacheáveis
+(P1-077/P1-078) ficam byte-idênticos. Texto não confiável entra cercado por
+`fenceUntrusted`: achados/saída de gate e o recap no prompt do builder, o diff dos
+reviewers (um ```` ``` ```` no diff não fecha mais a cerca) e as evidências do
+forensic — marcadores do pipeline dentro da cerca viram `VERDICT(quoted):`,
+`PILOT(quoted):TASK-DONE` etc. E o veredito do reviewer só conta quando o marcador
+**abre a linha** fora de bloco de código (`lastMarkerLine`): antes, um achado de
+REQUEST_CHANGES que citasse `VERDICT: APPROVE` no meio da linha virava o último
+marcador e aprovava sem achados (conferido em 394 sessões reais de review: mesmo
+veredito em 394/394).
+
 ## Dashboard sem token no HTML (P1-057)
 
 `GET /dashboard` nunca mais embute o apiToken no HTML (`__APITOKEN__` vira `""`). O
