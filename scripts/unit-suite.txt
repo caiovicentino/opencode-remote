@@ -6,6 +6,8 @@
 # script in package.json. .gitattributes merges this file with merge=union, so
 # two branches that each append a line merge without a conflict; a line that
 # lands twice fails the battery with a "listed twice" message — keep one.
+# Every portable test (PORTABLE_TESTS in scripts/portable-suite.ts) must be
+# listed here too: the Windows job runs a subset of this battery, never more.
 scripts/unit.test.ts
 scripts/preview.test.ts
 scripts/message-paging.test.ts
@@ -65,3 +67,21 @@ scripts/handoff.test.ts
 scripts/download-path.test.ts
 scripts/unit-suite.test.ts
 scripts/testhome.test.ts
+scripts/boothealth.test.ts
+scripts/browsecap.test.ts
+scripts/datawipe.test.ts
+scripts/deeplink-coldstart.test.ts
+scripts/drawer.test.ts
+scripts/gpuplan.test.ts
+scripts/installloc.test.ts
+scripts/loadfail.test.ts
+scripts/proxyplan.test.ts
+scripts/proxyauth.test.ts
+scripts/proxystore.test.ts
+scripts/routinedue.test.ts
+scripts/settingsmirror.test.ts
+scripts/shelllang.test.ts
+scripts/traystatus.test.ts
+scripts/updateremind.test.ts
+scripts/updateprogress.test.ts
+scripts/updatespace.test.ts

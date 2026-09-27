@@ -10,14 +10,19 @@
  * modulo durations (the evidence gate's normalization), the legacy-chain
  * fold, a real run through tsx in a throwaway repo (cwd, argv, stop), a
  * real git merge + rebase of two parallel appends (clean only because of
- * merge=union), and the real repo wiring.
+ * merge=union), and the real repo wiring — including the portable-suite
+ * parity (PORTABLE_TESTS ⊆ the list) and the P2-133 orphan-test
+ * reachability over the real repo.
  * Run: npx tsx scripts/unit-suite.test.ts
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PILOT_GATE_STEPS } from "../apps/pilot/src/gateprofile";
+import { PORTABLE_TESTS } from "./portable-suite";
+import { unreachableTests, type DeclaredRegistry } from "./testreachability";
 import {
   UNIT_SUITE_COMMAND,
   UNIT_SUITE_LIST,
@@ -331,6 +336,40 @@ const C: SuiteEntry = { file: "scripts/c.test.ts", args: [] };
   check(
     "real repo: .gitattributes merges the list with merge=union",
     attrs.split(/\r?\n/).some((l) => l.trim() === "scripts/unit-suite.txt merge=union"),
+  );
+
+  // Parity: the Windows job runs a SUBSET of this battery. 18 files once sat
+  // only in PORTABLE_TESTS — green on the P2-237 classification guard, yet
+  // never run by the gate's `npm run test:unit` nor on Linux CI.
+  const listed = new Set(suite.entries.map((e) => e.file));
+  const windowsOnly = PORTABLE_TESTS.filter((f) => !listed.has(`scripts/${f}`));
+  check(
+    "parity: every portable (Windows) test also runs in the unit battery — PORTABLE_TESTS ⊆ scripts/unit-suite.txt",
+    windowsOnly.length === 0,
+    `append to ${UNIT_SUITE_LIST}: ${windowsOnly.map((f) => `scripts/${f}`).join(", ")}`,
+  );
+
+  // P2-133, restored: the real-repo reachability assertion left
+  // scripts/unit.test.ts with the P1-056 judge split and nothing replaced
+  // it. Every scripts/*.test.ts must run in the unit list, the gate battery
+  // or CI, or be declared in scripts/test-registry.json with its runner.
+  const testFiles = readdirSync(join(root, "scripts"))
+    .filter((f) => f.endsWith(".test.ts"))
+    .sort()
+    .map((f) => `scripts/${f}`);
+  // the runner reads the list, so for reachability the list IS test:unit
+  const scripts = { ...pkg.scripts, "test:unit": suite.entries.map((e) => `tsx ${entryLabel(e)}`).join(" && ") };
+  const orphans = unreachableTests(
+    testFiles,
+    scripts,
+    PILOT_GATE_STEPS.map(([, cmd]) => cmd),
+    readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"),
+    JSON.parse(readFileSync(join(root, "scripts", "test-registry.json"), "utf8")) as DeclaredRegistry,
+  );
+  check(
+    "P2-133: real repo — every test file is executed by a runner or declared in test-registry.json",
+    orphans.length === 0,
+    `orphan test files (append to ${UNIT_SUITE_LIST} or declare in scripts/test-registry.json): ${orphans.join(", ")}`,
   );
 }
 
