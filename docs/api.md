@@ -25,11 +25,11 @@ opencode-remote token
 |---|---|---|
 | GET | `/api/health` | daemon/opencode/relay status |
 | GET | `/api/session` | list sessions |
-| POST | `/api/session` | create session `{ title? }` |
+| POST | `/api/session` | exchange the Bearer token for a 12 h HttpOnly `ocr_session` cookie (P1-057) — it does **not** create a session |
 | GET | `/api/session/:id` | session info |
 | DELETE | `/api/session/:id` | delete session |
-| GET | `/api/session/:id/messages?limit=200` | message history (oldest→newest) |
-| POST | `/api/session/:id/message` | send a prompt `{ text }` → `202` |
+| GET | `/api/session/:id/messages?limit=200` | message history: the newest `limit` rows, oldest→newest |
+| POST | `/api/session/:id/message` | send a prompt `{ text }` → `202 { accepted, opencode }` once the turn ends (below) |
 | GET | `/api/artifacts?session=<id>` | list agent artifacts (all sessions, or one), newest first, capped at the 500 most recent (P2-173); carries `total` (real count before the cap), `truncated` and — on the global listing — `titles: { sessionId: conversationTitle }` |
 | GET | `/api/artifacts/file?session=<id>&name=<file>` | raw artifact bytes |
 | GET | `/api/browse` | list live browser sessions |
@@ -39,8 +39,18 @@ opencode-remote token
 | GET | `/api/browse/screenshot?session=&w=&h=` | PNG screenshot of the live viewport |
 | POST | `/api/browse/close` | close a session `{ }` (name via `?session=`) |
 
-Prompts are asynchronous: the endpoint returns `202 { accepted }` while the
-agent works. Poll `messages` for the reply, or use the SDK's `sendAndWait`.
+The prompt route answers when the agent's turn is **over**, not when it
+starts: the daemon relays opencode's streaming `POST /session/:id/message`
+("create and send a new message to a session, streaming the AI response"),
+whose body only completes with the turn, and then answers
+`202 { accepted: true, opencode }` — `opencode` is the turn's final assistant
+message. A long turn therefore keeps the request open for minutes: give the
+client a timeout sized for a turn (the SDK's `send` defaults to 5 min), and
+treat a client-side timeout as "still running", not as "not sent" — the
+daemon keeps waiting on opencode either way. `messages` shows progress while
+the turn runs: opencode writes one assistant message per step, the steps
+that end in a tool call carry `finish: "tool-calls"`, and the last step
+carries `time.completed` plus its final `finish` (`stop`, …).
 
 ### `/api/health` — relay retry state (P2-129)
 
@@ -161,7 +171,6 @@ absent or out-of-set degrades to `null`), and `linkVerdict` maps a recorded
 pairing QR's relay-link line and the tray name the real problem instead of
 the endless "reconnecting" wait; a live link still outranks a stale mismatch
 (the fix self-heals), and the reconnect loop itself is untouched.
-level; the others are info).
 
 Since P2-339 a recorded `mismatch` also paces the daemon's own dialing: the
 reconnect wait takes a documented 5-minute floor through the same
@@ -171,8 +180,8 @@ reconnect wait takes a documented 5-minute floor through the same
 `legacy`, `unknown`, any probe failure) still changes nothing about the
 dialing. The wake/redial route (P2-327) may still anticipate a
 `protocol-mismatch` wait on an explicit human click — the "reconnect now"
-after updating the app or the relay — one anticipation per 10s; the next
-slice (the UI) consumes the `relayProtocol` field.
+after updating the app or the relay — one anticipation per 10s. The
+desktop shell consumes the `relayProtocol` field since P2-338 (above).
 
 ### `/api/health` — upstream agent state (P2-135)
 
@@ -652,18 +661,43 @@ been failing every day is visible instead of leaving no trace anywhere:
 ## SDK (TypeScript/JS)
 
 ```js
-import { createClient } from "@ocr/sdk";
+import { createClient, OcrError } from "@ocr/sdk";
 
 const ocr = createClient({ token: process.env.OCR_TOKEN });
 
-const { id } = await ocr.createSession();
-await ocr.send(id, "quanto custa rodar isto?");
-const reply = await ocr.sendAndWait(id, "agora explique em 1 frase");
+const { id } = await ocr.createSession("revisão");
+const reply = await ocr.sendAndWait(id, "explique o módulo de autenticação em 1 frase");
 console.log(reply);
 ```
 
-Install from a checkout: `npm i github:caiovicentino/opencode-remote` and
-import `@ocr/sdk` (workspace `packages/sdk`).
+- `send(id, text, { timeoutMs?, signal? })` resolves with `{ accepted, opencode }`
+  when the turn ends (see the prompt route above); default timeout 5 min.
+- `sendAndWait(id, text, { timeoutMs?, pollMs?, signal? })` resolves with the
+  text of the turn's **final** assistant step. When the daemon relays the
+  finished turn (today), that message is the reply and nothing is polled.
+  Otherwise it polls `messages`, anchored on the id of the last message
+  before the prompt — never on a row count, since the history route returns
+  at most `limit` rows — skips the steps that end in `finish: "tool-calls"`,
+  and counts only the steps answering its own prompt (`parentID`), so a turn
+  another device runs in the same session is never taken for the reply.
+  Agent servers without `time`/`finish` stamps fall back to "same text
+  across two polls".
+- Every failure is an `OcrError` with one `code`: `http` (non-2xx, with
+  `status` and `body` attached even when the body is not JSON), `timeout`,
+  `network`, `protocol` (a success that is not JSON or lacks the expected
+  shape), `agent` (the turn itself failed — provider error, abort) or
+  `aborted` (your `signal`).
+- `createClient({ timeoutMs })` sets the per-request timeout of the other
+  calls (default 30 s). Session ids are sent as URL-encoded path segments,
+  so an id can never turn into another route.
+
+The SDK is not published to npm: it is TypeScript source in the workspace
+`packages/sdk` (MIT, no dependencies). Use it from a checkout — scripts run
+with `npx tsx`, where `@ocr/sdk` resolves through the workspace link — or
+copy `packages/sdk/src/index.ts` into your project. `npm i
+github:caiovicentino/opencode-remote` does not make `@ocr/sdk` importable
+(the workspaces of a dependency are not installed), and Node refuses to
+strip TypeScript types inside `node_modules`.
 
 ## curl examples
 
@@ -682,5 +716,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 
 - Localhost bind + bearer token: any local user/process with the token can
   drive the agent — treat the token like a password (state file is 0600).
-- Every op is still tunneled through the same E2E proxy used by the phone;
-  audit log records sensitive ops as usual.
+- The `/api/session…` routes run through the same in-process `proxy()` the
+  E2E tunnel feeds (RT-453 path gates, prompt idempotency, upload
+  resolution), but the loopback HTTP hop itself is not sealed — the bearer
+  token and the 127.0.0.1 bind are its only protection. Path rejections are
+  audited exactly as on the tunnel.
