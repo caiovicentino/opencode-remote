@@ -95,6 +95,26 @@ export function resolveJudge(loc: JudgeLocation = {}): ResolvedJudge {
  * resolved tsx from the audited repo's node_modules — the C2 shadowing the
  * gate's own invariants step was already hardened against.
  */
+/**
+ * The live-invariants argv for an ALREADY-resolved judge dir: no re-validation
+ * (the caller resolved the judge once and owns the rollback-on-unusable guard;
+ * tests inject fake dirs that must never be re-checked). Same shape as
+ * judgeInvariantsCommand - the judge's own node + tsx by absolute path,
+ * cwd = the judge (C2: `npx tsx` with cwd = the prod checkout resolved tsx
+ * from the audited repo).
+ */
+export function judgeInvariantsArgv(dir: string, repo: string, opts: { live?: boolean } = {}): string {
+  const tsx = join(dir, "node_modules", "tsx", "dist", "cli.mjs");
+  return [
+    JSON.stringify(process.execPath),
+    JSON.stringify(tsx),
+    JSON.stringify(join(dir, "src", "invariants.ts")),
+    "--repo",
+    JSON.stringify(repo),
+    ...(opts.live ? ["--live"] : []),
+  ].join(" ");
+}
+
 export function judgeInvariantsCommand(repo: string, opts: { live?: boolean; loc?: JudgeLocation } = {}): { cmd: string; cwd: string } {
   const j = resolveJudge(opts.loc);
   const q = (s: string) => JSON.stringify(s);
