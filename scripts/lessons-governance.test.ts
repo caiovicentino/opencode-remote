@@ -21,6 +21,7 @@
  * Pure node (fs/os/path in a temp dir) — portable battery.
  * Run: npx tsx scripts/lessons-governance.test.ts
  */
+import "./testhome"; // throwaway HOME before any pilot module resolves ~/.opencode-remote (#1409)
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
