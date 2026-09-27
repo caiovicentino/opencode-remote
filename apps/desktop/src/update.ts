@@ -24,7 +24,9 @@
 // Everything here stays fail-open: a dead feed, a bad feed or a failed
 // download is logged and swallowed — it must never block or crash the shell.
 import { app, autoUpdater } from "electron";
+import { execFile } from "node:child_process";
 import { activeDaemonPort } from "./daemon";
+import { bundlePathFromExec, macSigningFromCodesign, squirrelCanApply, type MacSigning } from "./macsigning";
 import { assetUrlFrom, parseWindowsFeed } from "./winupdate";
 import { updateGuard } from "./updateguard";
 import { updateRollout, type UpdateRolloutView } from "./updaterollout";
@@ -221,6 +223,30 @@ export function releasePageUrl(feedUrl: string): string {
  */
 const manualOpened = new Set<string>();
 
+/** eval-16: the running bundle's signature, probed at most once per process
+ * (the bundle cannot change under a running app). Only a real packaged
+ * Electron app is probed — tests, dev runs and plain Node resolve "unknown",
+ * which keeps the Squirrel wiring byte-for-byte what it was. */
+let runningSigning: Promise<MacSigning> | null = null;
+function runningMacSigning(): Promise<MacSigning> {
+  if (!app?.isPackaged || process.platform !== "darwin") return Promise.resolve("unknown");
+  runningSigning ??= new Promise<MacSigning>((resolve) => {
+    execFile(
+      "/usr/bin/codesign",
+      ["-dv", "--verbose=2", bundlePathFromExec(process.execPath)],
+      { timeout: 5_000, encoding: "utf8" },
+      (err, stdout, stderr) => {
+        // codesign -dv prints its report on stderr and exits 0; an unsigned
+        // bundle exits 1 with "code object is not signed at all". A timeout
+        // or a missing binary leaves no recognizable text → unknown.
+        const text = `${stdout ?? ""}\n${stderr ?? ""}`;
+        resolve(err && !/not signed at all/i.test(text) ? "unknown" : macSigningFromCodesign(text));
+      },
+    );
+  });
+  return runningSigning;
+}
+
 /** True when an update surface exists for this platform: an explicitly staged
  * feed, or a packaged build on a platform with a public feed default. Mirrors
  * the boot-check gate so the tray never offers "Check for updates" on a
@@ -390,6 +416,14 @@ export interface UpdateCheckOptions {
    * The only consumer is the tray's progress label; no new network request,
    * no new IPC channel, no new timer anywhere in this wiring. */
   onProgress?: (info: unknown) => void;
+  /** eval-16: the running bundle's macOS signature (macsigning.ts), consulted
+   * only on darwin right before a JSON feed would be handed to Squirrel.Mac.
+   * An ad-hoc or unsigned bundle can never pass Squirrel's signature check,
+   * so it takes the manual release-page flow instead of a download that is
+   * bound to fail. Absent → probed once per process with `codesign`, and only
+   * inside a real packaged Electron app; anywhere else "unknown" (fail-open:
+   * the Squirrel wiring stays exactly as before). */
+  macSigning?: () => MacSigning | Promise<MacSigning>;
   /** P2-233: Windows explicit-action installer download. When wired (main.ts
    * does it ONLY for a user-initiated tray/Help re-check — never boot, never
    * the P2-155 scheduled recheck) and the platform is win32, a latest.yml
@@ -755,6 +789,22 @@ export async function checkForUpdatesOnBoot(opts: UpdateCheckOptions = {}): Prom
   // Squirrel.Mac so a packaged install downloads them in the background;
   // yml feeds stay parse+log (see the spike finding at the top).
   log(`update-available: ${feed.version}${feed.notes ? ` — ${feed.notes}` : ""}`);
+  if (feed.format === "json" && platform === "darwin") {
+    // eval-16: Squirrel.Mac only applies an update signed like the running
+    // bundle — an ad-hoc/unsigned build (a release shipped without the Apple
+    // secrets) can never pass that check, so the background download would
+    // fail on every recheck. Route it to the manual release-page flow the
+    // yml feeds use, before any updater wiring.
+    const signing = await (opts.macSigning ?? runningMacSigning)();
+    if (!squirrelCanApply(signing)) {
+      log(`update check: this build is ${signing}-signed — Squirrel.Mac cannot apply an update to it; update is manual, opening the release page`);
+      if (opts.openReleasePage && !manualOpened.has(feed.version)) {
+        manualOpened.add(feed.version);
+        opts.openReleasePage(releasePageUrl(feedUrl));
+      }
+      return finish("update-available-manual", feed.version);
+    }
+  }
   if (feed.format === "json") {
     // P1-050: listeners attach at most once per updater instance (see
     // attachUpdateListeners) and the downloaded handler reads its version
