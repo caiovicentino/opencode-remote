@@ -115,55 +115,13 @@ async function deriveAesKey(
   );
 }
 
-/**
- * RT-424: normalized frame `seq`. `undefined`/`null` → 0 (the historical
- * `?? 0` semantic: the replay guard keeps refusing it). A non-negative safe
- * integer passes through; anything else → null (fail-closed): numeric
- * strings, booleans, fractions, NaN, ±Infinity, negatives and values ≥ 2^53
- * are never allowed into the AAD or the replay guard.
- */
-export function frameSeq(raw: unknown): number | null {
-  if (raw === undefined || raw === null) return 0;
-  if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0) return raw;
-  return null;
-}
-
 /** AAD binding for data frames: sender id + sequence number. */
 export function seqAad(from: string, seq: number): Uint8Array {
-  if (frameSeq(seq) !== seq) {
-    throw new RangeError("seqAad: seq must be a non-negative safe integer");
-  }
   const f = te.encode(from);
   const out = new Uint8Array(new ArrayBuffer(f.length + 8));
   out.set(f, 0);
   new DataView(out.buffer).setBigUint64(f.length, BigInt(seq));
   return out;
-}
-
-/** Byte length of the client-chosen HKDF salt that travels as the hello nonce. */
-export const HELLO_NONCE_BYTES = 16;
-
-/**
- * RT-390 follow-up: the hello nonce is the daemon's replay-dedupe key, so it
- * must have exactly ONE accepted spelling. `fromB64` is deliberately tolerant
- * (base64url, whitespace, missing padding) and `atob` drops non-zero trailing
- * bits, so a recorded hello could be re-sent with its nonce re-spelled
- * ("…==" → "…", an inserted newline, a different last character): same salt
- * bytes, same session key, a string the dedupe had never seen — the replay
- * then re-opened the session with lastSeq = 0. Only the canonical standard
- * base64 of exactly HELLO_NONCE_BYTES bytes (what `clientHello` has always
- * emitted) is accepted; anything else → null (fail-closed).
- */
-export function helloNonce(raw: unknown): Uint8Array | null {
-  if (typeof raw !== "string" || raw.length !== 24) return null;
-  let salt: Uint8Array;
-  try {
-    salt = fromB64(raw);
-  } catch {
-    return null;
-  }
-  if (salt.length !== HELLO_NONCE_BYTES || b64(salt) !== raw) return null;
-  return salt;
 }
 
 /**
@@ -174,15 +132,10 @@ export function helloNonce(raw: unknown): Uint8Array | null {
 export async function clientHello(
   daemonPub: string,
   identity: Identity,
-  now: number = Date.now(),
 ): Promise<{ hello: DaemonHello; sessionKey: CryptoKey }> {
-  const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(HELLO_NONCE_BYTES)));
+  const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));
   const sessionKey = await deriveAesKey(identity.privateKey, daemonPub, salt);
-  // RT-390: the creation instant travels INSIDE the sealed token — the clear
-  // fields and the DaemonHello shape are unchanged, so the relay stays blind.
-  // The daemon refuses tokens older/newer than its skew window, which turns
-  // the eternal captured hello into a short-lived credential.
-  const token = await seal({ clientPub: identity.publicKey, ts: now }, sessionKey, te.encode(HELLO_AAD));
+  const token = await seal({ clientPub: identity.publicKey }, sessionKey, te.encode(HELLO_AAD));
   return { hello: { clientPub: identity.publicKey, nonce: b64(salt), token }, sessionKey };
 }
 
@@ -190,24 +143,20 @@ export async function clientHello(
 export async function serverAccept(
   hello: DaemonHello,
   daemonIdentity: Identity,
-): Promise<{ clientPub: string; sessionKey: CryptoKey; ts: number | null } | null> {
+): Promise<{ clientPub: string; sessionKey: CryptoKey } | null> {
   try {
-    // RT-390 follow-up: a non-canonical nonce is refused BEFORE any key
-    // derivation — see helloNonce.
-    const salt = helloNonce(hello.nonce);
-    if (!salt) return null;
-    const sessionKey = await deriveAesKey(daemonIdentity.privateKey, hello.clientPub, salt);
-    const token = await openSealed<{ clientPub: string; ts?: unknown }>(
+    const sessionKey = await deriveAesKey(
+      daemonIdentity.privateKey,
+      hello.clientPub,
+      fromB64(hello.nonce),
+    );
+    const token = await openSealed<{ clientPub: string }>(
       hello.token,
       sessionKey,
       te.encode(HELLO_AAD),
     );
     if (!token || token.clientPub !== hello.clientPub) return null;
-    // RT-390: no policy here — freshness is the daemon's decision (helloguard).
-    // A missing/non-numeric stamp is surfaced as null so old clients fail
-    // closed upstream instead of being silently tolerated.
-    const ts = typeof token.ts === "number" && Number.isFinite(token.ts) ? token.ts : null;
-    return { clientPub: hello.clientPub, sessionKey, ts };
+    return { clientPub: hello.clientPub, sessionKey };
   } catch {
     return null;
   }
@@ -215,9 +164,7 @@ export async function serverAccept(
 
 export async function acceptPayload(
   sessionKey: CryptoKey,
-  // P3-403: caps gains `tts` — the host's spoken-answer verdict (edge-tts
-  // installed), consumed by the PWA to place the per-session voice toggle.
-  caps?: { transcribe?: boolean; tts?: boolean },
+  caps?: { transcribe?: boolean },
 ): Promise<ServerAccept> {
   return { ok: true, confirm: await seal({ ok: true, caps }, sessionKey, te.encode(CONFIRM_AAD)) };
 }
