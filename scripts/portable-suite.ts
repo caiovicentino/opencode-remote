@@ -43,9 +43,9 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
-import { seconds, stepSummaryMarkdown, type FileTiming } from "./unit-suite";
+import { invokedDirectly, seconds, stepSummaryMarkdown, type FileTiming } from "./unit-suite";
 
 export const PORTABLE_TESTS: readonly string[] = [
   "boothealth.test.ts",
@@ -199,7 +199,8 @@ function cli(): number {
   return 0;
 }
 
-// CLI guard: run the suite only when executed directly (same pattern as
-// scripts/ci-scope.ts) — importing the module must stay side-effect free.
-const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === invoked) process.exit(cli());
+// CLI guard: run the suite only when executed directly — importing the
+// module must stay side-effect free. Real-path comparison (invokedDirectly):
+// the old string test skipped the suite and exited 0 when started through a
+// symlinked path.
+if (invokedDirectly(import.meta.url)) process.exit(cli());

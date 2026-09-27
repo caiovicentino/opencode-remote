@@ -25,6 +25,12 @@
  * (stderr is the end of the gate tail). On CI the per-file table, slowest
  * first, lands in the job summary ($GITHUB_STEP_SUMMARY) instead of stdout.
  *
+ * The whole battery runs under the throwaway HOME of scripts/testhome.ts
+ * (children inherit it and reuse the same sandbox), so no suite can reach
+ * the owner's ~/.opencode-remote even when it forgets `import "./testhome"`.
+ *
+ * `--keep-going` (local diagnosis) runs every file and ends with the list of
+ * all failures and their rerun commands, exit = the first failure's code.
  * `--list` prints the entries; `--fold-chain <git-ref | package.json path>
  * [--dry-run]` folds a legacy chain (a branch cut before the switch) into
  * the list: missing entries are appended in chain order and package.json is
@@ -34,7 +40,7 @@
  * module is side-effect free (CLI guard at the bottom).
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -221,8 +227,10 @@ export interface SuiteRunResult {
   code: number;
   /** One row per file that ran, in run order. */
   timings: FileTiming[];
-  /** The failing file, when one failed. */
+  /** The (first) failing file, when one failed. */
   failed?: { index: number; label: string };
+  /** Every failing file — more than one only under --keep-going. */
+  failures?: { index: number; label: string; code: number }[];
 }
 
 /** What one file's run reports back — the fields of spawnSync's result that matter. */
@@ -240,6 +248,12 @@ export interface SuiteRunDeps {
   err: (line: string) => void;
 }
 
+export interface SuiteRunOptions {
+  /** Local diagnosis: run every file and summarize all failures at the end
+   * (the default — and CI, and the gate — stop at the first failure). */
+  keepGoing?: boolean;
+}
+
 /** sh's view of a child's end: its status, or 128+signo for a signal death. */
 export function exitCodeOf(o: EntryOutcome): number {
   if (o.error) return 1;
@@ -253,12 +267,15 @@ export function seconds(ms: number): string {
 }
 
 /**
- * Run the entries in order, stop at the first failure. Pure over `deps`, so
- * the semantics are pinned with a fake exec and a fake clock.
+ * Run the entries in order, stop at the first failure (or, with keepGoing,
+ * run them all and summarize every failure; the exit code is still the
+ * first failing file's). Pure over `deps`, so the semantics are pinned with
+ * a fake exec and a fake clock.
  */
-export function runUnitSuite(entries: readonly SuiteEntry[], deps: SuiteRunDeps): SuiteRunResult {
+export function runUnitSuite(entries: readonly SuiteEntry[], deps: SuiteRunDeps, opts: SuiteRunOptions = {}): SuiteRunResult {
   const n = entries.length;
   const timings: FileTiming[] = [];
+  const failures: { index: number; label: string; code: number }[] = [];
   deps.out(`unit-suite: ${n} file(s) from ${UNIT_SUITE_LIST}`);
   const started = deps.now();
   for (let i = 0; i < n; i++) {
@@ -277,21 +294,38 @@ export function runUnitSuite(entries: readonly SuiteEntry[], deps: SuiteRunDeps)
         : outcome.status === null && outcome.signal
           ? `killed by ${outcome.signal} (exit ${code})`
           : `exit ${code}`;
+      if (opts.keepGoing) {
+        deps.err(`unit-suite: FAIL ${pos} ${label} — ${how} after ${ms}ms (--keep-going: continuing)`);
+        failures.push({ index: i, label, code });
+        continue;
+      }
       deps.err(`unit-suite: FAIL ${pos} ${label} — ${how} after ${ms}ms (${i} passed, ${n - i - 1} not run)`);
       deps.err(`unit-suite: rerun just this file: npx tsx ${label}`);
-      return { code, timings, failed: { index: i, label } };
+      return { code, timings, failed: { index: i, label }, failures: [{ index: i, label, code }] };
     }
     timings.push({ label, ms, ok: true });
     deps.out(`unit-suite: ok ${pos} ${label} (${ms}ms)`);
   }
-  deps.out(`unit-suite: OK ${n} file(s) in ${seconds(Math.round(deps.now() - started))}`);
-  return { code: 0, timings };
+  const took = seconds(Math.round(deps.now() - started));
+  if (failures.length > 0) {
+    deps.err(`unit-suite: FAILED ${failures.length} of ${n} file(s) in ${took} (--keep-going) — rerun each alone:`);
+    for (const f of failures) deps.err(`unit-suite:   npx tsx ${f.label}   # exit ${f.code}`);
+    const first = failures[0];
+    return { code: first.code, timings, failed: { index: first.index, label: first.label }, failures };
+  }
+  deps.out(`unit-suite: OK ${n} file(s) in ${took}`);
+  return { code: 0, timings, failures };
 }
 
 /** Markdown for $GITHUB_STEP_SUMMARY: every file that ran, slowest first. */
 export function stepSummaryMarkdown(result: SuiteRunResult, listed: number, title = `Unit battery (${UNIT_SUITE_LIST})`): string {
   const total = result.timings.reduce((sum, t) => sum + t.ms, 0);
-  const verdict = result.failed ? `FAILED at \`${result.failed.label}\` (exit ${result.code})` : `all ${listed} file(s) passed`;
+  const failedCount = result.failures?.length ?? (result.failed ? 1 : 0);
+  const verdict = !result.failed
+    ? `all ${listed} file(s) passed`
+    : failedCount > 1
+      ? `FAILED ${failedCount} file(s), first \`${result.failed.label}\` (exit ${result.code})`
+      : `FAILED at \`${result.failed.label}\` (exit ${result.code})`;
   const rows = [...result.timings].sort((a, b) => b.ms - a.ms || a.label.localeCompare(b.label));
   return [
     `### ${title} — per-file timings`,
@@ -318,7 +352,7 @@ export function readUnitSuite(root = resolve(dirname(fileURLToPath(import.meta.u
   return parseUnitSuite(readFileSync(join(root, UNIT_SUITE_LIST), "utf8"));
 }
 
-const USAGE = "usage: tsx scripts/unit-suite.ts [--list | --fold-chain <git-ref | package.json path> [--dry-run]]";
+const USAGE = "usage: tsx scripts/unit-suite.ts [--list | --keep-going | --fold-chain <git-ref | package.json path> [--dry-run]]";
 
 function fold(root: string, listText: string, suite: ParsedSuite, source: string | undefined, dryRun: boolean): number {
   if (!source) {
@@ -381,7 +415,7 @@ function fold(root: string, listText: string, suite: ParsedSuite, source: string
   return 0;
 }
 
-function cli(argv: readonly string[]): number {
+async function cli(argv: readonly string[]): Promise<number> {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   let listText: string;
   try {
@@ -396,7 +430,8 @@ function cli(argv: readonly string[]): number {
     const dryRun = rest.includes("--dry-run");
     return fold(root, listText, suite, rest.find((a) => a !== "--dry-run"), dryRun);
   }
-  if (argv.length > 1 || (argv.length === 1 && argv[0] !== "--list")) {
+  const keepGoing = argv.length === 1 && argv[0] === "--keep-going";
+  if (argv.length > 1 || (argv.length === 1 && argv[0] !== "--list" && !keepGoing)) {
     console.error(USAGE);
     return 2;
   }
@@ -417,12 +452,26 @@ function cli(argv: readonly string[]): number {
     console.error("unit-suite: FAIL — node_modules/tsx/dist/cli.mjs is missing (run npm ci); nothing ran");
     return 1;
   }
-  const result = runUnitSuite(suite.entries, {
-    exec: spawnEntry(root, tsxCli),
-    now: () => performance.now(),
-    out: (line) => console.log(line),
-    err: (line) => console.error(line),
-  });
+  // Structural guard for the WHOLE battery: the throwaway HOME of
+  // scripts/testhome.ts (and whatever else that module guards) before the
+  // first file runs. Every child inherits HOME/USERPROFILE and the
+  // OCR_TEST_HOME contract — a suite that imports ./testhome itself reuses
+  // this sandbox instead of nesting a second one, and a suite that forgets
+  // the import still cannot reach the owner's ~/.opencode-remote (on
+  // 2026-09-27 the battery rewrote the live pilot state.json and heartbeat).
+  // Run mode only: --list, --fold-chain and importing this module's helpers
+  // stay side-effect free.
+  await import("./testhome");
+  const result = runUnitSuite(
+    suite.entries,
+    {
+      exec: spawnEntry(root, tsxCli),
+      now: () => performance.now(),
+      out: (line) => console.log(line),
+      err: (line) => console.error(line),
+    },
+    { keepGoing },
+  );
   const summary = process.env.GITHUB_STEP_SUMMARY;
   if (summary) {
     try {
@@ -434,8 +483,22 @@ function cli(argv: readonly string[]): number {
   return result.code;
 }
 
-// CLI guard (same pattern as scripts/portable-suite.ts): run only when
-// executed directly. exitCode instead of process.exit() so piped stdout is
-// flushed before the process ends (the gate reads it through a pipe).
-const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === invoked) process.exitCode = cli(process.argv.slice(2));
+/**
+ * CLI guard: true when `metaUrl` is the script node was started with. The
+ * old `import.meta.url === pathToFileURL(argv[1]).href` test failed OPEN: a
+ * script started through a symlinked path (macOS /var → /private/var, a
+ * symlinked checkout) saw different strings, skipped its CLI and exited 0 —
+ * a battery that reports green without running a file. Compare real paths.
+ */
+export function invokedDirectly(metaUrl: string, argv1 = process.argv[1]): boolean {
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(metaUrl));
+  } catch {
+    return pathToFileURL(argv1).href === metaUrl;
+  }
+}
+
+// exitCode instead of process.exit() so piped stdout is flushed before the
+// process ends (the gate reads it through a pipe).
+if (invokedDirectly(import.meta.url)) process.exitCode = await cli(process.argv.slice(2));

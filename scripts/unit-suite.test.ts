@@ -17,7 +17,7 @@
  */
 import "./testhome"; // throwaway HOME before any pilot module loads (testhome.ts)
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,7 @@ import {
   entryLabel,
   exitCodeOf,
   foldPlan,
+  invokedDirectly,
   missingFileProblems,
   parseUnitSuite,
   readUnitSuite,
@@ -170,6 +171,8 @@ const C: SuiteEntry = { file: "scripts/c.test.ts", args: [] };
     return { result, ran, out, err };
   }
   const ok: EntryOutcome = { status: 0, signal: null };
+  // the evidence gate's duration mask (normalizeEvidenceLine: \d+ms, \d+(.\d+)?s → TIME)
+  const TIME = (l: string) => l.replace(/\b\d+(\.\d+)?(ms|min|h|s)\b/g, "TIME");
 
   const green = harness([ok, ok, ok], 5);
   check(
@@ -200,6 +203,48 @@ const C: SuiteEntry = { file: "scripts/c.test.ts", args: [] };
   );
   check("run: no OK total after a failure", !red.out.some((l) => l.startsWith("unit-suite: OK")));
 
+  // --keep-going (local diagnosis): every file runs, every failure is listed
+  function harnessKeepGoing(outcomes: EntryOutcome[], tick: number) {
+    const ran: string[] = [];
+    const out: string[] = [];
+    const err: string[] = [];
+    let t = 1_000;
+    const result = runUnitSuite(
+      [A, B, C],
+      {
+        exec: (e) => {
+          ran.push(entryLabel(e));
+          t += tick * 7;
+          return outcomes[ran.length - 1] ?? { status: 0, signal: null };
+        },
+        now: () => (t += tick),
+        out: (l) => out.push(l),
+        err: (l) => err.push(l),
+      },
+      { keepGoing: true },
+    );
+    return { result, ran, out, err };
+  }
+  const kg = harnessKeepGoing([{ status: 3, signal: null }, ok, { status: 5, signal: null }], 5);
+  check("keep-going: every file runs despite failures", kg.ran.length === 3);
+  check(
+    "keep-going: exit = the FIRST failure's code, both failures recorded",
+    kg.result.code === 3 && kg.result.failed?.label === "scripts/a.test.ts" && JSON.stringify(kg.result.failures?.map((f) => f.code)) === "[3,5]",
+    JSON.stringify(kg.result),
+  );
+  check(
+    "keep-going: the closing summary lists every failing file with its rerun command",
+    kg.err.some((l) => /^unit-suite: FAILED 2 of 3 file\(s\) in \d+\.\ds \(--keep-going\)/.test(l)) &&
+      kg.err.includes("unit-suite:   npx tsx scripts/a.test.ts   # exit 3") &&
+      kg.err.includes("unit-suite:   npx tsx scripts/c.test.ts   # exit 5") &&
+      !kg.out.some((l) => l.startsWith("unit-suite: OK")),
+    JSON.stringify(kg.err),
+  );
+  const kgSlow = harnessKeepGoing([{ status: 3, signal: null }, ok, { status: 5, signal: null }], 977);
+  check("keep-going: output identical modulo durations too", kgSlow.err.map(TIME).join("\n") === kg.err.map(TIME).join("\n") && kgSlow.out.map(TIME).join("\n") === kg.out.map(TIME).join("\n"));
+  const kgGreen = harnessKeepGoing([ok, ok, ok], 5);
+  check("keep-going: all green behaves like the default (OK total, exit 0)", kgGreen.result.code === 0 && kgGreen.out.some((l) => l.startsWith("unit-suite: OK 3 file(s)")) && kgGreen.err.length === 0);
+
   check("exit code: a SIGKILL death is 137, like sh", exitCodeOf({ status: null, signal: "SIGKILL" }) === 137);
   check("exit code: a spawn error is 1", exitCodeOf({ status: null, signal: null, error: new Error("ENOENT") }) === 1);
   check("exit code: no status and no signal is 1, never a pass", exitCodeOf({ status: null, signal: null }) === 1);
@@ -210,7 +255,6 @@ const C: SuiteEntry = { file: "scripts/c.test.ts", args: [] };
   // and the gate re-runs the command; lines are compared after
   // normalizeEvidenceLine (durations → TIME). Two runs with very different
   // clocks must therefore print the same lines once durations are masked.
-  const TIME = (l: string) => l.replace(/\b\d+(\.\d+)?(ms|min|h|s)\b/g, "TIME");
   const slow = harness([ok, ok, ok], 977);
   check("determinism: the raw lines of two runs differ only in durations", slow.out.join("\n") !== green.out.join("\n"));
   check("determinism: runner output is identical modulo durations (evidence-gate safe)", slow.out.map(TIME).join("\n") === green.out.map(TIME).join("\n"), JSON.stringify(slow.out.map(TIME)));
@@ -257,6 +301,84 @@ const C: SuiteEntry = { file: "scripts/c.test.ts", args: [] };
     check("real run: the file after the failure never ran", !existsSync(join(tmp, "c.out")));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// --- the CLI guard compares real paths ---------------------------------------------
+{
+  const self = fileURLToPath(import.meta.url);
+  check("invokedDirectly: the module's own path is a direct invocation", invokedDirectly(import.meta.url, self));
+  check("invokedDirectly: another script is not", !invokedDirectly(import.meta.url, join(root, "scripts", "unit-suite.ts")));
+  check("invokedDirectly: an empty argv[1] (REPL, -e) is not", !invokedDirectly(import.meta.url, ""));
+}
+
+// --- the real CLI: the whole battery under the testhome sandbox ------------------
+// POSIX only (the throwaway repo links node_modules with a symlink); the
+// sandbox itself is plain env inheritance, the same on every OS.
+if (process.platform !== "win32") {
+  const tmp = mkdtempSync(join(tmpdir(), "ocr-unit-suite-cli-"));
+  const ownerHome = mkdtempSync(join(tmpdir(), "ocr-unit-suite-owner-"));
+  try {
+    mkdirSync(join(tmp, "scripts"));
+    for (const f of ["unit-suite.ts", "testhome.ts"]) copyFileSync(join(root, "scripts", f), join(tmp, "scripts", f));
+    symlinkSync(join(root, "node_modules"), join(tmp, "node_modules"), "dir");
+    writeFileSync(join(tmp, "package.json"), '{ "type": "module" }\n');
+    const probeOut = join(tmp, "probe.json");
+    writeFileSync(
+      join(tmp, "scripts", "a.test.ts"),
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(probeOut)}, JSON.stringify({ home: process.env.HOME, testHome: process.env.OCR_TEST_HOME }));\n`,
+    );
+    writeFileSync(join(tmp, "scripts", "b.test.ts"), "process.exit(4);\n");
+    writeFileSync(join(tmp, "scripts", "c.test.ts"), `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(join(tmp, "c.out"))}, "ran");\n`);
+    writeFileSync(join(tmp, "scripts", "unit-suite.txt"), "scripts/a.test.ts\nscripts/b.test.ts\nscripts/c.test.ts\n");
+    // the invoker looks like an owner: its own HOME, no sandbox yet
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: ownerHome, USERPROFILE: ownerHome };
+    delete env.OCR_TEST_HOME;
+    delete env.GITHUB_STEP_SUMMARY;
+    const tsxCli = join(root, "node_modules", "tsx", "dist", "cli.mjs");
+    const runCli = (...args: string[]) =>
+      spawnSync(process.execPath, [tsxCli, join(tmp, "scripts", "unit-suite.ts"), ...args], { cwd: tmp, env, encoding: "utf8" });
+
+    const kept = runCli("--keep-going");
+    const probe = existsSync(probeOut) ? (JSON.parse(readFileSync(probeOut, "utf8")) as { home?: string; testHome?: string }) : null;
+    check(
+      "cli: every suite runs under the testhome sandbox — HOME is OCR_TEST_HOME, never the invoker's",
+      probe !== null && !!probe.home && probe.home === probe.testHome && probe.home !== ownerHome && realpathSync.native(dirname(probe.home)) === realpathSync.native(tmpdir()),
+      JSON.stringify({ probe, ownerHome, stderr: kept.stderr.slice(-400) }),
+    );
+    check("cli: the sandbox is removed when the battery ends", !!probe?.home && !existsSync(probe.home));
+    check("cli: nothing was written under the invoker's HOME", readdirSync(ownerHome).length === 0, JSON.stringify(readdirSync(ownerHome)));
+    check(
+      "cli --keep-going: the file after the failure still runs; exit = the failure's code",
+      kept.status === 4 && existsSync(join(tmp, "c.out")) && kept.stderr.includes("unit-suite: FAILED 1 of 3 file(s)"),
+      `${kept.status} ${kept.stderr.slice(-400)}`,
+    );
+    rmSync(join(tmp, "c.out"), { force: true });
+    const fast = runCli();
+    check(
+      "cli default: fail-fast — the file after the failure never runs, exit = its code",
+      fast.status === 4 && !existsSync(join(tmp, "c.out")) && fast.stderr.includes("unit-suite: rerun just this file: npx tsx scripts/b.test.ts"),
+      `${fast.status} ${fast.stderr.slice(-400)}`,
+    );
+    const usage = runCli("--keep-going", "--list");
+    check("cli: unknown flag combinations are a usage error (exit 2), nothing runs", usage.status === 2 && usage.stderr.includes("usage:"));
+    // Fail-open regression: through a symlinked path the old string guard
+    // skipped the CLI and exited 0 with no output — a green that ran nothing.
+    const link = `${tmp}-link`;
+    symlinkSync(tmp, link, "dir");
+    try {
+      const viaLink = spawnSync(process.execPath, [tsxCli, join(link, "scripts", "unit-suite.ts"), "--list"], { cwd: tmp, env, encoding: "utf8" });
+      check(
+        "cli: started through a symlinked path it still runs (never a silent exit 0)",
+        viaLink.status === 0 && viaLink.stdout.trim().split("\n").length === 3 && viaLink.stdout.includes("scripts/b.test.ts"),
+        `${viaLink.status} ${JSON.stringify(viaLink.stdout)} ${viaLink.stderr.slice(-300)}`,
+      );
+    } finally {
+      rmSync(link, { force: true });
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(ownerHome, { recursive: true, force: true });
   }
 }
 
