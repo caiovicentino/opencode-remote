@@ -1976,6 +1976,8 @@ const ROOM_BUDGET_PROM_ORDER = [
   "relay_capacity_refused_total",
   "relay_idle_unjoined_closed",
   "relay_room_budget_terminated",
+  // eval-13: second owner sockets seen since boot
+  "relay_duplicate_owner_total",
   "relay_rooms_active",
 ];
 const ROOM_BUDGET_JSON_ORDER = [
@@ -2000,6 +2002,8 @@ const ROOM_BUDGET_JSON_ORDER = [
   "capacity_refused_total",
   "idle_unjoined_closed",
   "room_budget_terminated",
+  // eval-13: same position as its Prometheus twin
+  "duplicate_owner_total",
   "rooms_active",
 ];
 // P3-461: the additive occupancy split joined the documented set, appended
@@ -2009,11 +2013,14 @@ const ROOM_OCC_SERIES = [
   "relay_rooms_single_peer",
   "relay_rooms_paired",
   "relay_rooms_crowded",
+  // eval-13: rooms whose owner identity two live sockets hold right now
+  "relay_rooms_duplicate_owner",
 ] as const;
 const ROOM_OCC_JSON_KEYS = [
   "rooms_single_peer",
   "rooms_paired",
   "rooms_crowded",
+  "rooms_duplicate_owner",
 ] as const;
 const GAUGE_SERIES: readonly string[] = [
   "relay_connections_active",
@@ -2463,6 +2470,8 @@ check(
       ["capacity_refused_total", "relay_capacity_refused_total", "counter"],
       ["idle_unjoined_closed", "relay_idle_unjoined_closed", "counter"],
       ["room_budget_terminated", "relay_room_budget_terminated", "counter"],
+      // eval-13: additive duplicate-owner counter, after the budget counter
+      ["duplicate_owner_total", "relay_duplicate_owner_total", "counter"],
       ["rooms_active", "relay_rooms_active", "gauge"],
     ];
     const expectedPrefix = PRE_EXISTING.flatMap(([key, name, type]) => [
