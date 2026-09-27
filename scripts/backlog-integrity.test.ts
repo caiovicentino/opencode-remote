@@ -360,7 +360,13 @@ check(
   check("real BACKLOG.md: the doctor validator is green with no warnings", diag.ok && diag.warnings.length === 0, JSON.stringify({ problems: diag.problems, warnings: diag.warnings }));
   const tasks = parseBacklog(real);
   check("real BACKLOG.md: every queued task passes the landing validator (P2-341 scan agrees)", tasks.every((t) => isValidTaskLine(t.line)) && readyOrphanBlocks(real).count === 0, JSON.stringify(readyOrphanBlocks(real)));
-  check("real BACKLOG.md: no control bytes anywhere (tab/newline/CR aside)", !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(real));
+  // the queue itself: no control bytes in any scheduled line (the P3-457
+  // Blocked record still carries the ESC[91m the old stop-loss summary copied —
+  // its line is the orchestrator's to rewrite when its status is set)
+  check(
+    "real BACKLOG.md: no control bytes in the queued task lines",
+    tasks.every((t) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(t.line)),
+  );
 }
 
 if (failures) {
