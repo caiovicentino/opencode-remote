@@ -1,5 +1,8 @@
 # TLS automático (Let's Encrypt) na frente do relay.
 # Troque pelo seu domínio apontando o DNS para este servidor:
+# O Caddy grava o IP do cliente em X-Forwarded-For; o relay do compose confia
+# em exatamente um salto (RELAY_TRUST_PROXY_HOPS=1) para o teto por IP valer
+# por cliente — sem isso toda conexão teria o IP do Caddy.
 relay.seudominio.com {
 	reverse_proxy relay:8787
 }

@@ -1,22 +1,32 @@
 # OpenCode Remote — deploy do relay (e do daemon, opcional) com Docker.
 #
-# Relay público com TLS:
+# Relay público com TLS (o layout padrão deste arquivo):
 #   1. Edite docker/Caddyfile com o seu domínio
 #   2. docker compose up -d relay caddy        # relay em wss://dominio
+#   O relay fica só no loopback do host (127.0.0.1:8787) — o Caddy fala com
+#   ele pela rede interna do compose — e confia em exatamente um proxy na
+#   frente (RELAY_TRUST_PROXY_HOPS=1), senão toda conexão chega com o IP do
+#   Caddy e o teto por IP (20) vira um teto GLOBAL de 20 sockets.
 #
 # Homelab (tudo em Docker, opencode na própria máquina):
-#   RELAY_URL=wss://seu.dominio.com docker compose up -d relay daemon
+#   RELAY_URL=wss://seu.dominio.com docker compose up -d relay caddy daemon
+#   RELAY_URL é obrigatório: é o endereço público que vai no QR de
+#   pareamento, e o daemon recusa ws:// para host que não seja loopback.
 #
-# Só relay, sem TLS (rede confiável / VPN):
-#   docker compose up -d relay
+# Só relay, sem TLS e sem proxy (rede confiável / VPN):
+#   RELAY_PUBLISH=0.0.0.0 RELAY_TRUST_PROXY_HOPS=0 docker compose up -d relay
+#   Sem proxy na frente os hops PRECISAM ser 0: com 1, qualquer cliente
+#   forjaria x-forwarded-for e giraria o próprio teto por IP.
 
 services:
   relay:
     build:
       context: .
       dockerfile: deploy/relay/Dockerfile
+    environment:
+      RELAY_TRUST_PROXY_HOPS: ${RELAY_TRUST_PROXY_HOPS:-1}
     ports:
-      - "8787:8787"
+      - "${RELAY_PUBLISH:-127.0.0.1}:8787:8787"
     restart: unless-stopped
 
   caddy:
@@ -39,13 +49,19 @@ services:
       dockerfile: Dockerfile.daemon
     profiles: ["daemon"]
     environment:
-      RELAY_URL: ${RELAY_URL:-ws://relay:8787}
+      # vazio de propósito: sem o endereço público o daemon recusa discar
+      # (fail-closed, motivo no log) em vez de embutir no QR um ws://relay
+      # que o celular nunca alcança
+      RELAY_URL: ${RELAY_URL:-}
       OPENCODE_URL: ${OPENCODE_URL:-http://host.docker.internal:4096}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
       OCR_MACHINE_NAME: ${OCR_MACHINE_NAME:-docker-host}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      # identidade + assinaturas push. Não aponte para o ~/.opencode-remote
+      # de um host que já roda o daemon: dois daemons com a mesma identidade
+      # disputam a mesma sala do relay.
       - ${HOME}/.opencode-remote:/root/.opencode-remote
     depends_on:
       - relay
