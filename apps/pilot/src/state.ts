@@ -229,6 +229,12 @@ export interface PilotState {
    * streak is a hard failure (read-only remote, dead gh) instead of an
    * infinite free reschedule. Survives midnight like taskAttempts. */
   infraStreaks?: Record<string, { kind: InfraFailureKind; n: number }>;
+  /** eval fixround: task key → CONSECUTIVE api-down outcomes (failureclass.ts
+   * cap). Free retries stop after API_DOWN_FREE_CYCLES once the provider was
+   * proven up in between; the trail then feeds the normal infra streak.
+   * Cleared by any non-api-down outcome of the task. Survives midnight like
+   * taskAttempts (an outage loop must not be reborn by a daily reset). */
+  apiDownStreaks?: Record<string, { n: number; startedAt: number }>;
   /** P2-334: task key → shared-defect holds already granted (a 3x ci-red
    * streak whose checks are also red on main). One hold per task lifetime:
    * when it is spent, a later ci-red starvation blocks again. Survives
@@ -357,6 +363,20 @@ function normalizeTaskHolds(v: unknown): Record<string, number> {
   return out;
 }
 
+/** eval fixround: tolerant parse of the per-task api-down trails — garbage
+ * dropped; positive counts and finite epoch timestamps only. */
+function normalizeApiDownStreaks(v: unknown): Record<string, { n: number; startedAt: number }> {
+  const out: Record<string, { n: number; startedAt: number }> = {};
+  if (!v || typeof v !== "object") return out;
+  for (const [task, s] of Object.entries(v as Record<string, unknown>)) {
+    const m = s as { n?: unknown; startedAt?: unknown } | null;
+    if (!m || typeof m !== "object" || typeof m.n !== "number" || !Number.isFinite(m.n) || m.n <= 0) continue;
+    if (typeof m.startedAt !== "number" || !Number.isFinite(m.startedAt)) continue;
+    out[task] = { n: Math.floor(m.n), startedAt: Math.floor(m.startedAt) };
+  }
+  return out;
+}
+
 /** P1-075: tolerant parse of the lesson-impact cohorts — garbage → undefined. */
 function normalizeLessonImpact(v: unknown): LessonImpact | undefined {
   if (!v || typeof v !== "object") return undefined;
@@ -391,6 +411,9 @@ export function loadState(file = STATE_FILE): PilotState {
           ) as Record<string, number>)
         : {},
       infraStreaks: normalizeInfraStreaks(s.infraStreaks),
+      // eval fixround: per-task api-down trails survive midnight like
+      // taskAttempts (an outage loop must not be reborn by the daily reset)
+      apiDownStreaks: normalizeApiDownStreaks(s.apiDownStreaks),
       // P2-334: shared-defect hold counters survive midnight like taskAttempts
       // (garbage/zero/negative/fractional entries dropped, never crash)
       taskHolds: normalizeTaskHolds(s.taskHolds),

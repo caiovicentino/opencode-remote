@@ -15,7 +15,7 @@ import { appendLessonsToWorkspace, lessonsNearDiff, pickRelevantLessons, readExp
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 import { repairPlan } from "./mergerepair";
-import { actionsIds, asFailedLog, bridgeRunId, CI_BRIDGE_MAX_CHARS, CI_RED_STEP, ciFindingBlock, failedLogCommand, jobLogCommand, summarizeCiFailure, type RedCheck } from "./cibridge";
+import { actionsIds, asFailedLog, bridgeRunId, CI_BRIDGE_MAX_CHARS, CI_BRIDGE_TIMEOUT_MIN, CI_JOB_LOG_ATTEMPTS, CI_RED_STEP, ciFindingBlock, failedLogCommand, jobLogCommand, summarizeCiFailure, type RedCheck } from "./cibridge";
 import { providerOutage, reviewerInconclusive } from "./failureclass";
 /**
  * P2-009 (round 2): single predicate for "UI evidence required", shared by the
@@ -505,7 +505,13 @@ export function builderPrompt(
   resume: AgentIds | null = null,
   attempt = 1,
   recap = "",
-): string {  const uiTask = needsUiEvidence(t.area, false);
+  // eval fixround (F13): the prompt's own diff hint follows the pipeline's
+  // diff base (origin/<base>), never the slot's LOCAL main — that ref only
+  // moves when this slot merges/blocks, and a stale one shows other tasks'
+  // files as "the diff".
+  base = "main",
+): string {
+  const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
   const specBlock = specFile
     ? `\nPLANNER SPEC: ${specFile} exists on this branch — read it FIRST. It holds the agreed problem analysis, approach, touched files, edge cases, acceptance criteria and out-of-scope. Follow it; if you must deviate, justify the deviation in the commit message. Do not delete or rewrite the spec.\n`
@@ -516,10 +522,10 @@ export function builderPrompt(
     ? `\nLONG-HORIZON TASK (P1-060): this task is size L and its spec's ## Approach is structured as numbered milestones (M1..Mn). Execute milestones IN ORDER, one or more per round, and keep the branch green at the end of every round (typecheck + build + unit). You have a larger round/timeout budget than a size-S task — use it to finish milestones, not to gold-plate.\n`
     : "";
   const attemptBlock = attempt > 1
-    ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff main...pilot/${t.id}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
+    ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff origin/${base}...pilot/${t.id}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
     : "";
   const roundBlock = round > 1
-    ? `\nRounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.`
+    ? `\nRounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff origin/${base}...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.`
     : "";
   const uiBullet = uiTask
     ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI — \`node tools/browse.mjs shot <path>.png 1440 900\` (desktop) and \`node tools/browse.mjs shot <path>.png 390 844\` (phone), positional width/height — and cite both paths in the EVIDENCE block below; PNG dimensions are verified at the gate (1440x900 exactly, 2x Retina accepted; width 390). This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
@@ -1542,7 +1548,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     const conflictBlock = mergeConflictBlock(prMergeable.output?.trim(), t.id, base);
     // mission v2: the mission may pin the builder model (verified against the
     // live catalog at dispatch; default model otherwise — never a crash)
-    const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap) + conflictBlock, {
+    const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap, base) + conflictBlock, {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -1573,8 +1579,11 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // opencode API preflight is infra — end the cycle NOW: retrying the next
     // round at once only dies again (2026-09-23 ~01:24: P2-337/338/339 each
     // lost a round, the immediate retry died ~70s later, and all three burned
-    // an attempt as "builder did not finish" within 25s).
-    const outage = roundFailed ? (build.infra === "api-down" ? "opencode API unreachable (preflight)" : providerOutage(build.output)) : null;
+    // an attempt as "builder did not finish" within 25s). The builder always
+    // runs --print-logs, so the outage detector requires the structured
+    // process-exit ERROR line right before the CLI's frame — a tool's output
+    // or model prose cannot forge both.
+    const outage = roundFailed ? (build.infra === "api-down" ? "opencode API unreachable (preflight)" : providerOutage(build.output, { printLogs: true })) : null;
     if (outage) {
       return { ok: false, detail: `[infra] model provider unreachable (builder round ${round}): ${outage}`, infra: "api-down", ...roundMeta() };
     }
@@ -1604,7 +1613,9 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // a stale one dragged other tasks' apps/web|apps/desktop files into the
     // diff: the gate demanded UI shots the builder was never asked for (P3-459,
     // local main 5cc7ae1 vs origin d900e65: 10 UI files) and reviewers read
-    // code that was not the task's. Foreign repos have no `main` at all.
+    // code that was not the task's. (Foreign repos do get a local `main` —
+    // ensureSlotWorkspace creates one tracking origin/<base> — so the old
+    // "no `main` at all" wording was wrong; the stale-`main` reason stands.)
     const diff = exec(`git diff origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
     const nameOnly = exec(`git diff --name-only origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
     touchedUi = touchedUiFromDiff(nameOnly);
@@ -1777,15 +1788,32 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     );
     // eval-03 (+ eval-15): a reviewer that never finished (timeout, spawn,
     // preflight, provider outage) returned no trustworthy verdict — even a
-    // VERDICT marker in its output may be a planted file it cat'ed. An
-    // inconclusive review is never an approval and never a merit rejection
-    // (the last round used to burn an attempt as "max review rounds"): infra.
-    const reviewDead = [sec, qual].map(reviewerInconclusive).find((x) => x !== null);
-    if (reviewDead) {
-      return { ok: false, detail: `[infra] review inconclusive (round ${round}): ${reviewDead.why}`, infra: reviewDead.infra, ...roundMeta() };
+    // VERDICT marker in its output may be a planted file it cat'ed. eval
+    // fixround: a plain reviewer TIMEOUT no longer aborts the cycle — 15 of
+    // 1025 real review rounds ran 20.0–20.4 min (reviewTimeoutMin=20) and six
+    // of them still merged on the same cycle; aborting discarded real
+    // verdicts and, on a task with 0 attempts, reset the whole branch. On a
+    // NON-final round the inconclusive reviewer's verdict AND markers are
+    // discarded (its output is untrusted text, never parsed): verdict null ⇒
+    // fail-closed rejection — the merit path that goes to the next round.
+    // Only on the LAST round the outcome stays infra "timeout" (a merit
+    // rejection there burns an attempt the round budget already spent).
+    // Spawn failures, the preflight and provider outages stay infra in every
+    // round — a builder still working when the provider dies cannot be
+    // re-litigated by re-running reviewers.
+    const secDead = reviewerInconclusive(sec);
+    const qualDead = reviewerInconclusive(qual);
+    const tolerated = round < cfg.maxReviewRounds;
+    const abortDead = [secDead, qualDead].find((d) => d !== null && !(tolerated && d.infra === "timeout"));
+    if (abortDead) {
+      return { ok: false, detail: `[infra] review inconclusive (round ${round}): ${abortDead.why}`, infra: abortDead.infra, ...roundMeta() };
     }
-    const secParsed = parseFindings(sec.output);
-    const qualParsed = parseFindings(qual.output);
+    // a tolerated inconclusive reviewer: no verdict, no findings — never an
+    // approval, never evidence (its output may end on a planted marker)
+    const secBlank = secDead !== null;
+    const qualBlank = qualDead !== null;
+    const secParsed = secBlank ? [] : parseFindings(sec.output);
+    const qualParsed = qualBlank ? [] : parseFindings(qual.output);
     // P2-015: reviewers are LLMs — findings citing files/lines that don't exist
     // (or snippets absent from the diff) are mechanically dropped.
     // P1-073: a verdict whose findings all fail verification no longer
@@ -1801,10 +1829,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // review — an APPROVE's rationale bullets are not findings.
     const allDropped = (o: string, v: { kept: string[]; dropped: string[] }) =>
       parseVerdict(o) === "REQUEST_CHANGES" && v.dropped.length > 0 && v.kept.length === 0;
-    const secAllDropped = allDropped(sec.output, secVerified);
-    const qualAllDropped = allDropped(qual.output, qualVerified);
-    const secOk = reviewerOk(sec.output, secVerified.kept, secVerified.dropped);
-    const qualOk = reviewerOk(qual.output, qualVerified.kept, qualVerified.dropped);
+    const secAllDropped = secBlank ? false : allDropped(sec.output, secVerified);
+    const qualAllDropped = qualBlank ? false : allDropped(qual.output, qualVerified);
+    const secOk = secBlank ? false : reviewerOk(sec.output, secVerified.kept, secVerified.dropped);
+    const qualOk = qualBlank ? false : reviewerOk(qual.output, qualVerified.kept, qualVerified.dropped);
     if (secAllDropped || qualAllDropped) {
       // P2-115: surface WHY every finding was unverifiable — one alert per
       // round, listing up to 2 distinct drop reasons per all-dropped reviewer
@@ -1853,12 +1881,17 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       });
       trackSession(esc.sessionId);
       // eval-03: an arbiter that never finished is no arbiter (same rule as
-      // the reviewers above — its output may end on a planted marker)
+      // the reviewers above — its output may end on a planted marker). eval
+      // fixround: like the reviewers, a plain TIMEOUT on a non-final round is
+      // tolerated as a fail-closed rejection (the round goes on); only the
+      // last round aborts as infra, and spawn/preflight/provider-outage stay
+      // infra in every round.
       const escDead = reviewerInconclusive(esc);
-      if (escDead) {
+      const escTolerated = escDead !== null && tolerated && escDead.infra === "timeout";
+      if (escDead && !escTolerated) {
         return { ok: false, detail: `[infra] review inconclusive (escalation, round ${round}): ${escDead.why}`, infra: escDead.infra, ...roundMeta() };
       }
-      const escParsed = parseFindings(esc.output);
+      const escParsed = escTolerated ? [] : parseFindings(esc.output);
       const escVerified = verifyFindings(escParsed, ws, reviewDiff);
       for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d, escVerified.reasons[d] ?? "unknown");
       // P3-355: when BOTH reviewers were all-dropped, the arbiter's APPROVE is
@@ -1867,7 +1900,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // Otherwise the approval is downgraded and the round continues as
       // REQUEST_CHANGES fed by [unverified] hints (fail-closed).
       const bothAllDropped = secAllDropped && qualAllDropped;
-      const escApproveRaw = reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
+      const escApproveRaw = escTolerated ? false : reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
       const escApprove = arbiterApproveHolds(escApproveRaw, bothAllDropped, esc.output, ws, reviewDiff);
       const approveDowngraded = escApproveRaw && !escApprove;
       if (escApprove) {
@@ -1885,7 +1918,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         task: t.id,
         phase: "escalation",
         ok: escApprove,
-        detail: `kept ${escVerified.kept.length}, dropped ${escVerified.dropped.length}${approveDowngraded ? " — span-less approve downgraded" : ""}`,
+        detail: `kept ${escVerified.kept.length}, dropped ${escVerified.dropped.length}${approveDowngraded ? " — span-less approve downgraded" : ""}${escTolerated ? " — arbiter timed out, verdict discarded" : ""}`,
       });
       console.log(
         JSON.stringify({
@@ -1973,6 +2006,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       findings = [...deduped, ...unverified].join("\n");
       if ((secAllDropped || qualAllDropped) && escalationFindings === null) {
         findings = `${findings}\n[a reviewer voted REQUEST_CHANGES but every finding failed mechanical verification — if the concern is real, restate it citing verifiable path:line evidence from the diff]`.trim();
+      }
+      // eval fixround: a tolerated inconclusive reviewer (timeout on a
+      // non-final round) rejects fail-closed with no evidence — the builder
+      // must know the round was inconclusive, not silent-approve
+      if (secBlank || qualBlank) {
+        findings = `${findings}\n[a reviewer ${[secBlank ? "security" : "", qualBlank ? "quality" : ""].filter(Boolean).join(" and ")} timed out before finishing — its round was inconclusive, its verdict was discarded; this cycle continues as a rejection and re-reviews next round]`.trim();
       }
       // P3-355: every dropped [BLOCKING] finding rides the gate-fail carry into
       // the next round as "[unverified BLOCKING]" — the builder must respond to
@@ -2241,10 +2280,22 @@ function writeGateFailCarry(stateRoot: string, taskId: string, step: string, tai
   }
 }
 
-/** eval-03: drop the per-task carry (a green gate superseded it). */
+/**
+ * eval-03: drop the per-task carry (a green gate superseded it) — but only
+ * carries of GATE steps. A green local gate says nothing about remote CI
+ * (`ci-red`) or review findings (`unverified-blocking`): erasing them left
+ * the next cycle without the CI log the builder needed when the round later
+ * aborted as infra (a fresh branch starts with no findings at all).
+ */
 function clearGateFailCarry(stateRoot: string, taskId: string) {
   const f = gateFailFile(stateRoot, taskId);
   if (!f) return;
+  try {
+    const carry = JSON.parse(readFileSync(f, "utf8")) as { step?: unknown };
+    if (carry.step === CI_RED_STEP || carry.step === "unverified-blocking") return;
+  } catch {
+    // unreadable/corrupt carry — a green gate removes it, as before
+  }
   try {
     rmSync(f, { force: true });
   } catch {}
@@ -2280,7 +2331,10 @@ export function gateFindingBlock(step: string, tail: string): string {
  * P3-341: readFile/writeFile are optional conflict-repair sinks — absent ⇒
  * the repair is skipped and the behavior is byte-for-byte the pre-P3-341 one. */
 export interface PrMergeIo {
-  exec: (cmd: string) => { ok: boolean; output: string };
+  /** `timeoutMin` (eval fixround): an optional per-call cap for the SYNCHRONOUS
+   * spawnSync behind it — the CI bridge's fetches hang the whole pilot event
+   * loop while they wait, so they get a short one instead of the 5-min default. */
+  exec: (cmd: string, timeoutMin?: number) => { ok: boolean; output: string };
   sleep: (ms: number) => Promise<void>;
   readFile?: (p: string) => string | null;
   writeFile?: (p: string, c: string) => boolean;
@@ -2700,23 +2754,30 @@ function staleHeadDetail(prNumber: number, head: string, ours: string): string {
  * run (`gh run view <run> --log-failed`, digits-only run id) and reduce them
  * to the bounded summary (cibridge.ts). Fail-open: a gh failure or a check
  * without Actions ids still yields the red job names ("log unavailable"),
- * never an exception and never a changed verdict.
+ * never an exception and never a changed verdict. eval fixround: under gh
+ * rate limiting this path must not hammer the API — at most
+ * CI_JOB_LOG_ATTEMPTS job-log reads (the cap counts ATTEMPTS, not successes:
+ * 5 red jobs under a rate limit previously made 5 calls), each with the
+ * short CI_BRIDGE_TIMEOUT_MIN cap (the exec is a synchronous spawnSync — a
+ * 5-min hang freezes the pilot event loop).
  */
 export function fetchCiFailure(io: PrMergeIo, checks: readonly RedCheck[], context = ""): string | undefined {
   if (!checks.length) return undefined;
   const cmd = failedLogCommand(bridgeRunId(checks));
-  const log = cmd ? io.exec(cmd) : null;
+  const log = cmd ? io.exec(cmd, CI_BRIDGE_TIMEOUT_MIN) : null;
   let raw = log?.ok ? log.output : "";
   if (!raw.trim()) {
     // `gh run view` refuses a run still in progress — read each red job's
-    // own log over REST instead (at most 3 jobs)
+    // own log over REST instead (bounded attempts, not bounded successes)
     const parts: string[] = [];
+    let attempts = 0;
     for (const c of checks) {
+      if (attempts >= CI_JOB_LOG_ATTEMPTS || parts.length >= 3) break;
       const jobCmd = c.name === "ci-gate" ? null : jobLogCommand(c.jobId);
       if (!jobCmd) continue;
-      const job = io.exec(jobCmd);
+      attempts++;
+      const job = io.exec(jobCmd, CI_BRIDGE_TIMEOUT_MIN);
       if (job.ok && job.output.trim()) parts.push(asFailedLog(c.name, job.output));
-      if (parts.length >= 3) break;
     }
     raw = parts.join("\n");
   }
@@ -2752,7 +2813,7 @@ export function fetchCiFailure(io: PrMergeIo, checks: readonly RedCheck[], conte
  */
 export async function mergePrForTask(
   io: PrMergeIo,
-  args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean; base?: string },
+  args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean; base?: string; pushOk?: boolean },
 ): Promise<PrMergeOutcome> {
   const create = io.exec(
     `gh pr create --head ${args.branch} --title ${shq(prTitle(args.title))} --body ${shq(args.body)}`,
@@ -2776,7 +2837,14 @@ export async function mergePrForTask(
   // red or conflicting PR is skipped here with the reason — classified infra
   // (free retry: the next cycle rebases/re-runs and probes again; three
   // identical skips in a row become a hard block via the streak breaker).
-  const ready = await awaitMergeReadiness(io, prNumber, PR_READINESS_POLLS, undefined, { ciExpected: args.ciExpected });
+  // eval fixround: when the push LANDED, the verdict and the head must come
+  // from ONE snapshot — expectSha makes the query read headRefOid and holds
+  // the verdict until the PR actually carries our sha, so a GitHub read lag
+  // (~3s after the push, P3-459: push 12:13:53, readiness 12:13:56) can no
+  // longer return a stale head's verdict as this cycle's. A refused push
+  // keeps the old one-read behavior: the stale-head path below names it
+  // fast instead of burning the poll budget on a head that will never move.
+  const ready = await awaitMergeReadiness(io, prNumber, PR_READINESS_POLLS, args.pushOk ? args.pushedSha : undefined, { ciExpected: args.ciExpected });
   // P3-341: a CONFLICTING PR is no longer a dead end. With the repair sinks
   // wired (real workspace) the builder merges origin/main into the branch in
   // the slot, resolves trivial conflicts (docs, comment-only code hunks) and
@@ -2831,9 +2899,13 @@ export async function mergePrForTask(
     // refused push (P3-459 cycle 3: GitHub 500 on the branch push) leaves the
     // PR on the previous cycle's head, whose red CI was then counted as the
     // third ci-red strike and blocked the task for code this cycle replaced.
+    // eval fixround: infra kind "stale-head" — it neither counts nor clears
+    // the per-task streak. When the push LANDED this shape is GitHub read lag
+    // (absorbed by the expectSha poll above), so a stale head here means the
+    // push really was refused.
     const head = effective.verdict === "skip" && effective.infra === "ci-red" ? prHeadSnapshot(io, prNumber) : null;
     if (head?.state === "OPEN" && head.head && head.head !== expectedSha) {
-      return { ok: false, infra: "network", detail: staleHeadDetail(prNumber, head.head, expectedSha) };
+      return { ok: false, infra: "stale-head", detail: staleHeadDetail(prNumber, head.head, expectedSha) };
     }
     const ciFailure =
       effective.verdict === "skip" && effective.infra === "ci-red"
@@ -2856,8 +2928,14 @@ export async function mergePrForTask(
   // head-mismatch check would burn an attempt + a fever sample for work that
   // is already in main. One explicit probe BEFORE arming: MERGED + foreign
   // head is infra "conflict" — the next cycle's empty-diff self-heal resyncs.
+  // eval fixround: this probe is fail-OPEN by design (gh noise falls through
+  // to the arm) — the arm itself is now fail-CLOSED: `--match-head-commit`
+  // makes GitHub refuse to squash-merge anything but `expectedSha`, so the
+  // "same transient 5xx that refused the push" can no longer arm a merge over
+  // an OPEN foreign head (S2). A refused push (pushOk=false) that slips
+  // through is classified stale-head by the confirmation poll, never merit.
   // gh noise here fails open: the poll below remains the backstop.
-  const pre = io.exec(`gh pr view ${prNumber} --json state,headRefOid`);
+  const pre = io.exec(`gh pr view ${prNumber} --json state,headRefOid`, CI_BRIDGE_TIMEOUT_MIN);
   if (pre.ok) {
     let preSnap: { state?: unknown; headRefOid?: unknown } = {};
     try {
@@ -2885,13 +2963,16 @@ export async function mergePrForTask(
     // would squash a head this cycle's gate never certified, and the poll
     // below would then report it as a merit anomaly
     if (preSnap.state === "OPEN" && preHead && preHead !== expectedSha) {
-      return { ok: false, infra: "network", detail: staleHeadDetail(prNumber, preHead, expectedSha) };
+      return { ok: false, infra: "stale-head", detail: staleHeadDetail(prNumber, preHead, expectedSha) };
     }
   }
   // --auto only works once branch protection exists; the immediate squash is
   // the fallback. Failure here is NOT fatal: the squash may be queued anyway.
+  // eval fixround: `--match-head-commit` on BOTH calls — the merge is atomic
+  // and fail-closed on OUR head (gh refuses when the PR head moved), so a
+  // probe failure can never arm a merge over someone else's code.
   const merge = io.exec(
-    `gh pr merge ${prNumber} --squash --delete-branch --auto || gh pr merge ${prNumber} --squash --delete-branch`,
+    `gh pr merge ${prNumber} --squash --delete-branch --match-head-commit ${expectedSha} --auto || gh pr merge ${prNumber} --squash --delete-branch --match-head-commit ${expectedSha}`,
   );
   const mergeTail = ghTail(merge.output);
   for (let poll = 0; poll < PR_MERGE_CONFIRM_POLLS; poll++) {
@@ -2907,8 +2988,16 @@ export async function mergePrForTask(
     const state = typeof snap.state === "string" ? snap.state : "";
     const head = typeof snap.headRefOid === "string" ? snap.headRefOid : "";
     // a head that is not ours (before or at merge) is a real anomaly, not infra
-    // — P3-341: "ours" is the pre-merge pushed sha OR the repair's new head
+    // — P3-341: "ours" is the pre-merge pushed sha OR the repair's new head.
+    // eval fixround: when the push itself was refused (pushOk=false), a
+    // foreign head is EXPECTED — the refused push kept the old head — so the
+    // honest verdict is infra "stale-head" (free retry), never a merit
+    // anomaly that burns an attempt (the P3-459 shape, even with the probe
+    // dead and the merge armed-but-refused by --match-head-commit).
     if (head && head !== expectedSha) {
+      if (args.pushOk === false) {
+        return { ok: false, infra: "stale-head", detail: staleHeadDetail(prNumber, head, expectedSha) };
+      }
       return { ok: false, detail: `PR #${prNumber} head is ${head.slice(0, 7)}, not our ${expectedSha.slice(0, 7)} — merge exec: ${mergeTail}` };
     }
     if (state === "MERGED") {
@@ -2994,7 +3083,7 @@ async function mergeTask(
   // retries the PR.
   const outcome = await mergePrForTask(
     {
-      exec: (cmd) => exec(cmd, { cwd: ws, timeoutMin: 5, allowFail: true }),
+      exec: (cmd, timeoutMin) => exec(cmd, { cwd: ws, timeoutMin: timeoutMin ?? 5, allowFail: true }),
       sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
       // P3-341: real repair sinks, resolved against the workspace and refusing
       // absolute paths or `..` traversal (git diff paths are repo-relative,
@@ -3024,6 +3113,12 @@ async function mergeTask(
       title,
       body: "Autonomous pipeline merge — gatekeeper green (typecheck, build, reconnect, integration, invariants, download).",
       pushedSha: preMergeHead,
+      // eval fixround: whether the branch push actually landed — the merge
+      // decision reads the PR head from the same snapshot as the CI verdict
+      // only when it did (GitHub read lag is absorbed by the poll); a refused
+      // push keeps the fast stale-head classification instead of burning the
+      // poll budget on a head that will never move.
+      pushOk: pushed.ok,
       // P3-346: read from the checkout being merged — a foreign mission repo
       // without workflows keeps the "no checks ⇒ merge" rule
       ciExpected: workflowsExpectPrChecks(readWorkflowTexts(ws)),

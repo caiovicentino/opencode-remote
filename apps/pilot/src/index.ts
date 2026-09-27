@@ -13,7 +13,7 @@ import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, bud
 import { deploy, drainForReload, headDrifted, pilotInfraDiffCmd, pilotInfraDrifted, resolveDeployPlan, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
 import { defaultVerifiedMergesFile, deploySkipReason, readVerifiedMerges } from "./deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_MS, DEPLOY_ROLLBACK_HOLD_MS, deployBackoffRemaining, noteDeployRefusal, noteDeployRollback, rollbackHoldRemaining, type DeployBackoff, type RollbackHold } from "./deploybackoff";
-import { noteProviderOutage, providerHoldRemaining, type ProviderHold } from "./failureclass";
+import { noteProviderOutage, apiDownStreakExhausted, noteApiDownStreak, providerHoldRemaining, type ProviderHold } from "./failureclass";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, readyOrphanBlocks, type AddTaskResult, type Task } from "./backlog";
 import { redteamFinding } from "./findingline";
@@ -70,6 +70,11 @@ let deployBackoff: DeployBackoff | null = null;
 /** eval-03: model-provider outage hold (failureclass.ts) — no new pipeline
  * picks until it expires. In-memory like deployBackoff: a restart looks again. */
 let providerHold: ProviderHold | null = null;
+/** eval fixround: pick time of the newest pipeline that completed WITHOUT an
+ * api-down — proof the provider answered after the current outage trail
+ * began. A run picked BEFORE that instant had model calls that predate the
+ * outage, so its success (a merge included) proves nothing. */
+let providerUpAt: number | null = null;
 /** eval r5: armed by a rolled-back deploy — the pending path waits for a new
  * verified merge (or DEPLOY_ROLLBACK_HOLD_MS) instead of walking down to the
  * next-newest sha with nothing learned. In-memory, like deployBackoff. */
@@ -649,10 +654,17 @@ async function runDoctorPass(st: PilotState): Promise<void> {
   }
 }
 
+/** eval fixround: the per-task api-down trail resets on any non-api-down
+ * outcome of the task — the cap counts CONSECUTIVE outage cycles. */
+function clearApiDownStreak(taskKey: string): void {
+  if (state.apiDownStreaks) delete state.apiDownStreaks[taskKey];
+}
+
 /** One pipeline run in a slot workspace, with all result bookkeeping.
  * P1-099: `onSettled` runs in the finally, right after the slot is released —
  * the eager-fill hook that immediately backfills every free slot. */
 async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig, onSettled?: () => void): Promise<void> {
+  const pickedAt = Date.now(); // eval fixround: proof-of-life anchor for the provider hold
   const tokensBefore = state.taskCosts?.[task.id] ?? 0; // eval 05: lifetime total BEFORE this run
   // P1-060: budgets scale with the task's size tag — clone the slot config
   // with the effective rounds/timeout/attempts so runPipeline and the
@@ -696,6 +708,19 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     state.tasks++;
     let blockedAttempts: number | null = null;
     const taskKey = attemptsKey(activeMissionKey, task.id);
+    // eval fixround: proof of life + hold clearing. Any outcome that did NOT
+    // end on api-down had model calls that reached the provider. If the run
+    // was PICKED after the hold was armed (picks are held until it expires,
+    // so this means its builder call happened after the outage was observed),
+    // the hold is cleared by evidence — never by a mere merge whose model
+    // calls predate the outage. infra "stale-head" neither counts nor clears
+    // the per-task ci-red streak (a refused push must not forgive strikes).
+    const infra = resultInfraKind(result);
+    if (infra !== "api-down") {
+      providerUpAt = pickedAt;
+      if (providerHold && pickedAt > providerHold.armedAt) providerHold = null;
+      clearApiDownStreak(taskKey);
+    }
     if (result.ok) {
       recordCycle(state, true, task.id); // P2-032 fever window (P2-063: attributed to the task)
       delete state.taskAttempts[taskKey]; // gate passed — breaker reset
@@ -704,26 +729,64 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       // P2-334: the shared-defect hold allowance resets on merge
       if (state.taskHolds) delete state.taskHolds[taskKey];
       clearTaskInfraStreak(state, taskKey);
-      providerHold = null; // eval-03: a merge proves the provider answers again
     } else {
       // P1-074: infra noise (API down, spawn error, timeout without output)
       // burns no attempt, adds no fever sample and blocks nothing — it counts
       // in the diagnostic infraFails, with a doctor pass every 3rd occurrence
       // (P1-094: classified only from the structured result.infra flag — the
       // detail text embeds findings and may legitimately mention infra words)
-      const infra = resultInfraKind(result);
       if (infra === "api-down") {
         // eval-03: the model provider (or the opencode API) is down — a
         // systemic condition, not this task's: it never feeds the per-task
         // streak (three quick outage cycles would block a healthy task) and
         // holds NEW picks with a doubling backoff instead of letting every
-        // free slot spin up a builder that dies on its first call.
-        const prevHold = providerHold;
-        providerHold = noteProviderOutage(providerHold, Date.now());
+        // free slot spin up a builder that dies on its first call. eval
+        // fixround: the free retries are capped per task — after
+        // API_DOWN_FREE_CYCLES consecutive api-down outcomes of the same
+        // task, once another pipeline was picked and completed after this
+        // trail began (proof the provider answers for someone else), the
+        // api-down feeds the NORMAL per-task streak: a task whose output
+        // reliably "ends" on an outage-shaped line is not an outage, it is
+        // the task — it blocks with an explicit reason like any other
+        // starvation instead of looping builder rounds at zero attempt cost.
+        const trail = noteApiDownStreak(state.apiDownStreaks?.[taskKey], pickedAt);
+        state.apiDownStreaks = state.apiDownStreaks ?? {};
+        state.apiDownStreaks[taskKey] = trail;
+        if (apiDownStreakExhausted(trail, providerUpAt)) {
+          const streak = recordTaskInfraStreak(state, taskKey, "api-down");
+          if (infraStreakExhausted(streak)) {
+            clearTaskInfraStreak(state, taskKey);
+            clearApiDownStreak(taskKey);
+            const reason = infraStarvationReason("api-down", streak, result.detail);
+            log("error", "pipeline infra-starvation", { task: task.id, kind: "api-down", streak, trail: trail.n, detail: result.detail.slice(0, 200) });
+            emit("phase", { task: task.id, phase: "infra-starvation", ok: false, detail: reason });
+            state.taskAttempts[taskKey] = Math.max(state.taskAttempts[taskKey] ?? 0, taskCfg.maxAttemptsPerTask);
+            const attempts = state.taskAttempts[taskKey]!;
+            await blockAndPush(taskCfg, state, task, attempts, reason, true);
+            blockedAttempts = attempts;
+          } else {
+            const wake = recordInfraFailure(state);
+            log("warn", "pipeline provider outage — task-local trail counts as infra", { task: task.id, trail: trail.n, streak, providerUpAt, detail: result.detail.slice(0, 200) });
+            if (wake) await runDoctorPass(state);
+          }
+        } else {
+          const prevHold = providerHold;
+          providerHold = noteProviderOutage(providerHold, Date.now());
+          const wake = recordInfraFailure(state);
+          const holdMin = Math.round(providerHoldRemaining(providerHold, Date.now()) / 60_000);
+          log("warn", "pipeline provider outage — new picks held", { task: task.id, holdMin, holds: providerHold.count, trail: trail.n, infraFails: state.infraFails, detail: result.detail.slice(0, 200) });
+          if (providerHold !== prevHold) emit("alert", { task: task.id, ok: false, detail: `model provider unreachable — new pipelines held ${holdMin}min (hold #${providerHold.count}); no attempt burned` });
+          if (wake) await runDoctorPass(state);
+        }
+      } else if (infra === "stale-head") {
+        // eval fixround: the PR sits on a head this cycle did not push (refused
+        // push) — its CI verdict is not this cycle's. It feeds NO streak and
+        // clears NO streak: a refused push must neither add nor forgive ci-red
+        // strikes (P3-459: a network verdict used to zero the genuine 1,2,1,1
+        // sequence into a fresh streak). Honest infra noise: diagnostic
+        // counter only, free retry next cycle.
         const wake = recordInfraFailure(state);
-        const holdMin = Math.round(providerHoldRemaining(providerHold, Date.now()) / 60_000);
-        log("warn", "pipeline provider outage — new picks held", { task: task.id, holdMin, holds: providerHold.count, infraFails: state.infraFails, detail: result.detail.slice(0, 200) });
-        if (providerHold !== prevHold) emit("alert", { task: task.id, ok: false, detail: `model provider unreachable — new pipelines held ${holdMin}min (hold #${providerHold.count}); no attempt burned` });
+        log("warn", "pipeline stale PR head — streak untouched", { task: task.id, kind: infra, infraFails: state.infraFails });
         if (wake) await runDoctorPass(state);
       } else if (infra) {
         // mission v2 (hardening b): the SAME infra kind repeating on the same

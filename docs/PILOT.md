@@ -2291,24 +2291,44 @@ em volta dela escondiam a causa e queimavam ciclos inteiros:
 - **Carry velho.** Um gate vermelho num round corrigido no round seguinte ficava
   em disco e voltava no próximo ciclo como `[previous gatekeeper failure]`,
   virando step/tail da lição de bloqueio (P3-401/P3-459 registrados como "UI
-  task without shot-1440x900"). Agora o gate verde apaga o carry.
+  task without shot-1440x900"). Agora o gate verde apaga o carry — só o carry
+  de step do PRÓPRIO gate: um carry `ci-red` (CI remoto) ou `unverified-blocking`
+  (achados de review) sobrevive ao gate verde, porque o gate local não prova
+  nada sobre eles (se o round seguinte abortar como infra antes do merge, o
+  log do CI não se perde junto com a branch resetada).
 - **Head velho contado como strike.** Com o push da branch recusado (P3-459,
   GitHub 500), a PR ficava no head do ciclo anterior e o CI vermelho dele era
   o 3º strike. Um `skip/ci-red` sobre um head `OPEN` que não é o nosso agora é
-  infra `network` ("the branch push did not land"), e a pré-sonda nunca arma
-  `gh pr merge` sobre esse head (antes armava e registrava falha de mérito).
+  infra `stale-head` ("the branch push did not land") — nem conta no streak
+  por task, nem zera o streak de ci-red genuíno (a sequência ci-red → ci-red →
+  head-velho → ci-red conta 1,2,2,3 em vez de recomeçar em 1). Quando o push
+  DEU certo, o veredito e o head vêm do MESMO snapshot: o primeiro
+  `awaitMergeReadiness` roda com `expectSha=<sha do push>`, então um lag de
+  leitura do GitHub (~3 s pós-push) espera o head atualizar em vez de descartar
+  o ciclo. E o armamento é fail-closed: `gh pr merge` sempre leva
+  `--match-head-commit <sha>`, então o GitHub recusa o squash se o head mudou —
+  nem uma falha transitória do `gh` na pré-sonda arma merge sobre head alheio.
 - **Motivo cortado.** A linha do `## Blocked` e a linha da lição cortam em 200
   caracteres e o boilerplate empurrava os nomes dos jobs para fora ("CI red:
   ci-ga…"). `infraStarvationReason` agora põe `(red: verify, …)` logo depois da
-  contagem, e um ci-red sem detalhe não sugere mais "unreachable API".
+  contagem, e um ci-red sem detalhe não sugere mais "unreachable API". As
+  leituras da ponte (`gh run view`/REST) têm timeout próprio de ~1 min e um
+  teto de 3 tentativas de job-log (contando tentativas, não sucessos — sob rate
+  limit, um teto de sucessos fazia 5 chamadas falhas para 5 jobs vermelhos).
 
 **Queda do provedor de modelo.** O preflight `waitForApi` só vê o `opencode
 serve`; com o provedor fora, o builder morria com o erro terminal da própria
 CLI (`Error: Cannot connect to API: Unable to connect…`), os rounds seguintes
 morriam na hora e o último virava "builder did not finish" — mérito, uma
 tentativa queimada (8 casos, P3-457 bloqueado assim). `failureclass.ts` (puro)
-só reconhece a queda na **última linha não-log** da saída do processo, com
-assinatura de conectividade/disponibilidade do provedor — um erro de stream
+só reconhece a queda na **última linha não-log** da saída do processo quando
+ela carrega a **moldura ANSI da própria CLI** (`\u001b[91m\u001b[1mError:
+\u001b[0m…` — corpus real de P3-457); com `--print-logs` (o builder sempre
+roda com), a linha estruturada `level=ERROR … message=process … error=` tem
+que estar logo antes da moldura. Falhas de conexão para alvos **loopback**
+(127.0.0.1, ::1, localhost) ficam fora — são serviço local (opencode serve,
+porta de gate, servidor de teste), nunca o provedor. Assim, uma linha de tool
+ou do modelo que "termina" em `Error: …` não é mais queda; um erro de stream
 que o SDK recuperou no meio (dezenas de logs que terminam em
 `PILOT:TASK-DONE`) e um finding que cita `ECONNREFUSED` continuam fora. Um
 round de builder (ou revisor sem veredito) morto assim encerra o ciclo como
@@ -2316,12 +2336,36 @@ infra `api-down`: sem tentativa, sem amostra de febre, fora do streak por task
 (uma queda sistêmica nunca bloqueia tasks uma a uma). O `runSlot` arma um
 hold global de novas picks — 2 min, dobrando a cada queda observada depois do
 hold anterior expirar, teto de 30 min, sem escalar pelos slots que já estavam
-no meio de um round — e um merge zera o hold.
+no meio de um round. **Teto por task (fixround):** o retry grátis não é
+licença — depois de `API_DOWN_FREE_CYCLES` (3) ciclos api-down SEGUIDOS da
+mesma task, e com outro pipeline escolhido DEPOIS do começo da trilha que
+completou sem api-down (prova de que o provedor responde), o api-down da task
+cai no streak infra normal e a task bloqueia com motivo explícito; a trilha
+persiste em `state.apiDownStreaks` e recomeça em qualquer outro desfecho da
+task. O hold só é zerado por prova de vida: um pipeline escolhido DEPOIS do
+instante em que o hold foi armado (`ProviderHold.armedAt`) que termina sem
+api-down — um merge cujo modelo rodou antes da queda não reabre as picks.
+
+**Revisor sem veredito vs. revisor em timeout.** Um revisor que nunca
+terminou (queda de provedor, spawn, preflight) devolve veredito nenhum —
+infra, como antes. Já um **timeout** de revisor (ou do árbitro tier-B) não
+aborta mais o ciclo: no histórico, 15 de 1025 rounds de review correram
+20,0–20,4 min (`reviewTimeoutMin=20`) e seis deles ainda mergearam no mesmo
+ciclo. Em round não-final o veredito (e qualquer marcador plantado) daquele
+revisor é descartado — `verdict = null` ⇒ rejeição fail-closed, o caminho de
+mérito que segue para o round seguinte sem queimar tentativa; só no ÚLTIMO
+round o desfecho volta a ser infra `timeout` (uma rejeição de mérito ali
+queimaria a tentativa que o orçamento de rounds já gastou). Spawn, preflight
+e queda do provedor seguem infra em todo round.
 
 **Diff do round contra `origin/<base>`.** `git diff main...pilot/<ID>` usava o
 `main` LOCAL do slot, que só anda quando aquele slot mergeia ou bloqueia: um
 `main` velho arrastava arquivos `apps/web`/`apps/desktop` de outras tasks para
 o diff (o gate exigia screenshots que o builder nunca teve motivo para fazer, e
 os revisores liam código alheio). O diff e o `nameOnly` que vão ao judge agora
-usam `origin/<base>...pilot/<ID>`. Testes: `scripts/failure-classifier.test.ts`
-(corpus real em `apps/pilot/src/__fixtures__/classifier/`).
+usam `origin/<base>...pilot/<ID>` — e o próprio prompt do builder manda
+`git diff origin/<base>...pilot/<ID>` (repositório estrangeiro também tem um
+`main` local criado pelo `ensureSlotWorkspace`, apontando para `origin/<base>`;
+o problema nunca foi a falta do ref, e sim o `main` velho). Testes:
+`scripts/failure-classifier.test.ts` (corpus real em
+`apps/pilot/src/__fixtures__/classifier/`).

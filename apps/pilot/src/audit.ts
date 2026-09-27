@@ -58,14 +58,21 @@ export function recordCycle(st: PilotState, ok: boolean, task?: string, now = Da
 
 // ── P1-074: infra-signature failures — never merit evidence ─────────────────
 
-/** P1-074: kind of infrastructure failure behind a pipeline outcome. P2-134:
+/**
+ * P1-074: kind of infrastructure failure behind a pipeline outcome. P2-134:
  * "conflict" = the task PR is blocked by a merge conflict with main (caused by
  * another slot's merge) — infra, not merit: the next cycle rebases the
  * preserved branch and retries at zero attempt cost. "ci-red" = GitHub reports
  * a failed check on the task PR, so the merge was skipped instead of landing
  * red code (mergeReadiness in pipeline.ts) — the streak breaker turns three
- * consecutive red cycles into a hard block with that exact reason. */
-export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network" | "conflict" | "spec-format" | "ci-red";
+ * consecutive red cycles into a hard block with that exact reason.
+ * "stale-head" (eval fixround) = the PR still sits on a head this cycle did
+ * not push (refused push): its CI verdict is not this cycle's. It feeds NO
+ * streak and clears NO streak — a refused push must neither add nor forgive
+ * ci-red strikes (P3-459); a persistently refused push is caught by the
+ * pr-create/push "network" path instead.
+ */
+export type InfraFailureKind = "api-down" | "spawn" | "timeout" | "network" | "conflict" | "spec-format" | "ci-red" | "stale-head";
 
 /** Every INFRA_DOCTOR_EVERY-th infra failure wakes the doctor (a diagnostic
  * pass without entering audit mode). */
