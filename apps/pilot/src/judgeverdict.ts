@@ -29,6 +29,12 @@ export interface Verdict {
   protected?: string[];
   /** P3-359: flaky passes counted against the judge's per-step budget. */
   flakes?: { step: string; count: number; budget: number; exhausted: boolean }[];
+  /** eval-04: early-warning lines of green steps (e.g. desktop-flow above 80% of its budget). */
+  warnings?: string[];
+  /** Operator/runtime files changed outside the battery sandbox (verdict refused). */
+  runtimeChanged?: string[];
+  /** launchctl mutating verbs / pattern kills the battery tried (verdict refused). */
+  blockedCommands?: string[];
 }
 
 export function hashVerdict(v: Verdict): string {

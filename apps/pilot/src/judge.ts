@@ -126,6 +126,8 @@ export interface JudgeGateResult {
   protected: string[];
   /** P3-359: flaky passes counted against the judge's budget this run. */
   flakes: { step: string; count: number; budget: number; exhausted: boolean }[];
+  /** eval-04: early-warning lines of green steps (e.g. desktop-flow above 80% of its budget). */
+  warnings: string[];
   /** Verdict v2: nonce + judge HEAD were checked (false on a v1 judge). */
   bound: boolean;
 }
@@ -138,10 +140,21 @@ export interface JudgeDeps extends JudgeLocation {
   reqRoot?: string;
   /** Escalation hook for a protected refusal (default: pilot alert event). */
   onConstitutionChange?: (taskId: string, ids: string[]) => void;
+  /** Alert hook when the battery touched production (runtime files changed
+   * outside its sandbox, launchctl/pkill refused) — default: pilot alert. */
+  onProductionTouch?: (taskId: string, what: string[]) => void;
 }
 
 function defaultRun(argv: string[], cwd: string): string {
   return execFileSync(process.execPath, argv, { encoding: "utf8", timeout: 30 * 60_000, maxBuffer: 64 * 1024 * 1024, cwd });
+}
+
+function alertProductionTouch(taskId: string, what: string[]): void {
+  emit("alert", {
+    task: taskId,
+    ok: false,
+    detail: `gate battery of ${taskId} tried to touch production (${what.slice(0, 3).join(" | ")}) — verdict refused by the judge`,
+  });
 }
 
 function alertConstitutionChange(taskId: string, ids: string[]): void {
@@ -205,6 +218,9 @@ export function judgeGate(input: JudgeGateInput, deps: JudgeDeps = {}): JudgeGat
     if (after) fail(`judge tree changed during the gate run — ${after}`);
     const blocked = Array.isArray(verdict.protected) ? verdict.protected.filter((x): x is string => typeof x === "string") : [];
     if (!verdict.ok && verdict.step === "protected") (deps.onConstitutionChange ?? alertConstitutionChange)(input.task.id, blocked);
+    const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+    const touched = [...strings(verdict.runtimeChanged), ...strings(verdict.blockedCommands)];
+    if (touched.length) (deps.onProductionTouch ?? alertProductionTouch)(input.task.id, touched);
     return {
       ok: verdict.ok,
       step: verdict.ok ? "none" : verdict.step,
@@ -214,6 +230,7 @@ export function judgeGate(input: JudgeGateInput, deps: JudgeDeps = {}): JudgeGat
       constitutionChange: verdict.constitutionChange === true,
       protected: blocked,
       flakes: Array.isArray(verdict.flakes) ? verdict.flakes : [],
+      warnings: strings(verdict.warnings).slice(0, 3),
       bound: j.version >= 2,
     };
   } finally {

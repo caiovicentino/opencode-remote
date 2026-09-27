@@ -2081,7 +2081,14 @@ um branch que troca `test:unit` por `true` ou planta um `judge.ts` que devolve
   (sem `lastSeenAt` e sem o cliente transitório `pilot-invariants`) são
   comparados antes/depois da bateria; mudança ⇒ vermelho no step `context` com
   `runtimeChanged[]` no veredito. `pilot/state.json` fica só com a sandbox: os
-  outros slots do pilot o gravam durante qualquer gate.
+  outros slots do pilot o gravam durante qualquer gate. Shims no início do PATH:
+  `launchctl` só aceita verbos de leitura (`print`, `list`, …) e `pkill`/`killall`
+  são recusados — launchd é por usuário, não por HOME (27/09 12:56: código de
+  deploy com exec real reiniciou relay e daemon de produção). Qualquer tentativa
+  recusa o veredito (`blockedCommands[]`) e o pilot emite `alert`.
+- **Avisos de runs verdes (eval-04).** Linhas `WARN <step> budget: …` de um step
+  verde (ex.: `desktop-flow` acima de 80% dos 420 s) viajam no veredito assinado
+  (`warnings`) e chegam ao pipeline (`judgeGate().warnings`, até 3).
 - **Intérprete do juiz.** Gate e `invariants --live` do deploy rodam
   `node <juiz>/node_modules/tsx/dist/cli.mjs` com cwd no juiz
   (`judgeInvariantsCommand`) — nunca `npx tsx` com cwd no checkout auditado.

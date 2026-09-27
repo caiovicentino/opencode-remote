@@ -93,7 +93,7 @@ function expectJudgeError(name: string, fn: () => unknown, re: RegExp) {
 // ── v2 judge: binding ────────────────────────────────────────────────────────
 {
   const j = fakeJudge(2);
-  const deps = { dir: j.dir, pinFile: j.pinFile, reqRoot: j.reqRoot, onConstitutionChange: () => {} };
+  const deps = { dir: j.dir, pinFile: j.pinFile, reqRoot: j.reqRoot, onConstitutionChange: () => {}, onProductionTouch: () => {} };
   let mode = -1;
   const ok = judgeGate(input, {
     ...deps,
@@ -162,6 +162,16 @@ function expectJudgeError(name: string, fn: () => unknown, re: RegExp) {
   check("protected: escalated once with the ids", escalated.length === 1 && escalated[0]?.join() === "apps/pilot/src/judge.ts");
   const flakes = judgeGate(input, { ...deps, run: answering((r, p) => ({ ...green(r, p), flaky: ["desktop-flow"], flakes: [{ step: "desktop-flow", count: 2, budget: 2, exhausted: false }] }), j.pin) });
   check("flakes: budget notes surfaced to the pipeline", flakes.flaky.join() === "desktop-flow" && flakes.flakes[0]?.count === 2);
+  const warned = judgeGate(input, { ...deps, run: answering((r, p) => ({ ...green(r, p), warnings: ["WARN desktop-flow budget: 350s of 420s (83%)", "WARN a budget: 1", "WARN b budget: 2", "WARN c budget: 3"] }), j.pin) });
+  check("warnings (eval-04): green-step warnings reach the pipeline, capped at 3", warned.ok && warned.warnings.length === 3 && warned.warnings[0] === "WARN desktop-flow budget: 350s of 420s (83%)");
+  check("warnings: a verdict without warnings yields an empty list", judgeGate(input, { ...deps, run: answering(green, j.pin) }).warnings.length === 0);
+  const touchedAlerts: string[][] = [];
+  const touch = judgeGate(input, {
+    ...deps,
+    onProductionTouch: (_t, what) => touchedAlerts.push(what),
+    run: answering((r, p) => ({ ...green(r, p), ok: false, step: "context", tail: "context: the battery tried to control production processes", blockedCommands: ["launchctl kickstart -k gui/501/com.ocr.relay"], runtimeChanged: [".opencode-remote/judge.json"] }), j.pin),
+  });
+  check("production touch: refusal surfaced and alerted with what was touched", !touch.ok && touch.step === "context" && touchedAlerts.length === 1 && touchedAlerts[0]?.join() === ".opencode-remote/judge.json,launchctl kickstart -k gui/501/com.ocr.relay");
 
   // pin / tree / interpreter
   writeFileSync(j.pinFile, JSON.stringify({ pin: "e".repeat(40) }));
