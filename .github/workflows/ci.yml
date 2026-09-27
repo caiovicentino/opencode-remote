@@ -166,6 +166,27 @@ jobs:
           done
           export PATH="$HOME/.opencode/bin:$PATH"
           opencode --version
+          # Warm-up: on a fresh runner the FIRST opencode start initializes its
+          # state; spawned cold by integration.ts it accepted one health probe
+          # and never answered it (runs 36329935973, 36330288905 — ~5 min
+          # stall), while a bash-started server answered in ~2s and the
+          # integration then passed (run 36330659362). Root cause inside
+          # opencode not isolated; the warm-up makes the phase explicit.
+          opencode serve --port 4917 > "$RUNNER_TEMP/opencode-warmup.log" 2>&1 &
+          warm_pid=$!
+          warm=""
+          for i in $(seq 1 90); do
+            if curl -fsS -m 3 -o /dev/null http://127.0.0.1:4917/global/health; then warm="${i}s"; break; fi
+            sleep 1
+          done
+          kill "$warm_pid" 2>/dev/null || true
+          wait "$warm_pid" 2>/dev/null || true
+          if [ -z "$warm" ]; then
+            cat "$RUNNER_TEMP/opencode-warmup.log"
+            echo "::error::opencode $OPENCODE_VERSION never answered /global/health during the warm-up"
+            exit 1
+          fi
+          echo "opencode warm-up healthy after ~$warm"
           npx tsx scripts/integration.ts | tee "$RUNNER_TEMP/integration.log"
           if grep -q '^SKIP' "$RUNNER_TEMP/integration.log"; then
             echo "::error::integration.ts skipped although opencode $OPENCODE_VERSION is installed"

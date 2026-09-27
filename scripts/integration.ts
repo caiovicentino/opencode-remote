@@ -64,7 +64,10 @@ try {
     },
     probe: async (port) => {
       try {
-        const r = await fetch(`http://127.0.0.1:${port}/global/health`);
+        // bounded per attempt: one request the server accepts and never
+        // answers must not hold the whole boot (undici waits up to 300s for
+        // headers — a cold opencode on CI stalled the step ~5 min, eval-17)
+        const r = await fetch(`http://127.0.0.1:${port}/global/health`, { signal: AbortSignal.timeout(5_000) });
         return r.ok;
       } catch {
         return false;
