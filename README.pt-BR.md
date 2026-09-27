@@ -49,7 +49,11 @@ remoto, zero confiança**.
   composer e o pedido vira um card acionável normal pra revisão manual.
   Pedidos já respondidos viram linha "resolvida", duplicatas do mesmo pedido
   aparecem uma vez só e tocar num card velho diz "Permissão já resolvida"
-  em vez de um 404 cru
+  em vez de um 404 cru. Um pedido que o daemon nunca responde (feito antes de
+  ligar o AutoMode ou durante um restart do daemon) aparece do mesmo jeito
+  depois de 10 s ("O AutoMode não respondeu"), e toda reconexão relê as
+  aprovações e perguntas pendentes — pedido feito com o celular dormindo
+  nunca fica invisível
 - **Preview de aprovação** — o card de permissão mostra as primeiras linhas
   do comando/patch pedido (direto do evento de permissão) antes de aprovar
   ou negar, pra você sempre saber o que está liberando

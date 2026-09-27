@@ -5823,3 +5823,39 @@ button.desk-new:disabled {
     border: 1px solid CanvasText;
   }
 }
+
+/* eval-10: agent question options — the global `input { width: 100% }` rule
+   turned every radio/checkbox into a full-width line floating above its label
+   (13px-tall tap target, 390 and 1440 evidence). One 44px row per option,
+   control first, label wraps beside it. */
+.q-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.q-opt input[type="radio"],
+.q-opt input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.q-opt-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* eval-10: the rewind chip keeps its quiet 23px look but gets a 44px-tall
+   invisible hit area (the B2 pattern of the composer/header icon buttons) */
+.msg-rewind {
+  position: relative;
+}
+.msg-rewind::before {
+  content: "";
+  position: absolute;
+  inset: -11px -4px;
+}

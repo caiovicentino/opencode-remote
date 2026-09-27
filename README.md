@@ -50,7 +50,11 @@ private. That is the product: **local power, remote control, zero trust**.
   normal actionable card for manual review. Asks that are already answered
   collapse into "resolved" lines, duplicates of the same request render once,
   and tapping a stale card says "Permission already resolved" instead of a
-  raw 404
+  raw 404. An ask the daemon never answers (asked before AutoMode was switched
+  on, or while the daemon restarted) surfaces the same way after 10 s
+  ("AutoMode hasn't answered"), and every reconnect re-reads the pending
+  approvals and questions — an ask made while the phone slept is never
+  invisible
 - **Approval preview** — permission cards show the first lines of the
   command/patch being requested (from the permission event payload) before
   you Approve/Deny, so you always know what you're green-lighting

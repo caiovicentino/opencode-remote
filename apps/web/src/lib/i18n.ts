@@ -996,6 +996,44 @@ export const dict = {
     browserErrDesktopOnly: "The browser pane needs the desktop connection.",
     browserErrUnexpected: "Unexpected answer from the machine.",
     browserErrGeneric: "Could not open the page — {msg}",
+    // eval-10 (PWA mobile UX): chat action failures are localized and never
+    // carry the raw response body; agent errors show the provider's message
+    errAgentFailed: "The agent stopped with an error: {message}",
+    errAgentFailedGeneric: "The agent stopped with an error — try again.",
+    errApproveFailed: "Couldn't deliver your approval to the machine — try again.",
+    errDenyFailed: "Couldn't deliver your denial to the machine — try again.",
+    errAnswerFailed: "Couldn't send your answer to the agent — try again.",
+    errRevertFailed: "Couldn't go back to this point — try again.",
+    errUnrevertFailed: "Couldn't redo the conversation — try again.",
+    errExportFailed: "Couldn't export the conversation — try again.",
+    errHandoffFailed: "Couldn't open this conversation on the computer — try again.",
+    errStopFailed: "Couldn't stop the agent — try again.",
+    // AutoMode left an ask pending past the grace (daemon never answered it)
+    autoStale: "AutoMode hasn't answered: {action} — approve manually",
+    // same short technical word in both locales on purpose: a longer label
+    // ("Mudanças") pushed Deny onto a second row of the approval card at 390px
+    diffBtn: "Diff",
+    // ErrorBoundary fallback (was hardcoded English + the raw React message)
+    crashTitle: "Something broke",
+    crashBody: "This screen hit an unexpected error. Your conversations are safe on the computer.",
+    crashRetry: "Try again",
+    crashDetails: "Technical details",
+    // share target + files pane (were hardcoded English)
+    shareContent: "Shared content",
+    shareEmpty: "(empty)",
+    shareExtraPlaceholder: "Optional: instructions for the agent (e.g. \"summarize this in Portuguese\")",
+    shareNewSession: "+ New conversation & send",
+    shareOrExisting: "…or send to an existing conversation:",
+    shareSending: "sending…",
+    shareSessionTitle: "Shared from phone",
+    shareSendFailed: "Couldn't send it to the agent — try again.",
+    shareListFailed: "Couldn't load the conversations — you can still start a new one.",
+    filesTitle: "Files on this machine",
+    filesEmpty: "No files yet.",
+    filesListFailed: "Couldn't list the machine's files — try again.",
+    filesNoPreview: "No preview for this file type — use Save.",
+    // label-less permission asks (reply events and pre-view asks carry no type)
+    permGenericAction: "action",
   },
   pt: {
     search: "Buscar conversas…",
@@ -1894,5 +1932,41 @@ export const dict = {
     browserErrDesktopOnly: "O pane do navegador pede a conexão do desktop.",
     browserErrUnexpected: "Resposta inesperada da máquina.",
     browserErrGeneric: "Não foi possível abrir a página — {msg}",
+    // eval-10 (UX mobile do PWA): falhas de ação no chat localizadas e sem o
+    // corpo cru da resposta; erro do agente mostra a mensagem do provedor
+    errAgentFailed: "O agente parou com um erro: {message}",
+    errAgentFailedGeneric: "O agente parou com um erro — tente de novo.",
+    errApproveFailed: "Não consegui entregar sua aprovação à máquina — tente de novo.",
+    errDenyFailed: "Não consegui entregar sua recusa à máquina — tente de novo.",
+    errAnswerFailed: "Não consegui enviar sua resposta ao agente — tente de novo.",
+    errRevertFailed: "Não consegui voltar a este ponto — tente de novo.",
+    errUnrevertFailed: "Não consegui refazer a conversa — tente de novo.",
+    errExportFailed: "Não consegui exportar a conversa — tente de novo.",
+    errHandoffFailed: "Não consegui abrir esta conversa no computador — tente de novo.",
+    errStopFailed: "Não consegui parar o agente — tente de novo.",
+    // AutoMode deixou um pedido pendente além da carência (o daemon nunca respondeu)
+    autoStale: "O AutoMode não respondeu: {action} — aprove manualmente",
+    diffBtn: "Diff",
+    // fallback do ErrorBoundary (era inglês fixo + a mensagem crua do React)
+    crashTitle: "Algo quebrou",
+    crashBody: "Esta tela encontrou um erro inesperado. Suas conversas continuam salvas no computador.",
+    crashRetry: "Tentar de novo",
+    crashDetails: "Detalhes técnicos",
+    // alvo de compartilhamento + painel de arquivos (eram inglês fixo)
+    shareContent: "Conteúdo compartilhado",
+    shareEmpty: "(vazio)",
+    shareExtraPlaceholder: "Opcional: instruções para o agente (ex.: \"resuma isto em português\")",
+    shareNewSession: "+ Nova conversa e enviar",
+    shareOrExisting: "…ou envie para uma conversa existente:",
+    shareSending: "enviando…",
+    shareSessionTitle: "Compartilhado do celular",
+    shareSendFailed: "Não consegui enviar ao agente — tente de novo.",
+    shareListFailed: "Não consegui carregar as conversas — ainda dá pra começar uma nova.",
+    filesTitle: "Arquivos desta máquina",
+    filesEmpty: "Nenhum arquivo ainda.",
+    filesListFailed: "Não consegui listar os arquivos da máquina — tente de novo.",
+    filesNoPreview: "Sem prévia para este tipo de arquivo — use Salvar.",
+    // pedidos de permissão sem rótulo (eventos de resposta e pedidos anteriores à tela não trazem o tipo)
+    permGenericAction: "ação",
   },
 } satisfies Record<Lang, Record<string, string>>;

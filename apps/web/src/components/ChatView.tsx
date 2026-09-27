@@ -22,7 +22,7 @@ import { saveFile } from "../lib/files";
 import { copyText } from "../lib/clipboard";
 import { copyPlan, type CopyPart } from "../lib/copymsg";
 import { useT } from "../lib/i18n";
-import { humanizeError } from "../lib/errors";
+import { agentErrorMessage, humanizeError } from "../lib/errors";
 import { buildAskDialog } from "../lib/askdialog";
 import AskDialog from "./AskDialog";
 import { getVoiceSettings } from "./SettingsView";
@@ -39,13 +39,16 @@ import { useExitAnimation } from "../lib/motion";
 import { sessionTitleOf } from "../lib/title";
 import { permissionPreview } from "../lib/permission";
 import {
+  AUTO_APPROVE_GRACE_MS,
   collectPermissionAsks,
   isPermissionResolvedElsewhere,
   reconcilePermissionCards,
+  staleAutoAsks,
   type PermissionAsk,
 } from "../lib/permissionCards";
 import { getCachedSession, putCachedSession } from "../lib/sessionCache";
-import { appendDraft, getDraft, setDraft, takeSendOnOpen } from "../lib/drafts";
+import { appendDraft, consumeSendOnOpen, getDraft, setDraft } from "../lib/drafts";
+import { SEND_TIMEOUT_MS, sendFailurePlan } from "../lib/sendfail";
 import { firstSentence, pressureLevel } from "../lib/context";
 import { getTtsLang, speakBrief } from "../lib/voice";
 import { deviceTtsAvailable, speakDevice, stopDeviceSpeech } from "../lib/speech";
@@ -58,7 +61,7 @@ import {
 } from "../lib/pasteattach";
 import { dropVerdict } from "../lib/dropgate";
 import { composerDiskAdvice } from "../lib/diskstate";
-import { mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
+import { keepInflight, mergeBubbles, rowsToBubbles, type Bubble, type HistoryRow } from "../lib/bubbleMerge";
 import {
   canHighlightInline,
   findHits,
@@ -719,6 +722,9 @@ export default function ChatView({
   const overlayPhase = useExitAnimation(!!overlaySource && !wide);
   const overlayArtifact = overlaySource ?? (overlayPhase !== "closed" ? lastOverlayRef.current : null);
   const t = useT();
+  // eval-10: the label-less fallback ("action", lib/permissionCards) is copy
+  // the user reads — resolve it per locale instead of painting English
+  const permLabel = (label?: string) => (!label || label === "action" ? t("permGenericAction") : label);
   // P3-462: the derived composer advice — static copy resolved per locale
   // (P2-118); the machine's own phrase renders verbatim when it qualifies.
   const diskAdvice = composerDiskAdvice(diskRead, t("diskLowHint"), t("diskAttachBlocked"));
@@ -728,9 +734,9 @@ export default function ChatView({
     try {
       const res = await request("POST", "/__ocr/handoff", { sessionId });
       if (res.status === 200) setAutoNote(t("openedOnMac"));
-      else setError(`handoff failed: ${JSON.stringify(res.body).slice(0, 140)}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      else setError(t("errHandoffFailed")); // eval-10: never the raw body
+    } catch {
+      setError(t("errHandoffFailed"));
     }
   }
   async function exportChat() {
@@ -739,14 +745,14 @@ export default function ChatView({
     try {
       const res = await request("POST", "/__ocr/export", { sessionId });
       if (res.status !== 200) {
-        setError(`export failed: ${JSON.stringify(res.body).slice(0, 140)}`);
+        setError(t("errExportFailed")); // eval-10: never the raw body
         return;
       }
       const { path } = res.body as { path: string };
       await saveFile(request, path);
       setAutoNote(t("exported"));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      setError(t("errExportFailed"));
     } finally {
       setExporting(false);
     }
@@ -892,10 +898,12 @@ export default function ChatView({
   // P1-088: restore this session's draft on navigation. Declared AFTER the
   // sessionIdRef sync effect above so it is the last writer on a switch.
   useEffect(() => {
-    setInput(getDraft(sessionId));
     // EVAL4-B: the home composer's arrow sends — consume the one-shot flag
     // (validated against this session's draft + TTL in lib/drafts.ts).
-    const auto = takeSendOnOpen(sessionId);
+    // eval-10: consuming also clears that draft (read below) — the text is
+    // already on its way and must not wait in the composer for a 2nd send.
+    const auto = consumeSendOnOpen(sessionId);
+    setInput(getDraft(sessionId));
     if (auto) void send(auto);
   }, [sessionId]);
 
@@ -1057,21 +1065,7 @@ export default function ChatView({
     // ask the daemon for pending permissions on this session — covers asks that
     // happened before the app was open (otherwise the agent stays stuck invisibly)
     void fetchPendingPermissions();
-    void (async () => {
-      try {
-        const q = await request("GET", "/question");
-        const list = (Array.isArray(q.body) ? q.body : []) as {
-          id: string;
-          sessionID?: string;
-          questions?: QuestionInfo[];
-        }[];
-        setPersistedQuestions(
-          list
-            .filter((x) => x.sessionID === sessionId)
-            .map((x) => ({ requestID: x.id, questions: x.questions ?? [] })),
-        );
-      } catch {}
-    })();
+    void fetchPendingQuestions();
     // P1-089: drop the previous session's streaming tail — otherwise an idle
     // finalize racing the switch appends it to the new session's bubbles
     liveRef.current = { text: "" };
@@ -1156,6 +1150,24 @@ export default function ChatView({
     } catch {}
   }
 
+  // eval-10: same source-of-truth read for agent questions — shared by the
+  // session switch and the reconnect resync below
+  async function fetchPendingQuestions() {
+    try {
+      const q = await request("GET", "/question");
+      const list = (Array.isArray(q.body) ? q.body : []) as {
+        id: string;
+        sessionID?: string;
+        questions?: QuestionInfo[];
+      }[];
+      setPersistedQuestions(
+        list
+          .filter((x) => x.sessionID === sessionIdRef.current)
+          .map((x) => ({ requestID: x.id, questions: x.questions ?? [] })),
+      );
+    } catch {}
+  }
+
   // P1-082: AutoMode — the daemon answers permission asks on the user's behalf.
   // While on, no actionable card is ever rendered (passive badge only); the
   // daemon's audit log is the record.
@@ -1186,12 +1198,20 @@ export default function ChatView({
 
   // P1-082: permission events no longer render cards by themselves — they
   // (debounced) re-fetch the daemon's pending list instead.
-  const permEventCount = events.filter((e) =>
-    e.type.toLowerCase().includes("permission"),
-  ).length;
+  // eval-10: keyed on the NEWEST permission event, not the count — once the
+  // 500-event buffer is full, an ask that evicts an older permission event
+  // left the count unchanged and the re-fetch never fired.
+  let permEventKey = "";
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type.toLowerCase().includes("permission")) {
+      permEventKey = e.id;
+      break;
+    }
+  }
   const permRefetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (permEventCount === 0) return;
+    if (!permEventKey) return;
     if (permRefetchTimer.current) clearTimeout(permRefetchTimer.current);
     permRefetchTimer.current = setTimeout(() => {
       permRefetchTimer.current = null;
@@ -1203,7 +1223,41 @@ export default function ChatView({
         permRefetchTimer.current = null;
       }
     };
-  }, [permEventCount]);
+  }, [permEventKey]);
+
+  // eval-10: AutoMode grace. The daemon only auto-approves asks it SAW as a
+  // live event; an ask pending before AutoMode was switched on, asked while
+  // the daemon restarted, or whose AUTO_FAILED_EVENT this phone missed while
+  // asleep never gets one — it stayed suppressed forever (invisibly stuck
+  // agent). Each pending ask gets a first-seen stamp on this client's clock;
+  // past AUTO_APPROVE_GRACE_MS it surfaces as a manual card.
+  const askSeenRef = useRef(new Map<string, number>());
+  const [askClock, setAskClock] = useState(() => Date.now());
+  useEffect(() => {
+    askSeenRef.current = new Map();
+  }, [sessionId]);
+  useEffect(() => {
+    const now = Date.now();
+    for (const a of persistedAsks) {
+      if (!askSeenRef.current.has(a.permissionID)) askSeenRef.current.set(a.permissionID, now);
+    }
+  }, [persistedAsks]);
+  useEffect(() => {
+    if (!autoMode) return;
+    let due = Infinity;
+    for (const a of persistedAsks) {
+      const at = (askSeenRef.current.get(a.permissionID) ?? Date.now()) + AUTO_APPROVE_GRACE_MS;
+      if (at > askClock) due = Math.min(due, at);
+    }
+    if (due === Infinity) return;
+    const timer = setTimeout(() => {
+      // re-read the truth first: an ask the daemon answered meanwhile is
+      // gone from the list and never flashes as a card
+      void fetchPendingPermissions();
+      setAskClock(Date.now());
+    }, Math.max(0, due - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [autoMode, persistedAsks, askClock]);
 
   useEffect(() => {
     setLoadingHistory(true);
@@ -1238,7 +1292,8 @@ export default function ChatView({
       const tools = toolsFromRows(rows);
       const more = page?.hasMore ?? false;
       const oldestId = page?.oldest ?? rows[0]?.info?.id ?? null;
-      setBubbles(out);
+      // eval-10: a prompt still in flight survives a history that predates it
+      setBubbles((cur) => keepInflight(out, cur));
       setWinStart(Math.max(0, out.length - MSG_WINDOW));
       setHistoryTools(tools);
       setHasMore(more);
@@ -1303,6 +1358,10 @@ export default function ChatView({
     }
   }
 
+  // eval-10: delivery proof of the prompt in flight — send() installs a fresh
+  // flag, the stream below flips it on opencode's user-message echo
+  const promptEchoRef = useRef<{ echoed: boolean } | null>(null);
+
   // stream: rebuild the tail of the conversation from live part events.
   // user messages echo as parts too — track message roles and only stream
   // assistant parts. `session.idle`/`session.status:idle` finalize the turn.
@@ -1327,9 +1386,13 @@ export default function ChatView({
       };
       if (p?.sessionID !== sessionId) continue;
       if (evt.type === "message.updated" && p.info?.id) {
+        const firstSight = !(p.info.id in rolesRef.current);
         rolesRef.current[p.info.id] = p.info.role ?? "assistant";
         const infoId = p.info.id;
         if (p.info.role === "user") {
+          // eval-10: a NEW user message is opencode's receipt of the prompt in
+          // flight (opencode re-emits old user messages, e.g. summary updates)
+          if (firstSight && promptEchoRef.current) promptEchoRef.current.echoed = true;
           // tag the freshly sent user bubble so it becomes rewindable
           setBubbles((b) => {
             let idx = -1;
@@ -1355,7 +1418,9 @@ export default function ChatView({
         if (errObj?.name === "MessageAbortedError") {
           idle = true; // user pressed Stop — expected, not a failure
         } else {
-          errored = JSON.stringify(evt.properties).slice(0, 200);
+          // eval-10: the readable message only, always valid JSON — the old
+          // 200-char cut of the whole payload handed React an object (#31)
+          errored = JSON.stringify({ error: agentErrorMessage(evt.properties) });
         }
       }
       if (p.part?.type === "text" && p.part.text) {
@@ -1461,6 +1526,13 @@ export default function ChatView({
       setLiveThinking(null);
       lastEventId.current = events[events.length - 1]?.id ?? null;
       void loadHistory();
+      // eval-10: events are never replayed after a drop — an approval or a
+      // question asked during the gap (the phone asleep is the common case)
+      // only exists in the daemon's pending lists. Without this re-read the
+      // card never appeared and the agent sat waiting invisibly.
+      void fetchPendingPermissions();
+      void fetchPendingQuestions();
+      void refreshChatSettings();
     }
   }, [connStatus]);
 
@@ -1480,7 +1552,7 @@ export default function ChatView({
       sawAuto = true;
       setResponded((prev) => new Set(prev).add(p.permissionID!));
       setPersistedAsks((prev) => prev.filter((x) => x.permissionID !== p.permissionID));
-      setAutoNote(t("autoApproved", { action: p.action ?? "action" }));
+      setAutoNote(t("autoApproved", { action: permLabel(p.action) }));
     }
     if (sawAuto) {
       // the daemon only auto-approves while AutoMode is on — reflect it
@@ -1508,7 +1580,7 @@ export default function ChatView({
       if (p?.sessionID !== sessionId || !p?.permissionID) continue;
       if (autoFailedRef.current.has(p.permissionID)) continue;
       autoFailedRef.current.add(p.permissionID);
-      setAutoFailNote(t("autoFailed", { action: p.action ?? "action" }));
+      setAutoFailNote(t("autoFailed", { action: permLabel(p.action) }));
     }
   }, [events, sessionId]);
 
@@ -1687,6 +1759,9 @@ export default function ChatView({
     persistedAsks,
     responded,
     autoMode,
+    autoMode
+      ? staleAutoAsks(askSeenRef.current, persistedAsks.map((a) => a.permissionID), askClock)
+      : undefined,
   );
 
   // P3-399: publish the actionable-ask count so the shell can toast "the agent
@@ -1784,7 +1859,13 @@ export default function ChatView({
     })();
   }, [connStatus, queue.length, sessionId]);
 
+  // eval-10: the last approval-failure copy shown, so a later success clears
+  // exactly that line (it used to outlive the approval that fixed it)
+  const permErrorRef = useRef("");
   async function respond(permissionID: string, response: "approve" | "reject") {    setResponded((prev) => new Set(prev).add(permissionID));
+    // eval-10: localized, body-free copy — was `approve failed (500): {…}`
+    // (English, raw JSON, and "approve" even when the tap was Deny)
+    const failCopy = t(response === "approve" ? "errApproveFailed" : "errDenyFailed");
     try {
       const res = await request("POST", `/session/${sessionId}/permissions/${permissionID}`, {
         response: response === "approve" ? "once" : "reject",
@@ -1802,17 +1883,20 @@ export default function ChatView({
           next.delete(permissionID);
           return next;
         });
-        setError(`approve failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+        permErrorRef.current = failCopy;
+        setError(failCopy);
       } else {
         setPersistedAsks((prev) => prev.filter((p) => p.permissionID !== permissionID));
+        setError((cur) => (cur && cur === permErrorRef.current ? "" : cur));
       }
-    } catch (err) {
+    } catch {
       setResponded((prev) => {
         const next = new Set(prev);
         next.delete(permissionID);
         return next;
       });
-      setError(err instanceof Error ? err.message : String(err));
+      permErrorRef.current = failCopy;
+      setError(failCopy);
     }
   }
 
@@ -1830,14 +1914,14 @@ export default function ChatView({
     try {
       const res = await request("POST", `/session/${sessionId}/revert`, { messageID });
       if (res.status !== 200) {
-        setError(`revert failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+        setError(t("errRevertFailed")); // eval-10: never the raw body
         return;
       }
       setCanUnrevert(true);
       setAutoNote(t("rewound"));
       await loadHistory();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      setError(t("errRevertFailed"));
     }
   }
 
@@ -1845,14 +1929,14 @@ export default function ChatView({
     try {
       const res = await request("POST", `/session/${sessionId}/unrevert`, {});
       if (res.status !== 200) {
-        setError(`unrevert failed (${res.status})`);
+        setError(t("errUnrevertFailed")); // eval-10: localized
         return;
       }
       setCanUnrevert(false);
       setAutoNote(t("unreverted"));
       await loadHistory();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      setError(t("errUnrevertFailed"));
     }
   }
 
@@ -1887,17 +1971,17 @@ export default function ChatView({
           next.delete(requestID);
           return next;
         });
-        setError(`answer failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
+        setError(t("errAnswerFailed")); // eval-10: never the raw body
       } else {
         setPersistedQuestions((prev) => prev.filter((q) => q.requestID !== requestID));
       }
-    } catch (err) {
+    } catch {
       setQResponded((prev) => {
         const next = new Set(prev);
         next.delete(requestID);
         return next;
       });
-      setError(err instanceof Error ? err.message : String(err));
+      setError(t("errAnswerFailed"));
     }
   }
 
@@ -1910,6 +1994,7 @@ export default function ChatView({
           next.delete(requestID);
           return next;
         });
+        setError(t("errAnswerFailed")); // eval-10: Skip used to fail in silence
       } else {
         setPersistedQuestions((prev) => prev.filter((q) => q.requestID !== requestID));
       }
@@ -1919,6 +2004,18 @@ export default function ChatView({
         next.delete(requestID);
         return next;
       });
+      setError(t("errAnswerFailed"));
+    }
+  }
+
+  // eval-10: Stop used to be a bare `void request(…)` — a failed abort
+  // (offline, daemon restart) left the agent running with no word about it
+  async function stopAgent() {
+    try {
+      const res = await request("POST", `/session/${sessionId}/abort`);
+      if (res.status !== 200) setError(t("errStopFailed"));
+    } catch {
+      setError(t("errStopFailed"));
     }
   }
 
@@ -1974,6 +2071,8 @@ export default function ChatView({
     // question (override) leaves the composer untouched.
     if (usingComposer) updateInput("");
     const attached = usingComposer ? [...images, ...staged] : staged;
+    const echo = { echoed: false };
+    promptEchoRef.current = echo;
     setBubbles((b) => [
       ...b,
       {
@@ -2000,7 +2099,8 @@ export default function ChatView({
       };
       if (usingComposer) setImages([]);
       let body = buildBody();
-      let res = await request("POST", `/session/${sessionId}/message`, body);
+      // eval-10: the daemon answers this op only when the whole turn ends
+      let res = await request("POST", `/session/${sessionId}/message`, body, undefined, SEND_TIMEOUT_MS);
       // attachments age out of the daemon (30min TTL, or a daemon restart):
       // re-upload whatever we still hold in memory and retry once
       if (res.status === 410 && attached.some((img) => img.raw)) {
@@ -2009,7 +2109,7 @@ export default function ChatView({
           img.id = await uploadBytes(img.raw, img.mime, img.filename);
         }
         body = buildBody();
-        res = await request("POST", `/session/${sessionId}/message`, body);
+        res = await request("POST", `/session/${sessionId}/message`, body, undefined, SEND_TIMEOUT_MS);
       }
       if (res.status === 410) {
         // EVAL4-B: 410 = the daemon no longer holds the upload (30 min TTL or
@@ -2067,7 +2167,14 @@ export default function ChatView({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (text) {
+      const plan = sendFailurePlan({ echoed: echo.echoed, hasText: !!text });
+      if (plan === "delivered") {
+        // eval-10: opencode already holds this prompt — a resend would run
+        // the whole turn twice; the stream and the history carry the reply
+        markPending(false);
+        return { status: "ok" };
+      }
+      if (plan === "queue") {
         enqueue(text);
         markPending("queued");
         const queued = `offline — message queued (${msg})`;
@@ -3088,7 +3195,7 @@ export default function ChatView({
                 ))}
               {b.role === "user" && b.messageID && (
                 <button
-                  className="muted"
+                  className="muted msg-rewind"
                   style={{ fontSize: "0.7rem", padding: "1px 6px", marginTop: 2, opacity: 0.7 }}
                   onClick={() => void revertTo(b.messageID!)}
                 >
@@ -3132,7 +3239,7 @@ export default function ChatView({
             <button
               className="danger"
               style={{ margin: "4px auto", display: "block" }}
-              onClick={() => void request("POST", `/session/${sessionId}/abort`)}
+              onClick={() => void stopAgent()}
             >
               {t("stop")}
             </button>
@@ -3172,17 +3279,22 @@ export default function ChatView({
                         </p>
                         <p style={{ margin: "0 0 6px" }}>{q.question}</p>
                         {q.options.map((o) => (
-                          <label key={o.label} style={{ display: "block" }}>
+                          // eval-10: one 44px row per option, control first
+                          // (.q-opt) — the global input width made each radio
+                          // a full-width line floating above its label
+                          <label key={o.label} className="q-opt">
                             <input
                               type={q.multiple ? "checkbox" : "radio"}
                               name={`${qr.requestID}-${qi}`}
                               checked={sel.includes(o.label)}
                               onChange={() => toggleOption(qr.requestID, qi, o.label, q.multiple)}
-                            />{" "}
-                            {o.label}
-                            {o.description && (
-                              <span className="muted"> — {o.description}</span>
-                            )}
+                            />
+                            <span className="q-opt-text">
+                              {o.label}
+                              {o.description && (
+                                <span className="muted"> — {o.description}</span>
+                              )}
+                            </span>
                           </label>
                         ))}
                         {q.custom && (
@@ -3225,7 +3337,7 @@ export default function ChatView({
           <div
             key={p.permissionID}
             style={
-              p.autoFailed
+              p.autoFailed || p.autoStale
                 ? {
                     marginBottom: 8,
                     border: "1px solid var(--danger)",
@@ -3257,9 +3369,9 @@ export default function ChatView({
             )}
             <div className="approval">
               <span style={{ flex: 1 }}>
-                {t("approve")} <b>{p.label}</b>?
+                {t("approve")} <b>{permLabel(p.label)}</b>?
               </span>
-              <button onClick={() => void showDiff(p)}>diff</button>
+              <button onClick={() => void showDiff(p)}>{t("diffBtn")}</button>
               <button className="primary" onClick={() => void respond(p.permissionID, "approve")}>
                 {t("approve")}
               </button>
@@ -3286,6 +3398,15 @@ export default function ChatView({
             {autoFailNote}
           </p>
         )}
+        {pending.some((p) => p.autoStale) && (
+          <p
+            className="auto-fail-note auto-stale-note"
+            role="alert"
+            style={{ color: "var(--danger)", fontSize: "0.72rem", margin: "4px 0" }}
+          >
+            {t("autoStale", { action: permLabel(pending.find((p) => p.autoStale)?.label) })}
+          </p>
+        )}
         {resolvedPerms.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "4px 0" }}>
             {resolvedPerms.map((r) => (
@@ -3302,7 +3423,7 @@ export default function ChatView({
               >
                 <span aria-hidden>·</span>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {r.label} — {r.origin === "auto" ? t("permAutoLine") : t("permResolvedLine")}
+                  {permLabel(r.label)} — {r.origin === "auto" ? t("permAutoLine") : t("permResolvedLine")}
                 </span>
               </div>
             ))}

@@ -21,24 +21,56 @@ export interface HistoryRow {
   parts: {
     type: string;
     text?: string;
+    /** opencode: text the system added to the turn (never typed by the user) */
+    synthetic?: boolean;
     url?: string;
+    filename?: string;
     callID?: string;
     tool?: string;
     state?: { status?: string; title?: string; output?: string };
   }[];
 }
 
+/**
+ * eval-10 (r4 PR-B1): the daemon appends a `[ocr-artifacts-path] …` text
+ * part to a session's first turn (apps/daemon/src/sessionctx.ts, again after
+ * every daemon restart) and opencode stores it inside the USER message — the
+ * bubble showed the internal marker plus the machine's home path. Mirror of
+ * the daemon's ARTIFACTS_PATH_MARKER (pinned by scripts/pwa-mobile-ux.test.ts).
+ */
+export const INJECTED_PATH_MARKER = "[ocr-artifacts-path]";
+
+/**
+ * True for text the user never typed: opencode's `synthetic` parts (file
+ * reads it inlines, anything a server marks synthetic) and the daemon's path
+ * line in user turns. The model still sees them — only the bubble skips them.
+ */
+export function isInjectedPart(part: { type?: string; text?: unknown; synthetic?: unknown }, role?: string): boolean {
+  if (part.type !== "text") return false;
+  if (part.synthetic === true) return true;
+  return role !== "assistant" && typeof part.text === "string" && part.text.trimStart().startsWith(INJECTED_PATH_MARKER);
+}
+
 /** text/file/reasoning parts -> chat bubbles, in the order the rows arrive */
 export function rowsToBubbles(rows: HistoryRow[]): Bubble[] {
   const out: Bubble[] = [];
   for (const row of rows) {
-    const text = row.parts
-      .filter((p) => p.type === "text" && p.text)
+    let text = row.parts
+      .filter((p) => p.type === "text" && p.text && !isInjectedPart(p, row.info.role))
       .map((p) => p.text)
       .join("\n");
     const images = row.parts
       .filter((p) => p.type === "file" && typeof p.url === "string" && p.url.startsWith("data:image/"))
       .map((p) => p.url as string);
+    // eval-10: a document-only turn keeps its bubble — its only text parts
+    // were opencode's synthetic file reads, so name the files instead (the
+    // same `[file …]` label the optimistic bubble used at send time)
+    if (!text && !images.length && row.info.role === "user") {
+      text = row.parts
+        .filter((p) => p.type === "file" && typeof p.filename === "string" && p.filename)
+        .map((p) => `[file ${p.filename}]`)
+        .join(" ");
+    }
     // P3-085: persisted reasoning renders as the collapsed thinking block;
     // history carries no timing, so the label falls back to "Pensou"
     const thinkingText = row.parts
@@ -56,6 +88,31 @@ export function rowsToBubbles(rows: HistoryRow[]): Bubble[] {
     }
   }
   return out;
+}
+
+/**
+ * eval-10: a history read that lands BEFORE the server stored the prompt in
+ * flight — the chat opens and sends in the same tick on the home composer's
+ * send-on-open, so the mount's history GET races the prompt POST — replaced
+ * the optimistic user bubble with a history that did not contain it yet: the
+ * first message vanished and only the reply showed (hermetic 390px repro).
+ * In-flight user bubbles (pending === true, no messageID yet) survive a
+ * history replace unless the history's newest user row already carries the
+ * same text. Queued (offline) bubbles are NOT kept: the reconnect flush
+ * re-renders them as fresh sends.
+ */
+export function keepInflight(history: Bubble[], current: Bubble[]): Bubble[] {
+  const inflight = current.filter((b) => b.role === "user" && !b.messageID && b.pending === true);
+  if (inflight.length === 0) return history;
+  let lastUser: Bubble | undefined;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") {
+      lastUser = history[i];
+      break;
+    }
+  }
+  const kept = inflight.filter((b) => lastUser?.text !== b.text);
+  return kept.length ? [...history, ...kept] : history;
 }
 
 /**
