@@ -366,9 +366,10 @@ const repoRoot = join(import.meta.dirname, "..");
 {
   // opencode injects AGENTS.md into the system prompt of EVERY agent turn in
   // this repo (Instruction.find/resolve in opencode 1.18.32). Measured cost:
-  // 0.2596 tokens/byte (OLS over 399 sessions, R² 0.998) — at 35,125 B that
-  // was 9.1K tokens × every turn (≈8.8% of the fleet's tokens on 09-22..24).
-  // Trimmed to ~16.8 KB on 2026-09-27; grow it only by moving something out.
+  // 0.2596 tokens/byte (OLS over 399 sessions, R² 0.998) — 9.1K tokens per
+  // turn at 35,125 B; re-reading it cost 114.8M tokens (7.6% of the fleet)
+  // over 14,778 turns on 09-22..24. Trimmed to ~16.8 KB on 2026-09-27; grow
+  // it only by moving something out.
   const AGENTS_MD_BUDGET_BYTES = 18 * 1024;
   const agents = readFileSync(join(repoRoot, "AGENTS.md"));
   check(

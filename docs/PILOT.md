@@ -996,14 +996,15 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
     total e é precificado como output.
   - *Orçamento por task* (`pilot.json` `tokenBudgetPerTask`, padrão 40M ≈ p95
     da janela; `0` desliga): ao cruzar 1×, 2×, 3×… o pilot emite `alert`
-    (fase `token-budget`) + notify do supervisor com tokens, attempts e o
+    (fase `token-budget`) + notify do supervisor com tokens, orçamento e o
     último desfecho. É visibilidade, nunca kill switch (qualidade > custo);
     o nível alertado persiste em `state.tokenBudgetAlerts` (sem tempestade de
     alertas em restart/meia-noite).
   - *AGENTS.md é imposto por turno*: o opencode injeta o `AGENTS.md` no prompt
     de sistema de todo turno de todo agente (0,26 token/byte, regressão sobre
-    399 sessões, R² 0,998). A 35.125 B eram ~9,1K tokens × 14.778 turnos em
-    3 dias (~8,8% dos tokens da frota). O histórico de beats do desktop-flow
+    399 sessões, R² 0,998). A 35.125 B são ~9,1K tokens por turno; com o
+    tamanho de cada época, reler o arquivo custou 114,8M tokens em 14.778
+    turnos de 22–24/09 (7,6% da frota). O histórico de beats do desktop-flow
     (~19 KB) foi movido verbatim para `docs/desktop-flow.md`; o
     `scripts/token-efficiency.test.ts` reprova o `AGENTS.md` acima de 18 KiB.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
