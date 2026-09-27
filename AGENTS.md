@@ -80,6 +80,11 @@ planner prompts receive the 10 most recent failure lessons so new tasks avoid re
 If you are asked to change anything that
 the constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
 the commit message. Never commit secrets. Always document user-visible changes.
+New tests go in a NEW `scripts/<topic>.test.ts` plus ONE line appended to `scripts/unit-suite.txt`
+(the `npm run test:unit` list; `merge=union`, so parallel appends never conflict) and a portable
+classification (`PORTABLE_TESTS` in `scripts/portable-suite.ts` or `PORTABLE_EXCLUSIONS` in
+`scripts/portablecoverage.ts`) — never edit the `test:unit` script, and do not append blocks to
+`scripts/unit.test.ts` (named in 8 of the 26 merge-conflict escalations of 08/09–24/09).
 
 ## Memória do projeto (LER PRIMEIRO)
 
