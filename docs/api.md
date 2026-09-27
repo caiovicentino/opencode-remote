@@ -24,6 +24,7 @@ opencode-remote token
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/health` | daemon/opencode/relay status |
+| GET | `/healthz` | liveness only, **no token** (eval-12): `{"ok":true,"service":"ocr-daemon"}`, same shape as the relay's and the PWA origin's probe |
 | GET | `/api/session` | list sessions |
 | POST | `/api/session` | exchange the Bearer token for a 12 h HttpOnly `ocr_session` cookie (P1-057) — it does **not** create a session |
 | GET | `/api/session/:id` | session info |
@@ -453,6 +454,10 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 ```
 
 Paths are strictly validated (no traversal); unknown/invalid names answer 404.
+A symlinked session directory is neither listed nor served: the file's real
+path must stay inside the real artifacts root, it is reopened with
+`O_NOFOLLOW` and re-checked, and only the size measured at open time is read
+(eval-12 — the same admission RT-466 gave downloads).
 
 Both listing routes (`/api/artifacts` and the tunnel's `/__ocr/artifacts`) return
 artifacts sorted newest → oldest, capped at the **500 most recent**
@@ -464,6 +469,29 @@ resolved only for the sessions present in the trimmed list.
 The phone/desktop UI consumes the same data over the E2E tunnel
 (`/__ocr/artifacts`) — the desktop app shows them in the **Artifacts pane**,
 and chat messages that mention an artifact file name render an attached card.
+
+### AutoMode events (P1-093, eval-12)
+
+With AutoMode on, the daemon answers opencode permission asks with `once`
+and broadcasts synthetic events over the E2E tunnel. The names are exported
+constants in `apps/daemon/src/automode.ts` (the web client matches the same
+literals — parity pinned by `scripts/daemon-hardening.test.ts`):
+
+| Event | When | `properties` |
+|---|---|---|
+| `ocr.permission.auto` (`AUTO_APPROVED_EVENT`) | the daemon answered the ask | `sessionID`, `permissionID`, `action` |
+| `ocr.permission.autoFailed` (`AUTO_APPROVE_FAILED_EVENT`) | the ask could not be answered and is still pending | `sessionID`, `permissionID`, `action`, `error`, `replayed?` |
+
+A failure is never silent: besides the live broadcast it pushes
+"AutoMode couldn't approve" (when permission notifications are on) and is
+kept in a bounded ledger (64 entries, 24 h) that is replayed — with
+`replayed: true` — to every client after its handshake, on its first sealed
+op, until opencode reports `permission.replied` for it or it leaves
+`GET /permission`. A `404` from the approve call is confronted with that
+pending list: gone means the ask was answered elsewhere (no alarm, no
+retry); still listed means the approve route itself failed (reported). A
+`permission.replied` event is never treated as an ask (it used to push a
+spurious "Approve needed" after every answer).
 
 ### Mission Control / pilot forensics (P2-048)
 
