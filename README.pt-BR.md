@@ -491,7 +491,10 @@ remoto, zero confiança**.
   campo de colar é o único caminho o "Parear" veste o accent (P3-433). No resto ele é
   o secundário sólido — superfície do card, borda firme e rótulo semibold em
   contraste total, habilitado de verdade (nunca o chip cinza rebaixado que lia como
-  desabilitado) — ainda um degrau acima do escanear. Superfície
+  desabilitado) — ainda um degrau acima do escanear. O escanear pega a câmera uma vez
+  por abertura (eval-09): a tela por trás re-renderiza a cada push do estado de
+  pareamento e isso não reinicia mais a câmera — a prévia não pisca e um feed morto fica
+  no painel de indisponível com a ação de colar. Superfície
   única em tela cheia: sem banners e sem overlay de
   pareamento (regra P2-108)
 - **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor

@@ -2073,7 +2073,10 @@ P3-449/P3-450). Everywhere else the submit is the solid secondary: the card's
 surface, a firm border and the full-contrast semibold label — an enabled
 control that is simply not the loudest (never the recessed grey chip the
 first P3-415 attempt shipped, which read as a disabled ghost beside the
-error) — still one step above the quiet scan option (P3-366). When the local agent is
+error) — still one step above the quiet scan option (P3-366). The scan option acquires the
+camera once per opening (eval-09): the screen behind it re-renders on every pairing-state
+push, and that no longer restarts the camera — the preview does not flicker and a dead
+feed stays on its unavailable panel with the paste action. When the local agent is
 down (P3-427), the scan entry and the host entry disappear from this surface
 entirely — the QR they promise is minted by the daemon that is out — and a
 calm verdict card ("The local agent is not running.") carries the reconnect

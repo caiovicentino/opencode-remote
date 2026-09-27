@@ -2135,6 +2135,14 @@ try {
         if (!ceremonyUp2) check("scan-live: add-machine ceremony rendered", false, "machine picker or ceremony did not open");
         run("scan-live: open the scanner", ["click", ".pair-scan-entry"], 15_000, scanFakeEnv);
         await waitProbe("scan-live: preview state reached", scannerState, (v) => v.includes("preview"), scanFakeEnv);
+        // eval-09: the camera is acquired ONCE per scanner mount. The capture
+        // effect used to depend on the parent's onScan, whose identity changes
+        // on every App render — each pairing-state push (and the 390px resize
+        // below) re-acquired a NEW stream, so a killed feed could flip back to
+        // "preview" and the NO SIGNAL checks flaked. The stream id read here
+        // must survive the re-renders until after the 390px beat.
+        const streamIdExpr = "document.querySelector('.qr-video')?.srcObject?.id ?? ''";
+        const streamBefore = run("scan-live: stream id at preview", ["ipc", streamIdExpr], 15_000, scanFakeEnv);
         const s1 = run("scan-live: 1440x900 evidence shot", ["shot", scanShot1440, "1440", "900"], 15_000, scanFakeEnv);
         if (s1.ok) check("scan-live: 1440x900 shot is a real PNG", pngSize(scanShot1440).join("x") === "1440x900");
         // 390px beat: the preview must keep breathing at phone width — the
@@ -2157,6 +2165,16 @@ try {
             "scan-live: preview survives 390px (video keeps a visible box)",
             !!box && box.w >= 200 && box.h >= 100,
             rect.stdout,
+          );
+        }
+        const streamAfter = run("scan-live: stream id after the re-renders", ["ipc", streamIdExpr], 15_000, scanFakeEnv);
+        if (streamBefore.ok && streamAfter.ok) {
+          const before = streamBefore.stdout.replace(/"/g, "").trim();
+          const after = streamAfter.stdout.replace(/"/g, "").trim();
+          check(
+            "scan-live: the camera stream survives parent re-renders (one getUserMedia per mount)",
+            before.length > 0 && before === after,
+            `before=${before} after=${after}`,
           );
         }
         // NO SIGNAL beat: kill the feed the way an unplugged capture device
