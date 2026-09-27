@@ -383,10 +383,15 @@ remoto, zero confiança**.
   e botão maximizar (~80% de largura). A primeira pintura do pane é um estado vazio de nova
    aba (P3-379): nada carrega até você digitar um endereço ou chegar um evento de prévia —
    o pane nunca navega sozinho para um serviço da máquina (a URL padrão antiga alcançava
-   silenciosamente o dashboard do daemon em boots sem pareamento). URL digitada que parseia
-   mas não é http(s) — `file://`, `data:`, … — é rejeitada com feedback nomeado (P3-378): a
-   barra de endereço fica vermelha e uma frase específica explica a regra http(s)-only da
-   sandbox e a saída (sirva a pasta via HTTP e abra a URL localhost), em vez do silêncio
+   silenciosamente o dashboard do daemon em boots sem pareamento). A barra responde a todo
+   endereço digitado (P3-378): host sem esquema é completado como num navegador —
+   `localhost:5173` ou `127.0.0.1:8080` carregam via http (servidores de dev),
+   `example.com/docs` via https; URL `file://` ou caminho local colado é rejeitado com
+   feedback nomeado — a barra fica vermelha (o anel de foco também) e uma frase específica
+   explica a regra http(s)-only da sandbox e a saída (sirva a pasta via HTTP e abra a URL
+   localhost); qualquer outro esquema (`javascript:`, `data:`, `about:`, …) ganha a própria
+   frase de "só endereços http(s)". A frase é anunciada ao leitor de tela, a página já
+   carregada fica onde está e editar o endereço desfaz o veredito — nunca o silêncio
    anterior. Enquanto vazia a barra mostra só um placeholder genérico `https://…` (P3-448) —
    nunca uma URL concreta que pareça já digitada. Um download iniciado no
    pane segue a
@@ -409,7 +414,9 @@ remoto, zero confiança**.
   pareamento manual a um clique. O header de marca fica centrado no mesmo eixo do
   wizard de boas-vindas e agora abre com o glifo de destaque do wizard (P3-373),
   junto do wordmark serifado — as três primeiras telas da jornada compartilham o
-  mesmo tratamento de marca. Quando o retry silencioso escala (P3-385/P3-394), o
+  mesmo tratamento de marca, e o diálogo "parear um celular" (QR) também (P3-373,
+  eval-09: o glifo sobre o wordmark serifado no lugar do ícone do app sobre um
+  título sans do splash do P1-050). Quando o retry silencioso escala (P3-385/P3-394), o
   bloco de diagnóstico respeita a superfície: no desktop aponta o botão "Abrir
   diagnósticos" do próprio app (o relatório é copiado de dentro dele) e no
   celular fala em conferir o próprio computador ou parear outro dispositivo —
@@ -476,7 +483,15 @@ remoto, zero confiança**.
   recuperação deixar de esconder atrás do Voltar discreto do header; o campo de colar
   código continua (um código de outra máquina que já esteja rodando o app é o único
   caminho que funciona ali), e o ceremony completo volta quando o daemon responde
-  de novo. Superfície
+  de novo. Cada render do ceremony tem UMA só ação com fill de accent, a do caminho
+  que ele lidera (P3-415, `lib/pairlead`; accent = a ação mais alta da tela): com o
+  agente fora, o "Reconectar agora" do card de veredito; quando a entrada de parear
+  celular aparece (adicionar máquina), a própria entrada — um tile de celular em
+  accent, o mesmo glifo do atalho "parear celular" do rail pareado; só quando o
+  campo de colar é o único caminho o "Parear" veste o accent (P3-433). No resto ele é
+  o secundário sólido — superfície do card, borda firme e rótulo semibold em
+  contraste total, habilitado de verdade (nunca o chip cinza rebaixado que lia como
+  desabilitado) — ainda um degrau acima do escanear. Superfície
   única em tela cheia: sem banners e sem overlay de
   pareamento (regra P2-108)
 - **Aviso do upstream (P2-138)** — o daemon pode estar saudável enquanto o servidor

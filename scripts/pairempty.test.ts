@@ -21,7 +21,8 @@ function check(name: string, ok: boolean, detail = "") {
 const view = readFileSync(join(import.meta.dirname, "..", "apps/web/src/components/PairingView.tsx"), "utf8");
 
 // the button's only disabled reason is busy — an empty box keeps it clickable
-const btn = view.match(/<button[^>]*className=\{preferPaste \? "pair-submit primary" : "pair-submit"\}[\s\S]*?\/>/);
+// P3-415 (eval-09): the class is the one-lead verdict (submitClass) now.
+const btn = view.match(/<button[^>]*className=\{submitClass\}[\s\S]*?\/>/);
 check("pair-submit button found", btn !== null);
 check("pair-submit disabled only while busy", !!btn && /disabled=\{busy\}/.test(btn[0]));
 check("pair-submit no longer disabled by empty code", !!btn && !/\!code\.trim\(\)/.test(btn[0]));
