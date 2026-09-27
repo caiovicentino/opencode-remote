@@ -2616,13 +2616,30 @@ setTimeout(checkRoutines, 10_000);
 // bundle detector dashboardFile() uses (CJS bundle defines __dirname, ESM
 // source does not). Unbundled top-level it crashed the daemon at boot
 // (fileURLToPath(undefined)) and took the desktop bundle smoke down with it.
+// eval-12: a source install that is not a git checkout (release tarball,
+// Docker image built without .git, `npm i github:…`) or a host without git
+// made the boot probe below throw at import — the daemon died before its
+// first log line. No checkout means no HEAD to drift from: the watch is
+// simply skipped, once, with a line saying so.
+let selfRestartBootHead = "";
 if (typeof __dirname === "undefined") {
+  try {
+    selfRestartBootHead = execSync("git rev-parse HEAD", {
+      cwd: join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    log("info", "self-restart watch off: not a git checkout");
+  }
+}
+if (typeof __dirname === "undefined" && selfRestartBootHead) {
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-  const BOOT_HEAD = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+  const BOOT_HEAD = selfRestartBootHead;
   let daemonDriftSince: number | undefined;
   setInterval(() => {
     try {
-      const head = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+      const head = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       if (head && BOOT_HEAD && head !== BOOT_HEAD) {
         daemonDriftSince ??= Date.now();
         if (Date.now() - daemonDriftSince >= 60_000) {

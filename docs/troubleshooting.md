@@ -238,6 +238,11 @@ closed pipe — absorbed instead of an `Unhandled 'error' event` crash). A
 genuinely fatal exception still exits the daemon (exit code `1`, restarted by
 launchd/the desktop shell) but first writes one `daemon crash` line with the
 error name and first stack frame, and drains its sockets like `SIGTERM`.
+On a source install that is not a git checkout (release tarball, Docker
+image, `npm i github:…`) the daemon logs `self-restart watch off: not a git
+checkout` once at boot — expected: the P1-056 restart-on-new-HEAD watch only
+exists for git checkouts (before eval-12 that boot probe threw and killed the
+daemon before its first log line).
 
 ## Document → PDF conversion unavailable (P2-231)
 

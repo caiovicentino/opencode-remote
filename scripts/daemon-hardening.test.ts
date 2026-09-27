@@ -20,7 +20,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { connect, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -319,6 +319,7 @@ if (!WIN) {
   check("pin: forwardEvents classifies through permissionEventFacts", src.includes("const perm = permissionEventFacts(evt.type, evt.properties);"));
   check("pin: a handshake arms the replay; the first sealed op fires it", src.includes("autoFailReplayDue.add(sessions.get(frame.from)!);") && src.includes("if (autoFailReplayDue.delete(session)) void replayAutoFailures(session)"));
   check("pin: loadIdentity rewrites the state file only when it changed", src.includes("if (serialized !== content) writeStateAtomic(STATE_FILE, serialized);"));
+  check("pin: the self-restart boot probe cannot throw at import", !src.includes('const BOOT_HEAD = execSync("git rev-parse HEAD"') && src.includes('log("info", "self-restart watch off: not a git checkout");'));
   const metricsSrc = readFileSync(join(REPO, "apps/daemon/src/metrics.ts"), "utf8");
   check("pin: the loopback server wraps every request in the backstop", metricsSrc.includes("apiRequestFailed(res, err);"));
 
@@ -385,11 +386,12 @@ const home = mkdtempSync(join(tmpdir(), "ocr-eval12-home-"));
 const stateDir = join(home, ".opencode-remote");
 const stateFile = join(stateDir, "daemon.json");
 
-function bootDaemon(port: number): ChildProcess {
+function bootDaemon(port: number, extraEnv: Record<string, string> = {}): ChildProcess {
   return spawn(process.execPath, ["--import", "tsx", "apps/daemon/src/index.ts"], {
     cwd: REPO,
     env: {
       ...process.env,
+      ...extraEnv,
       HOME: home,
       USERPROFILE: home,
       OCR_METRICS_PORT: String(port),
@@ -677,8 +679,29 @@ try {
   if (daemon) await stopDaemon(daemon);
 }
 
+// ─── boot outside a git checkout (tarball, Docker without .git, no git) ─────
+// Liveness via /metrics (exists on main too), so only the boot itself is judged.
+{
+  const portC = await freePort();
+  const daemonC = bootDaemon(portC, { GIT_DIR: join(scratch, "no-such-git-dir") });
+  let errC = "";
+  daemonC.stderr!.on("data", (c) => (errC += c));
+  daemonC.stdout!.on("data", () => {});
+  let upC = false;
+  for (let i = 0; i < 150 && !upC && alive(daemonC); i++) {
+    upC = await fetch(`http://127.0.0.1:${portC}/metrics`).then((r) => r.ok).catch(() => false);
+    if (!upC) await sleep(200);
+  }
+  check(
+    "no git checkout: the daemon boots (main: `git rev-parse HEAD` threw at import, exit 1)",
+    upC && alive(daemonC),
+    `exit=${daemonC.exitCode} stderr=${errC.split("\n").filter((l) => /rev-parse|fatal/.test(l)).join(" ").slice(0, 300)}`,
+  );
+  await stopDaemon(daemonC);
+}
+
 // ─── boot on a state dir that cannot be written (full disk / read-only) ─────
-if (!WIN) {
+if (!WIN && existsSync(stateDir)) {
   chmodSync(stateDir, 0o555);
   const portB = await freePort();
   const daemonB = bootDaemon(portB);
@@ -696,8 +719,10 @@ if (!WIN) {
     await stopDaemon(daemonB);
     chmodSync(stateDir, 0o755);
   }
-} else {
+} else if (WIN) {
   console.log("OK  read-only boot (skipped on Windows: POSIX modes)");
+} else {
+  check("read-only state dir: an established daemon still boots (no identity rewrite)", false, "the first daemon never created its state dir");
 }
 
 // ─── PWA origin (deploy/pwa-server.mjs): hardening headers on every answer ──
