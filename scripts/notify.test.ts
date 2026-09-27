@@ -15,10 +15,13 @@ import {
   NOTIFY_PENDING_MAX,
   NOTIFY_PENDING_TTL_MS,
   flushPending,
+  notifyOperator,
   notifySupervisor,
   type NotifyDeps,
   type NotifyTransport,
+  type PendingEntry,
 } from "../apps/pilot/src/notify";
+import { digest } from "../apps/pilot/src/push";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -288,6 +291,159 @@ function pendingLines(dir: string): string[] {
   check("corrupt config returns false", ok === false);
   check("corrupt config reports the parse failure, not a missing field", logs.some((l) => l.level === "warn" && /pilot\.json unparseable/.test(String((l.data as { reason?: string })?.reason ?? ""))));
   check("corrupt config parks nothing", !existsSync(join(dir, "pilot", "notify-pending.jsonl")));
+}
+
+// ── eval-01 ─────────────────────────────────────────────────────────────────
+// Daemon answers as the eval-01 relay sends them (apps/daemon/src/pilotnotify.ts).
+function answering(answer: Record<string, unknown>): { transport: NotifyTransport; sent: Array<Record<string, unknown>> } {
+  const sent: Array<Record<string, unknown>> = [];
+  const transport: NotifyTransport = async (_url, init) => {
+    sent.push(JSON.parse(init.body) as Record<string, unknown>);
+    return { ok: true, status: 200, json: async () => answer };
+  };
+  return { transport, sent };
+}
+function entries(dir: string): PendingEntry[] {
+  return pendingLines(dir).map((l) => JSON.parse(l) as PendingEntry);
+}
+
+// ── 10. dedupe by (task, kind): 45 identical disk-guard refusals were 45 lines
+{
+  const dir = mkDir(true);
+  const { transport } = transportOf("http-503");
+  const { deps } = depsFor(dir, transport);
+  for (const gb of ["0.1", "0.8", "2.1", "3.7", "0.2"]) {
+    await notifySupervisor("deploy", false, `disk low: ${gb}gb free (need 5.0gb) — deploy aborted before npm ci/build`, deps);
+  }
+  await notifySupervisor("P2-347", false, "gate green but the PR merge failed", deps);
+  const parked = entries(dir);
+  check("dedupe: same (task, kind) folds into one line with a count", parked.length === 2 && parked[0]!.task === "deploy" && parked[0]!.count === 5, JSON.stringify(parked.map((e) => [e.task, e.count])));
+  check("dedupe: the folded entry keeps its first and newest attempt", parked[0]!.firstTs !== undefined && parked[0]!.firstTs <= parked[0]!.ts && parked[0]!.text.includes("0.2gb"));
+  const accept = transportOf("deliver");
+  await flushPending({ session: "ses_test", token: "tok" }, accept.transport, depsFor(dir, accept.transport).deps);
+  const replayed = accept.sent.map((s) => JSON.parse(s.body).text as string);
+  check("dedupe: the replay says how many attempts it stands for", replayed.length === 2 && replayed[0]!.includes("(repetido 5×"));
+}
+
+// ── 11. guard: an expired line never survives the next write ──────────────
+{
+  const dir = mkDir(true);
+  mkdirSync(join(dir, "pilot"), { recursive: true });
+  const stale = { ts: Date.now() - NOTIFY_PENDING_TTL_MS - 60_000, task: "OLD", ok: false, text: "stale" };
+  writeFileSync(join(dir, "pilot", "notify-pending.jsonl"), JSON.stringify(stale) + "\n");
+  const { transport } = transportOf("socket");
+  const { deps } = depsFor(dir, transport, { now: () => Date.now() });
+  await notifySupervisor("NEW", false, "x", deps);
+  check("ttl: an expired line is gone after the next park", entries(dir).map((e) => e.task).join() === "NEW");
+}
+
+// ── 12. a replay stops at the first failure (was: every entry, every time) ─
+{
+  const dir = mkDir(true);
+  mkdirSync(join(dir, "pilot"), { recursive: true });
+  const now = Date.now();
+  writeFileSync(
+    join(dir, "pilot", "notify-pending.jsonl"),
+    [1, 2, 3, 4, 5].map((i) => JSON.stringify({ ts: now - i, task: `Q-${i}`, ok: false, text: `q${i}` })).join("\n") + "\n",
+  );
+  const { transport, sent } = transportOf("http-503");
+  await flushPending({ session: "ses_test", token: "tok" }, transport, depsFor(dir, transport).deps);
+  check("replay: one request, not five, when the channel refuses", sent.length === 1, `sent=${sent.length}`);
+  check("replay: nothing lost when stopping early", pendingLines(dir).length === 5);
+}
+
+// ── 13. the daemon took ownership (session deleted → phone): never parked ──
+{
+  const dir = mkDir(true);
+  const { transport, sent } = answering({ delivered: false, reason: "session-not-found", fallback: "push", phones: 1 });
+  const { deps, logs } = depsFor(dir, transport);
+  const ok = await notifySupervisor("P3-464", false, "max review rounds reached", deps);
+  check("ownership: returns false (the supervisor did not get it)", ok === false);
+  check("ownership: not parked — the replay could never succeed", pendingLines(dir).length === 0);
+  check(
+    "ownership: warn names the real reason and the route",
+    logs.some((l) => l.level === "warn" && l.msg === "supervisor notify routed by the daemon" && /session-not-found/.test(String((l.data as { reason?: string }).reason))),
+  );
+  check("ownership: audited with the real reason", auditEvents(dir).some((e) => e.event === "pilot-notify" && /session-not-found/.test(e.data.reason ?? "")));
+  check(
+    "payload: task, ok, kind and a one-line detail travel to the daemon",
+    sent[0]?.task === "P3-464" && sent[0]?.ok === false && String(sent[0]?.kind).startsWith("fail:") && sent[0]?.detail === "max review rounds reached",
+  );
+}
+
+// ── 14. a parked entry the daemon now owns leaves the queue on replay ──────
+{
+  const dir = mkDir(true);
+  mkdirSync(join(dir, "pilot"), { recursive: true });
+  writeFileSync(join(dir, "pilot", "notify-pending.jsonl"), JSON.stringify({ ts: Date.now(), task: "T", ok: false, text: "a\n\nb" }) + "\n");
+  const { transport } = answering({ delivered: false, reason: "session-not-found", fallback: "push", phones: 1 });
+  await flushPending({ session: "ses_test", token: "tok" }, transport, depsFor(dir, transport).deps);
+  check("handoff: a legacy parked line routed to the phone is removed", pendingLines(dir).length === 0);
+}
+
+// ── 15. no supervisorSession: the daemon still gets the message (phone route)
+{
+  const dir = mkDtempNoSession();
+  const { transport, sent } = answering({ delivered: false, reason: "no-supervisor-session", fallback: "push", phones: 1 });
+  const { deps, logs } = depsFor(dir, transport);
+  await notifySupervisor("P2-900", false, "gate red", deps);
+  check("no-session: the daemon is contacted instead of a silent local skip", sent.length === 1);
+  check("no-session: a missing supervisor is a normal state (info, not warn)", logs.some((l) => l.level === "info" && l.msg === "supervisor notify routed by the daemon"));
+}
+function mkDtempNoSession(): string {
+  const dir = mkdtempSync(join(tmpdir(), "notify-test-"));
+  writeFileSync(join(dir, "daemon.json"), JSON.stringify({ apiToken: "tok" }));
+  return dir;
+}
+
+// ── 16. notifyOperator: the hook for "a human must act" alerts (agent 02) ──
+{
+  const dir = mkDir(true);
+  const { transport, sent } = answering({ delivered: false, reason: "operator", fallback: "push", pushed: true, phones: 2 });
+  const { deps, pushes } = depsFor(dir, transport);
+  const ok = await notifyOperator("deploy", "disk-hold", "disk low: 2.1gb free (need 5.0gb)\n deploys held", deps);
+  check("operator: resolves true when a phone can get it", ok === true);
+  check("operator: routed to the phone, never the supervisor", sent[0]?.to === "operator" && sent[0]?.kind === "disk-hold" && sent[0]?.task === "deploy");
+  check("operator: one-line detail", !String(sent[0]?.text).includes("\n"));
+  check("operator: no direct push when the daemon owns it", pushes.length === 0);
+  check("operator: audited", auditEvents(dir).some((e) => e.event === "pilot-operator-alert"));
+}
+{
+  const dir = mkDir(true);
+  const { transport } = answering({ delivered: false, reason: "operator", fallback: "push", pushed: false, phones: 0 });
+  const { deps, logs } = depsFor(dir, transport);
+  const ok = await notifyOperator("deploy", "disk-hold", "x", deps);
+  check("operator: zero subscribed phones is false + a warn", ok === false && logs.some((l) => l.level === "warn" && /no phone/.test(l.msg)));
+}
+{
+  const dir = mkDir(true);
+  const { transport } = answering({ delivered: false }); // a daemon from before eval-01
+  const { deps, pushes } = depsFor(dir, transport);
+  const ok = await notifyOperator("deploy", "disk-hold", "held", deps);
+  check("operator: old daemon → best-effort direct push", ok === true && pushes.length === 1 && pushes[0]!.title === "⚠️ Pilot: deploy");
+}
+{
+  const dir = mkDir(true);
+  const { transport } = transportOf("socket");
+  const { deps } = depsFor(dir, transport, { push: async () => false });
+  let threw = false;
+  let ok = true;
+  try {
+    ok = await notifyOperator("deploy", "disk-hold", "held", deps);
+  } catch {
+    threw = true;
+  }
+  check("operator: daemon down never throws, resolves false", !threw && ok === false);
+}
+
+// ── 17. push.ts digest is honest: zero phones reached is not success ───────
+{
+  const dir = mkDir(true);
+  const fake = (payload: unknown, ok = true) => async () => ({ ok, json: async () => payload });
+  check("digest: 0 phones reached → false (was true)", (await digest("t", "b", "#/", { dir, fetchFn: fake({ ok: true, delivered: 0 }) })) === false);
+  check("digest: ≥1 phone reached → true", (await digest("t", "b", "#/", { dir, fetchFn: fake({ ok: true, delivered: 2, subscribers: 2 }) })) === true);
+  check("digest: HTTP error → false", (await digest("t", "b", "#/", { dir, fetchFn: fake({}, false) })) === false);
+  check("digest: no token → false", (await digest("t", "b", "#/", { dir: mkDir(false), fetchFn: fake({ delivered: 1 }) })) === false);
 }
 
 if (failures) process.exit(1);

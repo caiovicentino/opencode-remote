@@ -848,6 +848,9 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   não estaciona porque o daemon pode ainda entregar a 1ª cópia). Na 3ª recusa
   em janela o push do telefone recebe uma cópia com `needs operator`. Timeout
   vira 120s (`NOTIFY_TIMEOUT_MS`) e o researcher deixou de esperar o notify.
+  (eval-01: o relay passou a usar `prompt_async`, o timeout caiu para 30s e a
+  fila ganhou dedupe por (task, kind) e fallback para o telefone — ver
+  "Alertas de vida do pilot".)
 - **HUD NOTIFY no dashboard (P3-357)**: `/dashboard/v3` mostra ao lado do HB a
   idade do último aviso realmente entregue ao supervisor ("último aviso
   entregue há N min" no tooltip, via `pilot/notify-last` + `notifyLastMs` em
@@ -2016,3 +2019,143 @@ fresco) e o pilot emite evento `alert` + notify do supervisor dizendo que o
 main está vermelho no mesmo check — o próximo ciclo tenta de novo em vez de
 enterrar a task. No máximo um hold por task: no segundo ci-red compartilhado,
 bloqueia como antes.
+
+## Alertas de vida do pilot (eval-01)
+
+**Por quê.** Todo alerta do pilot (notify do supervisor, digests de push)
+roda DENTRO do processo do pilot — um pilot morto ou descarregado nunca avisa
+a própria morte. A frota ficou parada de 12/09 a 22/09 e de novo a partir de
+24/09 08:07 (`com.ocr.pilot` fora do launchd) sem nenhum alerta. Além disso a
+sessão do supervisor configurada em `pilot.json` tinha sido apagada (o
+opencode responde 404 `NotFoundError`), então todo notify falhava para sempre
+e 100 mensagens se acumularam em `pilot/notify-pending.jsonl` (45 delas a
+mesma recusa do disk guard) — e `subscriptions.json` estava vazio desde 15/09,
+então nenhum push chegava a telefone algum.
+
+### Watchdog de fora (daemon, `apps/daemon/src/pilotwatch.ts`)
+
+O daemon roda sob KeepAlive no mesmo host e vigia o pilot a cada 60s (primeira
+sonda 30s após o boot, só depois das chaves VAPID):
+
+| Sinal | Fonte | Veredito |
+|---|---|---|
+| heartbeat | `pilot/heartbeat` (epoch ms; mtime como reserva) | > 10 min sem batida = parado (o self-watchdog do pilot sai com 3 min) |
+| processo | `pilot/pilot.pid` + `kill(pid, 0)` | pid morto + heartbeat velho = `dead`; pid vivo + heartbeat velho = `stalled` |
+| launchd | `launchctl print gui/<uid>/com.ocr.pilot` (só leitura; exit 113 = não carregado) | não carregado + pid morto = `unloaded` (independe do heartbeat) |
+| reinícios | `runs` do launchd em janela de 15 min | ≥ 3 reinícios com exit ≠ 0 = `crash-loop` |
+| disk hold | `events.jsonl`: `deploy`/`disk-guard` desde o último `deploy`/`done` | ≥ 1h segurando (última recusa com < 6h) = `disk-hold` |
+| deploy lag | HEAD de `~/.opencode-remote/prod` × `pilot/verified-merges.jsonl` | merge verificado esperando ≥ 6h = `deploy-lag` |
+| supervisor | `GET /session/<supervisorSession>` no opencode (só leitura, a cada 10 min) | 404 `NotFoundError` = `supervisor-missing` |
+
+`unloaded`/`crash-loop`/`dead`/`stalled`/`no-heartbeat` são severidade
+**down**; `disk-hold`/`deploy-lag`/`supervisor-missing` são **degraded**. O
+pilot só conta como instalado com o plist do launchd OU se já rodou aqui
+(`pilot.json` + `pilot/heartbeat`) — máquina de usuário comum fica `absent` e
+nunca recebe alerta. `~/.opencode-remote/pilot.lock` (o freeze do próprio
+pilot) vira `paused`: parada intencional não pagina — é o jeito documentado de
+silenciar o watchdog enquanto o pilot fica desligado de propósito. O heartbeat
+sozinho não é confiável: em 27/09, com o pilot fora do launchd e o pid morto,
+algum outro processo reescreveu `pilot/heartbeat` e `pilot/state.json` — por
+isso `unloaded` e `crash-loop` não dependem do heartbeat.
+
+**Política de alerta** (planner puro, episódio persistido em
+`~/.opencode-remote/pilotwatch.json` — dedupe mesmo com restart do daemon ou
+um segundo processo de daemon): 2 sondas ruins seguidas antes do primeiro push
+(restart/self-reload nunca pagina); lembretes em 1h → 4h → 12h → depois a cada
+24h enquanto parado (degraded: a cada 24h); degraded → down pagina na hora;
+down → degraded manda um único "✅ Pilot voltou a rodar" dizendo o que ainda
+falta; a volta ao normal manda um único "✅ Pilot de volta ao normal" (só se o
+episódio chegou a paginar); `paused`/`absent` fecham o episódio em silêncio;
+se o push foi tentado com 0 telefones inscritos e um telefone se inscreve
+depois, o alerta é reenviado ~5 min depois. O push usa a tag `ocr-pilot` e o
+service worker (`apps/web/public/sw.js`) agora respeita a tag do payload com
+`renotify` — antes TODA notificação usava a tag única `opencode-remote`, então
+um "Agent finished" substituía um alerta de pilot parado sem tocar o celular.
+Cada push vira linha `pilot-liveness` no `audit.log`, log `pilot liveness page`
+e evento `alert` (`task: "pilot"`, `phase: "liveness"`) no feed do dashboard;
+push com 0 inscritos loga `reached no phone (0 push subscriptions)`, e a poda
+de inscrições mortas (404/410 do serviço de push) agora loga
+`push subscriptions pruned` — antes era silenciosa.
+
+Knobs (default seguro, nunca derrubam o boot — valor inválido volta ao padrão
+com uma linha de aviso): `OCR_PILOTWATCH=off` desliga os pushes (a API de
+leitura continua), `OCR_PILOTWATCH=on` força o pilot como instalado,
+`OCR_PILOTWATCH_INTERVAL_MS` / `OCR_PILOTWATCH_INITIAL_DELAY_MS` (testes).
+
+### Relay do supervisor com fallback no telefone (`apps/daemon/src/pilotnotify.ts`)
+
+`POST /api/pilot-notify` usa `prompt_async` do opencode (204 = aceito, sem
+esperar o turno inteiro do supervisor — era isso que estourava os 120s) e
+responde `{delivered, reason?, fallback?, pushed?, phones?}` com motivo
+fechado: `session-not-found`, `no-supervisor-session`,
+`invalid-supervisor-session`, `upstream-http-<n>`, `upstream-unreachable`,
+`upstream-timeout`, `empty-text`, `operator`. Falha **permanente** (sessão
+inexistente, não configurada, id inválido, 4xx) faz o daemon assumir a
+mensagem: falha (`ok:false`) entra no digest do telefone (`fallback: "push"`),
+informativo (`ok:true`) é descartado de propósito (`fallback: "drop"`). Falha
+**transitória** (opencode fora, 5xx, timeout) não tem `fallback` — o pilot
+estaciona e reenvia depois. O digest agrupa por (task, kind) (o kind colapsa
+números: "disk low: 0.1gb" e "2.1gb" são o mesmo), manda no máximo um push a
+cada 10 min, a mesma chave no máximo a cada 6h (o contador acumula: "(×31)"),
+descarta itens com mais de 24h, mostra 4 linhas + "+N outros avisos" e abre
+com o porquê ("Supervisor inacessível: a sessão do supervisor não existe mais
+no opencode"). Estado persistido no mesmo `pilotwatch.json`; o tick do
+watchdog despacha o que ficou retido pela janela.
+
+Lado do pilot (`apps/pilot/src/notify.ts`): sem `supervisorSession` o pilot
+ainda fala com o daemon (antes era um skip local silencioso); mensagem que o
+daemon assumiu nunca é estacionada; a fila `notify-pending.jsonl` só guarda
+falha transitória, com dedupe por (task, kind) (`count`, `firstTs`), TTL de
+24h aplicado em toda escrita e teto de 100 linhas; o replay para na primeira
+entrega que falha (antes reenviava as 100 a cada notify) e a entrada reenviada
+diz "(repetido N× desde HH:MM)"; `NOTIFY_TIMEOUT_MS` = 30s. `push.ts`
+(`digest`) só devolve true quando algum telefone recebeu — `/api/push` agora
+responde `{ok, delivered: <telefones alcançados>, subscribers}` (antes
+`delivered` era a contagem de inscrições).
+
+**Hook do operador** — para condições em que um humano precisa agir (disk
+hold, etc.), direto para o telefone, nunca para o chat do supervisor:
+
+```ts
+import { notifyOperator } from "./notify";
+await notifyOperator("deploy", "disk-hold", "disk low: 2.1gb free (need 5.0gb) — deploys held");
+// Promise<boolean>: true quando o daemon aceitou para push e há ≥1 telefone
+// inscrito (enviado agora ou retido pela janela de 10 min). Nunca lança.
+// Dedupe por (task, kind) com cooldown de 6h no daemon: pode chamar todo ciclo.
+```
+
+### API de leitura (Mission Control)
+
+`GET /api/pilot-liveness` (loopback, mesmo Bearer/cookie das outras rotas
+`/api`) e `GET /__ocr/pilot-liveness` (túnel selado, para o celular) devolvem o
+mesmo snapshot (cache de até 15s). Contrato v1 — timestamps em epoch ms,
+`null` = desconhecido (nunca um palpite):
+
+```json
+{
+  "v": 1,
+  "state": "ok | degraded | down | paused | absent",
+  "checkedAt": 1790521605070,
+  "reasons": [
+    { "code": "unloaded | crash-loop | dead | stalled | no-heartbeat | disk-hold | deploy-lag | supervisor-missing",
+      "severity": "down | degraded",
+      "detail": "frase curta em pt-BR, pronta para exibir" }
+  ],
+  "heartbeat": { "at": 1790248033162, "ageMs": 273572000 },
+  "process": { "pid": 35139, "alive": false },
+  "launchd": { "checked": true, "loaded": false, "state": null, "pid": null, "runs": null, "lastExitCode": null },
+  "disk": { "hold": { "since": 0, "last": 0, "refusals": 69, "detail": "disk low: …" }, "daemon": "ok | low | critical | unknown" },
+  "deploy": { "prodSha": "1ebbbc1…", "undeployed": 16, "oldestUndeployedAt": 1790189752000 },
+  "notify": { "pending": 100, "oldestPendingAt": 0, "lastDeliveredAt": 1789182096751, "supervisor": "ok | missing | unknown | unset" },
+  "push": { "subscribers": 0 },
+  "alerts": true,
+  "alert": { "episode": { "code": "unloaded", "severity": "down", "since": 0, "sent": 1, "delivered": 0, "lastSentAt": 0, "nextAt": 0 } }
+}
+```
+
+`reasons` vem ordenado (down primeiro, depois ordem fixa); `reasons[0]` é o
+motivo principal. `disk.hold` é informado mesmo quando velho demais para
+virar motivo. `push.subscribers: 0` significa que nenhum alerta chega a
+telefone algum — a UI deve dizer isso com destaque. `alert.episode` é `null`
+quando não há episódio aberto; `nextAt` é quando sai o próximo lembrete.
+Campos novos só entram de forma aditiva; mudança incompatível sobe `v`.
