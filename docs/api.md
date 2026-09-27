@@ -670,6 +670,10 @@ const reply = await ocr.sendAndWait(id, "explique o módulo de autenticação em
 console.log(reply);
 ```
 
+- `createSession(title?)` creates the opencode session through
+  `POST /api/session/new` (`POST /api/session` has been the cookie exchange
+  since P1-057). A daemon without that route answers 400 and the SDK raises
+  an `OcrError` (`code: "http"`) instead of handing back a session with no id.
 - `send(id, text, { timeoutMs?, signal? })` resolves with `{ accepted, opencode }`
   when the turn ends (see the prompt route above); default timeout 5 min.
 - `sendAndWait(id, text, { timeoutMs?, pollMs?, signal? })` resolves with the
