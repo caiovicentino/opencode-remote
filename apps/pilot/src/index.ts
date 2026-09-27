@@ -56,7 +56,7 @@ import {
   type PilotState,
 } from "./state";
 import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
-import { recordLessonImpact, runTokenDelta } from "./metrics";
+import { recordLessonImpact } from "./metrics";
 import { distSweepDue, doctorDist, runDoctor } from "./doctor";
 
 let deployBusy = false;
@@ -638,6 +638,7 @@ async function runDoctorPass(st: PilotState): Promise<void> {
  * P1-099: `onSettled` runs in the finally, right after the slot is released —
  * the eager-fill hook that immediately backfills every free slot. */
 async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig, onSettled?: () => void): Promise<void> {
+  const tokensBefore = state.taskCosts?.[task.id] ?? 0; // eval 05: lifetime total BEFORE this run
   // P1-060: budgets scale with the task's size tag — clone the slot config
   // with the effective rounds/timeout/attempts so runPipeline and the
   // circuit breaker both honor the long-horizon allowance for size L.
@@ -652,7 +653,6 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     // P2-028: the pipeline records every opencode session id it spawns; the
     // token totals are reconciled from opencode.db right after the run.
     const taskSessions = new Set<string>();
-    const tokensBefore = state.taskCosts?.[task.id]; // eval 05: lifetime total BEFORE this run
     const result = await runPipeline(taskCfg, task, state, taskSessions);
     try {
       // P1-077: rows query — folds the per-task cache breakdown (input /
@@ -674,7 +674,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       lessons: result.lessonsInjected ?? 0,
       rounds: result.rounds ?? 0,
       ok: result.ok,
-      tokens: runTokenDelta(tokensBefore, state.taskCosts?.[task.id]),
+      tokens: Math.max(0, (state.taskCosts?.[task.id] ?? 0) - tokensBefore), // = runTokenDelta
     };
     recordLessonImpact(state, impact);
     log("info", "lesson impact", { task: task.id, ...impact });

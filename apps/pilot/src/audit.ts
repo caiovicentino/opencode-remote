@@ -19,7 +19,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { nowLocalISO } from "./log";
-import { isBlockedFailure, parseFailureLessons, type FailureLesson } from "./failureLessons";
+import { isBlockedFailure } from "./failureLessons";
+import { parseFailureLessons, type FailureLesson } from "./failureLessons";
 import type { AuditMode, CycleSample, PilotState } from "./state";
 
 /** Sliding-window size for the fever-rate trigger (pipeline cycles). */

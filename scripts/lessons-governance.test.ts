@@ -136,6 +136,18 @@ const legacyArchived = (task: string, n: number) =>
     compactFindings('infra "ci-red" failed 3x in a row on this task — treated as a hard failure instead of an endless free retry (read-only remote, dead gh, or unreachable API?)') === 'infra "ci-red" 3x in a row',
   );
   check("render: other findings pass through untouched", compactFindings("planner did not produce a valid spec") === "planner did not produce a valid spec");
+  // eval-03 wording (PR #1399): red jobs after the count + ci-red hypothesis
+  check(
+    "render: eval-03 reason keeps the red job list and the last detail",
+    compactFindings('infra "ci-red" failed 3x in a row on this task (red: verify, relay-image) — treated as a hard failure instead of an endless free retry — last detail: gate green but the PR merge failed') ===
+      'infra "ci-red" 3x in a row (red: verify, relay-image): gate green but the PR merge failed',
+  );
+  check(
+    "render: eval-03 ci-red hypothesis without a detail compacts to kind + streak",
+    compactFindings('infra "ci-red" failed 3x in a row on this task — treated as a hard failure instead of an endless free retry (remote CI checks red on the task PR)') === 'infra "ci-red" 3x in a row',
+  );
+  const ciTail = ['remote CI red on "ci / verify (ubuntu-latest)" — scripts/unit.test.ts: FAIL relay-image import', "PR #1316 · rejected head 0123456789ab · branch origin/pilot/P3-459", "OK   typecheck"].join("\n");
+  check("render: eval-03 CI summary tail leads with the full job name", tailSignal(ciTail).startsWith('remote CI red on "ci / verify (ubuntu-latest)"') && !tailSignal(ciTail).includes("OK "));
   const line = formatFailureLesson(real("P3-459", { findings: boiler, step: "evidence" }));
   check("render: the rendered line keeps the job verdict inside the part budget", line.includes("verify=FAILURE") && !line.includes("treated as a hard failure"));
 

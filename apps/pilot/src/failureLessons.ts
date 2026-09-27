@@ -107,8 +107,10 @@ export function latestBlockedFailures(lessons: FailureLesson[], max = 10): Failu
   return [...latest.values()].slice(-max);
 }
 
+// audit.ts infraStarvationReason, before and after eval-03 (which adds the
+// " (red: <jobs>)" list and a ci-red-specific no-detail hypothesis)
 const INFRA_STARVATION_RE =
-  /^infra "([^"]+)" failed (\d+)x in a row on this task — treated as a hard failure instead of an endless free retry(?: \(read-only remote, dead gh, or unreachable API\?\))?(?: — last detail: )?/;
+  /^infra "([^"]+)" failed (\d+)x in a row on this task( \(red: [^)]*\))? — treated as a hard failure instead of an endless free retry(?: \((?:read-only remote, dead gh, or unreachable API\?|remote CI checks red on the task PR)\))?(?: — last detail: )?/;
 
 /** The failure reason minus the stop-loss boilerplate (~110 chars that ate
  * the render budget and cut the CI job name off at "CI red: ci-ga"). */
@@ -116,13 +118,13 @@ export function compactFindings(findings: string): string {
   const m = INFRA_STARVATION_RE.exec(findings);
   if (!m) return findings;
   const rest = findings.slice(m[0].length).trim();
-  return `infra "${m[1]}" ${m[2]}x in a row${rest ? `: ${rest}` : ""}`;
+  return `infra "${m[1]}" ${m[2]}x in a row${m[3] ?? ""}${rest ? `: ${rest}` : ""}`;
 }
 
 /** Passing/progress lines, event-log JSON and build chatter — never the failure. */
 const TAIL_NOISE_RE = /^(OK\s|\{"|\[\d{4}-\d{2}-\d{2}T|dist\/|\(Use `node|computing gzip|rendering chunks|✓ built|desktop flow duration)/;
 const TAIL_SIGNAL_RE =
-  /FAIL|Error|ERR!|never held|not a readable|without|diverges|gave up|timed? ?out|cannot|can't|missing|expected|refused|denied|reject|has been closed|✗|not ok/i;
+  /FAIL|Error|ERR!|never held|not a readable|without|diverges|gave up|timed? ?out|cannot|can't|missing|expected|refused|denied|reject|has been closed|✗|not ok|CI red/i;
 
 /**
  * The part of a gate/review tail worth a prompt line: unique failure-signal
