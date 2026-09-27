@@ -19,8 +19,10 @@ on:
 # eval-16: one release run per ref at a time. A tag push, a manual dispatch of
 # the same tag and a re-run used to race on one draft (and `gh release create
 # --draft` skips gh's existing-release check, so a second run minted a second
-# draft for the same tag). Queued, never cancelled: a half-uploaded draft is
-# worse than a late one.
+# draft for the same tag). A run IN PROGRESS is never cancelled (a half-uploaded
+# draft is worse than a late one); note GitHub's concurrency semantics still
+# collapse two QUEUED runs — a newer pending run cancels an older pending one —
+# so a tag push immediately followed by a dispatch may keep only the newest run.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -347,13 +349,21 @@ jobs:
       # writes — update-mac-arm64.json, update-mac-x64.json and the legacy
       # update-mac.json alias — so release-verify's per-arch feed slots are
       # satisfiable.
+      # eval-16 (fix-round): the dist/*.zip glob rides along — the Squirrel.Mac
+      # payload zips (OpenCode-Remote-<version>-arm64.zip / -x64.zip) are the
+      # files the update-mac*.json feeds point at, and release-verify
+      # (release-assets.ts), release-feeds (feed-consistency.ts),
+      # release-publish (release-checksums.ts) and the update client itself all
+      # require both zips. Without them no tag ever reaches the "complete,
+      # verified draft" this workflow promises. --clobber keeps a re-run
+      # idempotent.
       - name: Attach DMG + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml apps/desktop/dist/update-mac*.json \
+            apps/desktop/dist/*.dmg apps/desktop/dist/*.zip apps/desktop/dist/latest-mac.yml apps/desktop/dist/update-mac*.json \
             --clobber
 
   # P2-126: stage 5 is half Windows — the release also ships the NSIS setup
@@ -562,11 +572,20 @@ jobs:
     timeout-minutes: 10
     needs: [desktop-dmg, desktop-win]
     permissions:
-      contents: read
+      # eval-16 (fix-round): the release is ALWAYS a draft by the time this job
+      # runs (P2-179), and GitHub only lists draft releases to callers with
+      # push access — for the GITHUB_TOKEN that means contents: write
+      # (REST releases doc: "Only users with push access will receive listings
+      # for draft releases"). With contents: read, `gh release view`/`gh
+      # release download` answer "release not found" and the job fails before
+      # checking anything, so release-publish (which needs this job) never
+      # runs. The token is still never exposed to git credentials (checkout
+      # below sets persist-credentials: false).
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         # eval-16: no job here uses git credentials (every gh call gets
-        # GH_TOKEN through env), so the write-scoped token is not left in
+        # GH_TOKEN through env), so the token is not left in
         # .git/config for npm ci / npx lifecycle scripts to read.
         with:
           persist-credentials: false
@@ -680,11 +699,17 @@ jobs:
     timeout-minutes: 20
     needs: [desktop-dmg, desktop-win]
     permissions:
-      contents: read
+      # eval-16 (fix-round): same draft-visibility reason as release-verify —
+      # the release is a draft (P2-179) and GitHub only shows drafts to push
+      # access, so `gh release download`/`gh release view` need the token to
+      # carry contents: write or both steps answer "release not found" and the
+      # release-publish job is skipped forever. The job only READS release
+      # content; the write scope is the minimum that can see the draft.
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         # eval-16: no job here uses git credentials (every gh call gets
-        # GH_TOKEN through env), so the write-scoped token is not left in
+        # GH_TOKEN through env), so the token is not left in
         # .git/config for npm ci / npx lifecycle scripts to read.
         with:
           persist-credentials: false

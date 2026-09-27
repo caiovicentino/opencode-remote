@@ -8,7 +8,9 @@
  *   3. rollout.mjs (the release brake) speaks gh's real argv contract;
  *   4. release.yml: one run per ref, capped notes, idempotent draft,
  *      --publish never, a real ad-hoc signature, opt-in publication, and no
- *      pipeline push to main;
+ *      pipeline push to main; the upload globs attach a complete, consistent
+ *      set (both Squirrel.Mac zips included) and release-verify/release-feeds
+ *      can see the draft (contents: write);
  *   5. an ad-hoc/unsigned macOS build takes the manual update flow instead of
  *      a Squirrel.Mac download bound to fail;
  *   6. `opencode-remote setup` refuses a relay the phone cannot reach, builds
@@ -18,8 +20,12 @@
  * Hermetic: temp dirs only, a fake `gh` on PATH, no network, no ports.
  * Run: npx tsx scripts/release-distribution.test.ts
  */
+// testhome FIRST (fix-round): throwaway HOME for the whole suite plus the
+// launchctl/pkill PATH shims — section 6 spawns the real cli.mjs setup and a
+// refusal regression must never reach the host's launchd domain.
+import "./testhome";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -394,6 +400,31 @@ function jobBlock(name: string): string {
       !/\bgit (push|fetch|pull|remote|config)\b/.test(codeOnly(releaseYml)),
     `checkouts=${checkouts.length}`,
   );
+  // eval-16 (fix-round): the release is ALWAYS a draft when release-verify and
+  // release-feeds run (P2-179), and GitHub only lists drafts to push access —
+  // for the GITHUB_TOKEN that means contents: write. With contents: read both
+  // jobs fail on "release not found" and release-publish (needs both) never
+  // runs, so the draft is never verified.
+  const scopes = JSON.parse(readFileSync(join(repoRoot, "scripts", "workflow-scopes.json"), "utf8")) as {
+    jobs?: Record<string, readonly string[]>;
+  };
+  /** The scope line a job's own `permissions:` block declares (comments ignored). */
+  const scopeOf = (job: string): string | null => {
+    const block = jobBlock(job);
+    const group = /\n {4}permissions:\n((?: {6}[^\n]*\n)+)/.exec(block)?.[1];
+    if (!group) return null;
+    return / {6}([a-z-]+: (?:read|write|none))\n/.exec(group)?.[1] ?? null;
+  };
+  check(
+    "eval-16: release-verify and release-feeds declare contents: write in release.yml, name the draft-visibility reason, and the scopes allowlist agrees",
+    scopeOf("release-verify") === "contents: write" &&
+      scopeOf("release-feeds") === "contents: write" &&
+      jobBlock("release-verify").includes("draft") &&
+      jobBlock("release-feeds").includes("draft") &&
+      scopes.jobs?.["release.yml/release-verify"]?.includes("contents:write") === true &&
+      scopes.jobs?.["release.yml/release-feeds"]?.includes("contents:write") === true,
+    `verify=${scopeOf("release-verify")} feeds=${scopeOf("release-feeds")}`,
+  );
   check(
     "eval-16: the pinned formula is attached as a release asset",
     publish.includes("gh release upload \"$GITHUB_REF_NAME\" formula-pin/opencode-remote.rb --clobber"),
@@ -413,6 +444,129 @@ function jobBlock(name: string): string {
   } catch (err) {
     check("eval-16: release.yml parses as YAML", false, (err as Error).message);
   }
+}
+
+// --- 4b. the upload globs attach a complete, consistent set --------------------
+{
+  // eval-16 (fix-round): the rehearsal ran release-assets.ts over the DIST
+  // listing, not over what the upload steps actually attach — so a missing
+  // glob (the Squirrel.Mac zips the update-mac*.json feeds point at) stayed
+  // invisible and the "complete, verified draft" promise was never real.
+  // This section derives the attached set from the REAL globs of the upload
+  // steps over a realistic dist listing (the measured rehearsal shape:
+  // zips, blockmaps, builder-debug.yml, win-unpacked), then runs BOTH
+  // release verifiers on exactly that set.
+  const tag = "v0.2.0";
+
+  /** Every path token the `gh release upload` statements of a job hand over,
+   * multi-line continuations included (flags and "$GITHUB_REF_NAME" skipped). */
+  const uploadTokens = (job: string): string[] => {
+    const lines = job.split("\n");
+    const tokens: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!/gh release upload/.test(lines[i] ?? "")) continue;
+      let statement = (lines[i] ?? "").replace(/^\s*gh release upload/, "");
+      while (statement.trimEnd().endsWith("\\")) {
+        statement = `${statement.trimEnd().slice(0, -1)} ${lines[i + 1] ?? ""}`;
+        i++;
+      }
+      for (const raw of statement.split(/\s+/)) {
+        const token = raw.trim().replace(/\\$/, "");
+        if (!token || token.startsWith("-") || token.includes("GITHUB_REF_NAME")) continue;
+        tokens.push(token);
+      }
+    }
+    return tokens;
+  };
+
+  /** `*` within one path segment; everything else literal. */
+  const globToRegExp = (pattern: string): RegExp =>
+    new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`);
+
+  const dist = mkdtempSync(join(tmpdir(), "release-dist-upload-"));
+  // The rehearsal-mac listing (reports/16-release-distribution/rehearsal-mac/
+  // asset-names.txt) plus the Windows half electron-builder writes. Files the
+  // globs must NOT match stay in the listing on purpose.
+  for (const name of [
+    "builder-debug.yml",
+    "latest-mac.yml",
+    "OpenCode-Remote-0.2.0-arm64.dmg",
+    "OpenCode-Remote-0.2.0-arm64.dmg.blockmap",
+    "OpenCode-Remote-0.2.0-arm64.zip",
+    "OpenCode-Remote-0.2.0-arm64.zip.blockmap",
+    "OpenCode-Remote-0.2.0-x64.dmg",
+    "OpenCode-Remote-0.2.0-x64.dmg.blockmap",
+    "OpenCode-Remote-0.2.0-x64.zip",
+    "OpenCode-Remote-0.2.0-x64.zip.blockmap",
+    "OpenCode-Remote-Setup-0.2.0.exe",
+    "OpenCode-Remote-Setup-0.2.0.exe.blockmap",
+    "opencode-remote-v0.2.0.tar.gz",
+  ]) writeFileSync(join(dist, name), "bytes");
+  const exeSha = `${(await import("node:crypto")).createHash("sha512").update("exe-bytes").digest("base64")}`;
+  writeFileSync(
+    join(dist, "latest-mac.yml"),
+    `version: 0.2.0\nfiles:\n  - url: OpenCode-Remote-0.2.0-arm64.zip\n    sha512: YWJj\n    size: 5\npath: OpenCode-Remote-0.2.0-arm64.zip\nsha512: YWJj\nreleaseDate: '2026-09-27T00:00:00.000Z'\n`,
+  );
+  writeFileSync(
+    join(dist, "latest.yml"),
+    `version: 0.2.0\nfiles:\n  - url: OpenCode-Remote-Setup-0.2.0.exe\n    sha512: ${exeSha}\n    size: 9\npath: OpenCode-Remote-Setup-0.2.0.exe\nsha512: ${exeSha}\nreleaseDate: '2026-09-27T00:00:00.000Z'\n`,
+  );
+  // The feeds are built exactly like CI: update-feed.mjs from the zips + the
+  // yml (empty ROLLOUT_PERCENT = no rollout field, the plain tag push).
+  const feedRun = spawnSync(process.execPath, [join(repoRoot, "apps", "desktop", "scripts", "update-feed.mjs"), "--dist", dist], {
+    encoding: "utf8",
+    env: { ...process.env, ROLLOUT_PERCENT: "", GITHUB_REF_NAME: tag },
+  });
+  check(
+    "eval-16: the feed build over the rehearsal-shaped dist succeeds (zips present, yml matches the tag)",
+    feedRun.status === 0,
+    `${feedRun.status} ${feedRun.stderr}`,
+  );
+
+  const listing = readdirSync(dist);
+  const tokens = [...uploadTokens(codeOnly(jobBlock("desktop-dmg"))), ...uploadTokens(codeOnly(jobBlock("desktop-win"))), ...uploadTokens(codeOnly(jobBlock("release")))];
+  const attached = [...new Set(tokens.flatMap((token) => {
+    const base = token.startsWith("apps/desktop/dist/") ? token.slice("apps/desktop/dist/".length) : token;
+    return listing.filter((name) => globToRegExp(base).test(name));
+  }))].sort();
+  check(
+    "eval-16: the desktop-dmg upload carries the dist/*.zip glob (the Squirrel.Mac payloads the feeds point at)",
+    tokens.some((t) => t === "apps/desktop/dist/*.zip"),
+    JSON.stringify(tokens),
+  );
+  check(
+    "eval-16: the attached set carries both Squirrel.Mac zips, the tarball and every feed/metadata file",
+    attached.includes("OpenCode-Remote-0.2.0-arm64.zip") &&
+      attached.includes("OpenCode-Remote-0.2.0-x64.zip") &&
+      attached.includes("opencode-remote-v0.2.0.tar.gz") &&
+      attached.includes("update-mac-arm64.json") &&
+      attached.includes("update-mac-x64.json") &&
+      attached.includes("update-mac.json") &&
+      attached.includes("latest-mac.yml") &&
+      attached.includes("latest.yml"),
+    JSON.stringify(attached),
+  );
+  const assets = spawnSync(
+    process.execPath,
+    [tsxEntry, join(repoRoot, "scripts", "release-assets.ts"), tag, ...attached],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  check(
+    "eval-16: release-assets passes over EXACTLY what the upload globs attach (the rehearsal over the dist listing hid the missing zips)",
+    assets.status === 0 && assets.stdout.includes("release-assets: OK v0.2.0"),
+    `${assets.status} ${assets.stdout}${assets.stderr}`,
+  );
+  const consistency = spawnSync(
+    process.execPath,
+    [tsxEntry, join(repoRoot, "scripts", "feed-consistency.ts"), tag, join(dist, "update-mac.json"), join(dist, "latest.yml"), join(dist, "update-mac-arm64.json"), join(dist, "update-mac-x64.json")],
+    { cwd: repoRoot, encoding: "utf8", input: `${attached.join("\n")}\n` },
+  );
+  check(
+    "eval-16: feed-consistency passes over EXACTLY what the upload globs attach (every feed url resolves to a published zip)",
+    consistency.status === 0 && consistency.stdout.includes("feed-consistency: OK v0.2.0"),
+    `${consistency.status} ${consistency.stdout}${consistency.stderr}`,
+  );
+  rmSync(dist, { recursive: true, force: true });
 }
 
 // --- 5. ad-hoc macOS builds take the manual update flow ------------------------
@@ -521,7 +675,7 @@ function jobBlock(name: string): string {
       relayUrlFromArgv(["--relay", "ws://10.0.0.2:8788"]) === "ws://10.0.0.2:8788" &&
       relayUrlFromArgv(["--other"]) === null,
   );
-  const refused = ["", "   ", "not a url", "http://10.0.0.2:8788", "ws://127.0.0.1:8787", "ws://localhost:8787", "wss://[::1]:8788", "ws://0.0.0.0:8788", "ws://127.9.9.9:1"];
+  const refused = ["", "   ", "not a url", "http://10.0.0.2:8788", "ws://127.0.0.1:8787", "ws://localhost:8787", "wss://[::1]:8788", "ws://0.0.0.0:8788", "ws://127.9.9.9:1", "ws://[::ffff:127.0.0.1]:8788"];
   const accepted = ["wss://my-mac.tailnet.ts.net:8788", "ws://192.168.1.20:8788", "wss://relay.example.com"];
   check(
     "eval-16: relay URLs a phone cannot dial are refused; reachable ones pass",
@@ -534,24 +688,44 @@ function jobBlock(name: string): string {
   const doctorAt = setupSrc.indexOf("await doctor()");
   const webAt = setupSrc.indexOf("npm run build --workspace @ocr/web");
   const installAt = setupSrc.indexOf("deploy\", \"install.sh\"");
+  const guardAt = setupSrc.indexOf("process.env.OCR_SETUP_NO_INSTALL");
   check(
-    "eval-16: setup refuses the relay before any probe, builds the web app before the services, and prints the QR with its own relay",
-    problemAt > -1 && doctorAt > problemAt && webAt > doctorAt && installAt > webAt && setupSrc.includes("await qr(relayUrl)"),
-    `problem=${problemAt} doctor=${doctorAt} web=${webAt} install=${installAt}`,
+    "eval-16: setup refuses the relay before any probe, builds the web app before the services, prints the QR with its own relay, and carries the OCR_SETUP_NO_INSTALL guard BEFORE install.sh",
+    problemAt > -1 && doctorAt > problemAt && webAt > doctorAt && guardAt > -1 && guardAt < installAt && installAt > webAt && setupSrc.includes("await qr(relayUrl)"),
+    `problem=${problemAt} doctor=${doctorAt} web=${webAt} guard=${guardAt} install=${installAt}`,
   );
   check("eval-16: doctor reports a missing web build", cli.includes("existsSync(join(ROOT, WEB_DIST_INDEX))") && WEB_DIST_INDEX === join("apps", "web", "dist", "index.html"));
-  // Live and hermetic: the refusal happens before doctor(), so no port is probed.
+  // Live and hermetic: the refusal happens before doctor(), so no port is
+  // probed — and (eval-16 fix-round) every command the fall-through past a
+  // refusal regression would need (npm, bash, lsof) is shimmed to fail closed
+  // and LOG its call, plus cli.mjs carries the OCR_SETUP_NO_INSTALL guard
+  // before install.sh. Under a regressed refusal the run stops loudly at the
+  // guard or at a shim — it can never reach the real launchd domain
+  // (deploy/install.sh bootouts com.ocr.* and kills the :5173 listener).
+  const setupBin = mkdtempSync(join(tmpdir(), "release-dist-setup-bin-"));
+  const shimLog = join(setupBin, "calls.log");
+  const shimCall = (tool: string) =>
+    `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >> "${shimLog}"\necho "release-distribution: refusing '${tool} $*' under test" >&2\nexit 1\n`;
+  for (const tool of ["npm", "bash", "lsof"]) {
+    writeFileSync(join(setupBin, tool), shimCall(tool), { mode: 0o755 });
+  }
   const home = mkdtempSync(join(tmpdir(), "release-dist-home-"));
   const live = spawnSync(process.execPath, [join(repoRoot, "cli.mjs"), "setup", "--relay=ws://127.0.0.1:8787"], {
     encoding: "utf8",
-    env: { ...process.env, HOME: home, RELAY_URL: "" },
+    env: { ...process.env, HOME: home, RELAY_URL: "", OCR_SETUP_NO_INSTALL: "1", PATH: `${setupBin}:${process.env.PATH ?? ""}` },
   });
   check(
     "eval-16: `setup --relay=ws://127.0.0.1:8787` exits 1 naming the loopback, before checking prerequisites",
     live.status === 1 && live.stdout.includes("loopback") && !live.stdout.includes("checking prerequisites"),
     `${live.status} ${live.stdout}${live.stderr}`,
   );
+  check(
+    "eval-16: the live setup reached no dangerous tool — the npm/bash/lsof shims logged zero calls and testhome shields launchctl/pkill",
+    (existsSync(shimLog) ? readFileSync(shimLog, "utf8").trim() === "" : true) && guardAt > -1,
+    existsSync(shimLog) ? readFileSync(shimLog, "utf8") : "(no shim was called)",
+  );
   rmSync(home, { recursive: true, force: true });
+  rmSync(setupBin, { recursive: true, force: true });
 }
 
 // --- 7. Homebrew formula -------------------------------------------------------

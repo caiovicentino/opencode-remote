@@ -2797,9 +2797,15 @@ the fleet is to set the percentage on the resulting **draft** before
 publishing it:
 
 ```bash
-node apps/desktop/scripts/rollout.mjs vX.Y.Z 20     # on the draft
-gh release edit vX.Y.Z --draft=false                # then publish
+gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20   # on the draft — also regenerates checksums.txt
+gh release edit vX.Y.Z --draft=false                             # then publish
 ```
+
+Running `rollout.mjs` directly on a draft is NOT the recommended path: it
+rewrites the four feeds but leaves the already-attached `checksums.txt`
+stale for those four files (`shasum -a 256 -c checksums.txt` flags them
+FAILED). The dispatch above re-runs release-publish, which re-hashes every
+asset. `rollout.mjs` is the tool for releases already PUBLISHED (below).
 
 `gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20` also works:
 the run queues behind the tag-push run (one release run per ref), reuses the

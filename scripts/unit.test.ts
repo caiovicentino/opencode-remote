@@ -29049,6 +29049,13 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     ok.guide.includes("Primeira abertura no macOS") && ok.guide.includes("checksums.txt"),
     ok.guide,
   );
+  check(
+    "P2-216: the guide warns the Windows audience about SmartScreen (first release ships unsigned)",
+    ok.guide.includes("Primeira execução no Windows") &&
+      ok.guide.includes("Mais informações") &&
+      ok.guide.includes("Executar assim mesmo"),
+    ok.guide,
+  );
 
   // Never an invented name: every backticked installer token in the guide must
   // be a name the caller handed in.
@@ -29281,6 +29288,10 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
       mac.includes("npm run dist --workspace @ocr/desktop -- --mac --dir") &&
       mac.includes("CSC_IDENTITY_AUTO_DISCOVERY: false") &&
       mac.includes("dist:smoke --workspace @ocr/desktop -- --no-installer"),
+  );
+  check(
+    "P2-219: both dir packaging builds pass --publish never (eval-16 fix-round: with the repository field a CI-detected dir build would otherwise log 'Implicit publishing triggered by CI detection' and try to publish)",
+    mac.includes("-- --mac --dir --publish never") && win.includes("-- --win --dir --publish never"),
   );
 }
 
@@ -32936,8 +32947,8 @@ check(
   const macJob = ciJobs.find((j) => j.name === "desktop-package");
   const winJob = ciJobs.find((j) => j.name === "desktop-package-win");
   for (const [label, job, packagingRun] of [
-    ["mac", macJob, "npm run dist --workspace @ocr/desktop -- --mac --dir"],
-    ["windows", winJob, "npm run dist --workspace @ocr/desktop -- --win --dir"],
+    ["mac", macJob, "npm run dist --workspace @ocr/desktop -- --mac --dir --publish never"],
+    ["windows", winJob, "npm run dist --workspace @ocr/desktop -- --win --dir --publish never"],
   ] as const) {
     const steps = job?.steps ?? [];
     const bootIdx = steps.findIndex((s) => /packaged-boot\.mjs/.test(s.run));
@@ -32961,11 +32972,15 @@ check(
       (winJob?.steps.find((s) => /packaged-boot\.mjs/.test(s.run))?.run ?? "").includes("win-unpacked"),
   );
   check(
-    "P2-242: ci.yml — no packaging-job step uploads artifacts, publishes, signs or notarizes",
+    "P2-242: ci.yml — no packaging-job step uploads artifacts, publishes, signs or notarizes (--publish never is the explicit NEVER, not a publish)",
     [macJob, winJob].every(
       (j) =>
         j &&
-        j.steps.every((s) => !/upload-artifact|gh release|ghr|--publish|notariz/i.test(s.run)) &&
+        j.steps.every(
+          (s) =>
+            !/upload-artifact|gh release|ghr|notariz/i.test(s.run) &&
+            (!/--publish/.test(s.run) || /--publish never/.test(s.run)),
+        ) &&
         j.steps.some((s) => s.run.includes("packaged-boot.mjs")),
     ),
   );

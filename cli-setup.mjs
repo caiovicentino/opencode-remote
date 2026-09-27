@@ -53,7 +53,24 @@ export function relayUrlProblem(url) {
     return `"${text}" is not a ws:// or wss:// URL`;
   }
   const host = parsed.hostname.toLowerCase();
-  if (LOOPBACK_HOSTS.has(host) || /^127\./.test(host)) {
+  // IPv4-mapped IPv6 loopback (eval-16 fix-round): `ws://[::ffff:127.0.0.1]:
+  // 8788` reaches the same loopback relay. WHATWG URL keeps the brackets and
+  // NORMALIZES the address to the compressed hex form — "[::ffff:127.0.0.1]"
+  // comes back as "[::ffff:7f00:1]" — so unmap the tail into dotted-quad
+  // before the loopback tests.
+  const unbracketed = host.replace(/^\[/, "").replace(/\]$/, "");
+  let mappedV4 = null;
+  if (unbracketed.startsWith("::ffff:")) {
+    const tail = unbracketed.slice("::ffff:".length);
+    if (/^[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(tail)) {
+      const [hi, lo] = tail.split(":").map((g) => parseInt(g, 16));
+      mappedV4 = `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+    } else if (/^\d+\.\d+\.\d+\.\d+$/.test(tail)) {
+      mappedV4 = tail;
+    }
+  }
+  const mappedIsLoopback = mappedV4 !== null && (LOOPBACK_HOSTS.has(mappedV4) || /^127\./.test(mappedV4));
+  if (LOOPBACK_HOSTS.has(host) || /^127\./.test(host) || mappedIsLoopback) {
     return `"${text}" points at this machine's loopback — the phone dials the relay itself and can never reach ${host}; use this Mac's tailnet name or LAN IP instead`;
   }
   return null;

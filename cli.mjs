@@ -183,6 +183,15 @@ async function setup() {
   }
 
   console.log("\n  installing launchd services (KeepAlive)…\n");
+  // eval-16 (fix-round): hermetic test hook, checked BEFORE install.sh — the
+  // script below bootouts the com.ocr.* services, pkills dev runners and
+  // kills whatever holds :5173 (the production PWA port). A suite that ever
+  // reaches this step (e.g. a regression in the loopback refusal above) must
+  // be stopped by the guard instead of ever touching the real launchd domain.
+  if (process.env.OCR_SETUP_NO_INSTALL) {
+    process.exitCode = 1;
+    return bad("install refused — OCR_SETUP_NO_INSTALL is set (hermetic test mode)");
+  }
   // eval-16: quoted — a checkout under a path with spaces split the argv.
   const r = sh(`RELAY_URL=${JSON.stringify(relayUrl)} bash ${JSON.stringify(join(ROOT, "deploy", "install.sh"))}`, { cwd: ROOT });
   process.stdout.write(r.stdout ?? "");

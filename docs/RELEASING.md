@@ -91,8 +91,13 @@ gh release view v0.2.0 --repo caiovicentino/opencode-remote
 gh release download v0.2.0 --repo caiovicentino/opencode-remote --pattern '*-arm64.dmg' --dir ~/Downloads
 # instale, abra, pareie um celular
 
-# opcional: começar com uma fração das máquinas (reescreve só os feeds)
-node apps/desktop/scripts/rollout.mjs v0.2.0 20
+# opcional: começar com uma fração das máquinas — num DRAFT, refaça o release
+# com o input de rollout: ele reescreve os feeds E regenera o checksums.txt
+# (release-publish roda de novo sobre todos os assets). Rodar
+# `rollout.mjs` sobre o draft deixaria as 4 linhas de feed do checksums.txt
+# já anexado desatualizadas (`shasum -a 256 -c checksums.txt` acusa FAILED
+# nelas) — reserve o rollout.mjs para releases já PUBLICADOS.
+gh workflow run release.yml --ref v0.2.0 -f rollout_percent=20
 
 gh release edit v0.2.0 --repo caiovicentino/opencode-remote --draft=false
 ```

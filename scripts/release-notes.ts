@@ -89,6 +89,13 @@ export function guideSlots(tag: string): GuideSlot[] {
 const FIRST_OPEN_LINE =
   '> **Primeira abertura no macOS:** enquanto a assinatura de desenvolvedor não estiver configurada, o macOS bloqueia a primeira abertura do app ("não foi possível verificar…"). No macOS 15 (Sequoia) ou mais novo: tente abrir uma vez, depois vá em **Ajustes do Sistema → Privacidade e Segurança** e clique em **Abrir Mesmo Assim**. No macOS 14 ou anterior: clique com o botão direito no app e escolha **Abrir**. Só na primeira vez.';
 
+/** eval-16 (fix-round): the FIRST release ships the Windows installer unsigned
+ * (no WIN_CSC_* secrets, docs/RELEASING.md) — SmartScreen blocks its first
+ * run with a warning, not the macOS block above. The guide must say so or the
+ * Windows audience stops at the blue screen. */
+const WINDOWS_SMARTSCREEN_LINE =
+  '> **Primeira execução no Windows:** enquanto a assinatura de código não estiver configurada, o SmartScreen bloqueia a primeira execução do instalador ("O Windows protegeu o seu PC"). Clique em **Mais informações → Executar assim mesmo**. Só na primeira vez.';
+
 /** How to verify a download against the checksum manifest. */
 function checksumLine(): string {
   return (
@@ -131,6 +138,8 @@ export function downloadGuide(
   }
   lines.push("");
   lines.push(FIRST_OPEN_LINE);
+  lines.push("");
+  lines.push(WINDOWS_SMARTSCREEN_LINE);
   if (hasManifest) {
     lines.push("");
     lines.push(checksumLine());
