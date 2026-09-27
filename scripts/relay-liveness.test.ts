@@ -204,6 +204,8 @@ const P2_294_EXISTING_LINES = [
   "relay_idle_unjoined_closed",
   // P2-302: the room-budget termination counter joined the documented set
   "relay_room_budget_terminated",
+  // eval-13: second owner sockets seen since boot
+  "relay_duplicate_owner_total",
   "relay_rooms_active",
 ];
 const P2_294_CERT_LINES = ["relay_cert_expiry_state", "relay_cert_expiry_seconds"];
@@ -214,6 +216,8 @@ const P3_461_ROOM_LINES = [
   "relay_rooms_single_peer",
   "relay_rooms_paired",
   "relay_rooms_crowded",
+  // eval-13: rooms whose owner identity two live sockets hold right now
+  "relay_rooms_duplicate_owner",
 ];
 // P2-313: the additive process gauges joined the documented set, appended
 // after every pre-existing series (plain mode included — the process is

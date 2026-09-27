@@ -19,6 +19,7 @@
  * also runs in the portable (windows) battery.
  * Run: npx tsx scripts/failure-classifier.test.ts
  */
+import "./testhome";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {

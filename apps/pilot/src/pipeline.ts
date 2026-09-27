@@ -11,7 +11,7 @@ import { latestUiShot } from "./shot";
 import { defaultVerifiedMergesFile, recordVerifiedMerge } from "./deployguard";
 import { touchHeartbeat, type PilotConfig, type PilotState } from "./state";
 import { attemptsKey } from "./mission";
-import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } from "./experience";
+import { appendLessonsToWorkspace, lessonsNearDiff, pickRelevantLessons, readExperienceFile, SCRIBE_LESSON_BUDGET, SCRIBE_MAX_LESSONS } from "./experience";
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 import { repairPlan } from "./mergerepair";
@@ -715,21 +715,34 @@ export function recordContextPressure(
  * to docs/EXPERIENCE.md and commits, so an LLM never edits the file directly.
  * P1-075: the scribe sees ONLY the diff — reviewer findings made it distill
  * harness/process lessons instead of product-code ones.
+ * Eval 05 (2026-09-27): 0–2 lessons with a character budget (64/69 stored
+ * lessons were clipped at 240 chars; 427/434 merges emitted exactly 3), and
+ * the scribe sees the stored lessons closest to the task so it stops
+ * re-deriving them — a verbatim repeat refreshes the stored line instead.
  */
-export function scribePrompt(t: Task, diff: string): string {
+export function scribePrompt(t: Task, diff: string, existing: string[] = []): string {
   // P1-077 cache-aware assembly: stable role + rules + LESSONS contract first
   // (the format line uses a generic <TASK-ID> placeholder), variable task tail
-  // and the DIFF last.
+  // (task, existing lessons) and the DIFF last.
+  const known = existing.length
+    ? `EXISTING LESSONS (already stored — never paraphrase them; repeat one verbatim only if this diff re-confirms it):\n${existing.join("\n")}\n`
+    : "";
   return `You are the SCRIBE agent of the opencode-remote autonomous pipeline.
 The task at the end of this prompt was just merged after passing adversarial reviews and the deterministic gatekeeper.
 Your job: distill reusable engineering lessons for future agents.
 
 Rules:
 - Read the diff below (and the repo if needed). Do NOT modify any files.
-- Output 1 to 3 lessons: concrete, generalizable rules a future agent must
-  follow when touching similar code (gotchas, root causes, invariants). Skip the obvious.
+- Output 0 to ${SCRIBE_MAX_LESSONS} lessons. A lesson must save a future agent a failed round on OTHER
+  code: a surprising API/platform behavior, a root cause, an invariant the gate or a
+  reviewer enforced. Skip facts that only describe this task and conventions this repo
+  already applies everywhere (pure modules, closed verdict sets, fail-closed defaults,
+  both i18n locales, tests and README updates in the same commit).
+- Zero lessons is a valid answer: print the LESSONS: line with no lesson under it.
 - One lesson per line, EXACTLY this format (plain text, no markdown headings or code blocks):
-  - When <situation>, do <action> (fonte: <TASK-ID>)
+  - When <situation>, do <action> — <why> (fonte: <TASK-ID>)
+- At most ${SCRIBE_LESSON_BUDGET} characters before the (fonte: ...) tag — longer lines are cut.
+  Name the concrete file, API or pattern in <situation>: future tasks find lessons by those words.
 
 Your LAST lines must be exactly:
 LESSONS:
@@ -738,7 +751,7 @@ SCRIBE:DONE
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(none)"}
-DIFF:
+${known}DIFF:
 \`\`\`diff
 ${diff.slice(0, 30_000)}
 \`\``;
@@ -794,7 +807,8 @@ async function runScribe(
   // come back as TEXT and the runner validates + commits them. The next
   // pipeline start rewrites the full sandbox config (writeSandboxConfig).
   writeAuxSandboxConfig(ws);
-  const out = await runAgentForRole("scribe", scribePrompt(t, diff), {
+  const existing = lessonsNearDiff(readExperienceFile(ws), t.title, t.spec, diff);
+  const out = await runAgentForRole("scribe", scribePrompt(t, diff, existing), {
     cwd: ws,
     timeoutMin: 10,
     label: `scribe-${t.id}`,
@@ -1388,9 +1402,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       let lastSpecReason = "";
       // P2-042: the planner writes the spec the builder+reviewers are held to,
       // so it must know the same patterns the builder knows — top-5 IER lessons
-      // keyword-matched against the task plus the 10 most recent failure lessons.
+      // keyword-matched against the task plus the 5 blocked-task failure
+      // lessons closest to it (eval 05: real blocks only, one per task).
       const lessons = pickRelevantLessons(readExperienceFile(ws), t.title, t.spec);
-      const failureBlock = failureLessonsBlock(readRecentFailureLessons(defaultLessonsFile()));
+      const failureBlock = failureLessonsBlock(readRecentFailureLessons(defaultLessonsFile(), 50), 5, `${t.title}\n${t.spec}`);
       let attemptsSpent = 0;
       for (let attempt = 1; attempt <= PLANNER_MAX_ATTEMPTS && !specOk; attempt++) {
         attemptsSpent = attempt;

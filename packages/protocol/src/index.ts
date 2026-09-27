@@ -14,6 +14,8 @@ export {
   openSealed,
   seqAad,
   frameSeq,
+  helloNonce,
+  HELLO_NONCE_BYTES,
   type Identity,
   type DaemonHello,
   type ServerAccept,
