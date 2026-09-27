@@ -26,6 +26,10 @@ export const GATE_HEADLINE_BYTES = 300;
 
 /** Any single line is capped so one minified stack cannot eat the budget. */
 const LINE_CAP = 240;
+/** parse()'s patterns run on a bounded copy of every line (the gate tail is
+ * builder-controlled): a hostile line must cost milliseconds, not the pilot's
+ * event loop. The full line only feeds capLine()/flat(), which are linear. */
+const LINE_TEST_CAP = 4096;
 /** Most failing-check lines listed before "(+N more)". */
 const MAX_FAIL_LINES = 10;
 /** Lines kept after the first error anchor (stack / tsc continuation). */
@@ -37,8 +41,17 @@ const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
  * desktop-render, desktop-sidecar, …) plus TAP-style shapes. */
 const FAIL_LINE_RE = /^(?:FAIL\b|not ok\b|\s*✗ )/;
 
-/** desktop-flow phase banner: `--- <beat label> (12.3s elapsed)`. */
-const BEAT_BANNER_RE = /^--- (.+?)\s*$/;
+/** desktop-flow phase banner: `--- <beat label> (12.3s elapsed)`. Scanned with
+ * startsWith/slice instead of `/^--- (.+?)\s*$/`: the lazy `.+?` plus `\s*$`
+ * backtrack quadratically on a line with a long run of spaces followed by any
+ * other character (measured: 160k spaces ⇒ 35 s inside the pilot's event
+ * loop). */
+const BANNER_PREFIX = "--- ";
+function beatBanner(line: string): string | null {
+  if (!line.startsWith(BANNER_PREFIX)) return null;
+  const label = line.slice(BANNER_PREFIX.length).trimEnd();
+  return label || null;
+}
 
 /** desktop-flow's own failure report (one entry per failed check, with its
  * beat and detail) — preferred over the raw FAIL lines when present. */
@@ -87,7 +100,10 @@ function isErrorAnchor(line: string): boolean {
 }
 
 function capLine(line: string): string {
-  const t = line.replace(/\s+$/, "");
+  // trimEnd(), never `/\s+$/`: on a `spaces + any character` line the regex
+  // restarts the `\s+` run at every position — quadratic, same stall as the
+  // banner pattern
+  const t = line.trimEnd();
   return t.length > LINE_CAP ? `${t.slice(0, LINE_CAP - 1)}…` : t;
 }
 
@@ -114,7 +130,8 @@ function parse(output: string): Parsed {
   let lastBeat: string | null = null;
   let beatBeforeFirstFail: string | null = null;
   for (let i = 0; i < lines.length; i++) {
-    const l = lines[i] ?? "";
+    const raw = lines[i] ?? "";
+    const l = raw.length > LINE_TEST_CAP ? raw.slice(0, LINE_TEST_CAP) : raw;
     if (FAILED_CHECKS_RE.test(l) && failedChecks.length === 0) {
       // the report runs until the first blank line; its FAIL/detail lines
       // repeat stdout/stderr content, so they are not counted twice
@@ -123,8 +140,8 @@ function parse(output: string): Parsed {
       i = j - 1;
       continue;
     }
-    const banner = BEAT_BANNER_RE.exec(l);
-    if (banner?.[1]) lastBeat = banner[1];
+    const banner = beatBanner(l);
+    if (banner) lastBeat = banner;
     if (FAIL_LINE_RE.test(l)) {
       if (failIdx.length === 0) beatBeforeFirstFail = lastBeat;
       failIdx.push(i);
@@ -150,8 +167,10 @@ function failLines(p: Parsed): string[] {
  * characters. An output that fits passes through unchanged (short judge
  * reasons such as "UI task without shot-1440x900 path…" stay byte-identical).
  * Otherwise, in priority order:
- *   1. a header naming the step, the failing-check count and the last beat
- *      banner started before the first FAIL;
+ *   1. a header naming the step, the FIRST failing check (+N more), the
+ *      failing-check count and the last beat banner started before the first
+ *      FAIL — the check name must land inside formatFailureLesson's 200-char
+ *      slice of the carryover;
  *   2. desktop-flow's FAILED CHECKS report — or, for every other script, the
  *      raw FAIL lines (first MAX_FAIL_LINES);
  *   3. the first error block (anchor + ERROR_CONTEXT_LINES non-noise lines);
@@ -171,8 +190,13 @@ export function gateTailDigest(step: string, output: string, budget = GATE_FINDI
 
   const fails = failLines(p);
   const beat = p.beatBeforeFirstFail ? `; last beat started before the first FAIL: ${p.beatBeforeFirstFail}` : "";
+  // the first failing check LEADS the header: formatFailureLesson keeps only
+  // the first 200 characters of the carryover, and with desktop-flow the
+  // boilerplate alone used to fill them — strategist/planner then never
+  // learned which check broke (fix-round blocking 2)
+  const lead = fails.length ? `${capLine(fails[0] ?? "")}${fails.length > 1 ? ` (+${fails.length - 1} more)` : ""}: ` : "";
   const header = capLine(
-    `[gate tail digest — step "${step}": ${fails.length} FAIL line(s)${beat}; full output ${p.lines.length} lines, cut by relevance]`,
+    `[gate tail digest — step "${step}": ${lead}${fails.length} FAIL line(s)${beat}; ${p.lines.length} lines]`,
   );
 
   const failSection: string[] = [];

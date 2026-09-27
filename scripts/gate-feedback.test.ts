@@ -17,8 +17,8 @@
  * Run: npx tsx scripts/gate-feedback.test.ts
  */
 import "./testhome"; // throwaway HOME before any pilot module loads (testhome.ts)
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,6 +72,7 @@ import {
   workspaceCouplingIo,
   type CouplingIo,
 } from "../apps/pilot/src/coupling";
+import { formatFailureLesson } from "../apps/pilot/src/failureLessons";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -280,6 +281,38 @@ function desktopFlowOutput(withReport: boolean): string {
   );
   const fb = gateFindingBlock("desktop-flow", legacy);
   check("gatetail: gateFindingBlock carries the digest for a long tail", fb.includes("FAIL P2-090") && fb.includes("[gate tail digest — step \"desktop-flow\""), fb.slice(0, 300));
+
+  // hostile input (fix-round blocking 1a): the gate tail is builder-controlled
+  // and the digest runs inside the pilot's event loop. `/^--- (.+?)\s*$/` and
+  // capLine's `/\s+$/` backtracked quadratically on a line with a long run of
+  // spaces followed by any other character — 160k spaces cost 35 s (digest)
+  // plus 15.6 s (headline); every red gate stalled the pilot ~85 s. Now every
+  // pattern runs on a 4 KB copy of each line and the two patterns are linear.
+  const hostileLine = `--- ${" ".repeat(1_000_000)}x`;
+  const hostileOut = `OK   warmup line\n${hostileLine}\nFAIL P9-000: hostile line must not stall the gate\n`;
+  const hostileStart = Date.now();
+  const hostileDigest = gateTailDigest("desktop-flow", hostileOut);
+  const digestMs = Date.now() - hostileStart;
+  check(
+    "gatetail: a line with 1 MB of spaces is digested in under 100 ms (ReDoS guard)",
+    digestMs < 100,
+    `${digestMs}ms — digest length ${hostileDigest.length}`,
+  );
+  const headlineStart = Date.now();
+  const hostileHeadline = gateTailHeadline("desktop-flow", hostileOut);
+  const headlineMs = Date.now() - headlineStart;
+  check(
+    "gatetail: the same line passes through gateTailHeadline in under 100 ms",
+    headlineMs < 100 && hostileHeadline.startsWith("FAIL P9-000: hostile line must not stall the gate"),
+    `${headlineMs}ms; "${hostileHeadline.slice(0, 80)}"`,
+  );
+  check(
+    "gatetail: the hostile output still digests within budget, header capped and deterministic",
+    hostileDigest.length <= GATE_FINDING_TAIL_BYTES &&
+      (hostileDigest.split("\n")[0] ?? "").length <= 240 &&
+      gateTailDigest("desktop-flow", hostileOut) === hostileDigest,
+    hostileDigest.slice(0, 120),
+  );
 }
 
 // ============================================================================
@@ -350,6 +383,26 @@ try {
   check("evidence: a relative shot path is a gap", rel.length === 1 && rel[0]!.includes("relative"), rel.join(" | "));
   const unreadable = evidenceGaps(block([`shot-1440x900: ${join(tmp, "nope.png")}`, `shot-390: ${phone}`]), true, startedAtMs, io);
   check("evidence: a missing PNG is a gap", unreadable.length === 1 && unreadable[0]!.includes("not a readable PNG"), unreadable.join(" | "));
+  // a cited path the builder plants may be a FIFO: openSync would block until
+  // a writer shows up — forever (fix-round blocking 1b). The production
+  // reader must refuse non-regular files instead of opening them.
+  if (process.platform === "win32") {
+    check("evidence: FIFO probe skipped on this platform", true);
+  } else {
+    const fifoShot = join(tmp, "fifo-1440.png");
+    const mkfifo = spawnSync("mkfifo", [fifoShot]);
+    const reallyFifo = mkfifo.status === 0 && statSync(fifoShot).isFIFO();
+    if (!reallyFifo) {
+      check("evidence: FIFO probe skipped (mkfifo unavailable)", true);
+    } else {
+      const fifoGaps = evidenceGaps(block([`shot-1440x900: ${fifoShot}`, `shot-390: ${phone}`]), true, startedAtMs, io);
+      check(
+        "evidence: a FIFO cited as a shot is a 'not a readable PNG' gap, never a hang",
+        fifoGaps.length === 1 && fifoGaps[0]!.includes("not a readable PNG"),
+        fifoGaps.join(" | "),
+      );
+    }
+  }
   const wrongDims = evidenceGaps(block([`shot-1440x900: ${wrong}`, `shot-390: ${wide}`]), true, startedAtMs, io);
   check("evidence: wrong dimensions are gaps for both keys", wrongDims.length === 2 && wrongDims[0]!.includes("1280x720") && wrongDims[1]!.includes("width 390"), wrongDims.join(" | "));
   const staleGap = evidenceGaps(block([`shot-1440x900: ${stale}`, `shot-390: ${phone}`]), true, startedAtMs, io);
@@ -604,6 +657,40 @@ try {
     rmSync(ws, { recursive: true, force: true });
   }
 
+  // fix-round blocking 1c: the workspace walk used to accept any non-directory
+  // entry — a FIFO planted in apps/web/src blocked readFileSync forever. Both
+  // readers must skip non-regular files without a single open.
+  if (process.platform === "win32") {
+    check("coupling: FIFO probe skipped on this platform", true);
+  } else {
+    const wsF = mkdtempSync(join(tmpdir(), "ocr-eval04-coupling-fifo-"));
+    try {
+      mkdirSync(join(wsF, "apps", "web", "src"), { recursive: true });
+      mkdirSync(join(wsF, "scripts"), { recursive: true });
+      writeFileSync(join(wsF, "apps", "web", "src", "PairingView.tsx"), "<PaneMap offlinePanes={offlinePanes} />");
+      writeFileSync(join(wsF, "scripts", "unit.test.ts"), unitPin);
+      const fifoTrap = join(wsF, "apps", "web", "src", "Trap.tsx");
+      const fifoTest = join(wsF, "scripts", "evil.test.ts");
+      const ok1 = spawnSync("mkfifo", [fifoTrap]);
+      const ok2 = spawnSync("mkfifo", [fifoTest]);
+      if (ok1.status !== 0 || ok2.status !== 0 || !statSync(fifoTrap).isFIFO() || !statSync(fifoTest).isFIFO()) {
+        check("coupling: FIFO probe skipped (mkfifo unavailable)", true);
+      } else {
+        const wfio = workspaceCouplingIo(wsF);
+        check(
+          "coupling: a FIFO in the product tree and one named *.test.ts are skipped, never read",
+          !wfio.productFiles().some((f) => f.path.endsWith("Trap.tsx")) &&
+            wfio.productFiles().some((f) => f.path.endsWith("PairingView.tsx")) &&
+            !wfio.testFiles().some((f) => f.path.endsWith("evil.test.ts")) &&
+            couplingHints(paneDiff, wfio).length === 1,
+          JSON.stringify([wfio.productFiles().map((f) => f.path), wfio.testFiles().map((f) => f.path)]),
+        );
+      }
+    } finally {
+      rmSync(wsF, { recursive: true, force: true });
+    }
+  }
+
   // the pre-gate bounce carries coupling hints even when the evidence is clean
   const asked: string[] = [];
   let fixedTests = false;
@@ -657,6 +744,27 @@ try {
     );
     check(`real output (${label}): the headline names the first failure, the count and its beat`, gateTailHeadline("desktop-flow", out).startsWith("FAIL P2-090: session chat rendered without the pane (+1 more) [beat"));
   }
+
+  // fix-round blocking 2 (F6): the failure lesson keeps only the first 200
+  // characters of the carryover (formatFailureLesson → tailSignal, 200-char
+  // slice). desktop-flow's digest header used to fill the whole slice with
+  // boilerplate — the lesson never named the check, so strategist and planner
+  // stayed blind. The header now LEADS with the first failing check.
+  const lessonCarry = gateTailDigest("desktop-flow", full, GATE_CARRY_TAIL_BYTES);
+  const lessonLine = formatFailureLesson({
+    kind: "failure",
+    ts: "2026-09-27T12:00:00-03:00",
+    task: "P9-800",
+    attempts: 2,
+    step: "gatekeeper",
+    findings: "gatekeeper rejected at step desktop-flow",
+    tail: lessonCarry,
+  });
+  check(
+    "real output: the failure lesson (first 200 chars of the carry) names the first failing check",
+    lessonLine.includes("FAIL P2-090: session chat rendered without the pane"),
+    lessonLine,
+  );
 }
 
 if (failures) {

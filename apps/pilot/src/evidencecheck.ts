@@ -291,6 +291,9 @@ export function defaultEvidenceIo(): EvidenceIo {
   return {
     readHead: (p) => {
       try {
+        // the cited path is builder-controlled: openSync would block forever
+        // on a FIFO (no writer ever shows up) — regular files only
+        if (!statSync(p).isFile()) return null;
         const fd = openSync(p, "r");
         try {
           const buf = Buffer.alloc(24);

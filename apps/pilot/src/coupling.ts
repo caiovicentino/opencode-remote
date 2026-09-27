@@ -196,7 +196,10 @@ export function workspaceCouplingIo(ws: string): CouplingIo {
       if (e.name === "node_modules" || e.name.startsWith(".") || e.name === "dist" || e.name === "dist-electron") continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) walk(p, out);
-      else if (PRODUCT_EXT_RE.test(e.name)) out.push(p);
+      // regular files only: readFileSync on a FIFO (a path the builder can
+      // plant) would block the pilot forever — stat it via the Dirent, no
+      // extra syscall
+      else if (e.isFile() && PRODUCT_EXT_RE.test(e.name)) out.push(p);
     }
   };
   const rel = (p: string) => relative(ws, p).split(sep).join("/");
@@ -209,7 +212,9 @@ export function workspaceCouplingIo(ws: string): CouplingIo {
     testFiles: () => {
       let names: string[] = [];
       try {
-        names = readdirSync(join(ws, "scripts")).filter((n) => n.endsWith(".test.ts"));
+        names = readdirSync(join(ws, "scripts"), { withFileTypes: true })
+          .filter((e) => e.isFile() && e.name.endsWith(".test.ts"))
+          .map((e) => e.name);
       } catch {}
       return names.map((n) => ({ path: `scripts/${n}`, text: readText(join(ws, "scripts", n)) }));
     },

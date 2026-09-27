@@ -1622,7 +1622,9 @@ builder da P3-457 teve que rodar o flow de novo por conta própria.
 - **Cauda por relevância** (`apps/pilot/src/gatetail.ts`): o finding (1500),
   o carryover (1200) e o headline de log/detalhe (300) vêm do
   `gateTailDigest`/`gateTailHeadline`, nesta ordem:
-  1. cabeçalho com o último beat `---` iniciado antes do primeiro FAIL;
+  1. cabeçalho com o primeiro check que falhou (+N mais), a contagem e o
+     último beat `---` iniciado antes do primeiro FAIL — o nome do check tem
+     de caber nos 200 caracteres que a failure lesson guarda do carryover;
   2. os checks que falharam;
   3. o primeiro bloco de erro;
   4. o resumo (FAILURES, duração, aviso de orçamento);
@@ -1656,6 +1658,13 @@ builder da P3-457 teve que rodar o flow de novo por conta própria.
 
   Em reprovação de `unit`/`desktop-flow`/`desktop-render`, os hints também
   vão junto do finding.
+
+  Tudo isso roda dentro do processo do pilot, com entrada que o builder
+  controla: a saída do gate é partida por linha e cada padrão roda sobre uma
+  cópia de no máximo 4 KB (sem backtracking quadrático — uma linha de 1 MB de
+  espaços custava ~35 s de event loop por gate vermelho), e shot citado ou
+  arquivo do workspace só é aberto se for arquivo regular (um FIFO travava
+  `openSync`/`readFileSync` para sempre).
 - **Prompts**:
   - O builder recebe linhas fixas de UI-EVIDENCE
     (`shot-1440x900: ~/.opencode-remote/pilot/shots/builder/<TASK-ID>-r<ROUND>-1440.png`)
