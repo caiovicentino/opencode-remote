@@ -332,6 +332,10 @@ if (!WIN) {
   check("pin: ArtifactViewer's pdf frame carries no sandbox attribute", pdfFrame.includes("<iframe") && !/\bsandbox=/.test(pdfFrame));
   check("pin: ArtifactViewer pins the pdf blob type on meta.kind, not the declared mime", viewer.includes('b64ToBlob(c.data, meta.kind === "pdf" ? "application/pdf" : c.mime)'));
   check("pin: ArtifactViewer's html frame keeps sandbox=\"allow-scripts\" only", viewer.includes('sandbox="allow-scripts"') && !viewer.includes('sandbox="allow-scripts allow-same-origin"'));
+  check(
+    "pin: ArtifactViewer fetches once per artifact, not once per app render",
+    viewer.includes("}, [meta.sessionId, meta.name, meta.mtime, meta.kind]);") && !viewer.includes("}, [meta, request]);") && viewer.includes("fetchArtifact(requestRef.current, meta.sessionId, meta.name)"),
+  );
   const fileCard = readFileSync(join(REPO, "apps/web/src/components/FileCard.tsx"), "utf8");
   check("pin: FileCard's pdf frame only opens for kind pdf (typed by mimeFor)", fileCard.includes('preview?.url && kind === "pdf"') && fileCard.includes('ext === "pdf"'));
 }

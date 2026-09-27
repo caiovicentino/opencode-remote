@@ -150,13 +150,20 @@ export default function ArtifactViewer({
   const [state, setState] = useState<ViewState>({ loading: true });
   const viewRef = useRef<ViewState>({ loading: true });
   viewRef.current = state;
+  // eval-12: App hands down a fresh `request` function on every render (and a
+  // caller may rebuild `meta`), so an effect keyed on them re-downloaded the
+  // artifact and remounted the frame on every app render — for a PDF, a new
+  // browser PDF viewer per tick. The fetch keys on the artifact's identity
+  // only and reads the latest `request` through this ref.
+  const requestRef = useRef(request);
+  requestRef.current = request;
 
   useEffect(() => {
     let alive = true;
     setState({ loading: true });
     void (async () => {
       try {
-        const c = await fetchArtifact(request, meta.sessionId, meta.name);
+        const c = await fetchArtifact(requestRef.current, meta.sessionId, meta.name);
         if (!alive) return;
         if (!c) {
           setState({ loading: false, error: "artifact not found" });
@@ -186,7 +193,7 @@ export default function ArtifactViewer({
       const url = viewRef.current.url;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [meta, request]);
+  }, [meta.sessionId, meta.name, meta.mtime, meta.kind]);
 
   function save() {
     const mime = state.mime ?? "application/octet-stream";
