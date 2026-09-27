@@ -278,10 +278,11 @@ o perfil `pilot` é pinado **pelo caminho do workspace**
 achado a: um repo externo chamado `opencode-remote` ganhava a bateria
 completa e os `scripts/*.ts` dele rodavam como nossas invariants — conteúdo
 de repo é do atacante, o caminho é do scheduler; um clone de missão vive em
-`pilot/mission/<key>/repo-N`, cujo pai não é o slot root). **Re-pin do
-judge**: a cópia pinada em `~/.opencode-remote/judge/src/gateprofile.ts`
-ainda usa a detecção por nome/árvore — o operador espelha a regra de caminho
-lá e re-pina (a bateria unit cobre só o espelho in-repo). Um repo
+`pilot/mission/<key>/repo-N`, cujo pai não é o slot root). **Judge**: a
+cópia pinada em `~/.opencode-remote/judge/src/gateprofile.ts` já usa a mesma
+regra de caminho desde o commit `5ff11e8` do judge (P1-058); o checkout de
+produção vem de `OCR_PILOT_REPO` (herdado do launchd do pilot) ou
+`~/.opencode-remote/prod` — ver "Juiz: caminhos protegidos…" abaixo. Um repo
 externo (missão self-serve, abaixo) roda o **perfil genérico**: apenas os
 scripts `typecheck`, `build`, `test` e `lint` que existirem no `package.json`
 dele (`buildGenericProfile`), rodando do próprio repo alvo, cada step com
@@ -2016,3 +2017,75 @@ fresco) e o pilot emite evento `alert` + notify do supervisor dizendo que o
 main está vermelho no mesmo check — o próximo ciclo tenta de novo em vez de
 enterrar a task. No máximo um hold por task: no segundo ci-red compartilhado,
 bloqueia como antes.
+
+## Juiz: caminhos protegidos, cota de flaky e veredito v2 (P3-353, P3-359, eval-08)
+
+O gate roda no juiz pinado (`~/.opencode-remote/judge`, commit em
+`~/.opencode-remote/judge.json`), mas a bateria executa código que o builder
+edita e o pilot age sobre o veredito por código do próprio repo. Sem proteção,
+um branch que troca `test:unit` por `true` ou planta um `judge.ts` que devolve
+`{ok:true}` passava no próprio gate — reproduzido contra o juiz `957106c`
+(os dois vereditos saíram `ok:true`). O juiz v2 fecha isso:
+
+- **Diff do próprio juiz.** `gateVerdict` calcula o diff contra o merge-base
+  com `origin/HEAD|main|master` (o `nameOnly` do pedido só acrescenta
+  caminhos, nunca esconde). Diff vazio, sem base, HEAD ≠ sha pedido ou árvore
+  suja ⇒ vermelho no step `context`.
+- **Step `protected`** (antes de qualquer comando da bateria) quando o diff:
+  toca `apps/pilot/src/judge.ts`, `apps/pilot/src/judgeverdict.ts`,
+  `scripts/invariants.ts`, `packages/protocol/src/crypto.ts`, `.github/`,
+  `deploy/` ou qualquer `.npmrc` (comparação case-insensitive); remove ou
+  reescreve um script de `package.json` (raiz ou workspace) — acrescentar
+  comandos simples a uma cadeia `&&` continua livre, `|| true`/`;`/pipe não;
+  cria hook `pre*`/`post*`/`prepare`; remove workspace; ou tira pontos de
+  asserção (`check`/`assert`/`expect`/`fail`, `throw new …Error`, saída com
+  falha) de um script que o gate executa (contados depois do esbuild remover
+  comentários). `apps/pilot/` como um todo continua editável.
+  Calibração no histórico do `origin/main`: 68 de 533 merges de task
+  (12,8%, 48 deles na onda de CI/release da semana 36) teriam pedido
+  autorização; as regras de scripts/bateria disparam em 0,4% dos commits.
+- **Escalada.** O veredito assinado carrega `constitutionChange` e
+  `protected[]`; o pilot recebe o step `protected` como finding do builder e
+  emite `alert`. Autorizar é um ato do operador no juiz, nunca do workspace:
+  1. no juiz, adicionar a task em `protected-allow.json`
+     (`{"task":"P3-353","paths":[".github/","package.json#scripts"],"reason":"…","until":"AAAA-MM-DD"}`;
+     `paths` aceita id exato, prefixo terminado em `/` ou `<package.json>#scripts`);
+  2. `git -C ~/.opencode-remote/judge commit -am "allow P3-353: …"`;
+  3. `npm test && npm run canary` no juiz;
+  4. gravar o novo HEAD em `~/.opencode-remote/judge.json` (`{"pin":"<sha>"}`).
+  Editar o allowlist sem commit suja a árvore (o pilot recusa juiz sujo);
+  commitar sem re-pin tira o HEAD do pin (idem). O branch autorizado ainda
+  precisa de uma linha `constitution-change:` no corpo de algum commit.
+- **Cota de flaky (P3-359).** Um step que só passa no retry conta no ledger do
+  juiz (`~/.opencode-remote/judge/state/flakes.jsonl`, fora do git): 2 por step
+  por 24h móveis; o 3º vira vermelho com o tail da primeira execução. Ledger
+  que não grava ⇒ vermelho (fail-closed). Relatório:
+  `cd ~/.opencode-remote/judge && npx tsx src/cli.ts flakes --days 7`.
+  Em pilot.log (03–23/09) foram 55 passes flaky, 32 do `desktop-flow`: essa
+  cota teria virado 33 deles vermelhos — consertar o `desktop-flow` antes de
+  pinar ou aceitar a parada como sinal.
+- **Veredito v2.** O pilot manda um nonce por pedido; o juiz (package.json
+  `ocrJudge.verdict: 2`) devolve no payload assinado `nonce`, `judge` (HEAD) e
+  `base`. `checkVerdictBinding` (judgeverdict.ts) exige sha + task sempre e,
+  num juiz v2, nonce e HEAD = pin. A chave pública é lida antes do spawn e a
+  árvore do juiz é re-verificada depois do run; o diretório `judge-req-*`
+  some em qualquer caminho. Juiz v1 continua aceito por sha + task.
+- **Intérprete do juiz.** Gate e `invariants --live` do deploy rodam
+  `node <juiz>/node_modules/tsx/dist/cli.mjs` com cwd no juiz
+  (`judgeInvariantsCommand`) — nunca `npx tsx` com cwd no checkout auditado.
+- **Drift do protocolo vendorizado.** `judgeProtocolDrift({ repo })`
+  (`apps/pilot/src/judgedrift.ts`) e `npx tsx src/cli.ts drift --repo <dir>`
+  no juiz comparam `judge/src/protocol.ts` com `packages/protocol/src/crypto.ts`
+  por símbolo de runtime (comentário/tipo não conta). Teria acusado
+  `clientHello`/`serverAccept` em 10/09 — o incidente de 22/09 (12 dias de
+  deploys em quarentena).
+- **Canário.** `npm run canary` no juiz: 11 branches maliciosos recusados antes
+  da bateria, 2 controles positivos certificados, vereditos forjados/
+  adulterados/re-ligados rejeitados. `runJudgeCanary()` expõe o resultado ao
+  doctor (vermelho, com motivo, em juiz v1).
+
+Limites conhecidos: builder e juiz rodam com o mesmo usuário e o builder tem
+`bash`/`external_directory` liberados — ele consegue ler `judge.key` e editar
+o juiz fora do workspace; o isolamento real é o juiz num usuário macOS
+próprio (tarefa do operador). A base do diff vem das refs do workspace;
+`pipeline.ts` (79 commits) e `deploy.ts` (29) não são caminhos protegidos.
