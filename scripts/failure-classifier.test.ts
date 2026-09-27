@@ -27,11 +27,13 @@ import {
   CI_LINE_MAX,
   CI_RED_STEP,
   actionsIds,
+  asFailedLog,
   bridgeRunId,
   ciFindingBlock,
   ciGateVerdicts,
   extractJobFailure,
   failedLogCommand,
+  jobLogCommand,
   parseFailedLog,
   sanitizeCiLine,
   summarizeCiFailure,
@@ -144,6 +146,8 @@ const red = (name: string, runId: string | null, jobId: string | null = null): R
   check("actionsIds: run + job from a real detailsUrl", JSON.stringify(actionsIds("https://github.com/caiovicentino/opencode-remote/actions/runs/35877316740/job/107236490474")) === JSON.stringify({ runId: "35877316740", jobId: "107236490474" }));
   check("actionsIds: other hosts, shapes and non-strings → null", actionsIds("https://evil.example/actions/runs/1/job/2") === null && actionsIds("https://github.com/o/r/actions/runs/1;rm -rf ~") === null && actionsIds(42) === null && actionsIds(undefined) === null);
   check("failedLogCommand: digits only reach the shell", failedLogCommand("35877316740") === "gh run view 35877316740 --log-failed" && failedLogCommand("1 && id") === null && failedLogCommand(null) === null);
+  check("jobLogCommand: digits-only job id, owner/repo resolved by gh", jobLogCommand("107236490474") === "gh api 'repos/{owner}/{repo}/actions/jobs/107236490474/logs'" && jobLogCommand("1'; id; '") === null && jobLogCommand(null) === null);
+  check("asFailedLog: a raw job log becomes parseable columns under the job's name", parseFailedLog(asFailedLog("verify", "2026-09-23T14:54:38.0259858Z Error: x\n2026-09-23T14:54:59.0208822Z ##[error]Process completed with exit code 1.")).get("verify")?.join("|") === "Error: x|##[error]Process completed with exit code 1.");
   check("bridgeRunId: a real job's run first, the aggregate's as fallback", bridgeRunId([red("ci-gate", "7"), red("verify", "8")]) === "8" && bridgeRunId([red("ci-gate", "7")]) === "7" && bridgeRunId([red("verify", null)]) === null);
   check("parseFailedLog: garbage in → nothing out", parseFailedLog(undefined).size === 0 && parseFailedLog("no tabs here\nnor here").size === 0);
   check("parseFailedLog: BOM + timestamp stripped", parseFailedLog("verify\tS\t﻿2026-09-23T14:51:59.7985590Z Current runner").get("verify")?.[0] === "Current runner");
@@ -177,7 +181,7 @@ const red = (name: string, runId: string | null, jobId: string | null = null): R
   const ours = "e".repeat(40);
   const theirs = "0".repeat(39) + "9"; // the previous cycle's head (P3-459: 009d388)
   const detailsUrl = "https://github.com/caiovicentino/opencode-remote/actions/runs/35877316740/job/107236490474";
-  const mk = (o: { rollup: "red" | "green"; head: string; runLog?: { ok: boolean; output: string }; noUrl?: boolean }) => {
+  const mk = (o: { rollup: "red" | "green"; head: string; runLog?: { ok: boolean; output: string }; jobLog?: { ok: boolean; output: string }; noUrl?: boolean }) => {
     const calls: string[] = [];
     const io: PrMergeIo = {
       exec: (cmd) => {
@@ -186,6 +190,7 @@ const red = (name: string, runId: string | null, jobId: string | null = null): R
         if (cmd.startsWith("gh pr list")) return { ok: true, output: "1316\n" };
         if (cmd.startsWith("gh pr merge")) return { ok: true, output: "" };
         if (cmd.startsWith("gh run view")) return o.runLog ?? { ok: false, output: "unexpected" };
+        if (cmd.startsWith("gh api 'repos/{owner}/{repo}/actions/jobs/")) return o.jobLog ?? { ok: false, output: "unexpected" };
         if (cmd.startsWith("gh pr view") && cmd.includes("statusCheckRollup")) {
           const verify = { name: "verify", status: "COMPLETED", conclusion: o.rollup === "red" ? "FAILURE" : "SUCCESS", ...(o.noUrl ? {} : { detailsUrl }) };
           return { ok: true, output: JSON.stringify({ state: "OPEN", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [verify] }) };
@@ -210,6 +215,14 @@ const red = (name: string, runId: string | null, jobId: string | null = null): R
   const deadLog = mk({ rollup: "red", head: ours, runLog: { ok: false, output: "HTTP 410: logs expired" } });
   const deadOut = await mergePrForTask(deadLog.io, args);
   check("merge: gh run view failing never changes the verdict (fail-open) and still names the job", deadOut.infra === "ci-red" && (deadOut.ciFailure ?? "").includes('job "verify" — FAILURE (run 35877316740, job 107236490474): log unavailable (gh run view failed: HTTP 410: logs expired)'), deadOut.ciFailure);
+
+  // a run still in progress (repo without the aggregate: decided at the first
+  // red job): gh run view refuses, the job's own log is read over REST
+  const rawJobLog = P3459.split("\n").map((l) => l.split("\t").slice(2).join("\t")).join("\n");
+  const inProgress = mk({ rollup: "red", head: ours, runLog: { ok: false, output: "run 35877316740 is still in progress; logs will be available when it is complete" }, jobLog: { ok: true, output: rawJobLog } });
+  const inProgressOut = await mergePrForTask(inProgress.io, args);
+  check("merge: run in progress → the red job's log is read over REST (digits-only job id)", inProgress.calls.includes("gh api 'repos/{owner}/{repo}/actions/jobs/107236490474/logs'"));
+  check("merge: …and the bridge still names the root cause", (inProgressOut.ciFailure ?? "").startsWith('remote CI red on "verify" — Error: expected 502 (opencode down), got 410'), inProgressOut.ciFailure);
 
   const noUrl = mk({ rollup: "red", head: ours, noUrl: true });
   const noUrlOut = await mergePrForTask(noUrl.io, args);

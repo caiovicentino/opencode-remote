@@ -15,7 +15,7 @@ import { appendLessonsToWorkspace, pickRelevantLessons, readExperienceFile } fro
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 import { repairPlan } from "./mergerepair";
-import { actionsIds, bridgeRunId, CI_BRIDGE_MAX_CHARS, CI_RED_STEP, ciFindingBlock, failedLogCommand, summarizeCiFailure, type RedCheck } from "./cibridge";
+import { actionsIds, asFailedLog, bridgeRunId, CI_BRIDGE_MAX_CHARS, CI_RED_STEP, ciFindingBlock, failedLogCommand, jobLogCommand, summarizeCiFailure, type RedCheck } from "./cibridge";
 import { providerOutage } from "./failureclass";
 /**
  * P2-009 (round 2): single predicate for "UI evidence required", shared by the
@@ -2685,8 +2685,22 @@ export function fetchCiFailure(io: PrMergeIo, checks: readonly RedCheck[], conte
   if (!checks.length) return undefined;
   const cmd = failedLogCommand(bridgeRunId(checks));
   const log = cmd ? io.exec(cmd) : null;
-  const note = !cmd ? "no GitHub Actions run id on the red check" : log && !log.ok ? `gh run view failed: ${ghTail(log.output).slice(-160)}` : "";
-  return summarizeCiFailure(checks, log?.ok ? log.output : "", note, context).text;
+  let raw = log?.ok ? log.output : "";
+  if (!raw.trim()) {
+    // `gh run view` refuses a run still in progress — read each red job's
+    // own log over REST instead (at most 3 jobs)
+    const parts: string[] = [];
+    for (const c of checks) {
+      const jobCmd = c.name === "ci-gate" ? null : jobLogCommand(c.jobId);
+      if (!jobCmd) continue;
+      const job = io.exec(jobCmd);
+      if (job.ok && job.output.trim()) parts.push(asFailedLog(c.name, job.output));
+      if (parts.length >= 3) break;
+    }
+    raw = parts.join("\n");
+  }
+  const note = raw ? "" : !cmd ? "no GitHub Actions run id on the red check" : `gh run view failed: ${ghTail(log?.output ?? "").slice(-160)}`;
+  return summarizeCiFailure(checks, raw, note, context).text;
 }
 
 /**

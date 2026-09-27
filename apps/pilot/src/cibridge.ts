@@ -320,6 +320,24 @@ export function failedLogCommand(runId: string | null): string | null {
   return runId && /^\d{1,20}$/.test(runId) ? `gh run view ${runId} --log-failed` : null;
 }
 
+/** The REST read of ONE job's log — it works while the run is still in
+ * progress, where `gh run view --log-failed` refuses (a repo without the
+ * ci-gate aggregate is decided at its first red job). Digits-only job id;
+ * gh resolves `{owner}/{repo}` from the checkout it runs in. */
+export function jobLogCommand(jobId: string | null): string | null {
+  return jobId && /^\d{1,20}$/.test(jobId) ? `gh api 'repos/{owner}/{repo}/actions/jobs/${jobId}/logs'` : null;
+}
+
+/** Reshape one job's raw log (`<ISO ts> <text>` lines) into the
+ * `<job>\t<step>\t…` columns parseFailedLog reads. */
+export function asFailedLog(jobName: string, raw: string): string {
+  const name = jobName.replace(/[\t\r\n]/g, " ").trim() || "job";
+  return raw
+    .split(/\r?\n/)
+    .map((l) => `${name}\t-\t${l}`)
+    .join("\n");
+}
+
 /** The run whose logs the bridge reads: the first red, non-aggregate check
  * carrying Actions ids, else the aggregate's own run (same workflow run). */
 export function bridgeRunId(checks: readonly RedCheck[]): string | null {
