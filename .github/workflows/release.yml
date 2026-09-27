@@ -158,10 +158,12 @@ jobs:
         # failed every no-secrets release, and a downloaded copy opens as
         # "damaged". `-c.mac.identity=-` signs it ad-hoc for real (hardened
         # runtime + build/entitlements.mac.plist → "valid on disk", measured
-        # locally on electron-builder 26.15.3). `-c.mac.notarize=false` keeps
-        # a half-configured profile (APPLE_* secrets without a certificate)
-        # from sending an ad-hoc build to Apple: electron-builder 26 notarizes
-        # whenever those variables exist. `--publish never`: this workflow owns
+        # locally on electron-builder 26.15.3). `-c.mac.notarize=false` makes
+        # the preflight's notarize=no authoritative: electron-builder 26
+        # notarizes whenever the APPLE_* variables exist (an ad-hoc build
+        # would be sent to Apple) and throws on a partial set (a Developer ID
+        # build without complete notarization secrets would die mid-package).
+        # `--publish never`: this workflow owns
         # every upload — electron-builder's implicit tag-build publishing
         # (deprecated, removed in v27) must never race the gh uploads below.
         run: |
@@ -171,6 +173,7 @@ jobs:
             NOTARIZE="-c.mac.notarize=true"
           elif [ "${{ steps.signing.outputs.mode }}" = "developer-id" ]; then
             echo "Signing profile: developer-id (notarize=no) — shipping a Developer ID signed DMG without notarization"
+            NOTARIZE="-c.mac.notarize=false"
           else
             echo "Signing profile: ${{ steps.signing.outputs.mode }} (notarize=no) — shipping ad-hoc signed DMG (skip notarization)"
             SIGN="-c.mac.identity=-"

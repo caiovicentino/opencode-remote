@@ -284,14 +284,20 @@ function jobBlock(name: string): string {
     distLines.length === 3 && distLines.every((l) => l.includes("--publish never")),
     distLines.join("\n"),
   );
-  const dmg = jobBlock("desktop-dmg");
+  const dmg = codeOnly(jobBlock("desktop-dmg"));
+  const devIdAt = dmg.indexOf('elif [ "${{ steps.signing.outputs.mode }}" = "developer-id" ]');
   const adhocAt = dmg.indexOf('SIGN="-c.mac.identity=-"');
+  const noNotarize = [...dmg.matchAll(/NOTARIZE="-c\.mac\.notarize=false"/g)].map((m) => m.index ?? -1);
   check(
-    "eval-16: the no-Developer-ID branch signs ad-hoc for real and never notarizes",
-    adhocAt > -1 &&
-      dmg.indexOf('NOTARIZE="-c.mac.notarize=false"') > adhocAt &&
-      dmg.includes('elif [ "${{ steps.signing.outputs.mode }}" = "developer-id" ]') &&
+    "eval-16: the no-Developer-ID branch signs ad-hoc for real; notarize=no is explicit in both non-notarizing branches",
+    devIdAt > -1 &&
+      adhocAt > devIdAt &&
+      noNotarize.length === 2 &&
+      (noNotarize[0] ?? -1) > devIdAt &&
+      (noNotarize[0] ?? -1) < adhocAt &&
+      (noNotarize[1] ?? -1) > adhocAt &&
       dmg.includes("npm run dist --workspace @ocr/desktop -- --publish never $SIGN $NOTARIZE"),
+    JSON.stringify({ devIdAt, adhocAt, noNotarize }),
   );
   const publish = jobBlock("release-publish");
   const verdictAt = publish.indexOf("scripts/release-publish.ts");
