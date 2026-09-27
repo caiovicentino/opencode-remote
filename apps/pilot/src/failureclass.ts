@@ -71,6 +71,27 @@ export function providerOutage(output: unknown): string | null {
   return PROVIDER_OUTAGE_SIGNATURES.some((re) => re.test(err)) ? err : null;
 }
 
+/**
+ * eval-03 (+ eval-15 red team): a reviewer run that never FINISHED produced no
+ * trustworthy verdict — even when its output carries a VERDICT marker: a
+ * builder-planted file the reviewer cat'ed prints one before the timeout kill
+ * or the provider outage, and the LAST-marker rule would read it as the
+ * reviewer's own APPROVE. Timed out ⇒ infra "timeout"; not spawned ⇒ infra
+ * "spawn"; opencode preflight or provider outage ⇒ infra "api-down". null ⇒
+ * the run finished: its verdict is parsed as usual.
+ */
+export function reviewerInconclusive(r: {
+  output: string;
+  timedOut?: boolean;
+  infra?: string;
+}): { infra: "timeout" | "spawn" | "api-down"; why: string } | null {
+  if (r.timedOut) return { infra: "timeout", why: "a reviewer timed out before finishing" };
+  if (r.infra === "spawn") return { infra: "spawn", why: "a reviewer could not be spawned" };
+  if (r.infra === "api-down") return { infra: "api-down", why: "opencode API unreachable (preflight)" };
+  const outage = providerOutage(r.output);
+  return outage ? { infra: "api-down", why: `model provider unreachable: ${outage}` } : null;
+}
+
 // ── global pick hold while the provider is down ─────────────────────────────
 
 /** First hold after an outage, doubling per new outage, capped. */

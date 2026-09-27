@@ -16,7 +16,7 @@ import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } fro
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 import { repairPlan } from "./mergerepair";
 import { actionsIds, asFailedLog, bridgeRunId, CI_BRIDGE_MAX_CHARS, CI_RED_STEP, ciFindingBlock, failedLogCommand, jobLogCommand, summarizeCiFailure, type RedCheck } from "./cibridge";
-import { providerOutage } from "./failureclass";
+import { providerOutage, reviewerInconclusive } from "./failureclass";
 /**
  * P2-009 (round 2): single predicate for "UI evidence required", shared by the
  * builder prompt and the gatekeeper so the builder is always asked for exactly
@@ -1760,15 +1760,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         data: { task: t.id, round, secOk: parseVerdict(sec.output) === "APPROVE", qualOk: parseVerdict(qual.output) === "APPROVE" },
       }),
     );
-    // eval-03: a reviewer killed by a provider outage returned no verdict —
-    // an inconclusive review is never an approval and never a merit rejection
+    // eval-03 (+ eval-15): a reviewer that never finished (timeout, spawn,
+    // preflight, provider outage) returned no trustworthy verdict — even a
+    // VERDICT marker in its output may be a planted file it cat'ed. An
+    // inconclusive review is never an approval and never a merit rejection
     // (the last round used to burn an attempt as "max review rounds"): infra.
-    const reviewOutage = [sec, qual]
-      .filter((r) => parseVerdict(r.output) === null)
-      .map((r) => (r.infra === "api-down" ? "opencode API unreachable (preflight)" : providerOutage(r.output)))
-      .find(Boolean);
-    if (reviewOutage) {
-      return { ok: false, detail: `[infra] model provider unreachable (reviewers, round ${round}): ${reviewOutage}`, infra: "api-down", ...roundMeta() };
+    const reviewDead = [sec, qual].map(reviewerInconclusive).find((x) => x !== null);
+    if (reviewDead) {
+      return { ok: false, detail: `[infra] review inconclusive (round ${round}): ${reviewDead.why}`, infra: reviewDead.infra, ...roundMeta() };
     }
     const secParsed = parseFindings(sec.output);
     const qualParsed = parseFindings(qual.output);
@@ -1838,6 +1837,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         marker: ESCALATION_MARKER,
       });
       trackSession(esc.sessionId);
+      // eval-03: an arbiter that never finished is no arbiter (same rule as
+      // the reviewers above — its output may end on a planted marker)
+      const escDead = reviewerInconclusive(esc);
+      if (escDead) {
+        return { ok: false, detail: `[infra] review inconclusive (escalation, round ${round}): ${escDead.why}`, infra: escDead.infra, ...roundMeta() };
+      }
       const escParsed = parseFindings(esc.output);
       const escVerified = verifyFindings(escParsed, ws, reviewDiff);
       for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d, escVerified.reasons[d] ?? "unknown");
