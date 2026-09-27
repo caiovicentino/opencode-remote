@@ -2073,12 +2073,14 @@ um branch que troca `test:unit` por `true` ou planta um `judge.ts` que devolve
 - **Intérprete do juiz.** Gate e `invariants --live` do deploy rodam
   `node <juiz>/node_modules/tsx/dist/cli.mjs` com cwd no juiz
   (`judgeInvariantsCommand`) — nunca `npx tsx` com cwd no checkout auditado.
-- **Drift do protocolo vendorizado.** `judgeProtocolDrift({ repo })`
-  (`apps/pilot/src/judgedrift.ts`) e `npx tsx src/cli.ts drift --repo <dir>`
-  no juiz comparam `judge/src/protocol.ts` com `packages/protocol/src/crypto.ts`
-  por símbolo de runtime (comentário/tipo não conta). Teria acusado
-  `clientHello`/`serverAccept` em 10/09 — o incidente de 22/09 (12 dias de
-  deploys em quarentena).
+- **Drift do protocolo vendorizado.** Três camadas: no gate,
+  `packages/protocol/src/crypto.ts` é caminho protegido (mudar o handshake pede
+  re-vendor do juiz); no boot/preflight, o doctor compara a cópia do juiz com o
+  alvo (`apps/pilot/src/judgedrift.ts`); antes de re-pinar,
+  `npx tsx src/cli.ts drift --repo <dir>` no juiz compara `judge/src/protocol.ts`
+  com `packages/protocol/src/crypto.ts` por símbolo de runtime (comentário/tipo
+  não conta). Teria acusado `clientHello`/`serverAccept` em 10/09 — o incidente
+  de 22/09 (12 dias de deploys em quarentena).
 - **Canário.** `npm run canary` no juiz: 11 branches maliciosos recusados antes
   da bateria, 2 controles positivos certificados, vereditos forjados/
   adulterados/re-ligados rejeitados. `runJudgeCanary()` expõe o resultado ao

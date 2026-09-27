@@ -13,9 +13,8 @@
  *     request;
  *   - a protected refusal surfaces the ids and escalates;
  *   - deploy's live invariants run the judge's own node + tsx, never `npx`;
- *   - the doctor canary is red on a v1 judge (it has no real canary);
- *   - vendored-protocol drift (judgedrift.ts): comment/type-only is not
- *     drift, the RT-390 shape is.
+ *   - the doctor canary is red on a v1 judge (it has no real canary).
+ * (The vendored-protocol drift check is eval-07's apps/pilot/src/judgedrift.ts.)
  * Run: npx tsx scripts/judge-bridge.test.ts
  */
 import { execFileSync } from "node:child_process";
@@ -28,7 +27,6 @@ process.env.PILOT_EVENTS_FILE = join(mkdtempSync(join(tmpdir(), "judge-bridge-ev
 
 const { judgeGate, judgeInvariantsCommand, resolveJudge, runJudgeCanary, JudgeError } = await import("../apps/pilot/src/judge");
 const { checkVerdictBinding } = await import("../apps/pilot/src/judgeverdict");
-const { driftSummary, judgeProtocolDrift, protocolDrift } = await import("../apps/pilot/src/judgedrift");
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -209,27 +207,6 @@ function expectJudgeError(name: string, fn: () => unknown, re: RegExp) {
   check("binding: prefix pin accepted (judge.json may hold a short sha)", checkVerdictBinding(v, { ...want, pin: "1".repeat(12) }) === null);
   check("binding: v1 expectation ignores nonce/judge", checkVerdictBinding({ ...v, nonce: undefined, judge: undefined }, { ...want, version: 1 }) === null);
   check("binding: empty pin never matches", checkVerdictBinding(v, { ...want, pin: "" }) !== null);
-}
-
-// ── vendored protocol drift ──────────────────────────────────────────────────
-{
-  const crypto = src("packages/protocol/src/crypto.ts");
-  check("drift: identical → in sync", !protocolDrift(crypto, crypto).drift);
-  const commented = crypto.replace(/\/\*\*[\s\S]*?\*\//, "/** reworded */");
-  check("drift: comment-only edit → in sync", commented !== crypto && !protocolDrift(commented, crypto).drift);
-  const typed = crypto.replace("caps?: { transcribe?: boolean; tts?: boolean },", "caps?: { transcribe?: boolean },");
-  check("drift: type-only edit (the judge's caps without tts today) → in sync", typed !== crypto && !protocolDrift(typed, crypto).drift);
-  const stale = crypto.replace(/seal\(\{ clientPub: identity\.publicKey, ts: now \}/, "seal({ clientPub: identity.publicKey }");
-  const rt = protocolDrift(stale, crypto);
-  check("drift: a judge minting hellos without the sealed ts (RT-390 / 22-09) → drift on clientHello", stale !== crypto && rt.drift && rt.changed.includes("clientHello"), JSON.stringify(rt));
-  check("drift: summary tells the operator to re-vendor and re-pin", driftSummary(rt).includes("re-vendor judge/src/protocol.ts") && driftSummary(rt).includes("clientHello"));
-  const root = mkdtempSync(join(tmpdir(), "judge-drift-"));
-  mkdirSync(join(root, "judge", "src"), { recursive: true });
-  writeFileSync(join(root, "judge", "src", "protocol.ts"), typed);
-  const files = judgeProtocolDrift({ repo: join(import.meta.dirname, ".."), judgeDir: join(root, "judge") });
-  check("drift: judgeProtocolDrift reads the judge copy vs this repo", !files.drift, JSON.stringify(files));
-  const gone = judgeProtocolDrift({ repo: join(import.meta.dirname, ".."), judgeDir: join(root, "missing") });
-  check("drift: unreadable judge copy fails closed with a reason", gone.drift && !!gone.reason && driftSummary(gone).includes("failed closed"));
 }
 
 if (failures) {
