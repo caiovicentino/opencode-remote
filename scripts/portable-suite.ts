@@ -93,6 +93,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "settingsmirror.test.ts",
   "shelllang.test.ts",
   "sidecar-log.test.ts",
+  "supplychain.test.ts",
   "testhome.test.ts",
   "thinking.test.ts",
   "traystatus.test.ts",

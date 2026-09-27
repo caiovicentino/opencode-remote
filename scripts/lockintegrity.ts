@@ -33,6 +33,13 @@
  * 4. An origin outside the documented public registries becomes REJECT
  *    before any other consideration — a git dependency, an arbitrary tarball
  *    or a missing origin — this is the case the gate exists to prevent.
+ * 4b. (eval-15) A registry origin that is not the entry's OWN canonical
+ *    tarball — `<registry><name>/-/<basename>-<version>.tgz`, name from the
+ *    lockfile `name` field (npm aliases) or the entry path — becomes REJECT,
+ *    exemptions notwithstanding. A lockfile edit that points
+ *    `node_modules/lodash` at another package's tarball on the same registry
+ *    (with that tarball's valid hash) is lockfile injection: npm ci would
+ *    install foreign code under a trusted name and every earlier rule passed.
  * 5. An origin inside an accepted registry without a declared integrity hash
  *    becomes REJECT.
  * 6. A hash present whose algorithm differs from the documented one becomes
@@ -68,6 +75,10 @@ export interface LockEntry {
   internal: boolean;
   /** True when the lockfile could not be read or parsed. */
   readFailed?: boolean;
+  /** eval-15: the lockfile `name` field (set by npm for aliased packages). */
+  name?: string;
+  /** eval-15: the lockfile `version` field ("" / absent when not written). */
+  version?: string;
 }
 
 /** A documented, deadlined exemption for one lockfile entry. */
@@ -141,7 +152,43 @@ export function isInternalOrigin(origin: string): boolean {
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(origin)) return false;
   if (origin.startsWith("/") || origin.startsWith("~/")) return false; // absolute paths
   if (origin.startsWith("../")) return false; // escapes the repository root
+  // eval-15: a parent segment anywhere ("apps/../../x", "apps\\..\\x") can
+  // escape the root just as well — only a path that never climbs is provable
+  if (origin.split(/[\\/]/).includes("..")) return false;
   return true;
+}
+
+/** eval-15: the package name a lockfile entry installs — the `name` field
+ * when npm wrote one (aliases), else the path after the last node_modules/. */
+export function lockEntryPackageName(entry: Pick<LockEntry, "path" | "name">): string {
+  if (typeof entry.name === "string" && entry.name !== "") return entry.name;
+  const at = entry.path.lastIndexOf("node_modules/");
+  return at < 0 ? "" : entry.path.slice(at + "node_modules/".length);
+}
+
+/**
+ * eval-15 rule 4b: does a registry origin point at the entry's OWN tarball?
+ * Canonical npm shape: `<registry><name>/-/<basename>-<version>.tgz` (the
+ * scope slash may be written `%2f`). The version is compared only when the
+ * entry declares one. True for origins outside `registries` (rule 4 owns
+ * those).
+ */
+export function tarballMatchesPackage(entry: Pick<LockEntry, "path" | "resolved" | "name" | "version">, registries: readonly string[]): boolean {
+  const registry = registries.find((r) => typeof r === "string" && r !== "" && entry.resolved.startsWith(r.endsWith("/") ? r : `${r}/`));
+  if (registry === undefined) return true;
+  const name = lockEntryPackageName(entry);
+  if (name === "") return false;
+  const base = registry.endsWith("/") ? registry : `${registry}/`;
+  let rest: string;
+  try {
+    rest = decodeURIComponent(entry.resolved.slice(base.length));
+  } catch {
+    return false;
+  }
+  const prefix = `${name}/-/${name.split("/").pop()}-`;
+  if (!rest.startsWith(prefix) || !rest.endsWith(".tgz")) return false;
+  const version = typeof entry.version === "string" ? entry.version : "";
+  return version === "" || rest === `${prefix}${version}.tgz`;
 }
 
 /**
@@ -161,6 +208,16 @@ function entryLine(
   if (!originAccepted(entry.resolved, registries)) {
     return {
       line: `lock-integrity: REJECT ${entry.path} ${shown} — origin outside the documented public registries`,
+      outcome: "reject",
+    };
+  }
+  // Rule 4b (eval-15): a registry origin must be the entry's own tarball —
+  // another package's tarball under a trusted name is lockfile injection,
+  // and no exemption can save it either.
+  if (!tarballMatchesPackage(entry, registries)) {
+    const wanted = `${lockEntryPackageName(entry) || "(unnamed)"}${entry.version ? `@${entry.version}` : ""}`;
+    return {
+      line: `lock-integrity: REJECT ${entry.path} ${shown} — origin is not the tarball of ${wanted} (lockfile injection)`,
       outcome: "reject",
     };
   }

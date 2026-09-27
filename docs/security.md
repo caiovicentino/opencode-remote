@@ -274,7 +274,13 @@ identity servers, no accounts.
     exempt an entry with a deadline, add it with the lockfile path as id,
     a one-sentence reason and an expiry date to
     `scripts/lock-exemptions.json` — past the expiry the entry counts in
-    full again.
+    full again. A registry origin must also be the entry's **own**
+    canonical tarball (`<registry><name>/-/<basename>-<version>.tgz`, the
+    name taken from the lockfile `name` field for npm aliases): pointing a
+    trusted name such as `node_modules/lodash` at another package's tarball
+    on the same registry — with that tarball's valid hash — is lockfile
+    injection and rejects even under an exemption, and an origin with a
+    `..` segment anywhere is never provably internal (eval-15).
 
 18. **Update-feed digest confrontation (P2-308).** The `release-feeds` job
     downloads the release artifacts, measures sha512 (base64) and byte size
