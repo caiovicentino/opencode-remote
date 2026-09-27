@@ -2070,6 +2070,18 @@ um branch que troca `test:unit` por `true` ou planta um `judge.ts` que devolve
   num juiz v2, nonce e HEAD = pin. A chave pública é lida antes do spawn e a
   árvore do juiz é re-verificada depois do run; o diretório `judge-req-*`
   some em qualquer caminho. Juiz v1 continua aceito por sha + task.
+- **Bateria isolada do runtime.** Todo comando do workspace (scripts npm,
+  `scripts/*.ts`, re-execuções do EVIDENCE) roda com `HOME`/`USERPROFILE`
+  descartável (sem `//` do `TMPDIR`), caches reais de Playwright/npm/Electron,
+  identidade git por `GIT_AUTHOR_*`/`GIT_COMMITTER_*` e sem `RELAY_URL`,
+  `OCR_PILOT_REPO`, `PILOT_EVENTS_FILE` e `XDG_*` — como o CI. Em 27/09 o
+  `runDoctor` da bateria reescreveu o `pilot/state.json` de produção; agora isso
+  cai na sandbox. O step de invariants do juiz mantém o ambiente real. Tripwire:
+  `judge.json`, `pilot.json`, `mission.json`, `judge/judge.key` e `daemon.json`
+  (sem `lastSeenAt` e sem o cliente transitório `pilot-invariants`) são
+  comparados antes/depois da bateria; mudança ⇒ vermelho no step `context` com
+  `runtimeChanged[]` no veredito. `pilot/state.json` fica só com a sandbox: os
+  outros slots do pilot o gravam durante qualquer gate.
 - **Intérprete do juiz.** Gate e `invariants --live` do deploy rodam
   `node <juiz>/node_modules/tsx/dist/cli.mjs` com cwd no juiz
   (`judgeInvariantsCommand`) — nunca `npx tsx` com cwd no checkout auditado.
@@ -2082,8 +2094,10 @@ um branch que troca `test:unit` por `true` ou planta um `judge.ts` que devolve
   não conta). Teria acusado `clientHello`/`serverAccept` em 10/09 — o incidente
   de 22/09 (12 dias de deploys em quarentena).
 - **Canário.** `npm run canary` no juiz: 11 branches maliciosos recusados antes
-  da bateria, 2 controles positivos certificados, vereditos forjados/
-  adulterados/re-ligados rejeitados. `runJudgeCanary()` expõe o resultado ao
+  da bateria, 2 controles positivos certificados, 4 cenários de sandbox com a
+  bateria real contra um HOME falso (escrita em `$HOME/.opencode-remote` cai na
+  sandbox; escrita por caminho absoluto é pega pelo tripwire), vereditos
+  forjados/adulterados/re-ligados rejeitados. `runJudgeCanary()` expõe o resultado ao
   doctor (vermelho, com motivo, em juiz v1).
 
 Limites conhecidos: builder e juiz rodam com o mesmo usuário e o builder tem
