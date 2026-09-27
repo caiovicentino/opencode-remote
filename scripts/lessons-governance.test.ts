@@ -12,8 +12,8 @@
  *   boilerplate ignored, paraphrases not injected twice; word-boundary
  *   clipping; re-landed lessons refresh instead of duplicating; the scribe
  *   prompt contract (0–2 lessons, budget, existing lessons);
- * - lessonImpact v2: per-run token deltas, untreated runs outside the cohorts,
- *   the v1 record preserved as legacyV1.
+ * - lessonImpactV2: per-run token deltas, untreated runs outside the cohorts,
+ *   survives the midnight rollover; the v1 record is never rewritten.
  * Pure node (fs/os/path in a temp dir) — portable battery.
  * Run: npx tsx scripts/lessons-governance.test.ts
  */
@@ -45,8 +45,8 @@ import {
   tailSignal,
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
-import { LESSON_IMPACT_VERSION, normalizeLessonImpact, recordLessonImpact, runTokenDelta } from "../apps/pilot/src/lessonimpact";
-import type { LessonImpact } from "../apps/pilot/src/state";
+import { normalizeLessonImpactV2, recordLessonImpact, runTokenDelta } from "../apps/pilot/src/lessonimpact";
+import { loadState, type LessonImpact, type LessonImpactV2 } from "../apps/pilot/src/state";
 import { scribePrompt } from "../apps/pilot/src/pipeline";
 import type { Task } from "../apps/pilot/src/backlog";
 
@@ -233,7 +233,7 @@ const md = (lines: string[]) => `# Experience memory (IER)\n\n## Lessons\n${line
   check("scribe prompt: LESSONS/SCRIBE:DONE contract kept", a.includes("LESSONS:\n<lesson lines>\nSCRIBE:DONE"));
 }
 
-// ── lessonImpact v2 ─────────────────────────────────────────────────────────
+// ── lessonImpactV2 ──────────────────────────────────────────────────────────
 {
   // P1-076 in the real log: lifetime totals 23.3M → 27.4M → 35.9M over 3 runs
   const lifetimes = [23_288_442, 27_410_410, 35_896_509];
@@ -242,27 +242,27 @@ const md = (lines: string[]) => `# Experience memory (IER)\n\n## Lessons\n${line
   check("impact: per-run deltas sum to the task's lifetime (v1 counted 86.6M for 35.9M)", v2 === 35_896_509 && v1 === 86_595_361);
   check("impact: runTokenDelta never negative, unknown → 0", runTokenDelta(10, 5) === 0 && runTokenDelta(undefined, undefined) === 0 && runTokenDelta(5, Number.NaN) === 0);
 
-  const st: { lessonImpact?: LessonImpact } = {};
+  // the pre-incident production record (orchestrator, 2026-09-27)
+  const v1Record: LessonImpact = { with: { merges: 352, roundsTotal: 895, tokensTotal: 6_424_039_987 }, without: { merges: 3, roundsTotal: 4, tokensTotal: 16_530_200 } };
+  const st: { lessonImpact?: LessonImpact; lessonImpactV2?: LessonImpactV2 } = { lessonImpact: JSON.parse(JSON.stringify(v1Record)) };
   const now = new Date("2026-09-27T12:00:00-03:00");
   recordLessonImpact(st, { lessons: 5, rounds: 2, ok: true, tokens: 100 }, now);
   recordLessonImpact(st, { lessons: 0, rounds: 0, ok: false, tokens: 0 }, now);
   recordLessonImpact(st, { lessons: 0, rounds: 1, ok: true, tokens: 7 }, now);
-  const li = st.lessonImpact!;
-  check("impact: v2 record stamped with its start day", li.v === LESSON_IMPACT_VERSION && li.since === "2026-09-27");
-  check("impact: a run that never reached a builder stays out of both cohorts", li.untreated === 1 && li.with.runs === 1 && li.without.runs === 1 && li.without.merges === 1);
+  const li = st.lessonImpactV2!;
+  check("impact: v2 record stamped with its start day", li.since === "2026-09-27");
+  check("impact: a run that never reached a builder stays out of both cohorts", li.untreated === 1 && li.with.runs === 1 && li.without.runs === 1 && li.without.merges === 1 && li.with.tokensTotal === 100);
+  check("impact: the legacy v1 record is never rewritten (rollback-safe)", JSON.stringify(st.lessonImpact) === JSON.stringify(v1Record));
 
-  const legacy: { lessonImpact?: LessonImpact } = {
-    lessonImpact: { with: { merges: 352, roundsTotal: 895, tokensTotal: 6_424_039_987 }, without: { merges: 3, roundsTotal: 4, tokensTotal: 16_530_200 } },
-  };
-  recordLessonImpact(legacy, { lessons: 3, rounds: 1, ok: true, tokens: 50 }, now);
-  check(
-    "impact: a v1 record restarts the measurement and is kept as legacyV1",
-    legacy.lessonImpact!.v === LESSON_IMPACT_VERSION && legacy.lessonImpact!.with.merges === 1 && legacy.lessonImpact!.with.tokensTotal === 50 &&
-      legacy.lessonImpact!.legacyV1!.with.merges === 352 && legacy.lessonImpact!.legacyV1!.without.tokensTotal === 16_530_200,
-  );
-  const again = normalizeLessonImpact(JSON.parse(JSON.stringify(legacy.lessonImpact)));
-  check("impact: a v2 record round-trips through the state normalizer", JSON.stringify(again) === JSON.stringify(legacy.lessonImpact));
-  check("impact: garbage normalizes to undefined", normalizeLessonImpact("x") === undefined && normalizeLessonImpact(null) === undefined);
+  // loadState with an injected path (never the real HOME): a state from an
+  // earlier day goes through the midnight rollover — both records survive
+  const stateFile = join(dir, "state.json");
+  writeFileSync(stateFile, JSON.stringify({ date: "2026-09-24", tasks: 7, deploys: 1, failures: 0, merges: 5, taskAttempts: {}, lessonImpact: v1Record, lessonImpactV2: li }));
+  const loaded = loadState(stateFile);
+  check("impact: lessonImpactV2 survives the midnight rollover", loaded.tasks === 0 && JSON.stringify(loaded.lessonImpactV2) === JSON.stringify(li));
+  check("impact: the v1 record survives loadState untouched", JSON.stringify(loaded.lessonImpact) === JSON.stringify(v1Record));
+  check("impact: v2 round-trips through its normalizer", JSON.stringify(normalizeLessonImpactV2(JSON.parse(JSON.stringify(li)))) === JSON.stringify(li));
+  check("impact: garbage normalizes to undefined", normalizeLessonImpactV2("x") === undefined && normalizeLessonImpactV2(null) === undefined);
 }
 
 rmSync(dir, { recursive: true, force: true });

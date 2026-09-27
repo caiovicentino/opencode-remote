@@ -6859,15 +6859,16 @@ check(
 
 // --- P1-075 lesson-injection impact instrumentation ---------------------------
 {
-  const st: { lessonImpact?: import("../apps/pilot/src/state").LessonImpact } = {};
+  // eval 05: the accounting lives in lessonImpactV2 (the v1 record is frozen)
+  const st: { lessonImpactV2?: import("../apps/pilot/src/state").LessonImpactV2 } = {};
   recordLessonImpact(st, { lessons: 5, rounds: 2, ok: true, tokens: 100 });
   recordLessonImpact(st, { lessons: 3, rounds: 1, ok: false, tokens: 40 });
   recordLessonImpact(st, { lessons: 0, rounds: 3, ok: true, tokens: 7 });
   recordLessonImpact(st, { lessons: 0, rounds: 1, ok: false, tokens: 0 });
   check(
     "lesson impact: folds merges/rounds/tokens into the right cohort",
-    st.lessonImpact!.with.merges === 1 && st.lessonImpact!.with.roundsTotal === 3 && st.lessonImpact!.with.tokensTotal === 140 &&
-      st.lessonImpact!.without.merges === 1 && st.lessonImpact!.without.roundsTotal === 4 && st.lessonImpact!.without.tokensTotal === 7,
+    st.lessonImpactV2!.with.merges === 1 && st.lessonImpactV2!.with.roundsTotal === 3 && st.lessonImpactV2!.with.tokensTotal === 140 &&
+      st.lessonImpactV2!.without.merges === 1 && st.lessonImpactV2!.without.roundsTotal === 4 && st.lessonImpactV2!.without.tokensTotal === 7,
   );
 }
 

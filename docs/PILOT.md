@@ -1700,7 +1700,7 @@ detalhe>` — o nome do job de CI deixa de ser cortado), usa só as linhas de fa
 da cauda (sem `OK …`, eventos JSON nem códigos ANSI) e mostra o título da task
 quando a linha o tem (`title`, gravado a partir deste eval).
 O pipeline também registra, **de forma descritiva**, a injeção de lições: cada
-resultado de pipeline é dobrado em `state.lessonImpact` (coortes *with/without
+resultado de pipeline é dobrado em `state.lessonImpactV2` (coortes *with/without
 lessons*: runs, merges, rounds e tokens) e logado como `lesson impact`. Limites
 (eval 05, `apps/pilot/src/lessonimpact.ts`): as coortes **não são aleatórias** —
 o matcher decide quem recebe lição a partir do texto da task, então a diferença
@@ -1708,9 +1708,12 @@ entre elas não prova que lições ajudam ou atrapalham. A v1 (até 2026-09-27)
 somava o total **vitalício** de tokens da task a cada run (1,70× inflado em 568
 runs: 6,45 bi registrados contra 3,80 bi reais) e jogava runs que nem chegaram
 ao builder (8 falhas de planner) na coorte *without* — que tinha só 3 merges,
-todos de tasks RT. A v2 (`v: 2`) soma o delta de tokens de cada run, conta
-`runs` e deixa runs sem rodada de builder em `untreated`; o registro v1 fica
-preservado em `legacyV1`. Uma afirmação causal exige holdout aleatório: com a
+todos de tasks RT. A contabilidade nova vive em `state.lessonImpactV2`: soma o
+delta de tokens de cada run, conta `runs`, deixa runs sem rodada de builder em
+`untreated`, carimba `since` e sobrevive à virada da meia-noite. O registro v1
+(`state.lessonImpact`) fica **congelado** — nunca é reescrito nem migrado, então
+um rollback para código antigo continua achando os dois intactos. Uma afirmação
+causal exige holdout aleatório: com a
 variância medida (CV 0,89 em rounds/merge, 1,14 em tokens/merge), detectar 20%
 de efeito com 80% de poder pede ~311 merges por braço em rounds (~511 em
 tokens), ou seja, semanas de holdout — decisão do operador, ainda não ligada.

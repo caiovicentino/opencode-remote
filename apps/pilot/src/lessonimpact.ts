@@ -1,21 +1,21 @@
 /**
- * P1-075 lesson-injection instrumentation (state.lessonImpact), rebuilt by
- * eval 05 (2026-09-27). Pure and light on purpose — metrics.ts re-exports it
+ * P1-075 lesson-injection instrumentation, rebuilt by eval 05 (2026-09-27) as
+ * `state.lessonImpactV2`. Pure and light on purpose — metrics.ts re-exports it
  * and the daemon imports metrics.ts.
  *
  * What the numbers can and cannot say: the cohorts are DESCRIPTIVE. Nothing
  * randomizes which builder gets lessons (the matcher decides from the task
  * text), so "with" and "without" differ in task mix and a gap between them is
- * not evidence that lessons help or hurt. v1 (until 2026-09-27) also re-added
- * each task's lifetime token total on every run (1.70x inflated over 568
- * runs) and filed runs that never reached a builder (8 planner failures)
- * under "without".
+ * not evidence that lessons help or hurt.
+ *
+ * Why a new key: the v1 record (`state.lessonImpact`) re-added each task's
+ * LIFETIME token total on every run (1.70x inflated over 568 runs) and filed
+ * runs that never reached a builder (8 planner failures) under "without". It
+ * is left untouched — never rewritten, never migrated — so a deploy rollback
+ * to older code (which only knows `lessonImpact`) cannot lose either record.
  */
 import { TZ } from "./log";
-import type { LessonImpact, LessonImpactCohort } from "./state";
-
-/** Current accounting: per-run token deltas, untreated runs kept apart. */
-export const LESSON_IMPACT_VERSION = 2;
+import type { LessonImpactV2, LessonImpactV2Cohort } from "./state";
 
 /** P1-075: one pipeline outcome for the lesson-injection instrumentation. */
 export interface LessonImpactSample {
@@ -30,38 +30,20 @@ export interface LessonImpactSample {
 
 const num = (n: unknown) => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0);
 
-function legacyCohort(c: unknown): LessonImpactCohort {
-  const m = (c ?? {}) as Partial<LessonImpactCohort>;
-  return { merges: num(m.merges), roundsTotal: num(m.roundsTotal), tokensTotal: num(m.tokensTotal) };
+function cohort(c: unknown): LessonImpactV2Cohort {
+  const m = (c ?? {}) as Partial<LessonImpactV2Cohort>;
+  return { runs: num(m.runs), merges: num(m.merges), roundsTotal: num(m.roundsTotal), tokensTotal: num(m.tokensTotal) };
 }
 
-function cohort(c: unknown): LessonImpactCohort {
-  return { ...legacyCohort(c), runs: num((c as Partial<LessonImpactCohort> | null)?.runs) };
-}
-
-function emptyLessonImpact(): LessonImpact {
-  return { v: LESSON_IMPACT_VERSION, since: "", with: cohort(null), without: cohort(null), untreated: 0 };
-}
-
-/**
- * Tolerant parse of state.lessonImpact (garbage → undefined). A pre-v2
- * record restarts the measurement: its cohorts move to `legacyV1` and are
- * never summed with v2 numbers — the token accounting differs.
- */
-export function normalizeLessonImpact(v: unknown): LessonImpact | undefined {
+/** Tolerant parse of state.lessonImpactV2 — garbage → undefined. */
+export function normalizeLessonImpactV2(v: unknown): LessonImpactV2 | undefined {
   if (!v || typeof v !== "object") return undefined;
-  const raw = v as Partial<Record<keyof LessonImpact, unknown>>;
-  if (raw.v !== LESSON_IMPACT_VERSION) {
-    return { ...emptyLessonImpact(), legacyV1: { with: legacyCohort(raw.with), without: legacyCohort(raw.without) } };
-  }
-  const legacy = raw.legacyV1 as { with?: unknown; without?: unknown } | undefined;
+  const raw = v as Partial<Record<keyof LessonImpactV2, unknown>>;
   return {
-    v: LESSON_IMPACT_VERSION,
     since: typeof raw.since === "string" ? raw.since : "",
     with: cohort(raw.with),
     without: cohort(raw.without),
     untreated: num(raw.untreated),
-    ...(legacy && typeof legacy === "object" ? { legacyV1: { with: legacyCohort(legacy.with), without: legacyCohort(legacy.without) } } : {}),
   };
 }
 
@@ -76,27 +58,30 @@ export function runTokenDelta(before: number | undefined, after: number | undefi
 }
 
 /**
- * Fold one pipeline outcome into the with/without cohorts (mutates `state`,
- * like recordContextPressure). Merges count only successful runs; runs,
- * rounds and tokens count every treated outcome. A run that never reached a
- * builder round got no injection at all, so it is counted in `untreated`.
+ * Fold one pipeline outcome into the with/without cohorts of
+ * `state.lessonImpactV2` (mutates `state`, like recordContextPressure).
+ * Merges count only successful runs; runs, rounds and tokens count every
+ * treated outcome. A run that never reached a builder round got no injection
+ * at all, so it is counted in `untreated`. The legacy `state.lessonImpact` is
+ * never touched.
  */
 export function recordLessonImpact(
-  state: { lessonImpact?: LessonImpact },
+  state: { lessonImpactV2?: LessonImpactV2 },
   sample: LessonImpactSample,
   now = new Date(),
 ): void {
-  if (state.lessonImpact?.v !== LESSON_IMPACT_VERSION) {
-    state.lessonImpact = (state.lessonImpact && normalizeLessonImpact(state.lessonImpact)) || emptyLessonImpact();
-  }
-  const impact = state.lessonImpact;
-  if (!impact.since) impact.since = now.toLocaleDateString("en-CA", { timeZone: TZ });
+  const impact = (state.lessonImpactV2 ??= {
+    since: now.toLocaleDateString("en-CA", { timeZone: TZ }),
+    with: cohort(null),
+    without: cohort(null),
+    untreated: 0,
+  });
   if (!(sample.rounds > 0)) {
-    impact.untreated = (impact.untreated ?? 0) + 1;
+    impact.untreated++;
     return;
   }
-  const c: LessonImpactCohort = sample.lessons > 0 ? impact.with : impact.without;
-  c.runs = (c.runs ?? 0) + 1;
+  const c = sample.lessons > 0 ? impact.with : impact.without;
+  c.runs++;
   if (sample.ok) c.merges++;
   c.roundsTotal += Math.max(0, Math.round(sample.rounds));
   c.tokensTotal += Math.max(0, Math.round(sample.tokens));
