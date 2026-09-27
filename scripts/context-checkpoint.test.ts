@@ -15,9 +15,11 @@ import {
   CONTEXT_CRITICAL_PCT,
   clearRecapCarry,
   contextPct,
+  CONTEXT_PROBE_MESSAGES,
   contextWindowFor,
   fetchSessionContext,
   isContextCritical,
+  lastTurnContext,
   loadRecapCarry,
   saveRecapCarry,
   setRecapCarryDir,
@@ -139,28 +141,60 @@ async function withServer(jsonFor: (url: string) => { status?: number; body: unk
 }
 
 const SESSION = "ses_unitTestSession01";
-const fullSession = {
-  tokens: { input: 200_000, output: 10_000, reasoning: 0, cache: { read: 30_000, write: 5_000 } },
-  model: { providerID: "glm52", modelID: "glm-5.2" },
+// eval-18: the REAL opencode 1.18.32 shapes. `GET /session/:id` carries
+// `model: {id, providerID, variant}` (no modelID) and the CUMULATIVE bill of
+// every turn; the live context lives on the last assistant message of
+// `GET /session/:id/message?limit=N` ([{info, parts}], chronological tail).
+// The first P1-079 probe read the session object — its fixture used a
+// `modelID` shape opencode never returns, so the probe was dead in
+// production while this battery stayed green.
+const cumulativeSession = {
+  id: SESSION,
+  model: { id: "glm-5.2", providerID: "glm52", variant: "default" },
+  tokens: { input: 900_000, output: 60_000, reasoning: 0, cache: { read: 26_000_000, write: 0 } },
 };
+const turn = (created: number, tokens: Record<string, unknown>, modelID = "glm-5.2") => ({
+  info: { role: "assistant", providerID: "glm52", modelID, time: { created }, tokens },
+  parts: [],
+});
+const userMsg = { info: { role: "user", model: { providerID: "glm52", modelID: "glm-5.2" }, time: { created: 1 } }, parts: [] };
+// 245k live context = 200k+10k+30k+5k on the LAST assistant turn
+const tailMessages = [
+  userMsg,
+  turn(2, { input: 1_000, output: 500, reasoning: 0, cache: { read: 20_000, write: 0 } }),
+  turn(3, { total: 245_000, input: 200_000, output: 10_000, reasoning: 0, cache: { read: 30_000, write: 5_000 } }),
+];
 const WINDOW = 262_144;
+const seenUrls: string[] = [];
+const routes =
+  (tail: unknown, session: unknown = cumulativeSession) =>
+  (url: string): { status?: number; body: unknown } => {
+    seenUrls.push(url);
+    if (url.startsWith(`/session/${SESSION}/message`)) return { body: tail };
+    if (url.startsWith("/session/")) return { body: session };
+    if (url === "/provider") return { body: catalog };
+    return { status: 404, body: { error: "nope" } };
+  };
 
+await withServer(routes(tailMessages), async (port) => {
+  const base = `http://127.0.0.1:${port}`;
+  const ctx = await fetchSessionContext(SESSION, base);
+  check("fetchSessionContext returns the pressure", ctx !== null && ctx.window === 262_144);
+  const tokens = 245_000;
+  const expected = contextPct(tokens, WINDOW);
+  check("fetchSessionContext tokens = the LAST assistant turn's context (not the cumulative bill)", ctx?.tokens === tokens && Math.round(ctx!.pct) === Math.round(expected));
+  check("fixture session sits in the critical band", isContextCritical(ctx!.pct) === (expected >= 85));
+  check("fetchSessionContext asks for a bounded message tail", seenUrls.some((u) => u === `/session/${SESSION}/message?limit=${CONTEXT_PROBE_MESSAGES}`));
+  check("fetchSessionContext rejects junk ids", (await fetchSessionContext("garbage", base)) === null);
+});
+
+// eval-18 regression: a resumed session's cumulative bill (26.96M) dwarfs the
+// window, but its live context (100k) is only ~38% — never a recycle
 await withServer(
-  (url) =>
-    url.startsWith("/session/")
-      ? { body: fullSession }
-      : url === "/provider"
-        ? { body: catalog }
-        : { status: 404, body: { error: "nope" } },
+  routes([userMsg, turn(5, { input: 2_000, output: 1_000, reasoning: 0, cache: { read: 97_000, write: 0 } })]),
   async (port) => {
-    const base = `http://127.0.0.1:${port}`;
-    const ctx = await fetchSessionContext(SESSION, base);
-    check("fetchSessionContext returns the pressure", ctx !== null && ctx.window === 262_144);
-    const tokens = 245_000; // 200k+10k+30k+5k
-    const expected = contextPct(tokens, WINDOW);
-    check("fetchSessionContext tokens = DB columns sum", ctx?.tokens === tokens && Math.round(ctx!.pct) === Math.round(expected));
-    check("fixture session sits in the critical band", isContextCritical(ctx!.pct) === (expected >= 85));
-    check("fetchSessionContext rejects junk ids", (await fetchSessionContext("garbage", base)) === null);
+    const ctx = await fetchSessionContext(SESSION, `http://127.0.0.1:${port}`);
+    check("cumulative bill ≫ window but live context 100k → 38%, not critical", ctx?.tokens === 100_000 && !isContextCritical(ctx.pct) && Math.round(ctx.pct) === 38);
   },
 );
 
@@ -171,19 +205,34 @@ await withServer(
   },
 );
 
-await withServer(
-  (url) => (url.startsWith("/session/") ? { body: { tokens: fullSession.tokens, model: { providerID: "glm52", modelID: "unknown-model" } } } : { body: catalog }),
-  async (port) => {
-    check("fetchSessionContext fail-open on unknown model", (await fetchSessionContext(SESSION, `http://127.0.0.1:${port}`)) === null);
-  },
-);
+await withServer(routes([userMsg, turn(4, { total: 1_000, input: 1_000 }, "unknown-model")]), async (port) => {
+  check("fetchSessionContext fail-open on unknown model", (await fetchSessionContext(SESSION, `http://127.0.0.1:${port}`)) === null);
+});
+
+await withServer(routes([userMsg]), async (port) => {
+  check("fetchSessionContext fail-open when the tail has no assistant turn", (await fetchSessionContext(SESSION, `http://127.0.0.1:${port}`)) === null);
+});
 
 await withServer(
-  (url) => (url.startsWith("/session/") ? { body: fullSession } : { status: 500, body: { error: "boom" } }),
+  (url) => (url.startsWith("/session/") ? routes(tailMessages)(url) : { status: 500, body: { error: "boom" } }),
   async (port) => {
     check("fetchSessionContext fail-open on provider error", (await fetchSessionContext(SESSION, `http://127.0.0.1:${port}`)) === null);
   },
 );
+
+// eval-18: lastTurnContext (pure) — the latest measurable assistant turn wins
+check("lastTurnContext: garbage / empty → null", lastTurnContext(null) === null && lastTurnContext({}) === null && lastTurnContext([]) === null);
+check("lastTurnContext: user-only tail → null", lastTurnContext([userMsg]) === null);
+check("lastTurnContext: picks the latest assistant turn", lastTurnContext(tailMessages)?.tokens === 245_000);
+check(
+  "lastTurnContext: sums the five kinds when `total` is absent",
+  lastTurnContext([turn(9, { input: 10, output: 2, reasoning: 1, cache: { read: 20, write: 5 } })])?.tokens === 38,
+);
+check(
+  "lastTurnContext: an assistant turn without model ids or tokens is skipped",
+  lastTurnContext([turn(3, { total: 50 }), { info: { role: "assistant", time: { created: 9 }, tokens: { total: 999 } } }, turn(8, { total: 0 })])?.tokens === 50,
+);
+check("lastTurnContext: creation time beats list order", lastTurnContext([turn(9, { total: 7 }), turn(3, { total: 5 })])?.tokens === 7);
 // unreachable server
 check("fetchSessionContext fail-open when the server is down", (await fetchSessionContext(SESSION, "http://127.0.0.1:1")) === null);
 
@@ -199,11 +248,11 @@ check("fetchSessionContext fail-open when the server is down", (await fetchSessi
   const builderSession = SESSION;
 
   await withServer(
-    (url) => (url.startsWith("/session/") ? { body: fullSession } : { body: catalog }),
+    routes(tailMessages),
     async (port) => {
       const base = `http://127.0.0.1:${port}`;
       const fetchCtx = (sid: string) => fetchSessionContext(sid, base);
-      // fullSession tokens (~245k) sit ABOVE 85% of the 262144 window
+      // the last turn's live context (245k) sits ABOVE 85% of the 262144 window
       const over = await evaluateCheckpoint(builderSession, task, "fix X", fetchCtx, async () => "1. task\n2. pending\n3. next");
       check("critical session → recycle decision", over.recycle && over.recap.includes("next") && (over.pct ?? 0) >= 85);
       const applied = applyCheckpoint({ builderSession, resume, attempts }, over);
