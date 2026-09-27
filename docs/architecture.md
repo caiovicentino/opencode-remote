@@ -147,6 +147,13 @@ a clean reboot leaves the PWA reachable at
 
 - **Health probe**: `GET /healthz` answers `{"ok":true}` unauthenticated on
   the loopback port (it leaks nothing — a fixed literal).
+- **Headers (eval-12)**: every answer carries `X-Content-Type-Options:
+  nosniff`, `X-Frame-Options: DENY` (no other site may frame the page that
+  holds the pairing identity and the approve buttons) and `Referrer-Policy:
+  no-referrer` (outbound links never carry the tailnet hostname). There is
+  deliberately no Content-Security-Policy: artifact previews render agent HTML
+  in a `srcdoc` iframe, which inherits the page's CSP, so a `script-src` rule
+  would silently break every inline script or chart inside an artifact.
 - **Watchdog**: the daemon probes `/healthz` every 60s (only on hosts where
   `PWA_HEALTHZ_URL` is set or the `com.ocr.pwa` plist exists — sidecars on
   other machines stay silent) and on flip appends a `[pwa] origin` event to
@@ -165,7 +172,10 @@ a clean reboot leaves the PWA reachable at
 2. Relay reads `room`, forwards to sockets in the room — content opaque
 3. Daemon opens the seal (AAD check = replay/reorder guard), executes the op
    against `opencode serve` or its own `/__ocr/*` endpoints
-4. Response sealed back with AAD(daemon room, seq); bodies >900KB travel as
+4. Response sealed back with AAD(daemon room, seq) — every frame of one
+   session is numbered, sealed and sent through a single chain, so the wire
+   order always equals the seq order the client's strict guard expects
+   (eval-12); bodies >900KB travel as
    `res-chunk` frames the client reassembles byte-exact
 5. Client state machine (`connecting → paired`) drives the heartbeat: 20s
    app-level ping/pong, forced reconnect on resume-from-background. When the

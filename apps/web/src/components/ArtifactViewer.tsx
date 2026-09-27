@@ -150,19 +150,30 @@ export default function ArtifactViewer({
   const [state, setState] = useState<ViewState>({ loading: true });
   const viewRef = useRef<ViewState>({ loading: true });
   viewRef.current = state;
+  // eval-12: App hands down a fresh `request` function on every render (and a
+  // caller may rebuild `meta`), so an effect keyed on them re-downloaded the
+  // artifact and remounted the frame on every app render — for a PDF, a new
+  // browser PDF viewer per tick. The fetch keys on the artifact's identity
+  // only and reads the latest `request` through this ref.
+  const requestRef = useRef(request);
+  requestRef.current = request;
 
   useEffect(() => {
     let alive = true;
     setState({ loading: true });
     void (async () => {
       try {
-        const c = await fetchArtifact(request, meta.sessionId, meta.name);
+        const c = await fetchArtifact(requestRef.current, meta.sessionId, meta.name);
         if (!alive) return;
         if (!c) {
           setState({ loading: false, error: "artifact not found" });
           return;
         }
-        const blob = b64ToBlob(c.data, c.mime);
+        // eval-12: the pdf frame below renders unsandboxed, so its blob type is
+        // pinned here to exactly application/pdf — keyed on the same meta.kind
+        // that picks the frame, never on the declared mime — and the frame can
+        // only ever host the browser's PDF viewer, never a document of ours.
+        const blob = b64ToBlob(c.data, meta.kind === "pdf" ? "application/pdf" : c.mime);
         const url = TEXTISH.has(c.kind) ? undefined : URL.createObjectURL(blob);
         const full = TEXTISH.has(c.kind) ? await blob.text() : undefined;
         const truncated = full !== undefined && full.length > 500_000;
@@ -182,7 +193,7 @@ export default function ArtifactViewer({
       const url = viewRef.current.url;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [meta, request]);
+  }, [meta.sessionId, meta.name, meta.mtime, meta.kind]);
 
   function save() {
     const mime = state.mime ?? "application/octet-stream";
@@ -270,10 +281,13 @@ export default function ArtifactViewer({
             <iframe
               title={meta.name}
               src={state.url}
-              // P2-097: blob is same-origin — allow-same-origin keeps the
-              // browser's PDF viewer working while scripts/forms/popups stay
-              // blocked (the blob is created here, never attacker-navigable)
-              sandbox="allow-same-origin"
+              // eval-12: NO sandbox attribute. Chromium refuses to run its PDF
+              // viewer inside ANY sandboxed frame — measured: Chrome shows a
+              // blocked page and the desktop (Electron 44) a blank pane with
+              // ERR_BLOCKED_BY_CLIENT for the P2-097 `allow-same-origin` frame.
+              // The safety comes from the blob type pinned to application/pdf
+              // above: Chromium hands it to the out-of-process PDF viewer and
+              // never sniffs it into HTML (FileCard's preview works the same).
               style={{ width: "100%", height: "100%", border: "none" }}
             />
           )}
