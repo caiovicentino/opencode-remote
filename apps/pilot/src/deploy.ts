@@ -370,7 +370,44 @@ export interface DeployOpts {
   /** Judge guard probe (tests); null = proceed, string = refusal detail.
    * Absent = judgeGuardDetail against the pinned live judge. */
   probeJudge?: (repo: string, sha: string) => string | null;
+  /** Runner for EVERY side-effecting step of the mutation phase and the
+   * rollback (git fetch/reset, npm, build, launchctl kickstart, live
+   * invariants). Tests MUST inject it — the default refuses under a test
+   * harness (deployExecForbidden). */
+  run?: DeployRun;
+  /** Post-mutation judge resolution (tests); default resolveJudge(). */
+  resolveJudge?: () => { dir: string };
+  /** Heartbeat feeder during the soak (tests); default touchHeartbeat. */
+  heartbeat?: () => void;
+  /** State files touched by the mutation phase (tests); defaults under
+   * ~/.opencode-remote/pilot. */
+  quarantineFile?: string;
+  lastInstallFile?: string;
 }
+
+/** Side-effect runner of the mutation phase (same shape as runner.ts exec). */
+export type DeployRun = (cmd: string, opts: { cwd: string; timeoutMin?: number; allowFail?: boolean }) => { ok: boolean; output: string };
+
+/**
+ * Stop-the-line 2026-09-27 12:56: the PRODUCTION relay and daemon were
+ * kickstarted twice by deploy code that a test/simulation ran with the real
+ * exec — a HOME sandbox does not isolate launchd (the gui domain is per user).
+ * Under a test harness — OCR_TEST_HOME (scripts/testhome.ts), OCR_SANDBOX_HOME
+ * (the eval sandbox) or OCR_FORBID_REAL_DEPLOY_EXEC=1 — the default runner
+ * refuses every command and deploy() refuses to enter its mutation phase
+ * without an injected `run`. None of these is ever set for the launchd pilot.
+ */
+export function deployExecForbidden(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.OCR_TEST_HOME) || Boolean(env.OCR_SANDBOX_HOME) || env.OCR_FORBID_REAL_DEPLOY_EXEC === "1";
+}
+
+/** The production runner: runner.ts exec, refused under a test harness. */
+export const realDeployRun: DeployRun = (cmd, opts) => {
+  if (deployExecForbidden()) {
+    throw new Error(`deploy exec refused under a test harness (inject DeployOpts.run): ${cmd.slice(0, 120)}`);
+  }
+  return exec(cmd, opts);
+};
 
 /**
  * Judge guard (eval r5, the 09-10 → 09-22 incident): the live invariants that
@@ -568,12 +605,28 @@ export async function deploy(
     probe: opts?.probeHealth,
     onEvent: (fields) => emitEvent("deploy", fields),
     notify: opts?.notify,
+    sleep: opts?.sleep,
   });
   emitEvent("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
   // guard chain (sha → disk → dirty → direction → judge): a refusal returns here
   // with `refused` set and nothing mutated; only past this point is a real attempt
   const refusal = await deployPreflight(cfg, sha, meta, opts);
   if (refusal) return refusal;
+  // Stop-the-line 2026-09-27: past this point every step has production side
+  // effects (reset, npm, build, launchctl kickstart). Under a test harness
+  // without an injected runner, refuse loudly BEFORE the first one.
+  if (!opts?.run && deployExecForbidden()) {
+    throw new Error("deploy(): mutation phase reached under a test harness without DeployOpts.run — refused before any side effect");
+  }
+  const run = opts?.run ?? realDeployRun;
+  const health = opts?.probeHealth ?? (() => isHealthy(cfg));
+  const heartbeat = opts?.heartbeat ?? touchHeartbeat;
+  const qFile = opts?.quarantineFile ?? defaultQuarantineFile();
+  const installFile = opts?.lastInstallFile ?? defaultLastInstallFile();
+  const task = meta?.task ?? "deploy";
+  const notify = opts?.notify ?? notifySupervisor;
+  const toRollback = (bad: string, why: string) =>
+    banAndRollback(cfg, bad, prev, why, task, notify, rollbackHealth(task), { run, quarantineFile: qFile, lastInstallFile: installFile, emitEvent });
   opts?.onAttempt?.();
   // Catch-up (eval r5): say what goes live BEFORE it does (announceDeployPlan)
   const plan = opts?.plan;
@@ -582,13 +635,13 @@ export async function deploy(
   const summary = plan ? announceDeployPlan(plan, { emitEvent, notify: opts?.notify }) : "";
   // a failed catch-up step names its suspects (at most CATCHUP_STEP_TASKS)
   const suspects = catchUp && plan ? ` — step suspects: ${planTaskIds(plan.step)}` : "";
-  const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
+  const prev = run("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   // P1-044: the lane applies when this deploy changes the pilot's own code —
   // detected from the real sha range (covers the pending-deploy self-heal too);
   // both shas are validated object ids (prev from rev-parse, sha by shaGuard).
   const pilotInfra =
     opts?.pilotInfra ??
-    (exec(`git diff --name-only ${prev} ${sha} -- apps/pilot`, { cwd: cfg.repo, allowFail: true }).output.trim().length > 0);
+    (run(`git diff --name-only ${prev} ${sha} -- apps/pilot`, { cwd: cfg.repo, allowFail: true }).output.trim().length > 0);
   // Catch-up: several verified merges at once get the same reinforced watch
   // as the autocatalysis lane (baseline, live-invariant reruns, rate rollback).
   const reinforced = pilotInfra || catchUp;
@@ -597,7 +650,7 @@ export async function deploy(
   // ok:false on a fully failing baseline (dashboard must not read green).
   let baselineRate = 0;
   if (reinforced) {
-    baselineRate = await baselineHealthRate(opts?.probeHealth ?? (() => isHealthy(cfg)));
+    baselineRate = await baselineHealthRate(health, BASELINE_SAMPLES, opts?.sleep);
     emitEvent("deploy", {
       phase: "baseline",
       ok: baselineRate < 1,
@@ -608,20 +661,20 @@ export async function deploy(
     // allowFail: the target object is already local (the direction guard's
     // merge-base probe fails closed without it) — a transient fetch failure
     // must not quarantine a good sha through the catch below
-    exec(`git fetch origin`, { cwd: cfg.repo, allowFail: true });
-    exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
-    exec(`git reset -q --hard ${sha}`, { cwd: cfg.repo });
+    run(`git fetch origin`, { cwd: cfg.repo, allowFail: true });
+    run("git checkout -q main", { cwd: cfg.repo, allowFail: true });
+    run(`git reset -q --hard ${sha}`, { cwd: cfg.repo });
     // P1-021: install decision from the persisted last-install state. The hash
     // is computed once, after the reset, from HEAD's lockfile; a full `npm ci`
     // runs unless this exact lock was already installed successfully (missing/
     // corrupt state and empty hashes fail closed to "ci").
-    const lockHash = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo, allowFail: true }).output.trim();
-    const mode = installModeFor(lockHash, readLastInstall(defaultLastInstallFile()));
+    const lockHash = run("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo, allowFail: true }).output.trim();
+    const mode = installModeFor(lockHash, readLastInstall(installFile));
     const installStart = Date.now();
     let installed = false;
     if (mode === "fast") {
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "lock unchanged — fast install (no wipe)" }));
-      const fast = exec(FAST_INSTALL_CMD, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+      const fast = run(FAST_INSTALL_CMD, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
       if (fast.ok) {
         emitEvent("deploy", { phase: "install", ok: true, detail: `fast-install (lock unchanged) in ${Math.max(1, Math.round((Date.now() - installStart) / 1000))}s` });
         installed = true;
@@ -635,23 +688,23 @@ export async function deploy(
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "lock changed (or no install state) — full npm ci" }));
     }
     if (!installed) {
-      npmInstall(cfg); // throws on final failure → rollback path
+      npmInstall(cfg, run); // throws on final failure → rollback path
       emitEvent("deploy", { phase: "install", ok: true, detail: `npm ci in ${Math.max(1, Math.round((Date.now() - installStart) / 1000))}s` });
-      writeLastInstall(defaultLastInstallFile(), lockHash, nowLocalISO());
+      writeLastInstall(installFile, lockHash, nowLocalISO());
     }
-    exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15 });
-    kickstart(cfg, "com.ocr.relay");
-    kickstart(cfg, "com.ocr.daemon");
-    kickstartPwa(cfg);
+    run("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15 });
+    kickstart(cfg, "com.ocr.relay", run);
+    kickstart(cfg, "com.ocr.daemon", run);
+    kickstartPwa(cfg, run, emitEvent);
   } catch (err) {
-    await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
+    await toRollback(sha, `deploy steps failed: ${String(err).slice(0, 200)}`);
     return { ok: false, rolledBack: true, detail: `${String(err).slice(0, 200)}${suspects}` };
   }
 
   // health watch: services must come up healthy
-  const healthy = await pollHealth(cfg, 90);
+  const healthy = await pollHealth(health, 90, opts?.sleep);
   if (!healthy) {
-    await banAndRollback(cfg, sha, prev, "health check failed after deploy", meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
+    await toRollback(sha, "health check failed after deploy");
     return { ok: false, rolledBack: true, detail: `health check failed${suspects}` };
   }
 
@@ -664,17 +717,17 @@ export async function deploy(
   // refuses the retry until the pin is fixed).
   let judgeCli: string;
   try {
-    judgeCli = `${resolveJudge().dir}/src/invariants.ts`;
+    judgeCli = `${(opts?.resolveJudge ?? resolveJudge)().dir}/src/invariants.ts`;
   } catch (err) {
     const why = `judge unusable after the mutation: ${(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160)}`;
     log("warn", why, { sha: sha.slice(0, 7) });
     emitEvent("deploy", { phase: "rollback", ok: false, detail: why });
-    await rollback(cfg, prev, why, { ...rollbackHealth(meta?.task ?? "deploy"), notify: opts?.notify ?? notifySupervisor });
+    await rollback(cfg, prev, why, { ...rollbackHealth(task), notify }, { run, lastInstallFile: installFile, emitEvent });
     return { ok: false, rolledBack: true, detail: why };
   }
-  const inv = exec(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+  const inv = run(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
   if (!inv.ok) {
-    await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
+    await toRollback(sha, `live invariants failed: ${inv.output.slice(-200)}`);
     return { ok: false, rolledBack: true, detail: `live invariants failed${suspects}` };
   }
 
@@ -690,14 +743,15 @@ export async function deploy(
     pilotInfra,
     reinforced,
     baselineRate,
-    probe: () => isHealthy(cfg),
-    heartbeat: touchHeartbeat,
+    probe: health,
+    heartbeat,
     live: () => {
-      touchHeartbeat(); // before: the exec below blocks the loop for minutes
-      const r = exec(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
-      touchHeartbeat(); // after: the watchdog timer fires as soon as the loop unblocks
+      heartbeat(); // before: the exec below blocks the loop for minutes
+      const r = run(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+      heartbeat(); // after: the watchdog timer fires as soon as the loop unblocks
       return r;
     },
+    sleep: opts?.sleep,
     onEvent: (e) => emitEvent("deploy", e),
   });
   if (soak.outcome !== "ok") {
@@ -708,15 +762,15 @@ export async function deploy(
       ok: false,
       detail: soak.outcome === "health" ? "soak failed" : soak.outcome === "live" ? "live invariants failed during soak" : "soak failure rate above pre-deploy baseline",
     });
-    await banAndRollback(cfg, sha, prev, soak.why, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
+    await toRollback(sha, soak.why);
     return { ok: false, rolledBack: true, detail: `${detail}${suspects}` };
   }
-  emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
+  emitEvent("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
   // P2-011: UI-changing cycles leave visual evidence in the review log — a
   // post-deploy screenshot the reviewer agents cite in their verdicts.
   if (meta?.ui && meta.task) {
     const shotPath = await captureUiShot(meta.task, sha);
-    emit("phase", {
+    emitEvent("phase", {
       task: meta.task,
       phase: "ui-shot",
       ok: Boolean(shotPath),
@@ -728,7 +782,7 @@ export async function deploy(
   // abbreviated sha would false-positive against SHA_RE-normalized prev).
   // KeepAlive restarts the monitor on the new code; the pidfile singleton
   // covers any overlap.
-  const headNow = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
+  const headNow = run("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
   if (shouldSelfReload(prev, headNow)) {
     const moved = `HEAD moved ${prev.slice(0, 7)} → ${headNow.slice(0, 7)}`;
     // Frota Cognitiva: the drain+reload exists to put new PILOT code under the
@@ -774,11 +828,11 @@ export const FAST_INSTALL_CMD =
  * vector; the deploy only needs tsc/esbuild (no electron binary, no packaging).
  * P1-021: ELECTRON_CACHE keeps electron/ffmpeg binaries in a local cache so a
  * re-install never re-downloads them. */
-function npmInstall(cfg: PilotConfig) {
-  const r = exec('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --no-audit --no-fund --ignore-scripts --loglevel=error', { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+function npmInstall(cfg: PilotConfig, run: DeployRun = realDeployRun) {
+  const r = run('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --no-audit --no-fund --ignore-scripts --loglevel=error', { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   if (r.ok) return;
   console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "npm ci retry", data: r.output.slice(-300) }));
-  exec('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --no-audit --no-fund --ignore-scripts --loglevel=error', { cwd: cfg.repo, timeoutMin: 15 });
+  run('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --no-audit --no-fund --ignore-scripts --loglevel=error', { cwd: cfg.repo, timeoutMin: 15 });
 }
 
 /** P2-041: window the rolled-back build gets to come up healthy (30s ≈ 6 probes). */
@@ -838,22 +892,31 @@ export async function verifyRollbackHealth(cfg: PilotConfig, hooks?: RollbackHea
   return healthy;
 }
 
-async function rollback(cfg: PilotConfig, prevSha: string, why: string, hooks?: RollbackHealthHooks) {
-  exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
-  exec(`git reset -q --hard ${prevSha}`, { cwd: cfg.repo, allowFail: true });
-  const ci = exec('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --silent --ignore-scripts', { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+/** Side-effect seams shared by the rollback path (tests inject them all). */
+interface RollbackIo {
+  run?: DeployRun;
+  quarantineFile?: string;
+  lastInstallFile?: string;
+  emitEvent?: typeof emit;
+}
+
+async function rollback(cfg: PilotConfig, prevSha: string, why: string, hooks?: RollbackHealthHooks, io: RollbackIo = {}) {
+  const run = io.run ?? realDeployRun;
+  run("git checkout -q main", { cwd: cfg.repo, allowFail: true });
+  run(`git reset -q --hard ${prevSha}`, { cwd: cfg.repo, allowFail: true });
+  const ci = run('ELECTRON_CACHE="$HOME/.cache/electron" npm ci --silent --ignore-scripts', { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
   // P1-021: keep the "persisted hash == lock of the node_modules on disk"
   // invariant honest after a rollback — re-record only when the rollback ci
   // actually succeeded; a failed ci leaves the state stale on purpose (the
   // next deploy's fast install repairs it or the ladder falls back to ci).
   if (ci.ok) {
-    const h = exec("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo, allowFail: true }).output.trim();
-    writeLastInstall(defaultLastInstallFile(), h, nowLocalISO());
+    const h = run("git show HEAD:package-lock.json | shasum -a 256 | cut -d' ' -f1", { cwd: cfg.repo, allowFail: true }).output.trim();
+    writeLastInstall(io.lastInstallFile ?? defaultLastInstallFile(), h, nowLocalISO());
   }
-  exec("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
-  kickstart(cfg, "com.ocr.relay");
-  kickstart(cfg, "com.ocr.daemon");
-  kickstartPwa(cfg);
+  run("npm run build --silent", { cwd: cfg.repo, timeoutMin: 15, allowFail: true });
+  kickstart(cfg, "com.ocr.relay", run);
+  kickstart(cfg, "com.ocr.daemon", run);
+  kickstartPwa(cfg, run, io.emitEvent);
   console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "rollback", data: { prevSha, why } }));
   // P2-041: the old blind sleep(15s) never verified that the rolled-back build
   // came up — prod could stay unhealthy silently. Watch the health endpoint and
@@ -877,9 +940,10 @@ async function banAndRollback(
   task: string,
   notify: typeof notifySupervisor,
   healthHooks?: RollbackHealthHooks,
+  io: RollbackIo = {},
 ) {
-  await quarantineWithEscalation(defaultQuarantineFile(), badSha, why, task, notify);
-  await rollback(cfg, prevSha, why, { ...healthHooks, notify, task });
+  await quarantineWithEscalation(io.quarantineFile ?? defaultQuarantineFile(), badSha, why, task, notify);
+  await rollback(cfg, prevSha, why, { ...healthHooks, notify, task }, io);
 }
 
 /**
@@ -946,8 +1010,8 @@ export function resolveDeployPlan(
   );
 }
 
-function kickstart(cfg: PilotConfig, service: string) {
-  exec(`launchctl kickstart -k gui/${process.getuid?.() ?? 501}/${service}`, { cwd: cfg.repo });
+function kickstart(cfg: PilotConfig, service: string, run: DeployRun = realDeployRun) {
+  run(`launchctl kickstart -k gui/${process.getuid?.() ?? 501}/${service}`, { cwd: cfg.repo });
 }
 
 /**
@@ -957,9 +1021,9 @@ function kickstart(cfg: PilotConfig, service: string) {
  * keeps any previous instance serving the new dist from disk; the daemon's
  * pwa-origin watchdog reports a dead origin on the dashboard either way).
  */
-export function kickstartPwa(cfg: PilotConfig): boolean {
-  const r = exec(`launchctl kickstart -k gui/${process.getuid?.() ?? 501}/com.ocr.pwa`, { cwd: cfg.repo, allowFail: true });
-  emit("deploy", {
+export function kickstartPwa(cfg: PilotConfig, run: DeployRun = realDeployRun, emitEvent: typeof emit = emit): boolean {
+  const r = run(`launchctl kickstart -k gui/${process.getuid?.() ?? 501}/com.ocr.pwa`, { cwd: cfg.repo, allowFail: true });
+  emitEvent("deploy", {
     phase: "pwa-kickstart",
     ok: r.ok,
     detail: r.ok ? undefined : "com.ocr.pwa not loaded — run deploy/install.sh once",
@@ -984,15 +1048,15 @@ async function isHealthy(_cfg: PilotConfig): Promise<boolean> {
   }
 }
 
-async function pollHealth(cfg: PilotConfig, seconds: number): Promise<boolean> {
-  const deadline = Date.now() + seconds * 1000;
-  while (Date.now() < deadline) {
-    if (await isHealthy(cfg)) return true;
-    await sleep(5000);
+async function pollHealth(probe: () => Promise<boolean>, seconds: number, wait: (ms: number) => Promise<void> = sleep): Promise<boolean> {
+  // bounded by probe count (not wall clock) so an injected instant clock ends too
+  for (let waited = 0; waited < seconds * 1000; waited += 5000) {
+    if (await probe()) return true;
+    await wait(5000);
   }
   return false;
 }
 
-function sleep(ms: number) {
+function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }

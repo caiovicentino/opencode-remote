@@ -20,6 +20,9 @@
  * Run: npx tsx scripts/deploy-preflight.test.ts
  */
 process.env.PILOT_EVENTS_FILE = `${process.env.TMPDIR ?? "/tmp"}/pilot-deploy-preflight-events.jsonl`;
+// stop-the-line 2026-09-27 12:56: deploy code must never reach the real
+// launchctl/npm/git-reset from this suite — the default runner refuses
+process.env.OCR_FORBID_REAL_DEPLOY_EXEC = "1";
 process.env.GIT_AUTHOR_NAME ??= "ocr-unit";
 process.env.GIT_AUTHOR_EMAIL ??= "ocr-unit@test.local";
 process.env.GIT_COMMITTER_NAME ??= process.env.GIT_AUTHOR_NAME;
@@ -31,7 +34,7 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
 }
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -40,12 +43,16 @@ import { join } from "node:path";
 import {
   announceDeployPlan,
   deploy,
+  deployExecForbidden,
   deployPreflight,
   judgeGuardDetail,
+  kickstartPwa,
   planShipping,
+  realDeployRun,
   soakMinutesFor,
   soakWatch,
   type DeployOpts,
+  type DeployRun,
 } from "../apps/pilot/src/deploy";
 import {
   CATCHUP_MIN_TASKS,
@@ -401,6 +408,174 @@ const cfgOf = (repo: string): PilotConfig => ({
   check("deploy: one supervisor notify per distinct judge refusal (the pending path retries every cycle)", again.refused === "judge-guard" && notifies.length === 1);
   const pass = await deployPreflight(cfgOf(prodDir), c2, { task: "P0-002" }, { ...opts, probeJudge: () => null });
   check("deployPreflight: judge in sync + clean + descendant → null (proceed)", pass === null);
+}
+
+// ── 4b. deploy() can never reach the real launchctl/npm from a test ──────────
+{
+  check(
+    "tripwire: the harness env forbids the default runner; the launchd pilot env never does",
+    deployExecForbidden() &&
+      !deployExecForbidden({}) &&
+      deployExecForbidden({ OCR_TEST_HOME: "/tmp/x" }) &&
+      deployExecForbidden({ OCR_SANDBOX_HOME: "/tmp/y" }) &&
+      !deployExecForbidden({ HOME: "/Users/x", OCR_PILOT_REPO: "/p", PATH: "/usr/bin", RELAY_URL: "wss://r" }),
+  );
+  let refusedDefault = "";
+  try {
+    realDeployRun("launchctl kickstart -k gui/1/com.ocr.relay", { cwd: tmp });
+  } catch (err) {
+    refusedDefault = String(err);
+  }
+  check("tripwire: the default runner refuses launchctl under test (nothing spawned)", refusedDefault.includes("refused under a test harness"));
+  let refusedPwa = "";
+  try {
+    kickstartPwa(cfgOf(tmp));
+  } catch (err) {
+    refusedPwa = String(err);
+  }
+  check("tripwire: kickstartPwa with its default runner refuses under test", refusedPwa.includes("refused under a test harness"));
+
+  // every guard passes, no runner injected → deploy() must refuse BEFORE the
+  // first side effect (no onAttempt, no notify, no quarantine, no rollback)
+  let attempts = 0;
+  let notifies = 0;
+  let thrown = "";
+  const q0 = join(tmp, "q-tripwire.jsonl");
+  try {
+    await deploy(cfgOf(tmp), sha(77), { task: "P0-077" }, {
+      verifiedMerges: [vm(sha(77), "P0-077")],
+      quarantine: [],
+      probeFreeBytes: async () => 100 * 1024 ** 3,
+      probeDirty: () => "",
+      probeAncestor: () => true,
+      probeJudge: () => null,
+      notify: async () => {
+        notifies++;
+        return true;
+      },
+      emitEvent: () => {},
+      onAttempt: () => {
+        attempts++;
+      },
+      quarantineFile: q0,
+    });
+  } catch (err) {
+    thrown = String(err);
+  }
+  check(
+    "tripwire: deploy() past every guard WITHOUT DeployOpts.run throws before any side effect",
+    thrown.includes("refused before any side effect") && attempts === 0 && notifies === 0 && !existsSync(q0),
+    thrown,
+  );
+
+  // the whole mutation path through a FAKE runner: every command is recorded,
+  // none is executed — including the three launchctl kickstarts
+  const PREV = sha(70);
+  const TARGET = sha(74);
+  const mkFake = (failOn?: RegExp) => {
+    const calls: string[] = [];
+    let head = PREV;
+    const run: DeployRun = (cmd, o) => {
+      calls.push(cmd);
+      let r = { ok: true, output: "" };
+      if (cmd === "git rev-parse HEAD") r = { ok: true, output: `${head}\n` };
+      else if (cmd.startsWith("git reset -q --hard ")) head = cmd.slice("git reset -q --hard ".length).trim();
+      if (failOn && failOn.test(cmd)) r = { ok: false, output: "boom" };
+      if (!r.ok && !o.allowFail) throw new Error(`exec failed: ${cmd}`);
+      return r;
+    };
+    return { run, calls };
+  };
+  const hist = [sha(75), TARGET, sha(73), sha(72), sha(71), PREV];
+  const merges = [vm(sha(71), "T1"), vm(sha(72), "T2"), vm(sha(73), "T3"), vm(TARGET, "T4"), vm(PREV, "T0")];
+  const plan = planDeploy(hist, PREV, merges, []);
+  const baseOpts = (run: DeployRun, events: Array<{ phase?: string; ok?: boolean; detail?: string }>, notes: string[], beats: { n: number }, files: { q: string; li: string }): DeployOpts => ({
+    verifiedMerges: merges,
+    quarantine: [],
+    probeFreeBytes: async () => 100 * 1024 ** 3,
+    probeDirty: () => "",
+    probeAncestor: () => true,
+    probeJudge: () => null,
+    probeHealth: async () => true,
+    sleep: () => Promise.resolve(),
+    heartbeat: () => {
+      beats.n++;
+    },
+    resolveJudge: () => ({ dir: "/fake/judge" }),
+    pilotInfra: false,
+    plan,
+    run,
+    notify: async (task, _ok, detail) => {
+      notes.push(`${task}:${detail}`);
+      return true;
+    },
+    emitEvent: (_t, f) => {
+      events.push(f);
+    },
+    quarantineFile: files.q,
+    lastInstallFile: files.li,
+  });
+  const uid = process.getuid?.() ?? 501;
+  {
+    const fake = mkFake();
+    const events: Array<{ phase?: string; ok?: boolean; detail?: string }> = [];
+    const notes: string[] = [];
+    const beats = { n: 0 };
+    const files = { q: join(tmp, "q-ok.jsonl"), li: join(tmp, "li-ok.json") };
+    const res = await deploy(cfgOf(tmp), TARGET, { task: "P0-074" }, baseOpts(fake.run, events, notes, beats, files));
+    await new Promise((r) => setTimeout(r, 10));
+    check("fake run: the catch-up step deploys through the injected runner only", res.ok && !res.rolledBack && res.detail.includes(`deployed ${TARGET.slice(0, 7)}`) && res.detail.includes("ships T1, T2, T3, T4"), JSON.stringify(res));
+    check(
+      "fake run: the three launchctl kickstarts went to the FAKE runner (never to launchd)",
+      [`launchctl kickstart -k gui/${uid}/com.ocr.relay`, `launchctl kickstart -k gui/${uid}/com.ocr.daemon`, `launchctl kickstart -k gui/${uid}/com.ocr.pwa`].every((k) => fake.calls.includes(k)),
+      fake.calls.join(" | "),
+    );
+    check(
+      "fake run: reset to the step target, npm ci and build are all recorded, in order",
+      fake.calls.indexOf(`git reset -q --hard ${TARGET}`) > 0 &&
+        fake.calls.findIndex((c) => c.includes("npm ci")) > fake.calls.indexOf(`git reset -q --hard ${TARGET}`) &&
+        fake.calls.indexOf("npm run build --silent") > fake.calls.findIndex((c) => c.includes("npm ci")) &&
+        fake.calls.findIndex((c) => c.startsWith("launchctl")) > fake.calls.indexOf("npm run build --silent"),
+    );
+    const lives = fake.calls.filter((c) => c.includes("/fake/judge/src/invariants.ts") && c.endsWith("--live")).length;
+    check("fake run: a 4-merge catch-up runs the live invariants 3× (initial + soak checks 5 and 10)", lives === 3, String(lives));
+    check(
+      "fake run: plan, baseline (catch-up lane), 10 soak checks and done land on the injected feed",
+      events.some((e) => e.phase === "plan") && events.some((e) => e.phase === "baseline" && (e.detail ?? "").includes("catch-up of 4 merges")) && events.some((e) => e.phase === "soak 10/10") && events.some((e) => e.phase === "done"),
+    );
+    check("fake run: the supervisor hears the catch-up plan", notes.some((n) => n.startsWith("deploy-plan:") && n.includes("T1, T2, T3, T4")));
+    check("fake run: the soak fed the INJECTED heartbeat (the real file is never touched)", beats.n >= 10);
+    check("fake run: nothing quarantined on success", !existsSync(files.q));
+  }
+  {
+    const fake = mkFake(/^npm run build --silent$/);
+    const events: Array<{ phase?: string; ok?: boolean; detail?: string }> = [];
+    const notes: string[] = [];
+    const files = { q: join(tmp, "q-fail.jsonl"), li: join(tmp, "li-fail.json") };
+    const res = await deploy(cfgOf(tmp), TARGET, { task: "P0-074" }, baseOpts(fake.run, events, notes, { n: 0 }, files));
+    check("fake rollback: a failed build rolls back and names the step suspects", res.rolledBack && res.detail.includes("step suspects: T1, T2, T3, T4"), JSON.stringify(res));
+    check("fake rollback: the quarantine went to the injected file", readFileSync(files.q, "utf8").includes(TARGET));
+    check(
+      "fake rollback: reset to prev + rebuild + kickstarts ran through the fake runner",
+      fake.calls.includes(`git reset -q --hard ${PREV}`) && fake.calls.filter((c) => c.startsWith("launchctl kickstart")).length === 3,
+      fake.calls.join(" | "),
+    );
+    check("fake rollback: post-rollback health verdict lands on the injected feed", events.some((e) => e.phase === "rollback-health" && e.ok === true));
+  }
+  // source shape: the only direct exec left in deploy.ts is the guarded
+  // production runner plus read-only guard probes / target resolution
+  const src = readFileSync(join(ROOT, "apps", "pilot", "src", "deploy.ts"), "utf8");
+  const direct = [...src.matchAll(/\bexec\((`[^`]*`|"[^"]*")/g)].map((m) => m[1]!);
+  check(
+    "source: no launchctl/npm/reset/checkout ever goes through the raw exec in deploy.ts",
+    direct.every((c) => !/launchctl|npm |reset|checkout|--live/.test(c)) && /return exec\(cmd, opts\);/.test(src),
+    direct.join(" | "),
+  );
+  check(
+    "source: the tripwire sits between the guard chain and onAttempt",
+    src.indexOf("if (refusal) return refusal;") < src.indexOf("if (!opts?.run && deployExecForbidden())") &&
+      src.indexOf("if (!opts?.run && deployExecForbidden())") < src.indexOf("opts?.onAttempt?.();"),
+  );
 }
 
 // ── 5. doctor: tier-B completeness, judge check, refs fix ─────────────────────
