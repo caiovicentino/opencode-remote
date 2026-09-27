@@ -122,20 +122,22 @@ identity servers, no accounts.
   within ±300 000 ms (±5 min) of the daemon's clock, and the hello nonce is
   admitted at most once per window (in-memory cache, newest 4096 nonces,
   pruned every check; at the cap the newcomer is refused, never the oldest).
-  The nonce has exactly one accepted spelling (eval 14): the dedupe keys on
-  the nonce string, and the tolerant base64 decoder used to map dozens of
-  spellings of the same 16-byte salt (`==` stripped, inserted whitespace,
-  base64url, non-zero trailing bits) to the same session key — so a
-  recorded hello re-sent with a re-spelled nonce passed the dedupe, replaced
-  the victim's session with `lastSeq = 0` and let the recorded op frames run
-  a second time, no restart needed. `serverAccept` now admits only the
-  canonical standard base64 of exactly 16 bytes (`helloNonce`, what every
-  client has always sent) and refuses anything else before deriving a key
-  (`scripts/hello-replay.test.ts` replays four spellings against a real
-  daemon). Both refusals answer with a `session-reauth-required` control
-  instead of a silent drop, are counted in `ocr_hello_rejected_total`, and
-  never touch the live session's replay guard (`lastSeq`). Residual
-  limitations: the nonce cache lives in memory, so a hello captured shortly
+  Both refusals answer with a `session-reauth-required` control instead of a
+  silent drop, are counted in `ocr_hello_rejected_total`, and never touch the
+  live session's replay guard (`lastSeq`). The nonce has exactly one
+  accepted spelling (eval 14). The dedupe keys on the nonce string, and the
+  tolerant base64 decoder used to map dozens of spellings of the same
+  16-byte salt (`==` stripped, inserted whitespace, base64url, non-zero
+  trailing bits) to the same session key. A recorded hello re-sent with a
+  re-spelled nonce therefore passed the dedupe, replaced the victim's
+  session with `lastSeq = 0` and let the recorded op frames run a second
+  time, no restart needed. `serverAccept` now admits only the canonical
+  standard base64 of exactly 16 bytes (`helloNonce`, what every client has
+  always sent). Anything else is refused before a key is derived, on the
+  same path as a hello that fails to open: `session-reauth-required`,
+  counted in `ocr_auth_failures_total`, `lastSeq` untouched.
+  `scripts/hello-replay.test.ts` replays four spellings against a real
+  daemon. Residual limitations: the nonce cache lives in memory, so a hello captured shortly
   before a daemon restart can still be replayed once right after the
   restart while its stamp is fresh; and the cache keeps a nonce for 5 min
   after admission while a token stamped up to 5 min in the future stays
