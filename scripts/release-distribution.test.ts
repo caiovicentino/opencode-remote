@@ -26,6 +26,7 @@ import { join } from "node:path";
 
 import { checkForUpdatesOnBoot, type UpdaterLike, type UpdateStatus } from "../apps/desktop/src/update";
 import { bundlePathFromExec, macSigningFromCodesign, squirrelCanApply } from "../apps/desktop/src/macsigning";
+import { CODESIGN_ARGS, CODESIGN_BIN, runningMacSigning } from "../apps/desktop/src/macsigningprobe";
 import { ghDownloadArgs, ROLLOUT_FEED_ASSETS } from "../apps/desktop/scripts/rollout.mjs";
 import { relayUrlFromArgv, relayUrlProblem, WEB_DIST_INDEX } from "../cli-setup.mjs";
 import { capReleaseNotes, omissionLine, RELEASE_BODY_MAX_CHARS, RELEASE_NOTES_BUDGET_CHARS } from "./release-body";
@@ -409,6 +410,24 @@ function jobBlock(name: string): string {
   check("eval-16: an unknown signature fails open to Squirrel (today's behavior)", unknown.status === "update-available" && unknown.calls.length === 2);
   const win = await run("adhoc", "win32");
   check("eval-16: the signature probe is never consulted off macOS", win.probed === 0, JSON.stringify(win));
+
+  // The probe is the update path's only process execution and lives outside
+  // update.ts (P2-233 keeps update.ts/main.ts free of child_process): one
+  // fixed binary, display-only flags, and a target derived from
+  // process.execPath alone — it cannot be pointed at a downloaded file.
+  const probeSrc = codeOnly(readFileSync(join(repoRoot, "apps", "desktop", "src", "macsigningprobe.ts"), "utf8"));
+  const updateSrc = readFileSync(join(repoRoot, "apps", "desktop", "src", "update.ts"), "utf8");
+  check(
+    "eval-16: the signature probe runs only /usr/bin/codesign -dv --verbose=2 on the running bundle",
+    CODESIGN_BIN === "/usr/bin/codesign" &&
+      JSON.stringify(CODESIGN_ARGS) === JSON.stringify(["-dv", "--verbose=2"]) &&
+      (probeSrc.match(/execFile\(/g) ?? []).length === 1 &&
+      probeSrc.includes("[...CODESIGN_ARGS, bundlePathFromExec(process.execPath)]") &&
+      !/\b(spawn|spawnSync|execSync|execFileSync|exec)\(/.test(probeSrc) &&
+      runningMacSigning.length === 0,
+  );
+  check("eval-16: update.ts stays free of child_process (P2-233)", !updateSrc.includes("child_process") && updateSrc.includes('from "./macsigningprobe"'));
+  check("eval-16: outside a packaged Electron app the probe answers unknown without running anything", (await runningMacSigning()) === "unknown");
 }
 
 // --- 6. opencode-remote setup --------------------------------------------------

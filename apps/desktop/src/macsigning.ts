@@ -14,9 +14,10 @@
 // the very first public build would have hit this on the second release.
 //
 // Same module hygiene as updaterollout.ts / updateguard.ts: NO electron, NO
-// node:fs, no child_process, no timers, no imports — update.ts runs
-// `codesign -dv --verbose=2 <bundle>` and hands the text in; the unit battery
-// feeds real outputs captured from ad-hoc, Developer ID and unsigned bundles.
+// node:fs, no child_process, no timers, no imports — macsigningprobe.ts runs
+// `codesign -dv --verbose=2 <running bundle>` and hands the text in (update.ts
+// itself stays free of child_process, the P2-233 pin); the unit battery feeds
+// real outputs captured from ad-hoc, Developer ID and unsigned bundles.
 
 /** The signature the running bundle carries. */
 export type MacSigning = "developer-id" | "certificate" | "adhoc" | "unsigned" | "unknown";
