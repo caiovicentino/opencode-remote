@@ -7,6 +7,7 @@
  *    carryover file lifecycle and the "no attempt burned" contract.
  * Run: npx tsx scripts/context-checkpoint.test.ts
  */
+import "./testhome"; // throwaway HOME before any pilot module loads (testhome.ts)
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

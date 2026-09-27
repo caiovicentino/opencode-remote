@@ -25,6 +25,10 @@ for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIREC
   delete process.env[k];
 }
 
+// Throwaway HOME before any app module resolves ~/.opencode-remote (ESM runs
+// imports in order, and every statement above only after ALL imports) — the
+// battery must never reach the production runtime (testhome.ts).
+import "./testhome";
 import { b64, clientHello, fromB64, newIdentity, RELAY_WIRE_PROTOCOL, seal, openSealed, seqAad, frameSeq, serverAccept } from "@ocr/protocol";
 import { frameVerdict } from "../apps/daemon/src/frameguard";
 import { allowedUpstreamPath, relativePathVerdict } from "../apps/daemon/src/pathguard";
