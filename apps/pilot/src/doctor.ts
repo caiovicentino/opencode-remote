@@ -11,10 +11,12 @@
  *   state     — normalize state.json to the current schema + defaults
  *   tierb     — probe the tier-B claude binary (`claude --version`) (P2-114)
  *   dist      — sweep stale apps/desktop/dist trees from idle slot workspaces
+ *   judge     — pinned judge usable + protocol mirror in sync with origin (eval r5)
+ *   tierb-roles — every judgment role pinned when a tier-B block exists (eval r5)
  *
- * The pilot calls runDoctor() after every boot (apps/pilot/src/index.ts) and
- * operators can run any subcommand manually:
- *   tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|dist|all>
+ * The pilot calls runDoctor() + runDoctorGuards() after every boot
+ * (apps/pilot/src/index.ts) and operators can run any subcommand manually:
+ *   tsx apps/pilot/src/doctor.ts <refs|attempts|backlog|branches|state|tierb|dist|judge|tierb-roles|all>
  */
 import { lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -25,6 +27,16 @@ import { emit } from "./events";
 import { notifySupervisor } from "./notify";
 import { loadBacklog, parseBacklog } from "./backlog";
 import { bareTaskId } from "./mission";
+import { JUDGE_DIR } from "./judge";
+import {
+  compareProtocolMirror,
+  DEFAULT_JUDGE_PIN_FILE,
+  inspectJudge,
+  judgeDriftDetail,
+  readJudgeMirror,
+  showTargetProtocol,
+  type JudgeInspection,
+} from "./judgedrift";
 import {
   loadConfig,
   loadState,
@@ -33,6 +45,7 @@ import {
   type ModelsConfig,
   type PilotConfig,
   type PilotState,
+  type TierBRole,
 } from "./state";
 
 /** Injectable command runner — unit tests pin the exact git command sequence. */
@@ -67,7 +80,14 @@ export function doctorRefs(ws: string, run: RunFn = realRun(ws), base = "main"):
   const failed: string[] = [];
   for (const cmd of steps) {
     // fetch is best-effort (offline repair still resets to the local base ref)
-    if (!run(cmd).ok && !cmd.startsWith("git fetch")) failed.push(cmd);
+    if (!run(cmd).ok && !cmd.startsWith("git fetch")) {
+      failed.push(cmd);
+      // eval r5: a failed checkout leaves HEAD on whatever branch the slot
+      // was on — the reset below would rewind that pilot/<ID> branch onto
+      // origin and drop its unpushed commits (2026-09-24 07:12, repo-2 on
+      // pilot/P2-357: "failed: git checkout -q main", then the reset ran).
+      if (cmd === "git checkout -q main") break;
+    }
   }
   const after = run("git rev-parse HEAD").output.trim();
   return {
@@ -468,6 +488,109 @@ export function distSweepDue(lastAt: number | null, now: number, everyMs = DIST_
   return lastAt === null || now - lastAt >= everyMs;
 }
 
+// ── tierb-roles: every judgment role pinned when a tier-B block exists ───────
+
+/** Every TierBRole as a runtime list — the type alone vanishes at runtime. */
+export const TIER_B_ROLES = ["strategist", "planner", "forensic", "reviewerEscalation", "fable"] as const satisfies readonly TierBRole[];
+// Compile-time exhaustiveness: a TierBRole added to state.ts without being
+// listed above fails typecheck here instead of escaping this check.
+type UnlistedTierBRole = Exclude<TierBRole, (typeof TIER_B_ROLES)[number]>;
+export const TIER_B_ROLES_EXHAUSTIVE: [UnlistedTierBRole] extends [never] ? true : false = true;
+
+/**
+ * eval r5 (09-22 incident): pilot.json's tierB lacked `fable`, so the nightly
+ * product review ran on tier A for days — silently, because tier-A dispatch
+ * logs no agent-dispatch line. With a tier-B block present, every judgment
+ * role must be pinned: a missing role is reported by name (warning — the
+ * pipeline keeps working on tier A), and so is an unknown key (a typo such as
+ * "fabel" is kept by normalizeModels and matches no role). No tier-B block at
+ * all is the documented tier-A-only setup and stays green.
+ */
+export function doctorTierBRoles(models: ModelsConfig | undefined): DoctorResult {
+  const tierB = models?.tierB;
+  if (!tierB || Object.keys(tierB).length === 0) {
+    return { ok: true, changed: false, detail: "no tier-B block — every role runs tier A by design" };
+  }
+  const missing = TIER_B_ROLES.filter((r) => !tierB[r]);
+  const unknown = Object.keys(tierB).filter((k) => !(TIER_B_ROLES as readonly string[]).includes(k));
+  if (missing.length === 0 && unknown.length === 0) {
+    return { ok: true, changed: false, detail: `all ${TIER_B_ROLES.length} judgment roles pinned on tier B` };
+  }
+  const parts: string[] = [];
+  if (missing.length) parts.push(`${missing.join(", ")} silently run tier A (missing from models.tierB)`);
+  if (unknown.length) parts.push(`unknown key(s) ignored: ${unknown.join(", ")} (valid: ${TIER_B_ROLES.join("|")})`);
+  return { ok: false, changed: false, detail: `tier-B incomplete: ${parts.join("; ")}` };
+}
+
+// ── judge: pinned judge usable + protocol mirror in sync with origin ────────
+
+export interface JudgeDoctorDeps {
+  /** Pin/HEAD/dirty inspection (default: the live judge, read-only). */
+  inspect?: () => JudgeInspection;
+  /** The judge's vendored protocol (default: <judge>/src/protocol.ts). */
+  mirror?: () => string | null;
+  /** The protocol the next deploys ship (default: origin/<base> in the prod repo). */
+  target?: () => string | null;
+}
+
+/**
+ * eval r5 (09-10 → 09-22: 12 days of quarantined deploys): the judge pin is
+ * operator-owned and nothing watched it. Reports an unusable judge (missing,
+ * HEAD != pin, dirty) and a runtime drift between its vendored protocol and
+ * origin/<base>'s packages/protocol — the exact shape that makes the live
+ * invariants fail after every deploy. Diagnostic only (`changed` is always
+ * false): the judge guard in deployPreflight is what blocks the deploys.
+ */
+export function doctorJudge(repo: string, base = "main", deps: JudgeDoctorDeps = {}): DoctorResult {
+  const insp = (deps.inspect ?? (() => inspectJudge(JUDGE_DIR, DEFAULT_JUDGE_PIN_FILE)))();
+  if (!insp.usable) {
+    return { ok: false, changed: false, detail: `judge unusable: ${insp.detail} — every deploy is refused (judge guard) until the pin is fixed` };
+  }
+  const target = `origin/${base}`;
+  const drift = compareProtocolMirror(
+    (deps.mirror ?? (() => readJudgeMirror(JUDGE_DIR)))(),
+    (deps.target ?? (() => showTargetProtocol(repo, target)))(),
+  );
+  if (drift.state === "drift" || drift.state === "no-mirror") {
+    const window = drift.diff ? ` [judge: ${drift.diff.judge} | target: ${drift.diff.target}]` : "";
+    return { ok: false, changed: false, detail: `${judgeDriftDetail(insp.pin, target, drift)}${window}` };
+  }
+  return { ok: true, changed: false, detail: `${insp.detail}; protocol vs ${target}: ${drift.state} (${drift.detail})` };
+}
+
+/**
+ * Boot diagnostics added by eval r5 — the judge and tier-B completeness
+ * checks. Called by index.ts right after runDoctor (kept separate so the
+ * P1-030 pass and its pinned single tierB-binary alert stay untouched).
+ * A red check logs warn, raises an event and notifies the supervisor; it
+ * never blocks the boot.
+ */
+export function runDoctorGuards(
+  cfg: Pick<PilotConfig, "repo" | "models" | "baseBranch">,
+  log: typeof doctorLog = doctorLog,
+  hooks?: { judge?: JudgeDoctorDeps; notify?: typeof notifySupervisor; emitEvent?: typeof emit },
+): { judge: DoctorResult; tierBRoles: DoctorResult } {
+  const emitEvent = hooks?.emitEvent ?? emit;
+  const notify = hooks?.notify ?? notifySupervisor;
+  const judge = safe(() => doctorJudge(cfg.repo, cfg.baseBranch ?? "main", hooks?.judge), "judge");
+  log(judge.ok ? "info" : "warn", "doctor: judge", { repo: cfg.repo, ...judge });
+  if (!judge.ok) {
+    try {
+      emitEvent("alert", { task: "doctor", phase: "judge", ok: false, detail: judge.detail });
+    } catch {}
+    void Promise.resolve(notify("doctor", false, judge.detail)).catch(() => {});
+  }
+  const tierBRoles = safe(() => doctorTierBRoles(cfg.models), "tierb-roles");
+  log(tierBRoles.ok ? "info" : "warn", "doctor: tierB roles", tierBRoles);
+  if (!tierBRoles.ok) {
+    try {
+      emitEvent("phase", { task: "doctor", phase: "tierB-roles", ok: false, detail: tierBRoles.detail });
+    } catch {}
+    void Promise.resolve(notify("doctor", false, tierBRoles.detail)).catch(() => {});
+  }
+  return { judge, tierBRoles };
+}
+
 // ── orchestration ────────────────────────────────────────────────────────────
 
 export function doctorLog(level: string, msg: string, data?: unknown): void {
@@ -615,11 +738,24 @@ function main() {
       ok = r.ok;
       break;
     }
+    case "judge": {
+      const r = safe(() => doctorJudge(cfg.repo, cfg.baseBranch ?? "main"), "judge");
+      log(r.ok ? "info" : "warn", "doctor: judge", { repo: cfg.repo, ...r });
+      ok = r.ok;
+      break;
+    }
+    case "tierb-roles": {
+      const r = doctorTierBRoles(cfg.models);
+      log(r.ok ? "info" : "warn", "doctor: tierB roles", r);
+      ok = r.ok;
+      break;
+    }
     case "all":
       runDoctor(cfg, [cfg.workspace]);
+      runDoctorGuards(cfg);
       break;
     default:
-      console.error(`usage: tsx apps/pilot/src/doctor.ts <refs|attempts --clear [id]|backlog|branches|state|tierb|dist|all>`);
+      console.error(`usage: tsx apps/pilot/src/doctor.ts <refs|attempts --clear [id]|backlog|branches|state|tierb|dist|judge|tierb-roles|all>`);
       process.exitCode = 1;
       return;
   }

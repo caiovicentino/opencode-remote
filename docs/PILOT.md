@@ -552,6 +552,49 @@ mergeadas pelo workflow sem intervenção humana.
    (`DEPLOY_REFUSAL_BACKOFF_MS`, `deploybackoff.ts`; warn + evento
    `deploy/backoff`). Tentativa real, recusa de outro tipo ou restart do
    processo zeram a sequência (estado em memória).
+0g. **Guard do judge (eval r5)**: último guard antes da mutação. As live
+   invariants que fecham todo deploy rodam o judge **pinado**, que fala o
+   protocolo pela própria cópia vendorizada (`~/.opencode-remote/judge/src/protocol.ts`).
+   Se o judge está inutilizável (ausente, HEAD ≠ pin, checkout sujo) o deploy é
+   recusado (`refused:"judge-guard"`) — antes, `resolveJudge()` estourava DEPOIS
+   do reset/build/restart e produção ficava num build sem verificação e sem
+   rollback. Se a cópia diverge **em runtime** de
+   `packages/protocol/src/crypto.ts` no SHA alvo (`judgedrift.ts`: tipos e
+   comentários apagados pelo compilador, comparação por tokens — cópia ASCII ou
+   tipo estreitado não contam; o RT-390 conta) o deploy também é recusado, sem
+   quarentena e sem budget — era exatamente o incidente 10/09→22/09 (judge
+   pinado antes do RT-390, live invariants falhando e **quarentenando SHAs
+   bons** por 12 dias). Um notify por recusa distinta. Reparo: sincronizar a
+   cópia do judge, commitar no repo do judge e re-pinar `judge.json`. Alvo sem
+   `packages/protocol` (repo estrangeiro) não tem o que espelhar; comparação
+   impossível (sem compilador) segue em fail-open com warn. O judge é resolvido
+   uma vez após a mutação e reusado pelas re-execuções do soak; se ficar
+   inutilizável nesse meio-tempo o deploy volta ao SHA anterior **sem**
+   quarentena.
+0h. **Catch-up em passos + plano explícito (eval r5)**: os dois pontos de
+   deploy resolvem o alvo por `resolveDeployPlan()` (mesmo walk first-parent do
+   `latestDeployableSha`, ancorado no HEAD de produção). Com o intervalo
+   **limpo** (nenhum SHA quarentenado entre prod e o mais novo) e mais de
+   `CATCHUP_STEP_TASKS` (4) merges verificados pendentes, o deploy anda em
+   passos do mais antigo para o mais novo, até 4 merges por passo: uma falha
+   quarentena um passo e aponta no máximo 4 suspeitos (`step suspects:` no
+   detail), e os passos anteriores ficam no ar. Intervalo que já carrega uma
+   quarentena vai direto ao mais novo (regra de fix-forward — só o merge mais
+   novo pode trazer a correção). Todo deploy anuncia o plano depois dos guards
+   (log `deploy plan` com a lista, evento `deploy/plan`, notify do supervisor
+   para passo com ≥2 merges); o detail do deploy bem-sucedido carrega o resumo.
+   Deploy com ≥ `CATCHUP_MIN_TASKS` (2) merges ganha o **soak reforçado** da lane
+   de autocatálise (baseline, `invariants --live` extra a cada 5 checagens,
+   rollback por taxa) com piso de `CATCHUP_SOAK_MIN` (10) minutos — o
+   `monitorMin: 2` do pilot.json dava 2 sondas para 16 merges de uma vez.
+0i. **Espera após rollback (eval r5)**: um deploy que volta atrás arma uma
+   espera no caminho de pending deploy: nada de nova tentativa até a lista de
+   merges verificados ganhar um SHA novo (informação nova — talvez a correção)
+   ou passar `DEPLOY_ROLLBACK_HOLD_MS` (2h). Antes, o self-heal descia para o
+   próximo SHA verificado no ciclo seguinte sem aprender nada (11/09
+   08:33/08:39/08:44: três deploys e três SHAs bons quarentenados pela mesma
+   falha de ambiente). O caminho de merge (launchDeploy) não consulta a espera
+   — um merge novo É a informação nova. Estado em memória, como o backoff.
 1. `git reset --hard <sha>` no repo de produção + install + `npm run build`.
    **P1-021**: o install é decidido pelo hash do `package-lock.json` persistido
    em `~/.opencode-remote/pilot/last-install.json` — lock inalterado roda o fast
@@ -1208,6 +1251,23 @@ e logados em `apps/pilot/src/doctor.ts`:
   `models.tierB` tem algum role configurado; binário quebrado → `ok:false`
   (exit 1) com a cauda do erro no detail. Sem tier-B configurado a sonda é
   pulada (máquina tier-A-only fica verde).
+- **`tierb-roles`** (eval r5) — com um bloco `models.tierB` presente, todo papel
+  de julgamento (`TIER_B_ROLES`, exaustivo contra o tipo `TierBRole` em
+  compile-time) precisa estar pinado: papel faltando é nomeado ("fable silently
+  run tier A" — o caso de 22/09, quando o fable rodou em tier A em silêncio) e
+  chave desconhecida (typo) também; sem bloco tier-B continua verde;
+- **`judge`** (eval r5) — judge pinado utilizável (mesmo veredito do
+  `resolveJudge`, só leitura) e cópia vendorizada do protocolo em sincronia de
+  runtime com `origin/<base>:packages/protocol/src/crypto.ts`; divergência sai
+  com o reparo e a janela do primeiro token diferente. Diagnóstico apenas —
+  quem bloqueia o deploy é o guard do judge (0g).
+
+O boot roda `runDoctorGuards()` logo depois do pass completo (separado para não
+mexer no contrato do P1-030): cada check vermelho loga warn, emite evento
+(`alert`/`judge` ou `phase`/`tierB-roles`) e notifica o supervisor, sem nunca
+bloquear o boot. Desde a eval r5 o `refs` não reseta mais quando o `checkout
+main` falha — o reset caía na branch `pilot/<ID>` em que o slot estava e
+apagava commits não empurrados (24/09 07:12, repo-2).
 
 **Blocos soltos sob `## Ready`** (P2-341): o pass de doctor também denuncia as
 rodadas contíguas de prosa cuja primeira linha não é uma task line válida
@@ -1236,6 +1296,8 @@ npx tsx apps/pilot/src/doctor.ts backlog            # exit 1 se inválido
 npx tsx apps/pilot/src/doctor.ts branches
 npx tsx apps/pilot/src/doctor.ts state
 npx tsx apps/pilot/src/doctor.ts tierb            # sonda o binário claude tier-B
+npx tsx apps/pilot/src/doctor.ts tierb-roles      # todo papel tier-B pinado?
+npx tsx apps/pilot/src/doctor.ts judge            # judge pinado + protocolo em sincronia
 ```
 
 Cobertura: um bloco por subcomando em `scripts/unit.test.ts` (sequência exata de
@@ -1265,6 +1327,31 @@ npm run start --workspace @ocr/pilot       # loop contínuo em foreground
 
 Atenção: vale o singleton do pidfile — subir uma segunda instância (foreground,
 `once` ou serviço) mata a instância anterior viva.
+
+### Preflight antes de religar o pilot (eval r5)
+
+```sh
+npx tsx scripts/pilot-preflight.ts          # relatório pt-BR + VEREDITO GO/NO-GO (exit 0/1)
+npx tsx scripts/pilot-preflight.ts --json   # fatos + checks em JSON
+```
+
+Somente leitura (git com `--no-optional-locks`, nunca fetch; só GETs em
+loopback e na lista `/models` do provider tier A; nenhum segredo impresso —
+`daemon.json` nem é lido). Mede: serviços `com.ocr.*` no launchd, idade do
+heartbeat e pidfile, disco dos dois volumes (prod/slots e o volume do
+`opencode.db`, com folga em dias a +5 GB/dia), judge pinado + deriva do
+protocolo contra os alvos do deploy, `gh auth`, API do opencode (:4096), health
+de deploy do daemon (`/metrics` sem token), alcance do provider tier A,
+`claude --version`, completude do tier B, caminho de alerta (sessão supervisora
+existe? inscrições de push? fila `notify-pending`), validade do
+`mission.json`, o plano de deploy pendente (prod → alvo, tarefas incluídas,
+passos, o que o intervalo toca e se o código de prod — que é o que o restart
+roda — já tem o catch-up em passos) e o trabalho em voo (PRs `pilot/*`,
+commits só locais que o doctor do boot apagaria, com o comando de backup).
+Qualquer FALHA ⇒ NO-GO. Importante: o processo religado roda o código do
+checkout de produção; as mudanças do deploy desta seção só valem depois de
+deployadas — até lá o preflight indica a alavanca do código antigo
+(`monitorMin` no pilot.json).
 
 ## Regras do BACKLOG.md
 

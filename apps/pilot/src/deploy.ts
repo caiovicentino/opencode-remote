@@ -9,6 +9,7 @@ import { touchHeartbeat, type PilotConfig } from "./state";
 import { notifySupervisor } from "./notify";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "./disk";
 import { resolveJudge } from "./judge";
+import { compareProtocolMirror, judgeDriftDetail, readJudgeMirror, showTargetProtocol, type GitRead } from "./judgedrift";
 import {
   defaultLastInstallFile,
   defaultQuarantineFile,
@@ -24,12 +25,19 @@ import {
   writeLastInstall,
   dirtyGuardDetail,
   directionGuardDetail,
+  CATCHUP_MIN_TASKS,
+  CATCHUP_SOAK_MIN,
+  MAX_PLAN_COMMITS,
+  planDeploy,
+  planSummary,
+  planTaskIds,
+  type DeployPlan,
   type QuarantinedSha,
   type VerifiedMerge,
 } from "./deployguard";
 
 /** Pre-mutation guards that can refuse a deploy. None of them spent an attempt. */
-export type DeployRefusal = "sha-guard" | "disk-guard" | "dirty-guard" | "direction-guard";
+export type DeployRefusal = "sha-guard" | "disk-guard" | "dirty-guard" | "direction-guard" | "judge-guard";
 
 export interface DeployResult {
   ok: boolean;
@@ -50,10 +58,14 @@ export interface DeployResult {
  * 3 checks already cover the 3-consecutive-failure rollback; the rate and
  * live-invariant lanes re-engage automatically if the window ever grows ≥5.
  * Pure so the eval battery can pin the lane budgets.
+ * Catch-up (eval r5): a deploy shipping `shipping` >= CATCHUP_MIN_TASKS
+ * verified merges soaks at least CATCHUP_SOAK_MIN minutes whatever the lane —
+ * a 17-merge jump behind the 2-minute monitorMin of pilot.json is two health
+ * probes for a whole day of product changes.
  */
-export function soakMinutesFor(monitorMin: number, pilotInfra: boolean): number {
-  if (!pilotInfra) return monitorMin;
-  return 3;
+export function soakMinutesFor(monitorMin: number, pilotInfra: boolean, shipping = 1): number {
+  const lane = pilotInfra ? 3 : monitorMin;
+  return shipping >= CATCHUP_MIN_TASKS ? Math.max(lane, CATCHUP_SOAK_MIN) : lane;
 }
 
 /** P1-044 (c): sliding health window compared against the pre-deploy baseline. */
@@ -251,6 +263,9 @@ export interface SoakResult {
 export interface SoakOpts {
   checks: number;
   pilotInfra: boolean;
+  /** Catch-up deploy (several verified merges at once): the same reinforced
+   * lane as pilotInfra — live-invariant reruns + rate rollback. */
+  reinforced?: boolean;
   baselineRate: number;
   probe: () => Promise<boolean>;
   heartbeat: () => void;
@@ -273,6 +288,7 @@ export interface SoakOpts {
  */
 export async function soakWatch(o: SoakOpts): Promise<SoakResult> {
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const lane = o.pilotInfra || o.reinforced === true;
   let fails = 0;
   const window: boolean[] = [];
   for (let i = 0; i < o.checks; i++) {
@@ -287,7 +303,7 @@ export async function soakWatch(o: SoakOpts): Promise<SoakResult> {
       fails++;
       if (fails >= 3) return { outcome: "health", at: i + 1, why: `soak failed after ${i + 1} checks` };
     } else fails = 0;
-    if (o.pilotInfra && (i + 1) % LIVE_INVARIANT_EVERY === 0) {
+    if (lane && (i + 1) % LIVE_INVARIANT_EVERY === 0) {
       // Round 2: this exec blocks the event loop for up to 5min (execSync) —
       // touch the heartbeat on BOTH sides or the watchdog (same process) exits
       // before the caller can quarantine + roll back, leaving an unsoaked SHA.
@@ -303,7 +319,7 @@ export async function soakWatch(o: SoakOpts): Promise<SoakResult> {
         return { outcome: "live", at: i + 1, why: `live invariants failed during soak (check ${i + 1}): ${live.output.slice(-200)}` };
       }
     }
-    if (o.pilotInfra && soakFailureRateExceeded(window, o.baselineRate)) {
+    if (lane && soakFailureRateExceeded(window, o.baselineRate)) {
       const f = window.filter((h) => !h).length;
       return { outcome: "rate", at: i + 1, why: `soak failure rate ${f}/${window.length} above baseline ${o.baselineRate.toFixed(2)}` };
     }
@@ -347,11 +363,87 @@ export interface DeployOpts {
    * mutation — the caller's "a real attempt is starting" hook (daily budget
    * accounting). Never fired for a guard refusal. */
   onAttempt?: () => void;
+  /** Catch-up plan the caller resolved the target from (resolveDeployPlan):
+   * announced once the guards pass, and a multi-merge step gets the
+   * reinforced soak. Absent = a single-merge deploy (legacy behavior). */
+  plan?: DeployPlan;
+  /** Judge guard probe (tests); null = proceed, string = refusal detail.
+   * Absent = judgeGuardDetail against the pinned live judge. */
+  probeJudge?: (repo: string, sha: string) => string | null;
+}
+
+/**
+ * Judge guard (eval r5, the 09-10 → 09-22 incident): the live invariants that
+ * close every deploy run the PINNED judge, which speaks the protocol through
+ * its own vendored copy. Refuses BEFORE any mutation when (a) the judge is
+ * unusable — resolveJudge() would throw after prod was already reset, built
+ * and restarted, leaving an unverified build live with no rollback — or (b)
+ * the copy no longer matches the target's packages/protocol at runtime, in
+ * which case the live check would fail and quarantine a GOOD sha (12 days of
+ * rollbacks). A target without packages/protocol (foreign/test repo) has
+ * nothing to mirror. A comparison that cannot run (no compiler) fails OPEN
+ * with a warn — the live invariants still have the last word.
+ */
+export function judgeGuardDetail(
+  repo: string,
+  sha: string,
+  deps: { resolve?: () => { dir: string; pin: string }; git?: GitRead; readMirror?: (dir: string) => string | null } = {},
+): string | null {
+  const targetSrc = showTargetProtocol(repo, sha, deps.git);
+  if (targetSrc === null) return null;
+  let judge: { dir: string; pin: string };
+  try {
+    judge = (deps.resolve ?? resolveJudge)();
+  } catch (err) {
+    const why = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160);
+    return `judge unusable: ${why} — the live invariants would crash after prod was mutated; fix the judge pin — deploy refused, prod untouched`;
+  }
+  const drift = compareProtocolMirror((deps.readMirror ?? readJudgeMirror)(judge.dir), targetSrc);
+  if (drift.state === "drift" || drift.state === "no-mirror") {
+    log("warn", "judge guard: protocol mirror drift", { pin: judge.pin.slice(0, 8), target: sha.slice(0, 7), ...drift });
+    return `${judgeDriftDetail(judge.pin, sha.slice(0, 7), drift)} — deploy refused, prod untouched`;
+  }
+  if (drift.state === "unknown") log("warn", "judge guard: protocol comparison unavailable — proceeding (fail-open)", { detail: drift.detail });
+  return null;
+}
+
+/** Last judge-guard detail the supervisor was told about — the pending path
+ * retries every idle cycle; one notify per distinct refusal is enough. */
+let lastJudgeGuardNotice = "";
+
+/** Merges a deploy ships per its plan — 1 for a legacy/unknown plan. */
+export function planShipping(plan: DeployPlan | undefined): number {
+  return plan?.anchored && plan.step.length > 0 ? plan.step.length : 1;
+}
+
+/**
+ * eval r5: say what goes live BEFORE it does — the full list in the log, a
+ * one-line summary on the feed and, for a multi-merge step, the supervisor
+ * (the owner restarting after an outage must see the merges shipping, not
+ * discover them one rollback at a time). Returns the summary line.
+ */
+export function announceDeployPlan(
+  plan: DeployPlan,
+  hooks: { emitEvent?: typeof emit; notify?: typeof notifySupervisor } = {},
+): string {
+  const summary = planSummary(plan);
+  log("info", "deploy plan", {
+    summary,
+    ships: plan.step.map((m) => ({ sha: m.sha.slice(0, 7), task: m.task })),
+    pending: plan.pending.length,
+    skipped: plan.skipped.map((q) => ({ sha: q.sha.slice(0, 7), task: q.task, why: q.why.slice(0, 80) })),
+  });
+  (hooks.emitEvent ?? emit)("deploy", { phase: "plan", ok: true, detail: summary });
+  if (planShipping(plan) >= CATCHUP_MIN_TASKS) {
+    void Promise.resolve((hooks.notify ?? notifySupervisor)("deploy-plan", true, summary)).catch(() => {});
+  }
+  return summary;
 }
 
 /**
  * The pre-mutation guard chain, in order: sha (P2-058) → disk (P3-006) →
- * dirty tree (P2-114) → direction (target must descend from prod HEAD).
+ * dirty tree (P2-114) → direction (target must descend from prod HEAD) →
+ * judge (pinned judge usable + protocol mirror in sync, eval r5).
  * Returns the refusal result — `refused` names the guard — or null when the
  * deploy may proceed. Nothing here touches production; a refusal spends no
  * budget and quarantines nothing (the sha is not at fault). Exported so the
@@ -425,6 +517,21 @@ export async function deployPreflight(
     emitEvent("deploy", { phase: "direction-guard", ok: false, detail: direction });
     return { ok: false, rolledBack: false, detail: direction, refused: "direction-guard" };
   }
+  // Judge guard (eval r5): the pinned judge must be usable and speak the
+  // target's protocol — otherwise the live invariants below fail for a reason
+  // no merge can fix and quarantine a good sha. No quarantine, no budget; one
+  // notify per distinct refusal (the pending path retries every idle cycle).
+  const judge = (opts?.probeJudge ?? judgeGuardDetail)(cfg.repo, sha);
+  if (judge) {
+    log("warn", judge);
+    emitEvent("deploy", { phase: "judge-guard", ok: false, detail: judge });
+    if (judge !== lastJudgeGuardNotice) {
+      lastJudgeGuardNotice = judge;
+      void Promise.resolve((opts?.notify ?? notifySupervisor)(meta?.task ?? "deploy", false, judge)).catch(() => {});
+    }
+    return { ok: false, rolledBack: false, detail: judge, refused: "judge-guard" };
+  }
+  lastJudgeGuardNotice = "";
   return null;
 }
 
@@ -463,11 +570,18 @@ export async function deploy(
     notify: opts?.notify,
   });
   emitEvent("deploy", { phase: "start", detail: `sha ${sha.slice(0, 7)}` });
-  // guard chain (sha → disk → dirty → direction): a refusal returns here with
-  // `refused` set and nothing mutated; only past this point is a real attempt
+  // guard chain (sha → disk → dirty → direction → judge): a refusal returns here
+  // with `refused` set and nothing mutated; only past this point is a real attempt
   const refusal = await deployPreflight(cfg, sha, meta, opts);
   if (refusal) return refusal;
   opts?.onAttempt?.();
+  // Catch-up (eval r5): say what goes live BEFORE it does (announceDeployPlan)
+  const plan = opts?.plan;
+  const shipping = planShipping(plan);
+  const catchUp = shipping >= CATCHUP_MIN_TASKS;
+  const summary = plan ? announceDeployPlan(plan, { emitEvent, notify: opts?.notify }) : "";
+  // a failed catch-up step names its suspects (at most CATCHUP_STEP_TASKS)
+  const suspects = catchUp && plan ? ` — step suspects: ${planTaskIds(plan.step)}` : "";
   const prev = exec("git rev-parse HEAD", { cwd: cfg.repo }).output.trim();
   // P1-044: the lane applies when this deploy changes the pilot's own code —
   // detected from the real sha range (covers the pending-deploy self-heal too);
@@ -475,20 +589,26 @@ export async function deploy(
   const pilotInfra =
     opts?.pilotInfra ??
     (exec(`git diff --name-only ${prev} ${sha} -- apps/pilot`, { cwd: cfg.repo, allowFail: true }).output.trim().length > 0);
+  // Catch-up: several verified merges at once get the same reinforced watch
+  // as the autocatalysis lane (baseline, live-invariant reruns, rate rollback).
+  const reinforced = pilotInfra || catchUp;
   // P1-044 (c): pre-deploy health baseline, sampled before any mutation — the
   // window comparison during soak needs the old deployment's own failure rate.
   // ok:false on a fully failing baseline (dashboard must not read green).
   let baselineRate = 0;
-  if (pilotInfra) {
+  if (reinforced) {
     baselineRate = await baselineHealthRate(opts?.probeHealth ?? (() => isHealthy(cfg)));
     emitEvent("deploy", {
       phase: "baseline",
       ok: baselineRate < 1,
-      detail: `${Math.round(baselineRate * BASELINE_SAMPLES)}/${BASELINE_SAMPLES} failing (autocatalysis lane)`,
+      detail: `${Math.round(baselineRate * BASELINE_SAMPLES)}/${BASELINE_SAMPLES} failing (${pilotInfra ? "autocatalysis lane" : `catch-up of ${shipping} merges`})`,
     });
   }
   try {
-    exec(`git fetch origin`, { cwd: cfg.repo });
+    // allowFail: the target object is already local (the direction guard's
+    // merge-base probe fails closed without it) — a transient fetch failure
+    // must not quarantine a good sha through the catch below
+    exec(`git fetch origin`, { cwd: cfg.repo, allowFail: true });
     exec("git checkout -q main", { cwd: cfg.repo, allowFail: true });
     exec(`git reset -q --hard ${sha}`, { cwd: cfg.repo });
     // P1-021: install decision from the persisted last-install state. The hash
@@ -525,40 +645,56 @@ export async function deploy(
     kickstartPwa(cfg);
   } catch (err) {
     await banAndRollback(cfg, sha, prev, `deploy steps failed: ${String(err).slice(0, 200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
-    return { ok: false, rolledBack: true, detail: String(err).slice(0, 200) };
+    return { ok: false, rolledBack: true, detail: `${String(err).slice(0, 200)}${suspects}` };
   }
 
   // health watch: services must come up healthy
   const healthy = await pollHealth(cfg, 90);
   if (!healthy) {
     await banAndRollback(cfg, sha, prev, "health check failed after deploy", meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
-    return { ok: false, rolledBack: true, detail: "health check failed" };
+    return { ok: false, rolledBack: true, detail: `health check failed${suspects}` };
   }
 
-  // live invariants against production (replay, tunnel, state perms)
-  const judgeCli = `${resolveJudge().dir}/src/invariants.ts`;
-    const inv = exec(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+  // live invariants against production (replay, tunnel, state perms).
+  // eval r5: the judge is resolved ONCE here and reused by the soak reruns. A
+  // judge that became unusable after the preflight used to throw out of
+  // deploy() with prod already reset/built/restarted — no verification, no
+  // rollback (the pending path's await even took the whole pilot down). Now:
+  // roll back WITHOUT quarantine (the sha is not at fault; the judge guard
+  // refuses the retry until the pin is fixed).
+  let judgeCli: string;
+  try {
+    judgeCli = `${resolveJudge().dir}/src/invariants.ts`;
+  } catch (err) {
+    const why = `judge unusable after the mutation: ${(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160)}`;
+    log("warn", why, { sha: sha.slice(0, 7) });
+    emitEvent("deploy", { phase: "rollback", ok: false, detail: why });
+    await rollback(cfg, prev, why, { ...rollbackHealth(meta?.task ?? "deploy"), notify: opts?.notify ?? notifySupervisor });
+    return { ok: false, rolledBack: true, detail: why };
+  }
+  const inv = exec(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
   if (!inv.ok) {
     await banAndRollback(cfg, sha, prev, `live invariants failed: ${inv.output.slice(-200)}`, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
-    return { ok: false, rolledBack: true, detail: "live invariants failed" };
+    return { ok: false, rolledBack: true, detail: `live invariants failed${suspects}` };
   }
 
   // soak: keep watching for the monitor window; 3 consecutive failures = rollback
   // P1-044: autocatalysis lane — doubled window, extra live invariant runs and
   // a failure-rate rollback against the pre-deploy baseline. All soak-loop
   // events flow through the injectable emitEvent (P3-006 pattern).
-  const soakMin = soakMinutesFor(cfg.monitorMin, pilotInfra);
+  // eval r5: a catch-up step soaks >= CATCHUP_SOAK_MIN in the same lane.
+  const soakMin = soakMinutesFor(cfg.monitorMin, pilotInfra, shipping);
   const checks = Math.floor((soakMin * 60) / SOAK_INTERVAL_SEC);
   const soak = await soakWatch({
     checks,
     pilotInfra,
+    reinforced,
     baselineRate,
     probe: () => isHealthy(cfg),
     heartbeat: touchHeartbeat,
     live: () => {
       touchHeartbeat(); // before: the exec below blocks the loop for minutes
-      const judgeCli2 = `${resolveJudge().dir}/src/invariants.ts`;
-      const r = exec(`npx tsx ${JSON.stringify(judgeCli2)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+      const r = exec(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
       touchHeartbeat(); // after: the watchdog timer fires as soon as the loop unblocks
       return r;
     },
@@ -573,7 +709,7 @@ export async function deploy(
       detail: soak.outcome === "health" ? "soak failed" : soak.outcome === "live" ? "live invariants failed during soak" : "soak failure rate above pre-deploy baseline",
     });
     await banAndRollback(cfg, sha, prev, soak.why, meta?.task ?? "deploy", opts?.notify ?? notifySupervisor, rollbackHealth(meta?.task ?? "deploy"));
-    return { ok: false, rolledBack: true, detail };
+    return { ok: false, rolledBack: true, detail: `${detail}${suspects}` };
   }
   emit("deploy", { phase: "done", ok: true, detail: `sha ${sha.slice(0, 7)} live` });
   // P2-011: UI-changing cycles leave visual evidence in the review log — a
@@ -605,7 +741,7 @@ export async function deploy(
     if (!pilotInfra) {
       log("info", "deployed without pilot-infra changes — fleet keeps running", { sha: sha.slice(0, 7) });
       emitEvent("deploy", { phase: "no-reload", ok: true, detail: "fleet undisturbed — no apps/pilot diff" });
-      return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
+      return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})${catchUp ? ` — ${summary}` : ""}` };
     }
     // P1-104: never exit mid-pipeline — hold new picks and wait for the
     // running slots to drain; KeepAlive then restarts on the new code.
@@ -621,7 +757,7 @@ export async function deploy(
     }
     process.exit(0); // log is flushed synchronously; the pidfile singleton covers any overlap
   }
-  return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})` };
+  return { ok: true, rolledBack: false, detail: `deployed ${sha.slice(0, 7)} (prev ${prev.slice(0, 7)})${catchUp ? ` — ${summary}` : ""}` };
 }
 
 /**
@@ -783,6 +919,30 @@ export function latestDeployableSha(repo: string, base = "main"): string | null 
     hist.output.split("\n").map((l) => l.trim()).filter(Boolean),
     readVerifiedMerges(defaultVerifiedMergesFile()),
     readQuarantine(defaultQuarantineFile()),
+  );
+}
+
+/**
+ * eval r5: the plan behind the next deploy — the same fetch + first-parent
+ * walk as latestDeployableSha (its `newest` is reproduced exactly, same
+ * fail-closed null), anchored at prod HEAD so the merges in between are
+ * enumerated and a large clean range ships in bounded steps (planDeploy).
+ * Both deploy call sites (pending self-heal, launchDeploy) resolve through it.
+ */
+export function resolveDeployPlan(
+  repo: string,
+  base = "main",
+  deps: { verified?: VerifiedMerge[]; quarantine?: QuarantinedSha[]; fetch?: boolean } = {},
+): DeployPlan {
+  if (deps.fetch !== false) exec("git fetch -q origin", { cwd: repo, allowFail: true });
+  const prod = exec("git rev-parse HEAD", { cwd: repo, allowFail: true }).output.trim();
+  const hist = exec(`git log --first-parent --format=%H -n ${MAX_PLAN_COMMITS} origin/${base}`, { cwd: repo, allowFail: true });
+  const history = hist.ok ? hist.output.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  return planDeploy(
+    history,
+    prod,
+    deps.verified ?? readVerifiedMerges(defaultVerifiedMergesFile()),
+    deps.quarantine ?? readQuarantine(defaultQuarantineFile()),
   );
 }
 
