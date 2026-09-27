@@ -69,7 +69,13 @@ const deepLinkSection = mainTsSource.slice(
 
 const deepLinkSectionLogs = deepLinkSection.match(/^\s*log\([^\n]*$/gm) ?? [];
 
-check("deep-link section has exactly one log line and it never names the URI", deepLinkSectionLogs.length === 1 && deepLinkSectionLogs[0].includes("deep link accepted (opencode-remote://pair)"));
+// eval-11: the consent step (deeplinkconsent.ts) added static decision lines
+// to the section — the invariant is still that no line ever names the URI.
+check(
+  "deep-link section logs the acceptance once and no line ever names the URI",
+  deepLinkSectionLogs.filter((l) => l.includes("deep link accepted (opencode-remote://pair)")).length === 1 &&
+    deepLinkSectionLogs.every((l) => !/\$\{uri|\$\{raw|\+\s*uri/.test(l)),
+);
 
 if (failures) {
   console.error(`\n${failures} failure(s)`);

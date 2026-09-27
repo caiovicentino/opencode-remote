@@ -111,6 +111,48 @@ export function onRendererGone(
   log("[desktop] renderer reloaded (crash recovery)");
 }
 
+/**
+ * eval-11: which finished main-window load is the app itself.
+ *
+ * P2-247's load watch (loadfail.ts) refills its retry budget and P2-270's boot
+ * health promotes the running version to "healthy" on did-finish-load — but
+ * Chromium commits its own error page after a failed main-frame load and fires
+ * did-finish-load for THAT page right after did-fail-load (measured on
+ * Electron 44.2.0: did-start-navigation → did-fail-load(-6) → dom-ready →
+ * did-finish-load → did-stop-loading, for both file:// and http://). So every
+ * failed attempt refilled the budget — a broken install reloaded Chromium's
+ * error page every 1.5s forever and never reached the give-up message — and
+ * the very first failed load promoted a version whose UI never opened, which
+ * silenced the boot-health recovery for exactly the openings it exists for.
+ *
+ * The watch is fed by the same three webContents events main.ts already
+ * handles and answers one question at did-finish-load. Structural and
+ * electron-free like the rest of this file (unit-tested under plain tsx).
+ */
+export class MainLoadWatch {
+  private failed = false;
+
+  /** did-start-navigation: a new cross-document main-frame navigation is a
+   * fresh attempt (same-document ones — hash routes, pushState — are not). */
+  navigationStarted(isMainFrame: boolean, isSameDocument: boolean): void {
+    if (isMainFrame && !isSameDocument) this.failed = false;
+  }
+
+  /** did-fail-load whose P2-247 verdict counts (retry / giveup): the document
+   * that finishes next is Chromium's error page, not the app. */
+  failureCounted(): void {
+    this.failed = true;
+  }
+
+  /** did-finish-load: true only when the finished document is the app — never
+   * the error page of a counted failure and never one of the shell's data:
+   * fallback pages (the P2-247 give-up message, "web UI not found"). */
+  finishedApp(url: string): boolean {
+    if (this.failed) return false;
+    return !/^data:/i.test(url.trim());
+  }
+}
+
 /** Structural subset of Electron's app the fatal handlers need (tests fake it). */
 export interface QuitCapableApp {
   quit(): void;

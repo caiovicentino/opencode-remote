@@ -536,21 +536,28 @@ delete process.env.OCR_DAEMON_ENTRY;
     (await startDaemonSidecar(join(repoRoot, "apps", "desktop"), undefined)) === true,
   );
   realPid = Number(/pid (\d+)/.exec(logLines.find((l) => l.includes("daemon sidecar spawned")) ?? "")?.[1] ?? 0);
-  // The daemon mints its apiToken on the first probe, so poke the 401
-  // challenge first (same dance as the bundle smoke below) — healthOnce
-  // refuses to fetch while the shell has no token.
-  let challenged = false;
-  const challengeDeadline = Date.now() + 20_000;
-  while (Date.now() < challengeDeadline && !challenged) {
+  // eval-11: NO manual poke anymore. The daemon mints its apiToken on its
+  // first /api request; this block used to poke the 401 challenge itself
+  // because healthOnce refused to fetch without a token — which hid that the
+  // shell alone never confirmed a fresh daemon (the packaged app waited out
+  // the whole health timeout, then showed its own healthy sidecar as down).
+  // The shell's health wait must now get there with no outside help.
+  const tokenAtStart = ((): boolean => {
     try {
-      challenged = (await fetch(`http://127.0.0.1:${port}/api/health`)).status === 401;
+      return typeof (JSON.parse(readFileSync(realState, "utf8")) as { apiToken?: unknown }).apiToken === "string";
     } catch {
-      /* not up yet */
+      return false;
     }
-    if (!challenged) await new Promise((r) => setTimeout(r, 100));
+  })();
+  check("real daemon: the fresh HOME starts without an apiToken", !tokenAtStart);
+  check("real daemon: becomes healthy on the test port with no outside help", await waitForDaemonHealth({ timeoutMs: 20_000 }));
+  let challenged = false;
+  try {
+    challenged = (await fetch(`http://127.0.0.1:${port}/api/health`)).status === 401;
+  } catch {
+    /* unreachable daemon — the check below fails */
   }
-  check("real daemon: boot challenge answered (401)", challenged);
-  check("real daemon: becomes healthy on the test port", await waitForDaemonHealth({ timeoutMs: 15_000 }));
+  check("real daemon: an anonymous request is still challenged (401)", challenged);
   await stopDaemonSidecar();
   check(
     "real daemon: stopped via the graceful IPC path with code 0 (no signal)",

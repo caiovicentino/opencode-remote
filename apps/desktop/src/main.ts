@@ -107,6 +107,7 @@ import { ASK_NOTIFY_TITLE, askNotifyDecision, sanitizeAskCount } from "./asknoti
 import { awakePlan, sanitizeBusyCount } from "./awakeplan";
 import { keepAwakeFile, readKeepAwake, writeKeepAwake } from "./awakestore";
 import { coldStartDeepLink, deepLinkFromArgv, parseDeepLink } from "./deeplink";
+import { DEEP_LINK_BUTTON_INDEX, deepLinkConsentPlan, deepLinkFacts, deepLinkPrompt } from "./deeplinkconsent";
 import { externalOpenDecision } from "./extlink";
 import { downloadVerdict, DOWNLOAD_LIMITS, uniqueDownloadName } from "./downloadplan";
 import { guestAttachDecision, guestNavigationDecision } from "./webviewguard";
@@ -136,6 +137,7 @@ import { loadWindowBounds, rescueBounds, saveWindowBounds, WINDOW_MIN, windowSta
 import { DEFAULT_ZOOM_LEVEL, zoomStartupPlan, zoomVerdict, type ZoomAction } from "./zoomlevel";
 import {
   installFatalErrorHandlers,
+  MainLoadWatch,
   newHangEpisodeState,
   onHangWindowClosed,
   onRendererGone,
@@ -362,6 +364,17 @@ initDesktopLog(app.getPath("userData"));
 // installed before the first spawnChild — later, early daemon output would be
 // lost in the packaged app. Write failures are log-only and never throw.
 initSidecarLog(app.getPath("userData"));
+
+/** eval-11: a harness session (OCR_DESKTOP_SESSION) keeps its crash reports in
+ * its own userData — it used to write into the operator's real
+ * ~/.opencode-remote/pilot/client-logs (18 of the 20 reports there, all
+ * "killed" renderers from 09–11/09, are absent from the real app's
+ * desktop.log), and the real app's diagnostic bundle lists that folder as its
+ * own crashes. */
+function crashReportsDir(): string {
+  return HERMETIC_E2E ? join(app.getPath("userData"), "client-logs") : clientLogsDir(homedir());
+}
+
 // P3-011/P1-050: a main-process exception used to crash Electron without
 // will-quit, killing the daemon sidecar with no cleanup. Installed before
 // anything can throw, so even boot-time failures quit through the graceful
@@ -369,7 +382,7 @@ initSidecarLog(app.getPath("userData"));
 // a crash report file under ~/.opencode-remote/pilot/client-logs/ (P1-050,
 // best-effort: a full disk never takes the shell down).
 function reportCrash(kind: string, detail: string): void {
-  const file = writeCrashReport(clientLogsDir(homedir()), kind, detail, app.getVersion());
+  const file = writeCrashReport(crashReportsDir(), kind, detail, app.getVersion());
   if (file) log(`[desktop] crash report written: ${file}`);
   else logError("[desktop] crash report write failed (continuing, file logging has the detail)");
 }
@@ -400,7 +413,7 @@ function buildDiagnostics(): string {
   }
   let crashFiles: string[] = [];
   try {
-    crashFiles = readdirSync(clientLogsDir(homedir()))
+    crashFiles = readdirSync(crashReportsDir())
       .filter((f) => f.startsWith("crash-") && f.endsWith(".txt"))
       .sort()
       .slice(-10);
@@ -659,6 +672,10 @@ const gotLock = app.requestSingleInstanceLock();
 // lock branch: the Windows cold-start consult below runs synchronously during
 // module evaluation, so the declaration must already be initialized.
 let lastDeepLink: string | null = null;
+// eval-11: a validated link that arrived before ready (macOS open-url on a
+// cold start, the Windows argv consult) — it asks for the owner's consent in
+// onReady, once a window exists to carry the dialog.
+let pendingDeepLink: string | null = null;
 if (!gotLock) {
   // P2-069: a second real instance must never paint its own (white) window on
   // top of the running one. Quit quietly — the winner receives second-instance
@@ -1887,8 +1904,11 @@ async function onReady(): Promise<void> {
     const u = new URL(req.path, "http://127.0.0.1");
     if (!/^\/api\/browse(\/[a-z]+)?$/.test(u.pathname)) return null;
     try {
-      const stateFile = join(homedir(), ".opencode-remote", "daemon.json");
-      const token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken;
+      // eval-11: the same 0600 file every other shell read resolves through
+      // (daemon.ts stateFilePath, which honors the hermetic
+      // OCR_DAEMON_STATE_FILE) — a second hard-coded path made a hermetic run
+      // send the operator's real apiToken to the test daemon's port.
+      const token = readApiToken();
       if (!token) return null;
       const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}${u.pathname}${u.search}`, {
         method,
@@ -1925,8 +1945,8 @@ async function onReady(): Promise<void> {
           : /^\/api\/pilot-takeover$/.test(u.pathname);
     if (!okPath) return null;
     try {
-      const stateFile = join(homedir(), ".opencode-remote", "daemon.json");
-      const token = (JSON.parse(readFileSync(stateFile, "utf8")) as { apiToken?: string }).apiToken;
+      // eval-11: same state-file resolution as app:daemonBrowse above.
+      const token = readApiToken();
       if (!token) return null;
       const res = await fetch(`http://127.0.0.1:${activeDaemonPort()}${u.pathname}${u.search}`, {
         method,
@@ -2306,7 +2326,7 @@ async function onReady(): Promise<void> {
   // gate runs). Same test-only policy as OCR_DAEMON_FORCE_* — never set in
   // production; its only effect is the cameraBlocked flag below.
   const permissionCtx = {
-    devUrl: process.env.OCR_WEB_URL,
+    devUrl: devWebUrl(),
     cameraBlocked: process.env.OCR_DESKTOP_CAMERA_BLOCK === "1",
   };
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
@@ -2514,7 +2534,7 @@ async function onReady(): Promise<void> {
     packaged: app.isPackaged,
     wasOpenedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin === true,
     argv: process.argv,
-    coldDeepLink: lastDeepLink !== null,
+    coldDeepLink: pendingDeepLink !== null || lastDeepLink !== null,
   });
   log(`[desktop] login launch: ${launchVerdict.action} (${launchVerdict.reason})`);
 
@@ -2526,6 +2546,12 @@ async function onReady(): Promise<void> {
   if (hasNewChatFlag(process.argv)) requestNewChat();
 
   createWindow({ bootHidden: launchVerdict.action === "tray" });
+  // eval-11: a link that arrived before ready asks for consent now.
+  if (pendingDeepLink !== null) {
+    const uri = pendingDeepLink;
+    pendingDeepLink = null;
+    void consentDeepLink(uri);
+  }
   startPairingWatcher();
   // P2-209: react to the machine's return from sleep / session unlock —
   // registered after the pairing watcher so the probe path already exists.
@@ -2588,9 +2614,72 @@ function handleDeepLink(raw: unknown): void {
   // Logged without the URI: it carries the room's pairing key material and
   // the desktop.log lives on disk unencrypted.
   log("[desktop] deep link accepted (opencode-remote://pair)");
+  // eval-11: nothing reaches the renderer before the owner consents — a link
+  // used to re-pair a RUNNING local-mode desktop to the daemon it names
+  // (deeplinkconsent.ts has the whole story).
+  if (!app.isReady()) {
+    pendingDeepLink = uri;
+    return;
+  }
+  void consentDeepLink(uri);
+}
+
+/** Hands a consented link to the renderer: the late-pull cache plus a push to
+ * every live window (the pre-eval-11 body of handleDeepLink). */
+function forwardDeepLink(uri: string): void {
   lastDeepLink = uri;
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send("ocr:deep-link", uri);
+  }
+}
+
+let deepLinkDialogOpen = false;
+
+/** eval-11: the owner confirms the machine and relay a link names before the
+ * app pairs with it (Cancel is the default and the Escape answer). A harness
+ * session never opens the dialog — the plan answers through its hatch or
+ * refuses. One confirmation at a time; log lines never carry the URI. */
+async function consentDeepLink(uri: string): Promise<void> {
+  const plan = deepLinkConsentPlan({ harnessSession: HERMETIC_E2E, hatchAnswer: process.env.OCR_DESKTOP_DEEPLINK_ANSWER });
+  if (plan.action !== "ask") {
+    log(`[desktop] deep link ${plan.action === "accept" ? "forwarded" : "refused"} (${plan.reason})`);
+    if (plan.action === "accept") forwardDeepLink(uri);
+    return;
+  }
+  if (deepLinkDialogOpen) {
+    log("[desktop] deep link ignored — another pairing confirmation is already open");
+    return;
+  }
+  deepLinkDialogOpen = true;
+  try {
+    // The owner just clicked a link that opens this app: bring it forward so
+    // the question is never a sheet on a hidden window.
+    showMainWindow();
+    const prompt = deepLinkPrompt(deepLinkFacts(uri), shellLangState.lang);
+    const options: Electron.MessageBoxOptions = {
+      type: "question",
+      title: prompt.title,
+      message: prompt.message,
+      detail: prompt.detail,
+      buttons: [prompt.confirm, prompt.cancel],
+      defaultId: DEEP_LINK_BUTTON_INDEX.cancel,
+      cancelId: DEEP_LINK_BUTTON_INDEX.cancel,
+      noLink: true,
+    };
+    const { response } =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+    if (response === DEEP_LINK_BUTTON_INDEX.confirm) {
+      log("[desktop] deep link confirmed by the owner — forwarded to the app");
+      forwardDeepLink(uri);
+    } else {
+      log("[desktop] deep link cancelled by the owner — nothing was paired");
+    }
+  } catch (err) {
+    logError("[desktop] deep link confirmation failed — nothing was paired:", err);
+  } finally {
+    deepLinkDialogOpen = false;
   }
 }
 
@@ -3709,7 +3798,9 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   win.webContents.setWindowOpenHandler(({ url }) => {
     const decision = externalOpenDecision(url);
     if (decision.allow) {
-      void shell.openExternal(decision.href);
+      // eval-11: a scheme with no handler on this OS rejects — unhandled, the
+      // P3-011 fatal handler would quit the whole app (and its sidecar).
+      void shell.openExternal(decision.href).catch(() => logError(`[desktop] external open failed (reason=${decision.reason})`));
     } else {
       logError(`[desktop] external open refused (reason=${decision.reason})`);
     }
@@ -3777,7 +3868,7 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
       "ctx-select-all": () => win.webContents.selectAll(),
       "ctx-open-link": () => {
         if (!decision.allow) return;
-        void shell.openExternal(decision.href);
+        void shell.openExternal(decision.href).catch(() => logError("[desktop] context-menu link open failed"));
       },
       "ctx-copy-link": () => clipboard.writeText(params.linkURL ?? ""),
       "ctx-inspect": () => win.webContents.openDevTools({ mode: "detach" }),
@@ -3799,6 +3890,13 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   // decision writes exactly one log line; the give-up plan paints the message
   // into the window itself, same data:-URL pattern as loadUi's fallback.
   let loadFailAttempts = 0;
+  // eval-11: Chromium fires did-finish-load for its own error page right after
+  // a failed main-frame load; the watch (crash.ts) keeps that finish from
+  // refilling the budget below or promoting boot health.
+  const loadWatch = new MainLoadWatch();
+  win.webContents.on("did-start-navigation", (details) => {
+    loadWatch.navigationStarted(details.isMainFrame, details.isSameDocument);
+  });
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     const record = sanitizeLoadFailure({
       code: errorCode,
@@ -3808,6 +3906,7 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
     });
     const verdict = loadFailVerdict(record, loadFailAttempts, Date.now());
     loadFailAttempts = verdict.count;
+    if (verdict.plan !== "ignore") loadWatch.failureCounted();
     if (verdict.plan === "retry") {
       log(`[desktop] load watch: ${verdict.reason}`);
       setTimeout(() => {
@@ -3818,8 +3917,11 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
     if (verdict.plan === "giveup") {
       const messages = loadFailMessage(record);
       log(`[desktop] load watch: ${messages.log}`);
+      // eval-11: the charset rides in the data: URL — without it Chromium
+      // decoded the UTF-8 bytes as windows-1252 and the pt-BR message showed
+      // "nÃ£o" instead of "não".
       void win.loadURL(
-        "data:text/html," +
+        "data:text/html;charset=utf-8," +
           encodeURIComponent(
             `<body style="font-family:-apple-system,sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100dvh;margin:0"><div style="text-align:center;max-width:34em;padding:0 24px"><p style="font-size:15px;line-height:1.6">${messages.user}</p></div></body>`,
           ),
@@ -3835,6 +3937,10 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   // budget refills on every success.
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
+    // eval-11: an error page (failed load) or a data: fallback page finishing
+    // is not the app — no budget refill, no newChat flush, no boot-health
+    // promotion; the P2-247 retry/give-up path keeps its own count.
+    if (!loadWatch.finishedApp(win.webContents.getURL())) return;
     loadFailAttempts = 0;
     // P2-353: the load that just finished is what unblocks the queued
     // newChat broadcast — the argv paths set the flag while the page was
@@ -3864,9 +3970,16 @@ function createWindow(opts: { bootHidden?: boolean } = {}): BrowserWindow {
   return win;
 }
 
+/** Dev override: OCR_WEB_URL=http://localhost:5173 npm start. eval-11: a
+ * packaged build ignores it — the variable used to point the shipped app's
+ * window (preload bridge included) at any URL and made that origin count as
+ * the shell's own for permissions. */
+function devWebUrl(): string | undefined {
+  return app.isPackaged ? undefined : process.env.OCR_WEB_URL;
+}
+
 function loadUi(win: BrowserWindow): void {
-  // Dev override: OCR_WEB_URL=http://localhost:5173 npm start
-  const devUrl = process.env.OCR_WEB_URL;
+  const devUrl = devWebUrl();
   if (devUrl) {
     void win.loadURL(devUrl);
     return;
@@ -3876,7 +3989,7 @@ function loadUi(win: BrowserWindow): void {
     void win.loadFile(html);
   } else {
     void win.loadURL(
-      "data:text/html," +
+      "data:text/html;charset=utf-8," +
         encodeURIComponent(
           `<body style="font-family:-apple-system,sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100dvh;margin:0"><div style="text-align:center"><p style="font-size:15px">OpenCode Remote — web UI not found.</p><p style="opacity:.7;font-size:13px">Run <code style="background:#333;padding:2px 6px;border-radius:4px">npm run build --workspace @ocr/web</code> first.</p></div></body>`,
         ),

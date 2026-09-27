@@ -1600,7 +1600,13 @@ const deepLinkSection = mainTsSource.slice(
 
 const deepLinkSectionLogs = deepLinkSection.match(/^\s*log\([^\n]*$/gm) ?? [];
 
-check("deep-link section has exactly one log line and it never names the URI", deepLinkSectionLogs.length === 1 && deepLinkSectionLogs[0].includes("deep link accepted (opencode-remote://pair)"));
+// eval-11: the consent step (deeplinkconsent.ts) added static decision lines
+// to the section — the invariant is still that no line ever names the URI.
+check(
+  "deep-link section logs the acceptance once and no line ever names the URI",
+  deepLinkSectionLogs.filter((l) => l.includes("deep link accepted (opencode-remote://pair)")).length === 1 &&
+    deepLinkSectionLogs.every((l) => !/\$\{uri|\$\{raw|\+\s*uri/.test(l)),
+);
 
 
 
@@ -8958,10 +8964,16 @@ check(
   );
   const failAt = mainTsSource.indexOf('win.webContents.on("did-fail-load"');
   const finishAt = mainTsSource.indexOf('win.webContents.on("did-finish-load"');
-  const finishBlock = mainTsSource.slice(finishAt, finishAt + 200);
+  // eval-11: the window grew to fit the error-page guard that must run first.
+  const finishBlock = mainTsSource.slice(finishAt, finishAt + 700);
   check(
     "P2-247: main.ts resets the load-fail counter on every successful load",
     finishAt > failAt && finishBlock.includes("loadFailAttempts = 0"),
+  );
+  check(
+    "eval-11: an error page / data: fallback finishing never refills the load-fail budget (guard before the reset)",
+    finishBlock.indexOf("if (!loadWatch.finishedApp(win.webContents.getURL())) return;") > -1 &&
+      finishBlock.indexOf("if (!loadWatch.finishedApp(win.webContents.getURL())) return;") < finishBlock.indexOf("loadFailAttempts = 0"),
   );
   const loadFailLines = mainTsSource
     .split("\n")
@@ -42306,7 +42318,8 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
   );
   check(
     "P2-353 wiring: the queued broadcast flushes only from did-finish-load — after the renderer can hear it",
-    /did-finish-load", \(\) => \{\s*\n\s*if \(win\.isDestroyed\(\)\) return;\s*\n\s*loadFailAttempts = 0;[\s\S]{0,400}?mainWindowLoaded = true;[\s\S]{0,300}?sendMenuAction\("newChat"\);/.test(mainSrc353),
+    // eval-11: the error-page guard sits between the destroyed check and the reset.
+    /did-finish-load", \(\) => \{\s*\n\s*if \(win\.isDestroyed\(\)\) return;[\s\S]{0,400}?if \(!loadWatch\.finishedApp\(win\.webContents\.getURL\(\)\)\) return;\s*\n\s*loadFailAttempts = 0;[\s\S]{0,400}?mainWindowLoaded = true;[\s\S]{0,300}?sendMenuAction\("newChat"\);/.test(mainSrc353),
   );
   check(
     "P2-353 wiring: exactly two newChat broadcasts exist in main.ts — the loaded branch of requestNewChat and the did-finish-load flush",
