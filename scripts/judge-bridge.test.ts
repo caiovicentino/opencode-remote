@@ -17,6 +17,7 @@
  * (The vendored-protocol drift check is eval-07's apps/pilot/src/judgedrift.ts.)
  * Run: npx tsx scripts/judge-bridge.test.ts
  */
+import "./testhome";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, sign, createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
