@@ -345,21 +345,24 @@ const cfgOf = (repo: string): PilotConfig => ({
     "judge guard: a prod path with spaces is quoted in the steps",
     judgeRepinSteps("/Volumes/SSD Major/prod", "abc1234")[0]!.startsWith('git -C "/Volumes/SSD Major/prod" show abc1234:'),
   );
-  // PR #1394's shape (eval-14, canonical hello nonce): serverAccept gets
-  // stricter and clientHello is refactored, while the old client's nonce stays
-  // canonical — the old judge might still pass, but a stricter server is the
-  // 09-22 incident's shape, so the guard refuses until re-vendor + re-pin
-  const stricter = CURRENT_CRYPTO.replace(
-    "const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));",
-    "const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(HELLO_NONCE_BYTES)));",
-  ).replace(
-    "    const sessionKey = await deriveAesKey(\n      daemonIdentity.privateKey,\n      hello.clientPub,\n      fromB64(hello.nonce),\n    );",
-    "    const salt = helloNonce(hello.nonce);\n    if (!salt) return null;\n    const sessionKey = await deriveAesKey(daemonIdentity.privateKey, hello.clientPub, salt);",
-  ) + "\nexport const HELLO_NONCE_BYTES = 16;\nexport function helloNonce(raw: unknown): Uint8Array | null {\n  if (typeof raw !== \"string\" || raw.length !== 24) return null;\n  const salt = fromB64(raw);\n  return salt.length === HELLO_NONCE_BYTES && b64(salt) === raw ? salt : null;\n}\n";
-  const pr1394 = compareProtocolMirror(CURRENT_CRYPTO, stricter);
+  // PR #1394's shape (eval-14, canonical hello nonce), now CANONICAL on main:
+  // the mirror is the pre-#1394 protocol (no HELLO_NONCE_BYTES/helloNonce, the
+  // older clientHello/serverAccept bodies) and the target is the real file —
+  // exactly the drift a stale judge exhibits after #1394 landed.
+  const pre1394 = CURRENT_CRYPTO
+    .replace(/\/\** Byte length of the client-chosen HKDF salt[^\n]*\n\s*export const HELLO_NONCE_BYTES = 16;\n/, "")
+    .replace(/\/\*\*\n \* RT-390 follow-up:[\s\S]*?\n\}\n\n/, "")
+    .replace(
+      "const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(HELLO_NONCE_BYTES)));",
+      "const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));",
+    ).replace(
+      /const sessionKey = await deriveAesKey\(daemonIdentity\.privateKey, hello\.clientPub, salt\);/,
+      "    const sessionKey = await deriveAesKey(\n      daemonIdentity.privateKey,\n      hello.clientPub,\n      fromB64(hello.nonce),\n    );",
+    );
+  const pr1394 = compareProtocolMirror(pre1394, CURRENT_CRYPTO);
   check(
-    "judge guard: the #1394 shape (stricter serverAccept + helloNonce) is a drift naming clientHello, serverAccept and the new symbols",
-    stricter !== CURRENT_CRYPTO && pr1394.state === "drift" && JSON.stringify(pr1394.changed) === JSON.stringify(["clientHello", "serverAccept"]) &&
+    "judge guard: the pre-#1394 mirror vs the #1394 target drifts naming clientHello, serverAccept and the new symbols",
+    pre1394 !== CURRENT_CRYPTO && pr1394.state === "drift" && JSON.stringify(pr1394.changed) === JSON.stringify(["clientHello", "serverAccept"]) &&
       (pr1394.onlyInTarget ?? []).includes("HELLO_NONCE_BYTES") && (pr1394.onlyInTarget ?? []).includes("helloNonce"),
     JSON.stringify(pr1394),
   );
