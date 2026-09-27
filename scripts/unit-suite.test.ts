@@ -15,6 +15,7 @@
  * reachability over the real repo.
  * Run: npx tsx scripts/unit-suite.test.ts
  */
+import "./testhome"; // throwaway HOME before any pilot module loads (testhome.ts)
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
