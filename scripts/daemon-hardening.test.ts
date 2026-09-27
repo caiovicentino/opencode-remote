@@ -18,6 +18,9 @@
  *
  * Run: npx tsx scripts/daemon-hardening.test.ts
  */
+// #1409 convention: a throwaway HOME before any app module computes paths
+// (the daemons below get their own explicit HOME on top of it).
+import "./testhome";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
