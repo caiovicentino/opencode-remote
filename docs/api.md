@@ -394,9 +394,11 @@ Hard caps, enforced before any result is produced and each marking the answer
 
 An origin failure never throws: the answer is an empty list marked truncated,
 plus one coarse log line (no path, no secret). No new port, no new listener,
-no periodic timer — the search only runs while a request is in flight. Wiring
-this into the conversation selector is the next slice; no screen consumes the
-route yet.
+no periodic timer — the search only runs while a request is in flight. The
+conversation list (desktop sidebar and phone) and the `Cmd+K` palette consume
+it since eval-20 (`apps/web/src/components/ContentSearch.tsx`): a `404`
+reads as "older daemon" and keeps title search working, `truncated` renders
+as a calm partial-scan note.
 
 ### Browser self-driving (P2-011)
 

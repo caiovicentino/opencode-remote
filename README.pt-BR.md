@@ -248,6 +248,22 @@ remoto, zero confiança**.
   lista volta pra ela
 - **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
   filtram o painel pelas conversas com ou sem badge de não-lidas
+- **Busca dentro das conversas (eval-20)** — com 2+ caracteres na busca de
+  conversas (sidebar do desktop ou lista do celular) aparece a seção **Nas
+  mensagens** abaixo dos títulos: as conversas cujas mensagens citam o termo,
+  cada uma com um trecho de uma linha e a ocorrência destacada, servidas pela
+  rota `GET /__ocr/search` do daemon (P3-400); a paleta `Cmd+K` lista os
+  mesmos resultados depois dos títulos. Abrir um resultado abre a conversa com
+  a barra de busca já no termo (quando as mensagens carregadas o contêm).
+  Estados calmos: linha discreta de "buscando", uma linha "Nada encontrado
+  para “…”", nota de busca parcial quando a máquina cortou a varredura, erro
+  com "Tentar de novo" e aviso de uma linha quando o daemon do computador é
+  anterior à rota
+- **Folha de atalhos de teclado (eval-20)** — `Cmd+/` (`Ctrl+/` no Windows e
+  no Linux) ou `?` fora de campo de texto abre o mapa de atalhos; as linhas da
+  paleta mostram as teclas de cada ação e a paleta ganhou a ação **Atalhos de
+  teclado**. Uma tabela só (`apps/web/src/lib/shortcuts.ts`) alimenta as duas
+  e é pinada por teste contra os aceleradores do menu **Ir**
 - **Troca rápida de sessão (P1-064)** — abrir uma conversa busca só as últimas
   50 mensagens (paginação no daemon com `?limit&before`, medida em bytes
   exatos — outputs gigantes de tool são aparados — pra caber no limite de
@@ -1443,7 +1459,8 @@ não na home de saudação (P3-373; uma segunda volta — ou o boot — é a hom
 então a lista fica sempre a um toque. Atalhos de
 teclado (também no menu **Ir**): `Cmd+T` nova conversa, `Cmd+K` paleta de
 comandos (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
-Browser / Arquivos / Configurações / Mission Control. O menu nativo fala
+Browser / Arquivos / Configurações / Mission Control, `Cmd+/` (ou `?` fora de
+campo de texto) a folha de atalhos. O menu nativo fala
 português desde a P2-176 (mesmo idioma da UI) e ganhou o menu **Ajuda** com
 **Verificar atualizações**, **Abrir pasta de logs** e **Copiar diagnóstico** —
 as ações de suporte do tray, agora também na barra de menus (os itens de

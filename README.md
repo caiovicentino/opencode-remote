@@ -72,8 +72,23 @@ private. That is the product: **local power, remote control, zero trust**.
   conversation with a short snippet around the occurrence. Hard caps — the 200
   most recent conversations, the 200 newest messages each, a 1.5 s budget —
   mark the answer `truncated` when hit, and an origin failure degrades to an
-  empty truncated answer instead of an error. Wiring this into the session
-  selector is the next slice; no screen consumes the route yet
+  empty truncated answer instead of an error. The conversation list and the
+  `Cmd+K` palette consume it (next bullet)
+- **Search inside conversations (eval-20)** — typing 2+ characters in the
+  conversation search (desktop sidebar or phone list) adds an **In messages**
+  section below the title matches: the conversations whose messages mention
+  the term, each with a one-line snippet and the occurrence highlighted; the
+  `Cmd+K` palette lists the same hits after its title matches. Opening a hit
+  opens the conversation with the find bar already on the term (when the
+  loaded messages contain it). Calm states only: a quiet "searching" line,
+  one "Nothing found for “…”" line, a partial-scan note when the host capped
+  the scan, a retryable error line, and a one-line notice when the computer
+  runs a daemon older than the route
+- **Keyboard shortcuts sheet (eval-20)** — `Cmd+/` (`Ctrl+/` on Windows and
+  Linux) or `?` outside a text field opens the keyboard map; the palette rows
+  show each action's keys and the palette has a **Keyboard shortcuts** action.
+  One table (`apps/web/src/lib/shortcuts.ts`) feeds both and is pinned by test
+  against the **Ir** menu accelerators
 - **Copy message (P2-282)** — every chat bubble gets a copy action, so the
   phone (no right-click, no native context menu) can lift an answer — code
   included — out of the conversation. The action sits under each bubble: a
@@ -1726,7 +1741,8 @@ the list is always one tap away. Keyboard shortcuts
 (also in the **Ir** menu): `Cmd+T` new conversation (**Nova conversa**),
 `Cmd+K` command palette (**Paleta de comandos** — searches conversations and
 actions), `Cmd+1..6` switch to chat / Artifacts / Browser / Files / Settings /
-Mission Control. The native menu is Portuguese since P2-176 (matching the UI
+Mission Control, `Cmd+/` (or `?` outside a text field) the keyboard shortcuts
+sheet. The native menu is Portuguese since P2-176 (matching the UI
 copy), including a **Ajuda** menu with **Verificar atualizações**, **Abrir
 pasta de logs** and **Copiar diagnóstico** — the tray's support actions,
 reachable from the menu bar too (the update items appear only when an update

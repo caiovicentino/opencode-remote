@@ -75,6 +75,7 @@ import { initialUnreadState, reduceUnread, sendUnreadToShell } from "../lib/unre
 import { sendAskCountToShell } from "../lib/asks";
 import { frameToFile, screenFailKey, screenWaitVerdict } from "../lib/screenpeek";
 import { ArtifactIcon, IconArrowLeft, IconArrowRight, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconMonitor, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
+import { usePendingFind } from "./ContentSearch";
 
 /** P2-312: microphone verdict from the desktop shell (mirrors
  * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
@@ -648,6 +649,19 @@ export default function ChatView({
     }
     return map;
   }, [searchHits]);
+  // eval-20: a conversation-search hit (sidebar / ⌘K) opens this chat with
+  // the find bar already holding the searched term — applied once the
+  // transcript is on screen, and only when the loaded messages contain it
+  // (never an empty "0 of 0" bar for a match that lives in an older page).
+  const [pendingFind, clearPendingFind] = usePendingFind(sessionId);
+  useEffect(() => {
+    if (!pendingFind || loadingHistory) return;
+    clearPendingFind();
+    if (findHits(bubbles, pendingFind).length === 0) return;
+    setSearchTerm(pendingFind);
+    setSearchOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFind, loadingHistory, bubbles]);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
   // P1-064: server paging state + explicit history error (never an eternal skeleton)
   const [historyError, setHistoryError] = useState("");

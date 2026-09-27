@@ -11,6 +11,8 @@ import { dropCachedSession } from "../lib/sessionCache";
 import { buildAskDialog, type AskIntent } from "../lib/askdialog";
 import { IconArchive, IconCheck, IconChevronDown, IconFilter, IconMore, IconPencil, IconPin, IconPlus, IconUndo, IconX } from "./icons";
 import AskDialog from "./AskDialog";
+import ContentSearchSection, { openFromSearch } from "./ContentSearch";
+import { contentSearchTerm } from "../lib/convosearch";
 
 interface Session {
   id: string;
@@ -555,7 +557,13 @@ export default function SessionsView({
             </button>
           </div>
         )}
-        {!loading && filtered.length === 0 && <p className="muted">{t("noSessions")}</p>}
+        {/* eval-20: under a query the empty copy speaks about the search, not
+            about an empty machine — a term long enough for the content search
+            gets its verdict from the section below instead */}
+        {!loading && filtered.length === 0 && !query.trim() && <p className="muted">{t("noSessions")}</p>}
+        {!loading && filtered.length === 0 && query.trim() !== "" && !contentSearchTerm(query) && (
+          <p className="muted">{t("contentSearchNone", { q: query.trim() })}</p>
+        )}
         {variant === "rows" && (
           <div className="sess-rows">
             {pinnedSessions.length > 0 && <GroupHead group="pinned" label={t("groupPinned")} />}
@@ -599,6 +607,18 @@ export default function SessionsView({
             {archivedSessions.length > 0 && archivedToggle}
             {archivedOpen && archivedSessions.map((s) => renderListRow(s, true))}
           </div>
+        )}
+        {/* eval-20: conversations whose MESSAGES mention the term (P3-400
+            route), below the title matches — a hit opens the chat with the
+            find bar already on the occurrence */}
+        {!loading && (
+          <ContentSearchSection
+            request={request}
+            query={query}
+            titleMatchIds={filtered.map((s) => s.id)}
+            onOpen={(id, term) => openFromSearch(id, term, onOpen)}
+            variant={variant}
+          />
         )}
       </div>
 

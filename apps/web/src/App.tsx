@@ -87,6 +87,7 @@ import ScreenFlash from "./components/ScreenFlash";
 import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
 import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
+import ShortcutsSheet from "./components/ShortcutsSheet";
 import DegradedView from "./components/DegradedView";
 import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
@@ -2420,6 +2421,8 @@ export default function App() {
           onOpenPane={(slot) => openPane(slot)}
         />
       )}
+      {/* eval-20: ⌘/ or ? opens the keyboard map (self-contained listener) */}
+      <ShortcutsSheet />
       {pairingOverlay}
     </div>
   );

@@ -3,12 +3,19 @@ import { useT } from "../lib/i18n";
 import { applySessionFilters } from "../lib/sessionFilter";
 import { previewFromEvents } from "../lib/sessionPreview";
 import { humanizeError } from "../lib/errors";
+import { SNIPPET_LEAD_PALETTE, freshHits, type ContentHit } from "../lib/convosearch";
+import { comboKeys, comboLabel, shortcutFor } from "../lib/shortcuts";
+import { openFromSearch, SnippetText, useContentSearch } from "./ContentSearch";
+import { KeyCaps, openShortcutsSheet, platformIsMac } from "./ShortcutsSheet";
 import {
   IconChat,
   IconFolder,
   IconGlobe,
+  IconKeyboard,
   IconLayers,
+  IconPlus,
   IconRadar,
+  IconSearch,
   IconSettings,
 } from "./icons";
 
@@ -17,6 +24,7 @@ type RequestFn = (
   path: string,
   body?: unknown,
   query?: Record<string, string>,
+  timeoutMs?: number,
 ) => Promise<{ status: number; body: unknown }>;
 
 interface Session {
@@ -40,6 +48,10 @@ interface Item {
   kind: string;
   /** P3-084: last known message line (sessions only, optional). */
   preview?: string;
+  /** eval-20: content-search hit — the snippet line with the occurrence marked. */
+  hit?: ContentHit;
+  /** eval-20: the shortcut id whose key caps the row shows (lib/shortcuts). */
+  shortcut?: string;
   run: () => void;
 }
 
@@ -58,6 +70,9 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
   const listRef = useRef<HTMLDivElement>(null);
   // P3-084: last known message line per conversation (from the event buffer)
   const previews = useMemo(() => previewFromEvents(events), [events]);
+  // eval-20: conversations whose MESSAGES mention the query (P3-400 route)
+  const { state: content, retry: retryContent } = useContentSearch(request, query);
+  const mac = platformIsMac();
 
   useEffect(() => {
     void (async () => {
@@ -73,12 +88,13 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
   const items = useMemo<Item[]>(() => {
     const q = query.trim().toLowerCase();
     const actions: Item[] = [
-      { key: "a-new", label: t("paletteNewChat"), kind: "action", run: onNewChat },
-      { key: "a-artifacts", label: t("paletteOpenArtifacts"), kind: "action", run: () => onOpenPane("artifacts") },
-      { key: "a-browser", label: t("paletteOpenBrowser"), kind: "action", run: () => onOpenPane("browser") },
-      { key: "a-files", label: t("paletteOpenFiles"), kind: "action", run: () => onOpenPane("files") },
-      { key: "a-mission", label: t("paletteOpenMission"), kind: "action", run: () => onOpenPane("mission") },
-      { key: "a-settings", label: t("paletteOpenSettings"), kind: "action", run: () => onOpenPane("settings") },
+      { key: "a-new", label: t("paletteNewChat"), kind: "action", shortcut: "newChat", run: onNewChat },
+      { key: "a-artifacts", label: t("paletteOpenArtifacts"), kind: "action", shortcut: "pane:artifacts", run: () => onOpenPane("artifacts") },
+      { key: "a-browser", label: t("paletteOpenBrowser"), kind: "action", shortcut: "pane:browser", run: () => onOpenPane("browser") },
+      { key: "a-files", label: t("paletteOpenFiles"), kind: "action", shortcut: "pane:files", run: () => onOpenPane("files") },
+      { key: "a-mission", label: t("paletteOpenMission"), kind: "action", shortcut: "pane:mission", run: () => onOpenPane("mission") },
+      { key: "a-settings", label: t("paletteOpenSettings"), kind: "action", shortcut: "pane:settings", run: () => onOpenPane("settings") },
+      { key: "a-shortcuts", label: t("paletteShortcuts"), kind: "action", shortcut: "shortcuts", run: openShortcutsSheet },
     ].filter((a) => !q || a.label.toLowerCase().includes(q));
     const sess: Item[] = applySessionFilters(sessions, {}, query, "all")
       .slice(0, 30)
@@ -89,8 +105,18 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
         preview: previews[s.id],
         run: () => onOpenSession(s.id),
       }));
-    return [...actions, ...sess];
-  }, [query, sessions, previews, t, onNewChat, onOpenPane, onOpenSession]);
+    // eval-20: content hits come last and never repeat a title match, so the
+    // rows above keep their indexes (and the arrow-key cursor) as they land
+    const hits = content.phase === "ok" ? freshHits(content.hits, sess.map((s) => s.key.slice(2))) : [];
+    const found: Item[] = hits.map((hit) => ({
+      key: `m-${hit.id}`,
+      label: hit.title,
+      kind: "message",
+      hit,
+      run: () => openFromSearch(hit.id, content.phase === "ok" ? content.term : query.trim(), onOpenSession),
+    }));
+    return [...actions, ...sess, ...found];
+  }, [query, sessions, previews, content, t, onNewChat, onOpenPane, onOpenSession]);
 
   useEffect(() => {
     setActive(0);
@@ -143,25 +169,71 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
         />
         <div className="palette-list" ref={listRef}>
           {error && <div className="palette-empty">{humanizeError(error, t)}</div>}
-          {!error && items.length === 0 && <div className="palette-empty">{t("paletteEmpty")}</div>}
+          {!error && items.length === 0 && content.phase !== "loading" && (
+            <div className="palette-empty">{t("paletteEmpty")}</div>
+          )}
           {items.map((item, i) => (
             <button
               key={item.key}
-              className={`palette-item${i === active ? " active" : ""}${item.preview ? " has-sub" : ""}`}
+              className={`palette-item${i === active ? " active" : ""}${item.preview || item.hit ? " has-sub" : ""}`}
               data-active={i === active}
               onMouseEnter={() => setActive(i)}
               onClick={() => commit(i)}
             >
               <span className="palette-ico">
-                {item.kind === "session" ? <IconChat size={15} /> : <PaneIcon item={item.key} />}
+                {item.kind === "session" ? (
+                  <IconChat size={15} />
+                ) : item.kind === "message" ? (
+                  <IconSearch size={15} />
+                ) : (
+                  <PaneIcon item={item.key} />
+                )}
               </span>
               <span className="palette-label">
                 <span className="palette-label-main">{item.label}</span>
                 {item.preview && <span className="palette-sub">{item.preview}</span>}
+                {item.hit && (
+                  <span className="palette-sub palette-snippet">
+                    <SnippetText hit={item.hit} lead={SNIPPET_LEAD_PALETTE} />
+                  </span>
+                )}
               </span>
-              <span className="palette-kind">{item.kind === "session" ? t("paletteKindSession") : t("paletteKindAction")}</span>
+              {item.shortcut && shortcutFor(item.shortcut) ? (
+                <KeyCaps
+                  keys={comboKeys(shortcutFor(item.shortcut)!.combo, mac)}
+                  label={comboLabel(shortcutFor(item.shortcut)!.combo, mac)}
+                />
+              ) : (
+                <span className="palette-kind">
+                  {item.kind === "session"
+                    ? t("paletteKindSession")
+                    : item.kind === "message"
+                      ? t("paletteKindMessage")
+                      : t("paletteKindAction")}
+                </span>
+              )}
             </button>
           ))}
+          {/* eval-20: the content search speaks in one quiet line — never a
+              spinner that outlives the request, never a raw error */}
+          {content.phase === "loading" && (
+            <div className="palette-status" role="status">
+              <span className="content-hits-pulse" aria-hidden />
+              {t("contentSearchLoading")}
+            </div>
+          )}
+          {content.phase === "ok" && content.truncated && content.hits.length > 0 && (
+            <div className="palette-status">{t("contentSearchPartial")}</div>
+          )}
+          {content.phase === "unsupported" && <div className="palette-status">{t("contentSearchUnsupported")}</div>}
+          {content.phase === "error" && (
+            <div className="palette-status">
+              {t("contentSearchError")}{" "}
+              <button type="button" className="content-hits-retry" onClick={retryContent}>
+                {t("retry")}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -169,6 +241,9 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
 }
 
 function PaneIcon({ item }: { item: string }) {
+  if (item === "a-shortcuts") return <IconKeyboard size={15} />;
+  // eval-20: "New conversation" fell through to the settings gear
+  if (item === "a-new") return <IconPlus size={15} />;
   if (item === "a-artifacts") return <IconLayers size={15} />;
   if (item === "a-browser") return <IconGlobe size={15} />;
   if (item === "a-files") return <IconFolder size={15} />;

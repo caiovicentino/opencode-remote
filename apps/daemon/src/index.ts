@@ -1008,8 +1008,8 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
   // recent conversations scanned, messages per conversation, total time
   // budget with early exit — live in searchindex.ts and mark the answer
   // `truncated` when hit. Origin failure degrades to an empty truncated list
-  // plus one coarse log line (no path, no secret). Wiring this into the
-  // conversation selector is the next slice; no screen consumes the route yet.
+  // plus one coarse log line (no path, no secret). Consumed by the
+  // conversation list and the ⌘K palette (web components/ContentSearch.tsx).
   if (req.path === "/__ocr/search" && req.method === "GET") {
     const q = typeof req.query?.q === "string" ? req.query.q : "";
     if (q.trim().length < SEARCH_MIN_TERM) {
