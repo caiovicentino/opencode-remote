@@ -8,6 +8,9 @@
  *   const { id } = await ocr.createSession("code review");
  *   const reply = await ocr.sendAndWait(id, "explain the auth module");
  *   console.log(reply);
+ *
+ * Every failure is an `OcrError` with one `code` (http, timeout, network,
+ * protocol, agent, aborted) — never a bare SyntaxError from a non-JSON body.
  */
 
 export interface OcrClientOptions {
@@ -17,6 +20,40 @@ export interface OcrClientOptions {
   token: string;
   /** fetch override (tests, proxies) */
   fetchImpl?: typeof fetch;
+  /** per-request timeout in ms for regular calls (default 30 000) */
+  timeoutMs?: number;
+}
+
+/** Per-call knobs: a deadline and an optional caller-owned cancellation. */
+export interface CallOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export type OcrErrorCode = "http" | "timeout" | "network" | "protocol" | "agent" | "aborted";
+
+/** One cause per failure: `code` says which, `status`/`body` carry the HTTP answer when there was one. */
+export class OcrError extends Error {
+  readonly code: OcrErrorCode;
+  readonly status?: number;
+  readonly body?: unknown;
+  readonly method?: string;
+  readonly path?: string;
+
+  constructor(
+    code: OcrErrorCode,
+    message: string,
+    details: { method?: string; path?: string; status?: number; body?: unknown } = {},
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "OcrError";
+    this.code = code;
+    this.status = details.status;
+    this.body = details.body;
+    this.method = details.method;
+    this.path = details.path;
+  }
 }
 
 export interface SessionInfo {
@@ -27,8 +64,25 @@ export interface SessionInfo {
 }
 
 export interface HistoryRow {
-  info: { id?: string; role?: string };
+  info: {
+    id?: string;
+    role?: string;
+    parentID?: string;
+    /** opencode stamps `completed` when an assistant step ends */
+    time?: { created?: number; completed?: number };
+    /** why the step ended — "tool-calls" means another step of the same turn follows */
+    finish?: string;
+    /** set when the turn failed (provider error, abort, …) */
+    error?: { name?: string; data?: { message?: string } };
+  };
   parts: { type: string; text?: string; tool?: string; state?: { status?: string; title?: string; output?: string } }[];
+}
+
+/** Answer of POST /api/session/:id/message. */
+export interface SendResult {
+  accepted: boolean;
+  /** what opencode answered — today the turn's final assistant message */
+  opencode?: unknown;
 }
 
 export interface Health {
@@ -55,31 +109,146 @@ export interface Client {
   session(id: string): Promise<SessionInfo>;
   deleteSession(id: string): Promise<unknown>;
   messages(id: string, limit?: number): Promise<HistoryRow[]>;
-  /** fire a prompt and return immediately (the agent works asynchronously) */
-  send(id: string, text: string): Promise<{ accepted: boolean }>;
-  /** fire a prompt and resolve with the assistant's reply once the session goes idle */
-  sendAndWait(id: string, text: string, opts?: { timeoutMs?: number; pollMs?: number }): Promise<string>;
+  /**
+   * Fire a prompt. The daemon relays opencode's streaming
+   * POST /session/:id/message, which completes when the agent's turn ends —
+   * so this resolves then (202 { accepted }), bounded by `timeoutMs`
+   * (default 5 min).
+   */
+  send(id: string, text: string, opts?: CallOptions): Promise<SendResult>;
+  /** fire a prompt and resolve with the text of the turn's final assistant message */
+  sendAndWait(id: string, text: string, opts?: { timeoutMs?: number; pollMs?: number; signal?: AbortSignal }): Promise<string>;
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+/** A prompt's answer only arrives when the agent's turn ends (see Client.send). */
+const SEND_TIMEOUT_MS = 300_000;
+/** Rows read per poll; the anchor is matched by id inside this window. */
+const HISTORY_WINDOW = 200;
+
+interface TurnVerdict {
+  kind: "final" | "failed" | "pending" | "legacy";
+  row?: HistoryRow;
+}
+
+/**
+ * Is this the end of the turn? opencode writes one assistant message per
+ * step: "tool-calls" steps are followed by more, the last step carries
+ * `time.completed` and any other finish reason. Rows without `time` come from
+ * an agent server that predates the stamps (legacy → text-stability fallback).
+ */
+function turnVerdict(row: HistoryRow | undefined): TurnVerdict {
+  if (!row || row.info?.role !== "assistant") return { kind: "pending" };
+  if (row.info.error) return { kind: "failed", row };
+  if (!row.info.time) return { kind: "legacy", row };
+  if (typeof row.info.time.completed !== "number" || row.info.finish === "tool-calls") return { kind: "pending" };
+  return { kind: "final", row };
+}
+
+function replyText(row: HistoryRow): string {
+  return (row.parts ?? [])
+    .filter((p) => p.type === "text" && p.text)
+    .map((p) => p.text)
+    .join("\n");
+}
+
+function isHistoryRow(v: unknown): v is HistoryRow {
+  return typeof v === "object" && v !== null && typeof (v as HistoryRow).info === "object" && Array.isArray((v as HistoryRow).parts);
+}
+
+/**
+ * The rows of THIS prompt's turn: when our own user message is identifiable
+ * (a text part equal to the prompt — the daemon may append parts of its own),
+ * only the steps answering it count, so a turn another client runs in the
+ * same session is never mistaken for ours.
+ */
+function turnRows(fresh: HistoryRow[], text: string): HistoryRow[] {
+  for (let i = fresh.length - 1; i >= 0; i--) {
+    const r = fresh[i]!;
+    if (r.info?.role === "user" && r.info.id && (r.parts ?? []).some((p) => p.type === "text" && p.text === text)) {
+      const mine = r.info.id;
+      return fresh.slice(i + 1).filter((x) => x.info?.parentID === undefined || x.info.parentID === mine);
+    }
+  }
+  return fresh;
 }
 
 export function createClient(opts: OcrClientOptions): Client {
   const base = (opts.baseUrl ?? "http://127.0.0.1:8792").replace(/\/$/, "");
   const f = opts.fetchImpl ?? fetch;
+  const defaultTimeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const sid = (id: string) => encodeURIComponent(id);
 
-  async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await f(`${base}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${opts.token}`,
-        ...(body !== undefined ? { "content-type": "application/json" } : {}),
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(30_000),
-    });
-    const text = await res.text();
-    const parsed = text ? (JSON.parse(text) as T) : ({} as T);
-    if (!res.ok) throw new Error(`OCR ${method} ${path} -> ${res.status}: ${JSON.stringify(parsed).slice(0, 200)}`);
-    return parsed;
+  function transportError(err: unknown, method: string, path: string, timeoutMs: number, signal?: AbortSignal): OcrError {
+    const where = { method, path };
+    if (signal?.aborted) return new OcrError("aborted", `OCR ${method} ${path}: aborted by the caller`, where, { cause: err });
+    if ((err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError") {
+      return new OcrError("timeout", `OCR ${method} ${path}: no answer within ${timeoutMs} ms`, where, { cause: err });
+    }
+    return new OcrError("network", `OCR ${method} ${path}: ${(err as Error)?.message ?? String(err)}`, where, { cause: err });
   }
+
+  async function call<T>(method: string, path: string, body?: unknown, o: CallOptions = {}): Promise<T> {
+    const timeoutMs = o.timeoutMs ?? defaultTimeout;
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = o.signal ? AbortSignal.any([timeout, o.signal]) : timeout;
+    let text: string;
+    let status: number;
+    let ok: boolean;
+    try {
+      const res = await f(`${base}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${opts.token}`,
+          ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
+      });
+      status = res.status;
+      ok = res.ok;
+      text = await res.text();
+    } catch (err) {
+      throw transportError(err, method, path, timeoutMs, o.signal);
+    }
+    let parsed: unknown;
+    let json = false;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+        json = true;
+      } catch {
+        // proxies and crashes answer text/html — reported below, never thrown raw
+      }
+    }
+    if (!ok) {
+      const shown = json ? JSON.stringify(parsed) : text;
+      throw new OcrError("http", `OCR ${method} ${path} -> ${status}: ${shown.slice(0, 200)}`, {
+        method,
+        path,
+        status,
+        body: json ? parsed : text,
+      });
+    }
+    if (text && !json) {
+      throw new OcrError("protocol", `OCR ${method} ${path} -> ${status}: answer is not JSON`, { method, path, status, body: text });
+    }
+    return (text ? parsed : {}) as T;
+  }
+
+  const sleep = (ms: number, signal?: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) return reject(new OcrError("aborted", "sendAndWait: aborted by the caller"));
+      const t = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(t);
+        reject(new OcrError("aborted", "sendAndWait: aborted by the caller"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
 
   return {
     async health() {
@@ -89,46 +258,85 @@ export function createClient(opts: OcrClientOptions): Client {
       return call<SessionInfo[]>("GET", "/api/session");
     },
     async createSession(title?: string) {
-      return call<SessionInfo>("POST", "/api/session", title ? { title } : {});
+      // POST /api/session is the Bearer→cookie exchange since P1-057; the
+      // opencode session is created by POST /api/session/new.
+      const created = await call<Partial<SessionInfo>>("POST", "/api/session/new", title ? { title } : {});
+      if (typeof created?.id !== "string" || !created.id) {
+        throw new OcrError("protocol", "createSession: the daemon answered without a session id", {
+          method: "POST",
+          path: "/api/session/new",
+          body: created,
+        });
+      }
+      return created as SessionInfo;
     },
     async session(id) {
-      return call<SessionInfo>("GET", `/api/session/${id}`);
+      return call<SessionInfo>("GET", `/api/session/${sid(id)}`);
     },
     async deleteSession(id) {
-      return call<unknown>("DELETE", `/api/session/${id}`);
+      return call<unknown>("DELETE", `/api/session/${sid(id)}`);
     },
-    async messages(id, limit = 200) {
-      return call<HistoryRow[]>("GET", `/api/session/${id}/messages?limit=${limit}`);
+    async messages(id, limit = HISTORY_WINDOW) {
+      return call<HistoryRow[]>("GET", `/api/session/${sid(id)}/messages?limit=${limit}`);
     },
-    async send(id, text) {
-      return call<{ accepted: boolean }>("POST", `/api/session/${id}/message`, { text });
+    async send(id, text, o = {}) {
+      return call<SendResult>("POST", `/api/session/${sid(id)}/message`, { text }, {
+        timeoutMs: o.timeoutMs ?? SEND_TIMEOUT_MS,
+        signal: o.signal,
+      });
     },
-    async sendAndWait(id, text, { timeoutMs = 300_000, pollMs = 2_000 } = {}) {
-      const before = (await this.messages(id)).length;
-      await this.send(id, text);
+    async sendAndWait(id, text, { timeoutMs = SEND_TIMEOUT_MS, pollMs = 2_000, signal } = {}) {
       const deadline = Date.now() + timeoutMs;
-      let lastLen = -1;
+      const left = () => Math.max(1, deadline - Date.now());
+      const history = (limit: number) =>
+        call<HistoryRow[]>("GET", `/api/session/${sid(id)}/messages?limit=${limit}`, undefined, {
+          timeoutMs: Math.min(defaultTimeout, left()),
+          signal,
+        });
+      // Anchor on the last message BEFORE the prompt — by id, never by count:
+      // the history route returns at most `limit` rows, so a count stops
+      // growing once the session holds that many messages.
+      const anchor = (await history(1))[0]?.info?.id ?? null;
+      const sent = await call<SendResult>("POST", `/api/session/${sid(id)}/message`, { text }, { timeoutMs: left(), signal });
+      if (sent?.accepted === false) {
+        throw new OcrError("protocol", "sendAndWait: the daemon did not accept the prompt", { body: sent });
+      }
+      // The daemon relays opencode's streaming answer, which only completes
+      // when the turn is over: a completed assistant message in it IS the
+      // reply to this prompt — no polling, no guessing.
+      const direct = sent?.opencode;
+      if (isHistoryRow(direct) && direct.info.role === "assistant") {
+        if (direct.info.error) throw agentError(direct);
+        if (typeof direct.info.time?.completed === "number") return replyText(direct);
+      }
+      let lastLegacy = "";
       let stable = 0;
       for (;;) {
-        await new Promise((r) => setTimeout(r, pollMs));
-        const rows = await this.messages(id);
-        const last = rows[rows.length - 1];
-        const grew = rows.length > before;
-        const reply = last?.info?.role === "assistant"
-          ? last.parts
-              .filter((p) => p.type === "text" && p.text)
-              .map((p) => p.text)
-              .join("\n")
-          : "";
-        if (grew && reply) {
-          // stable across two consecutive polls ⇒ the turn is (probably) over
-          if (reply.length === lastLen) stable++;
-          else stable = 0;
-          lastLen = reply.length;
+        const rows = await history(HISTORY_WINDOW);
+        const at = anchor === null ? -1 : rows.findIndex((r) => r.info?.id === anchor);
+        const turn = turnRows(rows.slice(at + 1), text);
+        const verdict = turnVerdict(turn[turn.length - 1]);
+        if (verdict.kind === "final") return replyText(verdict.row!);
+        if (verdict.kind === "failed") throw agentError(verdict.row!);
+        if (verdict.kind === "legacy") {
+          // agent server without time/finish stamps: same text across two
+          // consecutive polls ⇒ the turn is (probably) over
+          const reply = replyText(verdict.row!);
+          stable = reply && reply === lastLegacy ? stable + 1 : 0;
+          lastLegacy = reply;
           if (stable >= 1) return reply;
         }
-        if (Date.now() > deadline) throw new Error("sendAndWait: timeout waiting for agent reply");
+        if (Date.now() >= deadline) {
+          throw new OcrError("timeout", `sendAndWait: no final reply within ${timeoutMs} ms`);
+        }
+        await sleep(Math.min(pollMs, left()), signal);
       }
     },
   };
+}
+
+function agentError(row: HistoryRow): OcrError {
+  const e = row.info.error;
+  const why = e?.data?.message ?? e?.name ?? "unknown error";
+  return new OcrError("agent", `the agent turn failed: ${why}`, { body: e });
 }

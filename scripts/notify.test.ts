@@ -6,6 +6,7 @@
  * than the 24h TTL must expire instead of replaying.
  * Run: npx tsx scripts/notify.test.ts
  */
+import "./testhome"; // throwaway HOME before any pilot module loads (testhome.ts)
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

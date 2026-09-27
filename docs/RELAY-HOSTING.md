@@ -977,6 +977,39 @@ These gauges are observation only — nothing in the relay reads them, closes
 a socket or changes a limit because of them — and no series ever carries a
 room id, address or IP.
 
+### Two daemons in one room: the duplicate-owner signal (eval-13b)
+
+The mirror image of the split: one relay, but **two daemons** in the same
+room. Every frame a daemon sends carries its room id as the sender (`from`
+equal to `room`), so two live sockets claiming that owner identity are two
+daemon processes sharing one identity — an old process still alive after a
+restart, a state directory copied to a second machine (Migration Assistant),
+or a container mounting the host's `~/.opencode-remote` while the host daemon
+runs. The relay fans every phone frame out to every other peer by design, so
+both daemons answer and whichever is first wins: answers come from the wrong
+process in silence.
+
+This is what turned `scripts/reconnect.test.ts` red in PR #1316's CI (run
+35877316740) and on main before P2-347 (run 35890024240): the harness spawned
+the daemon through `npx`, SIGTERM stopped only the npm wrapper on Linux, and
+the "restarted" daemon lived on. The relay's own lines show the replacement
+joining with `total: 3` and no close for the old socket, and the test read a
+`410 attachment expired` (the answering daemon's upload map did not hold the
+attachment) where it expected `502`. P2-347 fixed the harness (the daemon is
+spawned directly, in its own process group); in the 25 successful main runs
+after it, the step passed on the first try every time.
+
+The relay now says so itself: `relay_rooms_duplicate_owner` (gauge — rooms
+whose owner identity more than one live socket holds right now, computed per
+scrape; `rooms_duplicate_owner` in the JSON body), `relay_duplicate_owner_total`
+(counter — second owner sockets seen since boot; `duplicate_owner_total`) and
+one `room has more than one owner socket` warn line per occurrence (8-character
+room prefix, like every other rejection line). It is observation only: `from`
+is attacker-controllable, so a peer that knows a room id can fake the signal,
+and nothing is ever closed or refused because of it. The `RelayDuplicateOwner`
+alert fires when the gauge stays above zero for 10 minutes (a restart can
+overlap briefly).
+
 ## Metrics endpoint
 
 `GET /metrics` (counters as JSON; add `?format=prom` for Prometheus text
@@ -998,6 +1031,12 @@ JSON payload gains the matching `rooms_rejected_invalid_room_id` /
 `rooms_rejected_socket_room_cap` fields next to the unchanged
 `rooms_rejected`. Same contract as the probe: the sum never exceeds the
 total, and no line or field carries a room id, address or IP.
+
+The duplicate-owner pair (eval-13b) — `relay_duplicate_owner_total` (right
+after `relay_room_budget_terminated`) and the `relay_rooms_duplicate_owner`
+gauge (right after `relay_rooms_crowded`), `duplicate_owner_total` and
+`rooms_duplicate_owner` in the JSON — is described in the one-replica section
+above. Both publish zero on a healthy relay, never omitted.
 
 The fatal-crash counter rides the same surface (P2-351): `relay_crashes_total`
 in the Prometheus text format and `crashes_total` in the JSON, published right
@@ -1090,6 +1129,9 @@ instance is expected. What each rule anticipates:
   room id loop or legitimate clients hitting the per-connection ceiling.
 - `RelayRoomBudgetTerminated` — a room crossed its window volume budget and
   was terminated, the traffic-control signal an operator pays attention to.
+- `RelayDuplicateOwner` — for 10 minutes, some room's owner identity has been
+  held by more than one live socket: two daemons share one identity and the
+  phone gets answers from the wrong one.
 
 The rule set is closed and documented in one place: adding a rule means
 editing `alertrules.ts` (and this section) first, regenerating the file and
