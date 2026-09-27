@@ -11,6 +11,7 @@
  * the REAL BACKLOG.md of this repo, so debris can never land unnoticed again.
  * Run: npx tsx scripts/backlog-integrity.test.ts
  */
+import "./testhome";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,6 @@ import {
   blockTaskEdit,
   introducesReadyDebris,
   isBookkeepingSubject,
-  isValidTaskLine,
   markDone,
   parseBacklog,
   parseTaskLine,
@@ -331,6 +331,7 @@ check(
     ["prompt without v", JSON.stringify({ prompt: "x" }), 'missing "v": 1'],
     ["wrong version", JSON.stringify({ v: 2, models: { builder: "p/m" } }), "unsupported version"],
     ["unknown role", JSON.stringify({ models: { planner: "p/m" } }), '"planner"'],
+    ["unknown role is capped", JSON.stringify({ models: { [`${"r".repeat(80)}`]: "p/m" } }), `${"r".repeat(40)}…`],
     ["bad repo", JSON.stringify({ v: 1, repoUrl: "https://gitlab.com/a/b" }), "repoUrl"],
     ["nothing useful", JSON.stringify({ v: 1, setAt: at }), "needs a prompt"],
     ["garbage", "{nope", "not valid JSON"],
@@ -347,25 +348,27 @@ check(
 }
 
 // --- the REAL BACKLOG.md of this repo ------------------------------------------
+// Fixround (verdict 06, blocking 1): this gate runs on EVERY builder
+// (gateprofile.ts:103), so it may judge only the queue's SHAPE — the three
+// structure defects the pilot's own writers can introduce (orphan prose under
+// ## Ready, a [x] item left in the queue, a repeated ## Ready/## Done header).
+// A hand-written or requeued line is the scheduler's and the doctor's
+// business: a `;`, a missing `(area:)` tag or control bytes in a task line
+// still parse as schedulable (parseTaskLine — what backlogShapeIssues judges a
+// Ready line by) while failing the landing validator (isValidTaskLine), so
+// pinning the LANDING validator on the live file turned the whole fleet's gate
+// red on content the doctor reports as ok. The readyOrphanBlocks boot alert
+// (P2-341) still reports such a line — report-only, never a red gate.
 
 {
   const real = readFileSync(join(root, "BACKLOG.md"), "utf8");
-  const issues = backlogShapeIssues(real);
+  const issues = backlogShapeIssues(real).filter(
+    (i) => i.kind === "orphan" || i.kind === "done-in-ready" || i.kind === "duplicate-section",
+  );
   check(
-    "real BACKLOG.md: zero structure issues (no Ready debris, no misfiled status, no stray prose)",
+    "real BACKLOG.md: zero queue-shape issues (no Ready debris, no duplicate Ready/Done section)",
     issues.length === 0,
     issues.slice(0, 10).map((i) => `${i.kind}@${i.line}${i.id ? ` ${i.id}` : ""}`).join(", "),
-  );
-  const diag = validateBacklog(real);
-  check("real BACKLOG.md: the doctor validator is green with no warnings", diag.ok && diag.warnings.length === 0, JSON.stringify({ problems: diag.problems, warnings: diag.warnings }));
-  const tasks = parseBacklog(real);
-  check("real BACKLOG.md: every queued task passes the landing validator (P2-341 scan agrees)", tasks.every((t) => isValidTaskLine(t.line)) && readyOrphanBlocks(real).count === 0, JSON.stringify(readyOrphanBlocks(real)));
-  // the queue itself: no control bytes in any scheduled line (the P3-457
-  // Blocked record still carries the ESC[91m the old stop-loss summary copied —
-  // its line is the orchestrator's to rewrite when its status is set)
-  check(
-    "real BACKLOG.md: no control bytes in the queued task lines",
-    tasks.every((t) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(t.line)),
   );
 }
 

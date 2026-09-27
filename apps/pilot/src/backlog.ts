@@ -247,7 +247,7 @@ export function blockTask(repoDir: string, id: string, findings: string): Backlo
 }
 
 /** Add a task at the top of ## Ready (used by redteam findings). */
-export type AddTaskResult = "applied" | "invalid" | "missing";
+export type AddTaskResult = "applied" | "invalid" | "refused" | "missing";
 
 /**
  * P2-336: the one validator for a proposed task line — shared by
@@ -272,8 +272,9 @@ export function isValidTaskLine(line: string): boolean {
 /**
  * Outcome of addTask: "applied" wrote the validated line, "invalid" means
  * the produced line failed isValidTaskLine and NOTHING was written (the
- * caller must log a warning — fail-closed for every caller), "missing"
- * means the file has no ## Ready section and nothing was written.
+ * caller must log a warning — fail-closed for every caller), "refused" means
+ * the Ready-debris ratchet declined the write (also nothing written), and
+ * "missing" means the file has no ## Ready section and nothing was written.
  */
 export function addTask(repoDir: string, id: string, priority: string, title: string, spec: string): AddTaskResult {
   const p = join(repoDir, BACKLOG);
@@ -283,7 +284,8 @@ export function addTask(repoDir: string, id: string, priority: string, title: st
   if (!/^## Ready$/m.test(md)) return "missing";
   // eval-06: the validated line still goes through the Ready-debris ratchet —
   // a refusal is fail-closed exactly like an invalid line (nothing written)
-  return writeChecked(p, md, md.replace(/^## Ready$/m, () => `## Ready\n${entry}`)) ? "applied" : "invalid";
+  // and is reported as itself, never as "invalid" (the caller logs the reason)
+  return writeChecked(p, md, md.replace(/^## Ready$/m, () => `## Ready\n${entry}`)) ? "applied" : "refused";
 }
 
 // ── P2-341: orphan prose blocks under ## Ready (doctor diagnostic) ──────────

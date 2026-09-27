@@ -1046,7 +1046,9 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
           : { action: "abort" };
       },
     });
-    if (addResult.value !== "applied") {
+    if (addResult.value === "refused") {
+      log("warn", "redteam finding dropped — the Ready-debris ratchet refused the edit", { id: landedId, result: addResult.value });
+    } else if (addResult.value !== "applied") {
       log("warn", "redteam finding dropped — task line failed validation", { id: landedId, result: addResult.value });
     } else if (landed === "refused") {
       log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id: landedId });

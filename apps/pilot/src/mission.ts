@@ -98,7 +98,11 @@ export function parseMissionModels(raw: unknown): { ok: true; models?: MissionMo
   if (typeof raw !== "object" || Array.isArray(raw)) return { ok: false, reason: "models must be an object" };
   const out: MissionModels = {};
   for (const [role, id] of Object.entries(raw as Record<string, unknown>)) {
-    if (!isMissionModelRole(role)) return { ok: false, reason: `unknown role "${role}" (valid: ${MISSION_MODEL_ROLES.join("|")})` };
+    // eval-06 fixround: the unknown role is echoed into the pilot log — cap it
+    // so a garbage role key (attacker-writable mission.json) can't make the
+    // log line unbounded. The other branch's role is already a known name.
+    const cited = role.length > 40 ? `${role.slice(0, 40)}…` : role;
+    if (!isMissionModelRole(role)) return { ok: false, reason: `unknown role "${cited}" (valid: ${MISSION_MODEL_ROLES.join("|")})` };
     if (!validModelId(id)) return { ok: false, reason: `invalid model id for ${role} (expected provider/model)` };
     out[role] = id;
   }

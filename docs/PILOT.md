@@ -1324,8 +1324,16 @@ de refill pendente revalidam cada linha com `isValidTaskLine`; `markDone` sem
 `## Done` responde `missing` sem gravar (antes a task sumia); o resumo do
 stop-loss perde sequências ANSI e bytes de controle. O
 `scripts/backlog-integrity.test.ts` (fim da cadeia `test:unit`) valida o
-`BACKLOG.md` **real** do repo: zero problema de estrutura, validador do doctor
-verde e toda task da fila válida pro validador de landing.
+`BACKLOG.md` **real** do repo **só pela forma da fila** (`backlogShapeIssues`:
+linha órfã sob `## Ready`, item `[x]` na fila, cabeçalho `## Ready`/`## Done`
+duplicado). Linha escrita à mão ou reenfileirada é assunto do scheduler e do
+doctor: um `;`, um `(area:)` ausente ou bytes de controle numa task line
+segem sendo agendáveis (`parseTaskLine`) e o doctor responde `ok` — o alerta
+de boot da P2-341 (`readyOrphanBlocks`) pode denunciá-la, mas é somente
+relatório. O teste de fila **não** pinna o validador de landing
+(`isValidTaskLine`, mais rígido, feito para saída de LLM) no arquivo vivo:
+fazê-lo deixava o portão de toda a frota vermelho por conteúdo que o doctor
+considera ok.
 
 O boot do pilot roda o pass completo (refs/state/backlog/branches em cada slot,
 log `doctor: <cmd>` no JSONL) — falha do doctor nunca impede o pipeline de subir.
