@@ -418,6 +418,17 @@ export function loadState(file = STATE_FILE): PilotState {
       lessonImpact: normalizeLessonImpact(s.lessonImpact),
       // eval 05: lifetime record — must survive the midnight rollover below
       lessonImpactV2: normalizeLessonImpactV2(s.lessonImpactV2),
+      // eval 05: last-run guards and lifetime counters are not daily budgets —
+      // the rollover below dropped them, so every cross-midnight boot re-ran
+      // the WEEKLY forensic and reset the gate-corpus cadence
+      redteamLast: typeof s.redteamLast === "string" ? s.redteamLast : undefined,
+      researchLast: typeof s.researchLast === "string" ? s.researchLast : undefined,
+      explorerLast: typeof s.explorerLast === "string" ? s.explorerLast : undefined,
+      forensicLast: typeof s.forensicLast === "string" ? s.forensicLast : undefined,
+      mergesSinceCorpus:
+        typeof s.mergesSinceCorpus === "number" && Number.isFinite(s.mergesSinceCorpus) && s.mergesSinceCorpus >= 0 ? s.mergesSinceCorpus : undefined,
+      // P2-045: the dashboard chip text lives as long as auditMode (kept above)
+      auditDiagnosis: typeof s.auditDiagnosis === "string" ? s.auditDiagnosis : undefined,
     };
     if (s.date === today) return { ...s, ...shared, merges, infraFails };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };

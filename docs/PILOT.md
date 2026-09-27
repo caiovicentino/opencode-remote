@@ -720,7 +720,10 @@ intacto). Bloco opcional:
   `git log -50` e escreve a taxonomia de falhas (padrões, causas raiz,
   recomendações) em `~/.opencode-remote/pilot/forensic-latest.md` + digest no
   telefone. Guard próprio de 7 dias (`state.forensicLast`, persistido **antes**
-  do run); falha é best-effort e nunca bloqueia o loop. O relatório chega ao
+  do run; eval 05: preservado na virada de dia do `loadState` junto com
+  `redteamLast`/`researchLast`/`explorerLast`/`mergesSinceCorpus`/`auditDiagnosis`
+  — antes todo boot em outro dia descartava essas guardas e o forensic semanal
+  rodava de novo); falha é best-effort e nunca bloqueia o loop. O relatório chega ao
   disco pelo runner (stdout), nunca por write direto do agente fora do workspace.
 
 ## Tarefas long-horizon — campo size (P1-060)

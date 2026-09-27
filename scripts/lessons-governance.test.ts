@@ -13,11 +13,15 @@
  *   clipping; re-landed lessons refresh instead of duplicating; the scribe
  *   prompt contract (0–2 lessons, budget, existing lessons);
  * - lessonImpactV2: per-run token deltas, untreated runs outside the cohorts,
- *   survives the midnight rollover; the v1 record is never rewritten.
+ *   survives the midnight rollover; the v1 record is never rewritten, so a
+ *   state file round-trips through this branch and back to older code intact;
+ * - loadState's midnight rollover keeps the nightly guards and lifetime
+ *   counters (forensicLast & co. were dropped: weekly forensic re-ran daily).
+ * Every state file lives in a temp dir (injected paths — never the real HOME).
  * Pure node (fs/os/path in a temp dir) — portable battery.
  * Run: npx tsx scripts/lessons-governance.test.ts
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildDiagnosis } from "../apps/pilot/src/audit";
@@ -46,7 +50,7 @@ import {
   type FailureLesson,
 } from "../apps/pilot/src/failureLessons";
 import { normalizeLessonImpactV2, recordLessonImpact, runTokenDelta } from "../apps/pilot/src/lessonimpact";
-import { loadState, type LessonImpact, type LessonImpactV2 } from "../apps/pilot/src/state";
+import { loadState, saveState, type LessonImpact, type LessonImpactV2, type PilotState } from "../apps/pilot/src/state";
 import { scribePrompt } from "../apps/pilot/src/pipeline";
 import type { Task } from "../apps/pilot/src/backlog";
 
@@ -263,6 +267,49 @@ const md = (lines: string[]) => `# Experience memory (IER)\n\n## Lessons\n${line
   check("impact: the v1 record survives loadState untouched", JSON.stringify(loaded.lessonImpact) === JSON.stringify(v1Record));
   check("impact: v2 round-trips through its normalizer", JSON.stringify(normalizeLessonImpactV2(JSON.parse(JSON.stringify(li)))) === JSON.stringify(li));
   check("impact: garbage normalizes to undefined", normalizeLessonImpactV2("x") === undefined && normalizeLessonImpactV2(null) === undefined);
+}
+
+// ── loadState midnight rollover + rollback round-trip (eval 05) ─────────────
+{
+  const yesterdayFile = join(dir, "state-yesterday.json");
+  const v1Record: LessonImpact = { with: { merges: 352, roundsTotal: 895, tokensTotal: 6_424_039_987 }, without: { merges: 3, roundsTotal: 4, tokensTotal: 16_530_200 } };
+  // production shape before the 2026-09-27 incident (date = last pilot day)
+  const prod = {
+    date: "2026-09-24", tasks: 9, deploys: 2, failures: 1, merges: 7, taskAttempts: { "P2-356": 1 },
+    redteamLast: "2026-09-24", researchLast: "2026-09-23", explorerLast: "2026-09-24", forensicLast: "2026-09-24",
+    mergesSinceCorpus: 3, auditDiagnosis: "api=healthy | top failure steps: none | top rejected tasks: none",
+    expMaintLast: "2026-09-24", lessonImpact: v1Record,
+  };
+  writeFileSync(yesterdayFile, JSON.stringify(prod, null, 2));
+  const rolled = loadState(yesterdayFile);
+  check("rollover: daily counters reset on a new day", rolled.date !== "2026-09-24" && rolled.tasks === 0 && rolled.merges === 0 && rolled.deploys === 0);
+  check(
+    "rollover: nightly guards survive (forensicLast keeps the WEEKLY cadence)",
+    rolled.forensicLast === "2026-09-24" && rolled.redteamLast === "2026-09-24" && rolled.researchLast === "2026-09-23" && rolled.explorerLast === "2026-09-24" && rolled.expMaintLast === "2026-09-24",
+  );
+  check("rollover: lifetime counters survive (gate-corpus cadence, audit chip)", rolled.mergesSinceCorpus === 3 && rolled.auditDiagnosis === prod.auditDiagnosis && rolled.taskAttempts["P2-356"] === 1);
+  writeFileSync(yesterdayFile, JSON.stringify({ ...prod, forensicLast: 7, mergesSinceCorpus: -2, auditDiagnosis: { x: 1 } }));
+  const garbage = loadState(yesterdayFile);
+  check("rollover: garbage-typed guards are dropped, never crash", garbage.forensicLast === undefined && garbage.mergesSinceCorpus === undefined && garbage.auditDiagnosis === undefined && garbage.redteamLast === "2026-09-24");
+
+  // rollback safety: v1 file -> this branch (load, one run, save) -> a v1-only
+  // reader (origin/main + prod 1ebbbc1 normalize lessonImpact exactly like
+  // this: with/without cohorts copied, finite numbers >= 0) -> intact
+  writeFileSync(yesterdayFile, JSON.stringify(prod, null, 2));
+  const st: PilotState = loadState(yesterdayFile);
+  recordLessonImpact(st, { lessons: 4, rounds: 2, ok: true, tokens: 1234 }, new Date("2026-09-27T12:00:00-03:00"));
+  saveState(st, yesterdayFile);
+  const saved = JSON.parse(readFileSync(yesterdayFile, "utf8")) as { lessonImpact: LessonImpact; lessonImpactV2: LessonImpactV2; forensicLast: string };
+  check("round-trip: the branch never rewrites the v1 record on load/record/save", JSON.stringify(saved.lessonImpact) === JSON.stringify(v1Record));
+  const olderReader = (v: { with?: Partial<LessonImpact["with"]>; without?: Partial<LessonImpact["with"]> }) => {
+    const n = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : 0);
+    const c = (m: Partial<LessonImpact["with"]> = {}) => ({ merges: n(m.merges), roundsTotal: n(m.roundsTotal), tokensTotal: n(m.tokensTotal) });
+    return { with: c(v.with), without: c(v.without) };
+  };
+  check("round-trip: an older v1-only reader gets the original numbers back", JSON.stringify(olderReader(saved.lessonImpact)) === JSON.stringify(v1Record));
+  check("round-trip: the v2 run landed beside it, not inside it", saved.lessonImpactV2.with.runs === 1 && saved.lessonImpactV2.with.tokensTotal === 1234 && saved.forensicLast === "2026-09-24");
+  const back = loadState(yesterdayFile);
+  check("round-trip: reloading on the branch keeps both records", JSON.stringify(back.lessonImpact) === JSON.stringify(v1Record) && back.lessonImpactV2?.with.runs === 1);
 }
 
 rmSync(dir, { recursive: true, force: true });
