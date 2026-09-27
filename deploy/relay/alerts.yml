@@ -70,3 +70,10 @@ groups:
           severity: warning
         annotations:
           summary: "Uma sala passou o orçamento de volume da janela e foi encerrada."
+      - alert: RelayDuplicateOwner
+        expr: "relay_rooms_duplicate_owner > 0"
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Duas instâncias do daemon disputam a mesma sala (processo antigo vivo ou pasta de estado copiada): o celular recebe respostas da instância errada."

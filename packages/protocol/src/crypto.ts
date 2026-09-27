@@ -140,6 +140,32 @@ export function seqAad(from: string, seq: number): Uint8Array {
   return out;
 }
 
+/** Byte length of the client-chosen HKDF salt that travels as the hello nonce. */
+export const HELLO_NONCE_BYTES = 16;
+
+/**
+ * RT-390 follow-up: the hello nonce is the daemon's replay-dedupe key, so it
+ * must have exactly ONE accepted spelling. `fromB64` is deliberately tolerant
+ * (base64url, whitespace, missing padding) and `atob` drops non-zero trailing
+ * bits, so a recorded hello could be re-sent with its nonce re-spelled
+ * ("…==" → "…", an inserted newline, a different last character): same salt
+ * bytes, same session key, a string the dedupe had never seen — the replay
+ * then re-opened the session with lastSeq = 0. Only the canonical standard
+ * base64 of exactly HELLO_NONCE_BYTES bytes (what `clientHello` has always
+ * emitted) is accepted; anything else → null (fail-closed).
+ */
+export function helloNonce(raw: unknown): Uint8Array | null {
+  if (typeof raw !== "string" || raw.length !== 24) return null;
+  let salt: Uint8Array;
+  try {
+    salt = fromB64(raw);
+  } catch {
+    return null;
+  }
+  if (salt.length !== HELLO_NONCE_BYTES || b64(salt) !== raw) return null;
+  return salt;
+}
+
 /**
  * Client -> daemon handshake. The token is sealed with the very session key
  * it derives, so only the daemon that owns `daemonPub` can open it: mutual
@@ -150,7 +176,7 @@ export async function clientHello(
   identity: Identity,
   now: number = Date.now(),
 ): Promise<{ hello: DaemonHello; sessionKey: CryptoKey }> {
-  const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(16)));
+  const salt = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(HELLO_NONCE_BYTES)));
   const sessionKey = await deriveAesKey(identity.privateKey, daemonPub, salt);
   // RT-390: the creation instant travels INSIDE the sealed token — the clear
   // fields and the DaemonHello shape are unchanged, so the relay stays blind.
@@ -166,11 +192,11 @@ export async function serverAccept(
   daemonIdentity: Identity,
 ): Promise<{ clientPub: string; sessionKey: CryptoKey; ts: number | null } | null> {
   try {
-    const sessionKey = await deriveAesKey(
-      daemonIdentity.privateKey,
-      hello.clientPub,
-      fromB64(hello.nonce),
-    );
+    // RT-390 follow-up: a non-canonical nonce is refused BEFORE any key
+    // derivation — see helloNonce.
+    const salt = helloNonce(hello.nonce);
+    if (!salt) return null;
+    const sessionKey = await deriveAesKey(daemonIdentity.privateKey, hello.clientPub, salt);
     const token = await openSealed<{ clientPub: string; ts?: unknown }>(
       hello.token,
       sessionKey,

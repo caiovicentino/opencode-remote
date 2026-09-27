@@ -8,8 +8,7 @@ import { captureUiShot } from "./shot";
 import { touchHeartbeat, type PilotConfig } from "./state";
 import { notifySupervisor } from "./notify";
 import { DISK_MIN_FREE_BYTES, diskGuardDetail, freeDiskBytes } from "./disk";
-import { resolveJudge } from "./judge";
-import { compareProtocolMirror, judgeDriftDetail, readJudgeMirror, showTargetProtocol, type GitRead } from "./judgedrift";
+import { judgeInvariantsCommand } from "./judge";
 import {
   defaultLastInstallFile,
   defaultQuarantineFile,
@@ -708,24 +707,11 @@ export async function deploy(
     return { ok: false, rolledBack: true, detail: `health check failed${suspects}` };
   }
 
-  // live invariants against production (replay, tunnel, state perms).
-  // eval r5: the judge is resolved ONCE here and reused by the soak reruns. A
-  // judge that became unusable after the preflight used to throw out of
-  // deploy() with prod already reset/built/restarted — no verification, no
-  // rollback (the pending path's await even took the whole pilot down). Now:
-  // roll back WITHOUT quarantine (the sha is not at fault; the judge guard
-  // refuses the retry until the pin is fixed).
-  let judgeCli: string;
-  try {
-    judgeCli = `${(opts?.resolveJudge ?? resolveJudge)().dir}/src/invariants.ts`;
-  } catch (err) {
-    const why = `judge unusable after the mutation: ${(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 160)}`;
-    log("warn", why, { sha: sha.slice(0, 7) });
-    emitEvent("deploy", { phase: "rollback", ok: false, detail: why });
-    await rollback(cfg, prev, why, { ...rollbackHealth(task), notify }, { run, lastInstallFile: installFile, emitEvent });
-    return { ok: false, rolledBack: true, detail: why };
-  }
-  const inv = run(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
+  // live invariants against production (replay, tunnel, state perms)
+  // the judge's own node + tsx by absolute path, cwd = judge: `npx tsx` with
+  // cwd = the prod checkout resolved tsx from the audited repo (C2, P1-056)
+  const judgeInv = judgeInvariantsCommand(cfg.repo, { live: true });
+    const inv = exec(judgeInv.cmd, { cwd: judgeInv.cwd, timeoutMin: 5, allowFail: true });
   if (!inv.ok) {
     await toRollback(sha, `live invariants failed: ${inv.output.slice(-200)}`);
     return { ok: false, rolledBack: true, detail: `live invariants failed${suspects}` };
@@ -746,9 +732,10 @@ export async function deploy(
     probe: health,
     heartbeat,
     live: () => {
-      heartbeat(); // before: the exec below blocks the loop for minutes
-      const r = run(`npx tsx ${JSON.stringify(judgeCli)} --repo ${JSON.stringify(cfg.repo)} --live`, { cwd: cfg.repo, timeoutMin: 5, allowFail: true });
-      heartbeat(); // after: the watchdog timer fires as soon as the loop unblocks
+      touchHeartbeat(); // before: the exec below blocks the loop for minutes
+      const judgeInv2 = judgeInvariantsCommand(cfg.repo, { live: true });
+      const r = exec(judgeInv2.cmd, { cwd: judgeInv2.cwd, timeoutMin: 5, allowFail: true });
+      touchHeartbeat(); // after: the watchdog timer fires as soon as the loop unblocks
       return r;
     },
     sleep: opts?.sleep,
