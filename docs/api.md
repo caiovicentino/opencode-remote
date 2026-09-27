@@ -666,8 +666,12 @@ import { createClient, OcrError } from "@ocr/sdk";
 const ocr = createClient({ token: process.env.OCR_TOKEN });
 
 const { id } = await ocr.createSession("revisão");
-const reply = await ocr.sendAndWait(id, "explique o módulo de autenticação em 1 frase");
-console.log(reply);
+try {
+  console.log(await ocr.sendAndWait(id, "explique o módulo de autenticação em 1 frase"));
+} catch (err) {
+  if (err instanceof OcrError && err.code === "timeout") console.error("o agente ainda está trabalhando");
+  else throw err;
+}
 ```
 
 - `createSession(title?)` creates the opencode session through
