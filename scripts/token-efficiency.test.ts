@@ -98,6 +98,12 @@ const repoRoot = join(import.meta.dirname, "..");
   );
   const garbageWeights = normalizePricingConfig({ selfHosted: { models: ["m"], usdPerHour: 10, mtokPerHour: 10, weights: { input: "x" } } });
   check("selfHosted: garbage weights fall back to the defaults", close(garbageWeights?.selfHosted?.usdPerMTok.output, 4.4 / 1.4));
+  // verifier round 2: finite inputs can still derive an infinite rate, and an
+  // Infinity opsUSD used to be persisted as null taskUSD — the block drops.
+  const infinite = normalizePricingConfig({ selfHosted: { models: ["m"], usdPerHour: 1e308, mtokPerHour: 1e-10 } });
+  check("selfHosted: a derived rate that overflows to Infinity → block dropped", infinite === undefined);
+  const directInfinity = normalizePricingConfig({ selfHosted: { models: ["m"], usdPerMTok: { input: 1e308, output: 1e300, cacheRead: 1, cacheWrite: 1 } } });
+  check("selfHosted: a direct finite-per-column table with a huge rate survives (only the DERIVED rate is guarded)", directInfinity !== undefined);
 }
 
 // ── pricing: ops view in taskCostUSD ─────────────────────────────────────────
@@ -117,6 +123,11 @@ const repoRoot = join(import.meta.dirname, "..");
   );
   const none = taskCostUSD({ "claude-sonnet-4-6": { input: 5, output: 0, cacheRead: 0, cacheWrite: 0 } }, pricing);
   check("ops: configured but no self-hosted tokens → opsUSD 0 / opsTokens 0 (present, honest zero)", none.opsUSD === 0 && none.opsTokens === 0);
+  // verifier round 2: `opencode models` prints (and mission.json stores) the
+  // `provider/model` form, while the DB carries the bare id — both must price.
+  const qualified = normalizePricingConfig({ selfHosted: { models: ["b200x4/glm-5.3-flash"], usdPerMTok: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 } } });
+  const q = taskCostUSD({ "glm-5.3-flash": { input: 1e6, output: 1e6, cacheRead: 10e6, cacheWrite: 0 } }, qualified);
+  check("ops: the provider/model config form matches the bare session id (opsUSD $4.00, not a silent $0)", close(q.opsUSD, 4) && q.opsTokens === 12e6);
   const fp1 = pricingFingerprint(undefined);
   check("fingerprint: stable for the same inputs", fp1 === pricingFingerprint(undefined) && /^v1-[0-9a-f]+$/.test(fp1));
   check("fingerprint: changes when the self-hosted config changes", fp1 !== pricingFingerprint(pricing) && pricingFingerprint(pricing) !== pricingFingerprint(normalizePricingConfig({ selfHosted: { models: ["glm-5.3-flash"], usdPerHour: 9, mtokPerHour: 3 } })));
@@ -226,6 +237,9 @@ const repoRoot = join(import.meta.dirname, "..");
   const st: { tokenBudgetAlerts?: Record<string, number> } = {};
   check("budget: below the budget → no alert, nothing recorded", !checkTaskTokenBudget(st, "P3-001", 10e6, 40e6).alert && st.tokenBudgetAlerts === undefined);
   const v1 = checkTaskTokenBudget(st, "P3-465", 51_307_260, 40e6, { outcome: "gate green but the PR merge failed: conflict in scripts/unit.test.ts" });
+  check("budget: the verdict carries the task's real outcome (verifier round 2: no hardcoded false)", v1.ok === false);
+  const merged = checkTaskTokenBudget(st, "P2-332", 85.6e6, 40e6, { outcome: "merged", ok: true });
+  check("budget: a merged task's alert verdict carries ok=true (the notify must not read 'pilot falhou')", merged.alert && merged.ok === true);
   check(
     "budget: crossing 1x alerts once with a bounded, informative line",
     v1.alert && v1.level === 1 && st.tokenBudgetAlerts?.["P3-465"] === 1 && v1.detail.includes("P3-465") && v1.detail.includes("51.3M") && v1.detail.includes("budget 40.0M") && v1.detail.includes("1.3x") && v1.detail.includes("merge failed") && v1.detail.length <= 220,
@@ -238,17 +252,28 @@ const repoRoot = join(import.meta.dirname, "..");
   const long = checkTaskTokenBudget({}, "P9-2", 80e6, 40e6, { outcome: "x".repeat(500) });
   check("budget: long outcomes are clipped — detail ≤ 220 chars", long.detail.length <= 220);
   const events: Array<{ type: string; fields: Record<string, unknown> }> = [];
-  const notes: string[] = [];
+  const notes: Array<{ note: string; ok: boolean }> = [];
   const hooks = {
     emitEvent: ((type: string, fields: Record<string, unknown>) => void events.push({ type, fields })) as never,
-    notify: (async (task: string, _ok: boolean, detail: string) => {
-      notes.push(`${task}:${detail}`);
+    notify: (async (task: string, ok: boolean, detail: string) => {
+      notes.push({ note: `${task}:${detail}`, ok });
       return true;
     }) as never,
   };
   raiseTokenBudgetAlert("P3-465", v1, hooks);
   raiseTokenBudgetAlert("P3-001", { alert: false, level: 0, detail: "" }, hooks);
-  check("budget: alert → one `alert` event (phase token-budget) + one supervisor notify", events.length === 1 && events[0].type === "alert" && events[0].fields.phase === "token-budget" && notes.length === 1 && notes[0].startsWith("P3-465:"));
+  check("budget: alert → one `alert` event (phase token-budget) + one supervisor notify", events.length === 1 && events[0].type === "alert" && events[0].fields.phase === "token-budget" && notes.length === 1 && notes[0].note.startsWith("P3-465:"));
+  const mergedEvents: Array<{ type: string; fields: Record<string, unknown> }> = [];
+  const mergedNotes: boolean[] = [];
+  const mergedHooks = {
+    emitEvent: ((type: string, fields: Record<string, unknown>) => void mergedEvents.push({ type, fields })) as never,
+    notify: (async (_task: string, ok: boolean, _detail: string) => {
+      mergedNotes.push(ok);
+      return true;
+    }) as never,
+  };
+  raiseTokenBudgetAlert("P2-332", merged, mergedHooks);
+  check("budget: a merged task's budget notify reports the real outcome (ok=true, not 'falhou')", mergedNotes.length === 1 && mergedNotes[0] === true);
   const pruned: Parameters<typeof pruneTaskCosts>[0] = { taskCosts: {}, taskCostSessions: {}, tokenBudgetAlerts: {} };
   for (let i = 0; i < 205; i++) {
     pruned.taskCosts![`P9-${i}`] = i;
@@ -398,6 +423,21 @@ const repoRoot = join(import.meta.dirname, "..");
   const text = agents.toString("utf8");
   check("AGENTS.md points to the moved desktop-flow history", text.includes("docs/desktop-flow.md") && existsSync(join(repoRoot, "docs", "desktop-flow.md")));
   check("AGENTS.md: pilot agents are told NOT to read the operator's private journal", /Agentes do Pilot[\s\S]{0,80}NÃO leem/.test(text));
+  // product conventions that a trimming agent must never cut (verifier round
+  // 2): the artifact/download/clip/doc2pdf/browse/mission/preview flows are
+  // how user-facing deliverables and fleet instructions keep reaching agents.
+  const REQUIRED_SECTIONS: Array<[string, string]> = [
+    [".opencode-remote/artifacts", "artifacts pane"],
+    ["[file:", "download card"],
+    ["tools/doc2pdf.mjs", "doc→PDF converter"],
+    ["tools/clip.mjs", "video clipping pipeline"],
+    ["mission.json", "fleet mission (self-serve)"],
+    ["tools/browse.mjs", "browser self-driving"],
+    ["Auto-preview", "auto-preview of local servers"],
+  ];
+  for (const [needle, label] of REQUIRED_SECTIONS) {
+    check(`AGENTS.md keeps the ${label} section (${needle})`, text.includes(needle));
+  }
   const flowDoc = readFileSync(join(repoRoot, "docs", "desktop-flow.md"), "utf8");
   check("docs/desktop-flow.md keeps the moved beat history (P1-070 … P2-355)", flowDoc.includes("P1-070 adicionou o bloco") && flowDoc.includes("open < install < settle < read < shots."));
 }

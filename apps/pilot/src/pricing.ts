@@ -265,7 +265,7 @@ export function taskCostUSD(perModel: Record<string, TokenCols>, pricing?: Prici
     };
     const colTotal = counted.input + counted.output + counted.cacheRead + counted.cacheWrite;
     tokens += colTotal;
-    if (selfHostedIds?.has(model)) {
+    if (selfHosted && selfHostedIds?.has(model)) {
       opsUSD += priceCols(counted, selfHosted.usdPerMTok);
       opsTokens += colTotal;
     }
