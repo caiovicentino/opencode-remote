@@ -9,7 +9,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { connect } from "node:net";
 import {
   bootOnEphemeralPort,
@@ -335,7 +335,19 @@ if (process.platform === "darwin" || process.platform === "linux") {
       join(TMP, "ocr-int-FAKE", "path"),
       "apps/relay/src/index.ts",
     ],
-    { stdio: "ignore", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: "/Users/operator" } },
+    // the decoy's env must be CLEAN: under the testhome sandbox (which the
+    // unit battery runner applies to every suite) PATH carries
+    // <tmpdir>/ocr-test-home-*/.ocr-test-bin, itself a <tmpdir>/ocr- marker
+    {
+      stdio: "ignore",
+      env: {
+        PATH: (process.env.PATH ?? "/usr/bin:/bin")
+          .split(delimiter)
+          .filter((dir) => !dir.includes(join(TMP, "ocr-")))
+          .join(delimiter),
+        HOME: "/Users/operator",
+      },
+    },
   );
   await new Promise((r) => setTimeout(r, 400));
   check("poisoned decoy is running", decoy.pid !== undefined && !decoy.killed);
