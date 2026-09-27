@@ -499,6 +499,22 @@ if (process.platform !== "win32") {
     orphans.length === 0,
     `orphan test files (append to ${UNIT_SUITE_LIST} or declare in scripts/test-registry.json): ${orphans.join(", ")}`,
   );
+
+  // A check() placed after a suite's final `if (failures > 0) { … exit(1) }`
+  // gate prints FAIL and the suite still exits 0 — unit.test.ts's P2-331 pin
+  // did exactly that (eval-04). No suite may call check() after its last gate.
+  const postGate = testFiles.filter((file) => {
+    const lines = readFileSync(join(root, file), "utf8").split(/\r?\n/);
+    let gate = -1;
+    lines.forEach((l, i) => {
+      if (/^if \(failures( > 0)?\) \{\s*$/.test(l)) gate = i;
+    });
+    if (gate < 0) return false;
+    let end = gate + 1;
+    while (end < lines.length && lines[end] !== "}") end++;
+    return lines.slice(end + 1).some((l) => /^\s*check\(/.test(l));
+  });
+  check("no suite calls check() after its final failures gate (a FAIL there cannot fail the battery)", postGate.length === 0, postGate.join(", "));
 }
 
 if (failures > 0) {

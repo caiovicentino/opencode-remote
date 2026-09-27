@@ -42670,6 +42670,13 @@ if (failures > 0) {
   check("relay-image-smoke: inline RELAY_WIRE_PROTOCOL matches @ocr/protocol", !!literal && Number(literal[1]) === RELAY_WIRE_PROTOCOL);
 }
 
+// The P2-331 pin above sits after the main gate: without this second gate
+// its FAIL printed and the battery still exited 0 with "UNIT TESTS PASSED"
+// (eval-04; reproduced by eval-17 with the inline literal drifted).
+if (failures > 0) {
+  console.error(`UNIT TESTS FAILED: ${failures}`);
+  process.exit(1);
+}
 
 console.log("UNIT TESTS PASSED");
 process.exit(0);
