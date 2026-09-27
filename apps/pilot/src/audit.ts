@@ -19,7 +19,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { nowLocalISO } from "./log";
-import { parseFailureLessons, type FailureLesson } from "./failureLessons";
+import { isBlockedFailure, parseFailureLessons, type FailureLesson } from "./failureLessons";
 import type { AuditMode, CycleSample, PilotState } from "./state";
 
 /** Sliding-window size for the fever-rate trigger (pipeline cycles). */
@@ -302,7 +302,9 @@ export function buildDiagnosis(opts: {
 }): Diagnosis {
   let lessons: FailureLesson[] = [];
   try {
-    lessons = parseFailureLessons(readFileSync(opts.lessonsFile, "utf8"));
+    // eval 05: blocked failures only — the legacy archived success-lesson rows
+    // made "top failure steps" read archived(182) and listed merged tasks
+    lessons = parseFailureLessons(readFileSync(opts.lessonsFile, "utf8")).filter(isBlockedFailure);
   } catch {}
   const lessonTasks = new Set(lessons.map((l) => l.task));
 

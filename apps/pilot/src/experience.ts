@@ -8,20 +8,34 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { doneTaskIds } from "./backlog";
 import { landMetaCommit } from "./metapush";
-import type { FailureLesson } from "./failureLessons";
+import type { ArchivedLesson } from "./failureLessons";
+import { jaccard, QUERY_BOILERPLATE, queryTokens, tokenize } from "./lessontext";
 import { nowLocalISO } from "./log";
 
 export const EXPERIENCE_FILE = "docs/EXPERIENCE.md";
-/** Red-team nightly duty (P1-007): dedupe + prune once the file grows past this. */
-export const EXPERIENCE_CAP = 60;
+/** Red-team nightly duty (P1-007): dedupe + prune once the file grows past this.
+ * Eval 05: 60 held under one day of lessons (~27 merges/day, the nightly pass
+ * dropped 47–92 per night — median lesson lifetime 27h in a replay of the
+ * real 09-01..24 scribe stream); 150 (the pool size the matcher was measured
+ * on) gives ~68h with the 0–2 lessons/merge + refresh policy. */
+export const EXPERIENCE_CAP = 150;
+/** Hard ceiling of a stored lesson line (before the fonte tag); longer text is clipped. */
+export const LESSON_MAX_CHARS = 240;
+/** Budget the scribe prompt asks for — below LESSON_MAX_CHARS so a compliant
+ * lesson is never clipped (2026-09-27: 64/69 stored lessons ended in "…"). */
+export const SCRIBE_LESSON_BUDGET = 200;
+/** New lessons one merge may add (the scribe emitted 3 in 427/434 merges and
+ * the nightly prune then dropped 47–92 lessons per night at cap 60). */
+export const SCRIBE_MAX_LESSONS = 2;
 
 export function experienceTemplate(): string {
   return `# Experience memory (IER)
 
 Lições destiladas pelo pipeline (role SCRIBE) após cada merge bem-sucedido.
-Cada lição é uma linha \`- When <situação>, do <ação> (fonte: <ID>)\`. Os prompts
-de planner, builder e strategist recebem o top-5 de lições relevantes (keyword-match,
-mais recentes primeiro); o red team noturno deduplica e poda acima de
+Cada lição é uma linha \`- When <situação>, do <ação> — <porquê> (fonte: <ID>)\`. Os prompts
+de planner, builder e strategist recebem até 5 lições relevantes (palavras em comum com a
+task pesadas pela raridade; nenhuma quando nada é relevante); uma lição aprendida de novo
+é renovada no lugar de duplicada, e a manutenção noturna deduplica e poda acima de
 ${EXPERIENCE_CAP} lições.
 
 ## Lessons
@@ -50,35 +64,16 @@ export function lessonKey(lesson: string): string {
     .trim();
 }
 
-const STOPWORDS = new Set([
-  "when", "the", "and", "for", "with", "that", "this", "than", "then", "from",
-  "into", "onto", "over", "under", "after", "before", "just", "only", "also",
-  "all", "any", "are", "was", "were", "has", "have", "had", "not", "but", "can",
-  "may", "will", "shall", "must", "should", "would", "could", "your", "you",
-  "our", "its", "their", "they", "them", "there", "here", "what", "which",
-  "how", "why", "where", "fonte", "spec", "task", "new", "use", "uses",
-  "por", "para", "com", "que", "uma", "sem", "mais", "como", "sobre", "entre",
-]);
+// tokenizer + similarity live in the import-free lessontext.ts (shared with
+// failureLessons.ts); re-exported here for existing callers
+export { jaccard, QUERY_BOILERPLATE, queryTokens, tokenize };
 
-/** Lowercase alphanumeric tokens (≥3 chars, stopwords dropped). */
-export function tokenize(text: string): Set<string> {
-  const out = new Set<string>();
-  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
-    if (raw.length >= 3 && !STOPWORDS.has(raw)) out.add(raw);
-  }
-  return out;
-}
-
-/** P1-075: semantic-duplicate threshold over tokenize() — pinned by the battery. */
-export const JACCARD_DUPE = 0.6;
-
-/** Jaccard similarity of two token sets (|A∩B| / |A∪B|); 0 when either is empty. */
-export function jaccard(a: Set<string>, b: Set<string>): number {
-  if (!a.size || !b.size) return 0;
-  let inter = 0;
-  for (const t of a) if (b.has(t)) inter++;
-  return inter / (a.size + b.size - inter);
-}
+/** P1-075: semantic-duplicate threshold over tokenize() — pinned by the battery.
+ * Calibrated 2026-09-27 on three real 144–152-lesson snapshots (~33k pairs):
+ * every pair at >= 0.30 was the same lesson re-derived by another scribe
+ * (16/16; e.g. the `ws.on("message")` async-handler lesson landed 3x at
+ * 0.42–0.50), 0.20–0.30 was mixed, and the old 0.6 never fired (max 0.50). */
+export const JACCARD_DUPE = 0.3;
 
 /** Tokens of a lesson line with the provenance tag stripped (copies re-tagged). */
 function lessonTokens(lesson: string): Set<string> {
@@ -105,38 +100,86 @@ export function lessonFonte(lesson: string): string {
   return /\(fonte:\s*([^)]+)\)/.exec(lesson)?.[1]?.trim() ?? "";
 }
 
-/** Title hits weigh 2, spec hits 1 — titles carry the intent of the task. */
-export function lessonScore(lesson: string, titleTokens: Set<string>, specTokens: Set<string>): number {
-  // provenance tag excluded from matching + word-boundary tokens (no "app"-in-"happen")
-  const words = tokenize(lesson.replace(/\(fonte:[^)]*\)/g, " "));
-  let score = 0;
-  for (const w of titleTokens) if (words.has(w)) score += 2;
-  for (const w of specTokens) if (words.has(w)) score += 1;
-  return score;
-}
+/** A lesson must share at least this many informative tokens with the task. */
+export const LESSON_MIN_MATCHED = 2;
+/** ...and score at least this many "lesson-unique spec token" units (idf of a
+ * token only one lesson carries) — one generic overlap is not relevance. */
+export const LESSON_MIN_EVIDENCE = 2.5;
 
 /**
- * Top-`max` lessons keyword-matched against title+spec, best score first and
- * most recent first on ties (the file is append-ordered, last = newest).
- * Lessons with no keyword overlap are not "relevant" and are not injected.
+ * Top-`max` lessons relevant to a task, best score first and most recent
+ * first on ties (the file is append-ordered, last = newest). Title hits weigh
+ * 2, spec hits 1 — titles carry the intent of the task; the provenance tag is
+ * never matched and tokens are whole words (no "app"-in-"happen").
+ *
+ * 2026-09-27 replay of the last 60 merges: plain keyword overlap (score > 0)
+ * filled all 5 slots for 58/60 tasks, with the same "hub" lessons everywhere
+ * (two of them in 23/60 prompts) — ~5% of the injected lines were relevant.
+ * So: tokens are weighted by their rarity in the lesson pool (idf), the
+ * query drops spec boilerplate, a lesson needs LESSON_MIN_MATCHED shared
+ * tokens AND LESSON_MIN_EVIDENCE worth of score, and a paraphrase of a lesson
+ * already picked is skipped. No relevant lesson → nothing is injected.
  */
 export function pickRelevantLessons(md: string, title: string, spec: string, max = 5): string[] {
   if (max <= 0) return [];
   const lessons = parseLessons(md);
-  const titleTokens = tokenize(title);
-  const specTokens = tokenize(spec);
-  const scored = lessons
-    .map((text, i) => ({ text, i, score: lessonScore(text, titleTokens, specTokens) }))
-    .filter((s) => s.score > 0);
+  const docs = lessons.map(lessonTokens);
+  const df = new Map<string, number>();
+  for (const d of docs) for (const t of d) df.set(t, (df.get(t) ?? 0) + 1);
+  const idf = (t: string) => Math.log((lessons.length + 1) / ((df.get(t) ?? 0) + 0.5));
+  const titleTokens = queryTokens(title);
+  const specTokens = queryTokens(spec);
+  const floor = LESSON_MIN_EVIDENCE * Math.log((lessons.length + 1) / 1.5);
+  const scored: { text: string; i: number; score: number }[] = [];
+  lessons.forEach((text, i) => {
+    let score = 0;
+    let matched = 0;
+    for (const t of docs[i]!) {
+      if (titleTokens.has(t)) score += 2 * idf(t);
+      else if (specTokens.has(t)) score += idf(t);
+      else continue;
+      matched++;
+    }
+    if (matched >= LESSON_MIN_MATCHED && score >= floor) scored.push({ text, i, score });
+  });
   scored.sort((a, b) => b.score - a.score || b.i - a.i);
-  return scored.slice(0, max).map((s) => s.text);
+  const picked: typeof scored = [];
+  for (const s of scored) {
+    if (picked.length >= max) break;
+    if (picked.some((p) => semanticDupe(docs[p.i]!, docs[s.i]!))) continue;
+    picked.push(s);
+  }
+  return picked.map((s) => s.text);
 }
 
-/** Normalize an agent lesson line: single line, `- ` prefix, trusted fonte tag. */
-export function normalizeLesson(raw: string, sourceId: string, maxLen = 240): string {
+/**
+ * The stored lessons a SCRIBE must see before writing new ones (so it stops
+ * re-deriving them): matched against the task plus the diff's touched paths
+ * and added lines — the diff speaks the lessons' (English, code) vocabulary,
+ * the pt-BR backlog title rarely does.
+ */
+export function lessonsNearDiff(md: string, title: string, spec: string, diff: string, max = 5): string[] {
+  const paths = [...diff.matchAll(/^diff --git a\/(\S+)/gm)].map((m) => m[1]).join(" ");
+  const added = diff
+    .split("\n")
+    .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
+    .join("\n")
+    .slice(0, 6_000);
+  return pickRelevantLessons(md, title, `${spec}\n${paths}\n${added}`, max);
+}
+
+/** Normalize an agent lesson line: single line, `- ` prefix, trusted fonte tag.
+ * Overlong text is clipped at a word boundary (never mid-word) when one sits
+ * in the last quarter of the budget. */
+export function normalizeLesson(raw: string, sourceId: string, maxLen = LESSON_MAX_CHARS): string {
   const text = raw.replace(/\s+/g, " ").trim().replace(/^-\s+/, "").replace(/\s*\(fonte:[^)]*\)\s*$/, "").trim();
   if (text.length < 15) return "";
-  const clipped = text.length > maxLen ? text.slice(0, maxLen - 1).trimEnd() + "…" : text;
+  let clipped = text;
+  if (text.length > maxLen) {
+    const hard = text.slice(0, maxLen - 1);
+    const space = hard.lastIndexOf(" ");
+    clipped = (space >= Math.floor(maxLen * 0.75) ? hard.slice(0, space) : hard).replace(/[\s,;:—-]+$/, "") + "…";
+  }
   return `- ${clipped} (fonte: ${sourceId})`;
 }
 
@@ -156,32 +199,45 @@ function spliceLessonsSection(md: string, lessons: string[]): string {
 
 /**
  * Append new lessons (deduped against the file and against each other — exact
- * key OR semantic Jaccard match — capped at `max`). Returns the updated file
- * content plus the lessons actually added.
+ * key OR semantic Jaccard match — at most `max` new ones). Returns the updated
+ * file content, the lessons actually added and the ones refreshed.
+ *
+ * A lesson that re-lands (another merge re-derived it) REFRESHES the stored
+ * one: the newest wording moves to the end of the file, so the nightly
+ * oldest-first prune keeps what keeps recurring instead of aging it out.
  */
 export function appendLessons(
   md: string,
   lessons: string[],
   sourceId: string,
-  max = 3,
-): { md: string; added: string[] } {
-  const known = parseLessons(md).map((l) => ({ key: lessonKey(l), tokens: lessonTokens(l) }));
+  max = SCRIBE_MAX_LESSONS,
+): { md: string; added: string[]; refreshed: string[] } {
+  // keep the FULL history: existing lessons first, new ones appended —
+  // splicing with only `added` was wiping the whole section every merge
+  let current = parseLessons(md);
   const added: string[] = [];
+  const refreshed: string[] = [];
   for (const raw of lessons) {
     if (added.length >= max) break;
     const line = normalizeLesson(raw, sourceId);
     if (!line) continue;
     const key = lessonKey(line);
     const tokens = lessonTokens(line);
-    if (known.some((k) => k.key === key || semanticDupe(tokens, k.tokens))) continue;
-    known.push({ key, tokens });
-    added.push(line);
+    const dupe = current.findIndex((l) => lessonKey(l) === key || semanticDupe(tokens, lessonTokens(l)));
+    if (dupe < 0) {
+      current = [...current, line];
+      added.push(line);
+      continue;
+    }
+    const stored = current[dupe]!;
+    // a dupe of a line this batch already wrote, or the identical newest line
+    if (added.includes(stored) || refreshed.includes(stored)) continue;
+    if (stored === line && dupe === current.length - 1) continue;
+    current = [...current.slice(0, dupe), ...current.slice(dupe + 1), line];
+    refreshed.push(line);
   }
-  if (!added.length) return { md, added };
-  // keep the FULL history: existing lessons first, new ones appended —
-  // splicing with only `added` was wiping the whole section every merge
-  const kept = parseLessons(md).filter((l) => !added.includes(l));
-  return { md: spliceLessonsSection(md, [...kept, ...added]), added };
+  if (!added.length && !refreshed.length) return { md, added, refreshed };
+  return { md: spliceLessonsSection(md, current), added, refreshed };
 }
 
 /**
@@ -247,16 +303,17 @@ export function readExperienceFile(ws: string): string {
   }
 }
 
-/** SCRIBE commit path: append lessons to the workspace file, creating it if needed. */
+/** SCRIBE commit path: append lessons to the workspace file, creating it if
+ * needed. Returns the lessons written (added + refreshed) — 0 = nothing to commit. */
 export function appendLessonsToWorkspace(ws: string, lessons: string[], sourceId: string): number {
   const file = join(ws, EXPERIENCE_FILE);
   const md = existsSync(file) ? readFileSync(file, "utf8") : experienceTemplate();
-  const { md: next, added } = appendLessons(md, lessons, sourceId);
-  if (added.length) {
+  const { md: next, added, refreshed } = appendLessons(md, lessons, sourceId);
+  if (added.length || refreshed.length) {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, next);
   }
-  return added.length;
+  return added.length + refreshed.length;
 }
 
 /**
@@ -299,7 +356,7 @@ export interface ExpMaintResult {
  * failure semantics with fakes (commit/push failures never throw). */
 export interface ExpMaintIo {
   exec: (cmd: string) => { ok: boolean; output: string };
-  appendLesson: (file: string, lesson: FailureLesson) => boolean;
+  appendLesson: (file: string, lesson: ArchivedLesson) => boolean;
   lessonsFile: string;
 }
 
@@ -369,14 +426,14 @@ export async function maintainExperienceWorkspace(
   // for; using it on success would archive lessons the landed pass never saw.
   const archivedSource = result === "pushed" ? maint.archived : pre.archived;
   for (const lesson of archivedSource) {
+    // its own kind, never kind:"failure" — the 192 legacy failure-shaped rows
+    // filled the planner/strategist FAILURE LESSONS block and the doctor's
+    // "top failure steps" with merged tasks' success lessons
     const landed = io.appendLesson(io.lessonsFile, {
-      kind: "failure",
+      kind: "experience-archived",
       ts: nowLocalISO(),
       task: lessonFonte(lesson) || "unknown",
-      attempts: 0,
-      step: "archived",
-      findings: lesson,
-      tail: "",
+      lesson,
     });
     if (landed) archivedLanded++;
     else log("warn", "archived lesson could not land in lessons.jsonl");

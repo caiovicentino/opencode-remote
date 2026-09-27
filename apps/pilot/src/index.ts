@@ -18,7 +18,7 @@ import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTas
 import { redteamFinding } from "./findingline";
 import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
-import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
+import { appendArchivedLesson, appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
 import { areaKey, nightlyIdleDue, nightlySkipDue, nightlyWindow, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
@@ -56,7 +56,7 @@ import {
   type PilotState,
 } from "./state";
 import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
-import { recordLessonImpact } from "./metrics";
+import { recordLessonImpact, runTokenDelta } from "./metrics";
 import { distSweepDue, doctorDist, runDoctor } from "./doctor";
 
 let deployBusy = false;
@@ -652,6 +652,7 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     // P2-028: the pipeline records every opencode session id it spawns; the
     // token totals are reconciled from opencode.db right after the run.
     const taskSessions = new Set<string>();
+    const tokensBefore = state.taskCosts?.[task.id]; // eval 05: lifetime total BEFORE this run
     const result = await runPipeline(taskCfg, task, state, taskSessions);
     try {
       // P1-077: rows query — folds the per-task cache breakdown (input /
@@ -667,13 +668,13 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
     // P1-075: lesson-injection instrumentation — fold this outcome into the
-    // with/without cohorts (tokens from the reconciliation above, 0 when it
-    // failed) so the operator can measure whether lessons actually help.
+    // with/without cohorts (tokens = what THIS run added to the reconciled
+    // lifetime total, 0 when it failed). Descriptive only (lessonimpact.ts).
     const impact = {
       lessons: result.lessonsInjected ?? 0,
       rounds: result.rounds ?? 0,
       ok: result.ok,
-      tokens: state.taskCosts?.[task.id] ?? 0,
+      tokens: runTokenDelta(tokensBefore, state.taskCosts?.[task.id]),
     };
     recordLessonImpact(state, impact);
     log("info", "lesson impact", { task: task.id, ...impact });
@@ -940,7 +941,7 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
         today,
         {
           exec: (cmd) => exec(cmd, { cwd: cfg.workspace, allowFail: true }),
-          appendLesson: appendFailureLesson,
+          appendLesson: appendArchivedLesson,
           lessonsFile: defaultLessonsFile(),
         },
         log,
@@ -1165,6 +1166,7 @@ async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attemp
       kind: "failure",
       ts: nowLocalISO(),
       task: task.id,
+      title: task.title, // eval 05: the feed line names what the blocked task was
       attempts,
       step: gate?.step ?? "pipeline",
       findings: detail,

@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { nowLocalISO } from "./log";
+import { normalizeLessonImpact } from "./lessonimpact";
 import { homedir } from "node:os";
 import type { TaskUsd } from "./pricing";
 import type { MissionModels } from "./mission";
@@ -174,12 +175,28 @@ export interface LessonImpactCohort {
   merges: number;
   roundsTotal: number;
   tokensTotal: number;
+  /** eval 05: pipeline runs folded in (merge rate = merges / runs). */
+  runs?: number;
 }
 
-/** P1-075: lesson-injection impact — with vs without injected IER lessons. */
+/** P1-075: lesson-injection impact — with vs without injected IER lessons.
+ * DESCRIPTIVE ONLY: nothing randomizes who gets lessons (the matcher decides
+ * from the task text), so the cohorts differ in task mix and a gap between
+ * them is not evidence that lessons help or hurt (lessonimpact.ts). */
 export interface LessonImpact {
+  /** accounting version (lessonimpact.ts LESSON_IMPACT_VERSION). */
+  v?: number;
+  /** YYYY-MM-DD (local) the current accounting started. */
+  since?: string;
   with: LessonImpactCohort;
   without: LessonImpactCohort;
+  /** eval 05: runs that ended before any builder round (e.g. no valid spec) —
+   * they never received the treatment, so they sit outside both cohorts. */
+  untreated?: number;
+  /** eval 05: the pre-v2 record, kept as audit trail. Its tokens re-added the
+   * task's LIFETIME total on every run (1.70x inflated on 2026-09-27) and its
+   * "without" cohort mixed 8 planner failures with 3 red-team merges. */
+  legacyV1?: { with: LessonImpactCohort; without: LessonImpactCohort };
 }
 
 export interface PilotState {
@@ -328,18 +345,6 @@ function normalizeTaskHolds(v: unknown): Record<string, number> {
     out[task] = Math.floor(n);
   }
   return out;
-}
-
-/** P1-075: tolerant parse of the lesson-impact cohorts — garbage → undefined. */
-function normalizeLessonImpact(v: unknown): LessonImpact | undefined {
-  if (!v || typeof v !== "object") return undefined;
-  const cohort = (c: unknown): LessonImpactCohort => {
-    const m = (c ?? {}) as Partial<LessonImpactCohort>;
-    const num = (n: unknown) => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0);
-    return { merges: num(m.merges), roundsTotal: num(m.roundsTotal), tokensTotal: num(m.tokensTotal) };
-  };
-  const raw = v as { with?: unknown; without?: unknown };
-  return { with: cohort(raw.with), without: cohort(raw.without) };
 }
 
 export function loadState(file = STATE_FILE): PilotState {

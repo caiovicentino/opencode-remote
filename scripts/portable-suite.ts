@@ -101,6 +101,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "voice.test.ts",
   "voiceloop.test.ts",
   "workflow-yaml.test.ts",
+  "lessons-governance.test.ts",
 ];
 
 /**
