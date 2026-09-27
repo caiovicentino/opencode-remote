@@ -985,7 +985,12 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
     (0 de 228 sessões de reviewer atribuídas em 22–24/09, ~11% dos tokens da
     frota fora do `taskCosts`). O runner ganhou `sessionCapture`: passa
     `--print-logs` e remove as linhas de log do `output`, então os parsers
-    leem exatamente o texto de antes. Subagentes (`task` tool do opencode)
+    leem exatamente o texto de antes. O id vem da linha `message=created …
+    parentID=undefined` (sessão raiz) ou do próprio `-s` numa retomada — nunca
+    mais do primeiro `ses_…` do stdout, onde o opencode imprime saída de
+    ferramenta: um reviewer citando a fixture `ses_abc123456` virava "sessão"
+    da task (4 ids de fixture em `taskCostSessions`), e o mesmo caminho podia
+    entregar um id falso ao `-s` do builder. Subagentes (`task` tool do opencode)
     vivem em sessões filhas — o `tokensSql` agora percorre `parent_id`
     recursivamente e soma os descendentes na task; `tokens_reasoning` entra no
     total e é precificado como output.

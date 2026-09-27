@@ -154,6 +154,40 @@ export function logLineStripper(): { push: (chunk: string) => string; flush: () 
 }
 
 /**
+ * eval-18: the `created` log line of a ROOT session. A subagent's line
+ * carries `parentID=ses_…` and never matches, so the first hit is the run's
+ * own session — authoritative, unlike a `ses_…` seen on stdout: opencode
+ * prints tool OUTPUT to stdout, and an agent that greps a test fixture
+ * (`ses_abc123456`) or a reviewer quoting one used to become that "session"
+ * (4 fixture ids sat in state.taskCostSessions, 2026-09-24).
+ */
+const ROOT_CREATED_RE = /^timestamp=\S+ level=[A-Z]+ .*\bmessage=created id=(ses_[A-Za-z0-9]+) .*\bparentID=undefined\b/;
+
+/** eval-18: line-buffered stderr scan for the root `created` line (pure). */
+export function rootSessionScanner(): { push: (chunk: string) => void; id: () => string | undefined } {
+  let pending = "";
+  let found: string | undefined;
+  const take = (line: string) => {
+    if (found) return;
+    const m = ROOT_CREATED_RE.exec(line);
+    if (m) found = m[1];
+  };
+  return {
+    push(chunk: string): void {
+      if (found) return;
+      const lines = (pending + chunk).split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) take(line);
+    },
+    id(): string | undefined {
+      if (pending) take(pending);
+      pending = "";
+      return found;
+    },
+  };
+}
+
+/**
  * P2-016: opencode API endpoint. Reviewer note (round 2): the :4096 fallback is
  * duplicated with apps/daemon/src/index.ts (OPENCODE_URL) — keep them in sync;
  * the daemon copy is not exported, so a shared constant is a follow-up.
@@ -305,6 +339,11 @@ export async function runAgent(
     const outScan = idScanner();
     const errScan = idScanner();
     const errStrip = stripLogs ? logLineStripper() : null;
+    // eval-18: with --print-logs the root `created` line is the authority;
+    // a resumed run (-s) IS that session. Only without either does the
+    // legacy stdout-first scan decide.
+    const rootScan = opts.printLogs || opts.sessionCapture ? rootSessionScanner() : null;
+    const sessionOf = (scanned: string | undefined) => opts.sessionId ?? rootScan?.id() ?? scanned;
     // P1-035: the self-watchdog must be fed even when the agent stays silent
     // on stdout (a slow strategist/researcher/redteam used to starve the
     // heartbeat and kill the pilot with slots in flight) — hence a timer, not
@@ -322,6 +361,7 @@ export async function runAgent(
     });
     child.stderr.on("data", (c: Buffer) => {
       output += errStrip ? errStrip.push(c.toString()) : c.toString();
+      rootScan?.push(c.toString());
       errScan.scan(c.toString());
     });
     child.on("exit", () => {
@@ -329,7 +369,7 @@ export async function runAgent(
       clearTimeout(timer);
       if (errStrip) output += errStrip.flush();
       const ids = mergeAgentIds(outScan.flush(), errScan.flush());
-      resolve({ ok: !timedOut, output, timedOut, sessionId: ids.sessionId, taskIds: ids.taskIds });
+      resolve({ ok: !timedOut, output, timedOut, sessionId: sessionOf(ids.sessionId), taskIds: ids.taskIds });
     });
     child.on("error", (err) => {
       stopHeartbeat();
@@ -340,7 +380,7 @@ export async function runAgent(
         ok: false,
         output: output + `\nspawn error: ${String(err)}`,
         timedOut,
-        sessionId: ids.sessionId,
+        sessionId: sessionOf(ids.sessionId),
         taskIds: ids.taskIds,
         infra: "spawn",
       });

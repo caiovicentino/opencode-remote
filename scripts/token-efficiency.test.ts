@@ -40,7 +40,7 @@ const { applySessionCosts, parseSessionTokenRows, pruneTaskCosts, querySessionTo
   await import("../apps/pilot/src/costs");
 const { budgetLevel, checkTaskTokenBudget, fmtTokens, raiseTokenBudgetAlert } = await import("../apps/pilot/src/tokenbudget");
 const { DEFAULT_TOKEN_BUDGET_PER_TASK, loadState, normalizePilotConfig, normalizeTokenBudget } = await import("../apps/pilot/src/state");
-const { logLineStripper, runAgent } = await import("../apps/pilot/src/runner");
+const { logLineStripper, rootSessionScanner, runAgent } = await import("../apps/pilot/src/runner");
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -270,11 +270,16 @@ const repoRoot = join(import.meta.dirname, "..");
   logTail.push("timestamp=2026-09-24T00:00:00Z level=WARN run=1 message=x");
   check("stripper: a trailing partial log line is dropped on flush", logTail.flush() === "");
 
-  // spawn-free fake of `opencode run` (portable battery: no child process) —
-  // the id line arrives split across two stderr chunks, like a real pipe can
+  // spawn-free fake of `opencode run` (portable battery: no child process):
+  // each run replays a scripted interleaving of stdout/stderr chunks
+  const LOG = (msg: string) => `timestamp=2026-09-24T10:40:48.826Z level=INFO run=076efe7f ${msg}`;
+  const ROOT_CREATED = LOG('message=created id=ses_rootSess000001 slug=calm-otter version=1.18.32 projectID=p directory=/x path="" workspaceID=undefined parentID=undefined title="New session"\n');
+  const CHILD_CREATED = LOG('message=created id=ses_childSess00001 slug=x version=1.18.32 projectID=p directory=/x path="" workspaceID=undefined parentID=ses_rootSess000001 title="sub"\n');
+  let script: Array<["out" | "err", string]> = [];
   const seen: string[][] = [];
   const fakeSpawn = ((_cmd: string, args: string[]) => {
     seen.push(args);
+    const chunks = script;
     const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill: () => boolean };
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
@@ -286,28 +291,55 @@ const repoRoot = join(import.meta.dirname, "..");
     child.stdout.on("end", ended);
     child.stderr.on("end", ended);
     setImmediate(() => {
-      child.stderr.write("timestamp=2026-09-24T10:40:48.826Z level=INFO run=076efe7f message=created id=ses_capTe");
-      child.stderr.write("st12345678 slug=x\n");
-      child.stdout.write("VERDICT: APPROVE\n");
-      child.stderr.write("Error: real stderr line\n");
+      for (const [stream, text] of chunks) (stream === "out" ? child.stdout : child.stderr).write(text);
       child.stdout.end();
       child.stderr.end();
     });
     return child;
   }) as unknown as typeof spawn;
+  // a reviewer run: the root line split across two chunks, a test fixture id
+  // quoted on stdout BEFORE the verdict, then a subagent's own created line
+  const reviewerRun: Array<["out" | "err", string]> = [
+    ["err", ROOT_CREATED.slice(0, 70)],
+    ["err", ROOT_CREATED.slice(70)],
+    ["out", 'grep: const SESS = { id: "ses_abc123456" }\n'],
+    ["err", CHILD_CREATED],
+    ["out", "VERDICT: APPROVE\n"],
+    ["err", "Error: real stderr line\n"],
+  ];
   const base = { cwd: tmpdir(), timeoutMin: 1, label: "t", preflight: async () => true, spawnImpl: fakeSpawn, heartbeatTouch: () => {} };
+  script = reviewerRun;
   const cap = await runAgent("p", { ...base, sessionCapture: true });
   check("runAgent sessionCapture: --print-logs added for the id line", JSON.stringify(seen[0]) === JSON.stringify(["run", "--print-logs", "p"]));
-  check("runAgent sessionCapture: session id captured from the stderr log line", cap.sessionId === "ses_capTest12345678");
+  check("runAgent sessionCapture: the ROOT created line wins over a fixture id quoted on stdout and over a subagent's line", cap.sessionId === "ses_rootSess000001", String(cap.sessionId));
   check(
     "runAgent sessionCapture: output = agent text + real stderr, no log lines",
-    cap.output.includes("VERDICT: APPROVE") && cap.output.includes("Error: real stderr line") && !cap.output.includes("timestamp="),
+    cap.output.includes("VERDICT: APPROVE") && cap.output.includes("Error: real stderr line") && cap.output.includes("ses_abc123456") && !cap.output.includes("timestamp="),
     JSON.stringify(cap.output),
   );
+  script = reviewerRun;
   const plain = await runAgent("p", base);
   check("runAgent default: argv unchanged (no --print-logs), stderr passes through untouched", JSON.stringify(seen[1]) === JSON.stringify(["run", "p"]) && plain.output.includes("timestamp="));
-  const builder = await runAgent("p", { ...base, printLogs: true, sessionCapture: true });
-  check("runAgent printLogs: logs stay in the output (builder log file unchanged)", JSON.stringify(seen[2]) === JSON.stringify(["run", "--print-logs", "p"]) && builder.output.includes("timestamp=") && builder.sessionId === "ses_capTest12345678");
+  script = reviewerRun;
+  const builder = await runAgent("p", { ...base, printLogs: true });
+  check("runAgent printLogs: logs stay in the output (builder log file unchanged), root id authoritative", JSON.stringify(seen[2]) === JSON.stringify(["run", "--print-logs", "p"]) && builder.output.includes("timestamp=") && builder.sessionId === "ses_rootSess000001");
+  script = [
+    ["out", 'test output: ses_abc123456 fixture\n'],
+    ["err", LOG("message=loop session.id=ses_resumeSess0001 step=0\n")],
+    ["out", "PILOT:TASK-DONE\n"],
+  ];
+  const resumed = await runAgent("p", { ...base, printLogs: true, sessionId: "ses_resumeSess0001" });
+  check("runAgent resume (-s): the resumed session IS the id, whatever stdout quotes", JSON.stringify(seen[3]) === JSON.stringify(["run", "--print-logs", "-s", "ses_resumeSess0001", "p"]) && resumed.sessionId === "ses_resumeSess0001");
+  const scan = rootSessionScanner();
+  scan.push(CHILD_CREATED);
+  check("root scanner: a subagent created line alone is not a root", scan.id() === undefined);
+  const scan2 = rootSessionScanner();
+  scan2.push(ROOT_CREATED.slice(0, 40));
+  scan2.push(ROOT_CREATED.slice(40) + ROOT_CREATED.replace("ses_rootSess000001", "ses_laterRoot00001"));
+  check("root scanner: split line completes; the FIRST root wins", scan2.id() === "ses_rootSess000001");
+  const scan3 = rootSessionScanner();
+  scan3.push(ROOT_CREATED.trimEnd());
+  check("root scanner: a final unterminated root line still counts", scan3.id() === "ses_rootSess000001");
 }
 
 // ── wiring (source assertions): attribution + budget + re-price stay wired ─
