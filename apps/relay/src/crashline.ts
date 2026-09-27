@@ -141,6 +141,16 @@ const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
  * collapse to their basename.
  */
 const ABS_PATH_RE = /(?<![A-Za-z0-9_])(?:file:\/\/)?(?:[A-Za-z]:)?(?:[\/\\][^\s()\\\/]+)+/g;
+/**
+ * Delimited absolute paths, which may contain spaces ("/Volumes/SSD Major/…",
+ * "C:\Program Files\…"): the location inside a stack frame's parentheses, a
+ * quoted path in a message, and an anonymous frame ("at /path/file.ts:1:2").
+ * The bare-token pass above stops at the first space, so without these the
+ * tail of such a path ("SSD Major/…/index.ts:1:2") survived redaction.
+ */
+const PAREN_PATH_RE = /\(((?:file:\/\/)?(?:[A-Za-z]:)?[\/\\][^()\r\n]*)\)/g;
+const QUOTED_PATH_RE = /(['"`])((?:file:\/\/)?(?:[A-Za-z]:)?[\/\\][^'"`\r\n]*)\1/g;
+const BARE_FRAME_PATH_RE = /^(\s*at\s+(?:async\s+)?)((?:file:\/\/)?(?:[A-Za-z]:)?[\/\\].*:\d+(?::\d+)?)$/gm;
 /** Class names must stay a short, closed-vocabulary token. */
 const CLASS_TOKEN_RE = /[A-Za-z0-9_$]{1,40}/;
 const NEWLINE_RE = /\r\n?|\n/g;
@@ -303,11 +313,21 @@ function stackText(error: unknown): string | undefined {
 
 /** Reduce every absolute path in the line to its basename. */
 function stripPaths(text: string): string {
-  return text.replace(ABS_PATH_RE, (match) => {
-    const segments = match.split(/[\/\\]/);
-    const base = segments[segments.length - 1] ?? "";
-    return base.length > 0 ? base : match;
-  });
+  return text
+    .replace(PAREN_PATH_RE, (_match, path: string) => `(${basenameOf(path)})`)
+    .replace(QUOTED_PATH_RE, (_match, quote: string, path: string) => `${quote}${basenameOf(path)}${quote}`)
+    .replace(BARE_FRAME_PATH_RE, (_match, lead: string, path: string) => `${lead}${basenameOf(path)}`)
+    .replace(ABS_PATH_RE, (match) => {
+      const segments = match.split(/[\/\\]/);
+      const base = segments[segments.length - 1] ?? "";
+      return base.length > 0 ? base : match;
+    });
+}
+
+/** Last non-empty path segment ("" when the path is only separators). */
+function basenameOf(path: string): string {
+  const segments = path.split(/[\/\\]/).filter((s) => s.length > 0);
+  return segments[segments.length - 1] ?? "";
 }
 
 /**

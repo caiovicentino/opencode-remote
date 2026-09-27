@@ -197,6 +197,28 @@ check("crashline: a file:// frame is reduced to its basename too", (() => {
   e.stack = "Error: m\n    at fn (file:///srv/relay/src/index.ts:2:2)";
   return crashLine("uncaughtException", e, 0).stack === "at fn (index.ts:2:2)";
 })());
+check("crashline: a frame path with spaces is reduced to its basename (install under /Volumes/SSD Major)", (() => {
+  const e = new Error("m");
+  e.stack = "Error: m\n    at fn (/Volumes/SSD Major/Major/wt/apps/relay/src/index.ts:7:9)";
+  return crashLine("uncaughtException", e, 0).stack === "at fn (index.ts:7:9)";
+})());
+check("crashline: a Windows frame path with spaces is reduced to its basename", (() => {
+  const e = new Error("m");
+  e.stack = "Error: m\n    at fn (C:\\Program Files\\OCR\\relay\\index.ts:3:4)";
+  return crashLine("uncaughtException", e, 0).stack === "at fn (index.ts:3:4)";
+})());
+check("crashline: an anonymous frame path with spaces is reduced to its basename", (() => {
+  const e = new Error("m");
+  e.stack = "Error: m\n    at /Volumes/SSD Major/Major/wt/apps/relay/src/index.ts:11:2";
+  const plain = crashLine("uncaughtException", e, 0).stack;
+  e.stack = "Error: m\n    at async /Volumes/SSD Major/Major/wt/apps/relay/src/index.ts:11:2";
+  const asyncFrame = crashLine("uncaughtException", e, 0).stack;
+  return plain === "at index.ts:11:2" && asyncFrame === "at async index.ts:11:2";
+})());
+check("crashline: a quoted path with spaces in the message keeps only its basename", (() => {
+  const line = crashLine("unhandledRejection", new Error("ENOENT: open '/Volumes/SSD Major/state/daemon.json'"), 0);
+  return !line.message.includes("/") && !line.message.includes("SSD") && line.message.includes("'daemon.json'");
+})());
 check("crashline: node-internal frame ids survive path stripping intact", (() => {
   const e = new Error("m");
   e.stack = "Error: m\n    at node:internal/process/task_queues:95:5";
