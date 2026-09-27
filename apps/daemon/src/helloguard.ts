@@ -44,24 +44,39 @@ export function helloFreshness(
 export type HelloAdmitVerdict = "new" | "replay" | "overflow";
 
 /**
- * Second check: bounded nonce dedupe. `admit` records the nonce under the
- * DAEMON's clock (never the client-supplied ts), prunes entries older than
- * the window on every call, and — at the cap — refuses the NEWCOMER instead
- * of evicting the oldest (fail-closed: an attacker's flood must not buy room
- * for a replay by pushing entries out).
+ * Second check: bounded nonce dedupe. `admit` keeps a nonce until the token
+ * that carried it can no longer be fresh, prunes expired entries on every
+ * call, and — at the cap — refuses the NEWCOMER instead of evicting the
+ * oldest (fail-closed: an attacker's flood must not buy room for a replay by
+ * pushing entries out).
+ *
+ * eval-12 (routed from eval-14): the entry used to expire `skew` after
+ * ADMISSION on the daemon's clock, but helloFreshness keeps a future-dated
+ * token fresh until `ts + skew`. With the client clock δ ahead (δ ≤ skew) the
+ * identical hello was accepted again inside (t0 + skew, t0 + skew + δ]. The
+ * token's authenticated `ts` now only EXTENDS retention — expiry is
+ * max(now, ts) + skew, never earlier than the daemon-clock bound — and
+ * freshness already caps ts at now + skew, so retention stays ≤ 2 × skew.
  */
 export class HelloSeen {
+  /** nonce → expiry instant (daemon clock, ms) */
   private readonly seen = new Map<string, number>();
 
   constructor(private readonly cap: number = HELLO_SEEN_CAP) {}
 
-  admit(nonce: string, now: number, skewMs: number = HELLO_MAX_SKEW_MS): HelloAdmitVerdict {
-    for (const [key, seenAt] of this.seen) {
-      if (now - seenAt > skewMs) this.seen.delete(key);
+  admit(
+    nonce: string,
+    now: number,
+    skewMs: number = HELLO_MAX_SKEW_MS,
+    ts: number | null = null,
+  ): HelloAdmitVerdict {
+    for (const [key, expiresAt] of this.seen) {
+      if (now > expiresAt) this.seen.delete(key);
     }
     if (this.seen.has(nonce)) return "replay";
     if (this.seen.size >= this.cap) return "overflow";
-    this.seen.set(nonce, now);
+    const issuedAt = typeof ts === "number" && Number.isFinite(ts) ? Math.max(now, ts) : now;
+    this.seen.set(nonce, issuedAt + skewMs);
     return "new";
   }
 

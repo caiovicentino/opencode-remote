@@ -530,6 +530,10 @@ interface Socket extends WebSocket {
   // room — the join-deadline reaper's only two inputs (joindeadline.ts).
   openedAt?: number;
   joinedRoom?: boolean;
+  // eval-13: rooms this socket claimed as their owner — a frame whose `from`
+  // equals its room, the daemon's convention for every frame it sends.
+  // Observation only (see the duplicate-owner signal in the message path).
+  ownerRooms?: Set<string>;
 }
 
 const rooms = new Map<string, Set<Socket>>();
@@ -573,6 +577,9 @@ const m = {
   idleUnjoinedClosed: 0,
   // P2-243: rooms closed for moving more bytes than the window budget allows.
   roomBudgetTerminated: 0,
+  // eval-13: times a second live socket claimed the owner identity of a room
+  // that already had one — two daemons sharing one identity.
+  duplicateOwners: 0,
   startedAt: Date.now(),
 };
 // P2-313: process-observation state for the metrics surfaces — pure
@@ -603,6 +610,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
       // set sizes leave the map and reach the pure module; no room id, no
       // address, no IP ever leaves the process.
       const occupancy = roomOccupancyCounts([...rooms.values()].map((set) => set.size));
+      const duplicateOwnerRooms = countDuplicateOwnerRooms();
       if (req.url.includes("format=prom")) {
         const lines = [
           "# TYPE relay_connections_total counter",
@@ -651,6 +659,9 @@ if (METRICS.port && METRICS.problems.length === 0) {
           // IP, port, token or any identifiable material.
           "# TYPE relay_room_budget_terminated counter",
           `relay_room_budget_terminated ${m.roomBudgetTerminated}`,
+          // eval-13: additive — second owner sockets seen since boot
+          "# TYPE relay_duplicate_owner_total counter",
+          `relay_duplicate_owner_total ${m.duplicateOwners}`,
           "# TYPE relay_rooms_active gauge",
           `relay_rooms_active ${rooms.size}`,
           // P3-461: additive occupancy split of the SAME rooms map, computed
@@ -667,6 +678,10 @@ if (METRICS.port && METRICS.problems.length === 0) {
           `relay_rooms_paired ${occupancy.paired}`,
           "# TYPE relay_rooms_crowded gauge",
           `relay_rooms_crowded ${occupancy.crowded}`,
+          // eval-13: additive — rooms whose owner identity is held by more
+          // than one live socket right now (same live rooms map, per scrape)
+          "# TYPE relay_rooms_duplicate_owner gauge",
+          `relay_rooms_duplicate_owner ${duplicateOwnerRooms}`,
           // P2-294: additive certificate-expiry series — the SAME verdict the
           // periodic revalidation below already maintains and the /healthz
           // getter publishes, now on the surface the operator's metric
@@ -720,6 +735,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
             // never a room id, address, IP, port, token or any identifiable
             // material.
             room_budget_terminated: m.roomBudgetTerminated,
+            duplicate_owner_total: m.duplicateOwners,
             rooms_active: rooms.size,
             // P3-461: additive occupancy split — the SAME buckets the
             // Prometheus text publishes above, next to rooms_active. Zero
@@ -728,6 +744,7 @@ if (METRICS.port && METRICS.problems.length === 0) {
             rooms_single_peer: occupancy.single,
             rooms_paired: occupancy.paired,
             rooms_crowded: occupancy.crowded,
+            rooms_duplicate_owner: duplicateOwnerRooms,
             // P2-313: additive — the SAME process numbers the Prometheus
             // text publishes above, next to the uptime this body already
             // had. Observation only: no policy reads them.
@@ -778,6 +795,18 @@ function leaveAll(socket: Socket) {
       roomBudgets.delete(room);
     }
   }
+}
+
+// eval-13: rooms whose owner identity (from === room) is claimed by more than
+// one live socket. Only whole counts leave this function.
+function countDuplicateOwnerRooms(): number {
+  let n = 0;
+  for (const [room, set] of rooms) {
+    let owners = 0;
+    for (const s of set) if (s.readyState === s.OPEN && s.ownerRooms?.has(room)) owners++;
+    if (owners > 1) n++;
+  }
+  return n;
 }
 
 // P2-177: entries below the configured level are dropped before the line is
@@ -1205,6 +1234,27 @@ wss.on("connection", (socket: Socket, req) => {
         m.rejects++;
         socket.close(1013, "room full");
         return;
+      }
+
+      // eval-13: a second live socket claiming the owner identity of this room
+      // (from === room) means two daemons share one identity — an old process
+      // still alive after a restart, a state directory copied to a second
+      // machine. The relay fans every phone frame out to both and whichever
+      // answers first wins, so answers come from the wrong process in silence
+      // (the reconnect.test failure of PR #1316). Observation only: `from` is
+      // attacker-controllable, so nothing is closed or refused because of it.
+      if (frame.from === frame.room && !socket.ownerRooms?.has(frame.room)) {
+        (socket.ownerRooms ??= new Set()).add(frame.room);
+        for (const t of rooms.get(frame.room) ?? []) {
+          if (t !== socket && t.readyState === t.OPEN && t.ownerRooms?.has(frame.room)) {
+            m.duplicateOwners++;
+            ev("warn", "room has more than one owner socket", {
+              room: frame.room.slice(0, 8),
+              count: m.duplicateOwners,
+            });
+            break;
+          }
+        }
       }
 
       const targets = rooms.get(frame.room);

@@ -75,13 +75,16 @@ carry cache affinity (P1-078): a task prefers the free slot that last ran the sa
 within ~10min (provider prefix-cache inheritance) and simultaneous slot starts are staggered
 20s so the first builder's cache-write completes first; per-slot cache hit ratios are logged
 as `slot cache` and folded into `state.slotCache`. After every
-successful merge a SCRIBE agent distills up to 3 engineering lessons into `docs/EXPERIENCE.md`
-(P1-007) — the top-5 keyword-matched lessons are injected into the planner, builder and
-strategist prompts (P2-042), and the nightly red-team pass dedupes/prunes the file above 60 lessons.
+successful merge a SCRIBE agent distills 0–2 engineering lessons (≤200 chars; it sees the closest
+stored lessons, and a re-learned lesson refreshes instead of duplicating) into `docs/EXPERIENCE.md`
+(P1-007) — up to 5 relevant lessons (idf-weighted match with a relevance floor; none when nothing
+is relevant) are injected into the planner, builder and strategist prompts (P2-042), and the
+nightly red-team pass dedupes/prunes the file above 150 lessons.
 When the stop-loss moves a
-task to `## Blocked`, a failure scribe records a structured `kind:"failure"` lesson (failing step,
-findings, gate tail) in `~/.opencode-remote/pilot/lessons.jsonl` (P2-031) and the strategist and
-planner prompts receive the 10 most recent failure lessons so new tasks avoid repeating blocked patterns.
+task to `## Blocked`, a failure scribe records a structured `kind:"failure"` lesson (title, failing
+step, findings, gate tail) in `~/.opencode-remote/pilot/lessons.jsonl` (P2-031) and the strategist
+(10 most recent) and planner (5 closest to the task) prompts receive real blocked-task lessons only —
+one per task, never archived success lessons — so new tasks avoid repeating blocked patterns.
 If you are asked to change anything that
 the constitution protects (crypto, allowlist, replay protection, deploy/), flag it explicitly in
 the commit message. Never commit secrets. Always document user-visible changes.
