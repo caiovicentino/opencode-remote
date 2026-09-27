@@ -122,13 +122,56 @@ identity servers, no accounts.
   within ±300 000 ms (±5 min) of the daemon's clock, and the hello nonce is
   admitted at most once per window (in-memory cache, newest 4096 nonces,
   pruned every check; at the cap the newcomer is refused, never the oldest).
-  Both refusals answer with a `session-reauth-required` control instead of a
-  silent drop, are counted in `ocr_hello_rejected_total`, and never touch the
-  live session's replay guard (`lastSeq`). Residual limitation: the nonce
-  cache lives in memory, so a hello captured shortly before a daemon restart
-  can still be replayed within the ±5 min window right after the restart —
-  closing that for good requires a server challenge (handshake v3, out of
-  scope).
+  The nonce has exactly one accepted spelling (eval 14): the dedupe keys on
+  the nonce string, and the tolerant base64 decoder used to map dozens of
+  spellings of the same 16-byte salt (`==` stripped, inserted whitespace,
+  base64url, non-zero trailing bits) to the same session key — so a
+  recorded hello re-sent with a re-spelled nonce passed the dedupe, replaced
+  the victim's session with `lastSeq = 0` and let the recorded op frames run
+  a second time, no restart needed. `serverAccept` now admits only the
+  canonical standard base64 of exactly 16 bytes (`helloNonce`, what every
+  client has always sent) and refuses anything else before deriving a key
+  (`scripts/hello-replay.test.ts` replays four spellings against a real
+  daemon). Both refusals answer with a `session-reauth-required` control
+  instead of a silent drop, are counted in `ocr_hello_rejected_total`, and
+  never touch the live session's replay guard (`lastSeq`). Residual
+  limitations: the nonce cache lives in memory, so a hello captured shortly
+  before a daemon restart can still be replayed once right after the
+  restart while its stamp is fresh; and the cache keeps a nonce for 5 min
+  after admission while a token stamped up to 5 min in the future stays
+  fresh for up to 10 min, so a client whose clock runs δ ahead of the
+  daemon leaves a δ-long window in which its hello is accepted once more.
+  Closing both for good requires daemon-contributed randomness in the
+  session key (handshake v3, below).
+- No forward secrecy (eval 14): the session key is HKDF-SHA-256 over a
+  static-static ECDH P-256 secret — the client's long-term identity key
+  times the daemon's long-term identity key — salted with the client's
+  16-byte nonce, which travels in the clear inside the hello. Nothing
+  ephemeral enters the derivation, so whoever records relay traffic (a
+  hosted relay, any room member) and later obtains the daemon's private key
+  (`daemon.json` or any copy of it, see Key rotation) can decrypt every
+  recorded session of every paired device. The client key is
+  non-extractable, so the daemon side is the exposure. Handshake v3 would
+  add an ephemeral ECDH key on both sides plus a daemon-chosen nonce: that
+  gives forward secrecy and closes the replay residuals above. It changes
+  the wire, so the judge's vendored `protocol.ts` must be re-vendored and
+  re-pinned in the same change.
+- Session keys and usage limits (eval 14): each handshake derives one
+  AES-256-GCM key that both directions share. The direction is bound by the
+  AAD sender id (a client `from` vs the daemon room), so a frame reflected
+  back to its sender never opens. Every frame gets a fresh random 96-bit IV,
+  and NIST SP 800-38D caps a random-IV key at 2^32 invocations. The key
+  changes on every rehandshake (reconnect, daemon restart, app relaunch).
+  Nothing forces a rekey by count or time, but a session would need about
+  1.4 years at a sustained 100 frames/s to reach the cap. Receivers accept
+  only a strictly increasing `seq` per session, so a frame that arrives
+  after a higher one is dropped: senders must emit in `seq` order.
+- One handshake version, no negotiation (eval 14): the pairing URI says
+  `v=2`, the HKDF info is `opencode-remote v2`, and there is no
+  version field in the hello — nothing to downgrade today. When v3 ships,
+  the daemon must stop accepting v2 hellos from a device once that device
+  has spoken v3 (and eventually altogether), or an attacker could strip a
+  hello back to the replayable v2.
 - A room member can DoS the daemon with malformed envelope metadata (RT-424):
   a frame whose clear-text `seq` is not a non-negative safe integer (fraction,
   numeric string, boolean, NaN/±Infinity, ≥ 2^53), a non-object envelope or a
@@ -336,7 +379,20 @@ identity servers, no accounts.
     It is the single context to require on `main` (operator action, one
     time, after the job has reported at least once):
 
+    ```bash
+    gh api -X PATCH repos/caiovicentino/opencode-remote/branches/main/protection/required_status_checks \
+      -F strict=false -f 'contexts[]=ci-gate'
+    ```
+
 ## Key rotation
 
-Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and
-re-pair: a fresh daemon identity invalidates every previously paired client.
+`manage.ts revoke-all` only empties the allowlist (the next QR pairing
+bootstraps again): the daemon keypair stays the same. To rotate the machine
+identity, stop the daemon and delete `~/.opencode-remote/daemon.json`
+**and every other copy of it**, because each one carries the private key:
+`daemon.json.backup` (the P2-254 automatic copy), any
+`daemon.json.<stamp>.quarantine` kept by the unreadable-file path, and any
+manual backup. Then start the daemon and re-pair: a fresh daemon identity
+invalidates every previously paired client. The handshake has no forward
+secrecy (see Threat notes), so a leftover copy of the old private key
+still decrypts relay traffic recorded before the rotation.
