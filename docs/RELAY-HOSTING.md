@@ -62,8 +62,12 @@ runs the smoke battery of `scripts/relay-image-smoke.ts` against the live
 container (5s fetch timeout per probe):
 
 - `/healthz` answers `200` with today's counter body (`ok`, `version`,
-  `protocol`, `uptimeS`, `rooms`, `roomsRejected`), with `protocol` equal to
-  the `RELAY_WIRE_PROTOCOL` constant the tree shipped (P2-331);
+  `protocol`, `uptimeS`, `rooms`, `roomsRejected`, `instanceId`), with
+  `protocol` equal to the `RELAY_WIRE_PROTOCOL` constant the tree shipped
+  (P2-331) and `instanceId` inside the closed instance-id grammar (1–64
+  characters of letters, digits and dashes — P3-401, smoke-pinned since
+  P3-459), so the replica identity the two-minute test below compares is
+  guaranteed to be present in any published image;
 - `/` answers `200` with `text/html` and every security header P2-192
   introduced (CSP, referrer/permissions policies, framing, COOP/CORP);
 - the content-hashed bundle asset referenced by the entry document answers
