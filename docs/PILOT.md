@@ -907,6 +907,9 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   não estaciona porque o daemon pode ainda entregar a 1ª cópia). Na 3ª recusa
   em janela o push do telefone recebe uma cópia com `needs operator`. Timeout
   vira 120s (`NOTIFY_TIMEOUT_MS`) e o researcher deixou de esperar o notify.
+  (eval-01: o relay passou a usar `prompt_async`, o timeout caiu para 30s e a
+  fila ganhou dedupe por (task, kind) e fallback para o telefone — ver
+  "Alertas de vida do pilot".)
 - **HUD NOTIFY no dashboard (P3-357)**: `/dashboard/v3` mostra ao lado do HB a
   idade do último aviso realmente entregue ao supervisor ("último aviso
   entregue há N min" no tooltip, via `pilot/notify-last` + `notifyLastMs` em
@@ -1013,6 +1016,64 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   convertidos silenciosamente para $0: os tokens aparecem como `sem preço`
   no tooltip (`unpricedTokens`). Sinal best-effort como o resto do P2-028:
   nada de gate consome `taskUSD`.
+- **Eficiência de tokens e custo próprio (eval-18, 2026-09-27)**:
+  - *Alias de modelo*: o tier A rodava como `glm52/glm-5.2` até 11/09 e como
+    `b200x4/glm-5.3-flash` desde então — mesmo endpoint servido, só o id
+    mudou — e a tabela só conhecia `glm-5.2`: 68 das 200 tasks da janela
+    (1,37B tokens) ficaram "sem preço". `MODEL_ALIASES` em `pricing.ts`
+    resolve `glm-5.3-flash` para a linha `glm-5.2` (nunca inventa preço).
+  - *Custo de ops self-hosted* (opcional, `pilot.json`):
+    `"pricing": {"selfHosted": {"models": ["glm-5.3-flash","glm-5.2"], "usdPerHour": <custo all-in do nó/h>, "mtokPerHour": <MTok PONDERADOS processados/h>}}`
+    — amortização por hora de GPU: US$/MTok de cada coluna = `usdPerHour ÷
+    mtokPerHour × peso` (pesos padrão = razões do preço de lista GLM: input 1,
+    output 3,14, cache-read 0,19, cache-write 1; sobrescreva com `weights`).
+    Alternativa direta: `"usdPerMTok": {"input","output","cacheRead","cacheWrite"}`
+    (as quatro colunas ou nada). `mtokPerHour` = Σ(coluna × peso) de TODO
+    tráfego do nó numa janela ÷ horas de relógio da janela (amortiza a
+    ociosidade que o operador paga). Bloco inválido = ausente. Mudou o preço?
+    O boot re-precifica a janela uma vez (`task usd repriced`, fingerprint em
+    `state.taskUSDPricing`): tudo-ou-nada por task — `taskUSD`, `taskCosts` e
+    `taskCache` saem do mesmo fold (subagentes inclusos) só quando todas as
+    sessões-raiz ainda existem no `opencode.db` e o total não diminui.
+  - *Contrato de campo* (`state.taskUSD[id]`, lido pelo dashboard):
+    `total`/`tierA`/`tierB`/`unpricedTokens`/`tokens` = visão BYOK de lista,
+    semântica P2-113 intacta; **novos e opcionais** `opsUSD` (US$ que o
+    operador paga pelos tokens servidos no nó self-hosted) e `opsTokens`
+    (tokens cobertos por `opsUSD`) — AUSENTES quando `pricing.selfHosted` não
+    está configurado (nunca um $0 falso), `0` quando configurado mas a task
+    não usou modelo self-hosted. A base do cálculo está em `cfg.pricing`
+    (o `/api/pilot-events` já devolve o `pilot.json`).
+  - *Atribuição completa*: reviewers, escalation (fallback tier A), scribe e
+    recap rodavam sem `--print-logs`, então o id da sessão nunca era capturado
+    (0 de 228 sessões de reviewer atribuídas em 22–24/09, ~11% dos tokens da
+    frota fora do `taskCosts`). O runner ganhou `sessionCapture`: passa
+    `--print-logs` e remove as linhas de log do `output`, então os parsers
+    leem exatamente o texto de antes. O id vem da linha `message=created …
+    parentID=undefined` (sessão raiz) ou do próprio `-s` numa retomada — nunca
+    mais do primeiro `ses_…` do stdout: a premissa é de ORDEM, não de fluxo.
+    O opencode 1.18.32 imprime log (e saída de ferramenta) no stderr (o módulo
+    de UI usa `process.stderr.write`); a linha `created` da raiz sai ANTES de
+    qualquer ferramenta e o primeiro match vence (224 builder logs: 144 com
+    exatamente 1 linha raiz, 80 retomadas com 0, nenhum com 2) — um reviewer
+    citando a fixture `ses_abc123456` não vira mais "sessão"
+    da task (4 ids de fixture em `taskCostSessions`), e o mesmo caminho podia
+    entregar um id falso ao `-s` do builder. Subagentes (`task` tool do opencode)
+    vivem em sessões filhas — o `tokensSql` agora percorre `parent_id`
+    recursivamente e soma os descendentes na task; `tokens_reasoning` entra no
+    total e é precificado como output.
+  - *Orçamento por task* (`pilot.json` `tokenBudgetPerTask`, padrão 40M ≈ p95
+    da janela; `0` desliga): ao cruzar 1×, 2×, 3×… o pilot emite `alert`
+    (fase `token-budget`) + notify do supervisor com tokens, orçamento e o
+    último desfecho. É visibilidade, nunca kill switch (qualidade > custo);
+    o nível alertado persiste em `state.tokenBudgetAlerts` (sem tempestade de
+    alertas em restart/meia-noite).
+  - *AGENTS.md é imposto por turno*: o opencode injeta o `AGENTS.md` no prompt
+    de sistema de todo turno de todo agente (0,26 token/byte, regressão sobre
+    399 sessões, R² 0,998). A 35.125 B são ~9,1K tokens por turno; com o
+    tamanho de cada época, reler o arquivo custou 114,8M tokens em 14.778
+    turnos de 22–24/09 (7,6% da frota). O histórico de beats do desktop-flow
+    (~19 KB) foi movido verbatim para `docs/desktop-flow.md`; o
+    `scripts/token-efficiency.test.ts` reprova o `AGENTS.md` acima de 18 KiB.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)
@@ -1036,8 +1097,10 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
    mesmo, sempre vazio) — e, com slots ocupados, **espera drenar** (P1-104): novos picks
    são suspensos, o reload só sai com 0 slots rodando (pipeline sempre termina — task
    timeout), nunca no meio de um builder round; sai com `process.exit(0)` (log já flushado,
-   sem órfão) e o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem
-   sinal → exit → KeepAlive ressozinho
+   sem órfão) e o KeepAlive reassume no código novo; heartbeat + watchdog — 3 min sem
+   sinal → exit → KeepAlive ressozinho (eval-01: um tick atrasado — loop bloqueado por
+   chamada síncrona como o `execFileSync` do judge gate, ou máquina dormindo — rearma o
+   heartbeat em vez de matar os slots em voo; log `watchdog: event loop was blocked`)
 4. **Processo stale (P3-101)**: o loop guarda o HEAD do repo de produção capturado no boot
    (`bootHead`) e, num momento 100% ocioso (nenhum slot rodando, nenhum deploy em voo),
    reexecuta `git rev-parse HEAD`; se driftou (`headDrifted`), sai com `exit(0)` e o
@@ -1201,6 +1264,16 @@ de recap falha, a sessão segue como antes (fail-open); o carryover é consumido
 primeira round que o usar e removido no merge. O mesmo cálculo alimenta o gauge de
 contexto do chat (apps/web via `GET /__ocr/context` do daemon, amarelo ~70%,
 vermelho ~85%) e o recap fixado sob o composer — ver README.
+**Correção eval-18**: a sonda original lia `GET /session/:id`, cujo `model` no
+opencode 1.18.x é `{id, providerID, variant}` — ela procurava `modelID` e
+devolvia null em TODA round (zero linhas `contextPressure` em 1.447 builder
+rounds, 31/08–24/09: o checkpoint nunca rodou); e o `tokens` daquele objeto é
+a conta cumulativa da sessão (27M no P3-465 contra 205K de contexto real), que
+leria 100% em toda round retomada. A sonda agora lê a cauda
+`GET /session/:id/message?limit=4` e mede a última mensagem do assistente
+(`tokens.total`, o mesmo número que o opencode mostra como uso de contexto) com
+o `providerID`/`modelID` dela. O gauge do daemon (`/__ocr/context`) tem os
+mesmos dois defeitos e segue pendente (fora do pilot).
 
 ## Circuit breaker de febre — modo auditoria (P2-032)
 
@@ -2026,6 +2099,148 @@ threshold, notify e emit são injetáveis (`DeployOpts`) — a bateria de eval
 (`scripts/unit.test.ts`) testa o abort com threshold mockado provando que ele
 acontece antes do `npm ci`.
 
+## Disco: hold, retenção e VACUUM (eval-02, 27/09)
+
+**Por quê.** Em 24/09, das 04:20 às 07:40, o volume de `~/.opencode-remote` (e, na
+época, do `opencode.db`) chegou a 0 bytes. O disk guard do deploy recusou por 12h
+(85 recusas desde 23/09 15:56), mas nada parava os 8 slots. Depois disso, toda
+escrita virou fatal: `pilot fatal … ENOSPC … pilot.pid` a cada relaunch do
+KeepAlive (~14×, com 30s de ThrottleInterval). O `saveState` do caminho de crash
+lançou ENOSPC e pulou o cool-down (763 re-picks do mesmo task em ~2min). O
+heartbeat falhava em silêncio até o watchdog matar o loop. A queda de 12/09 → 22/09
+foi da mesma classe.
+
+**Disk hold** (`apps/pilot/src/diskhold.ts`). Em todo tick, antes de qualquer
+trabalho, o loop faz `statfs` de cada volume que a frota escreve: estado do pilot,
+checkout de prod, o `opencode.db` **resolvido** (symlink para o SSD desde 24/09) e
+o temp. O **pior** volume decide o nível:
+
+| nível | entra | sai (histerese) | efeito |
+|---|---|---|---|
+| `low` | < 10 GiB | ≥ 12 GiB → ok | sem picks novos, sem nightly/aux; pipelines em voo terminam; deploy segue com o guard de 5 GiB |
+| `critical` | < 5 GiB, ou uma escrita falhou com ENOSPC (mín. 10 min) | ≥ 7 GiB → low | nada novo, sem deploy; o loop só sonda, varre espaço (dist + artefatos) e alimenta o heartbeat |
+
+Cada transição gera **um** alerta: log `disk hold` / `disk hold released`, evento
+`alert` (`task: "disk"`), `notifySupervisor("pilot-disk")` e um push `💾 Pilot …`
+com `digest` ligado. Enquanto o hold durar, sai um lembrete a cada 6h: em 12/09 um
+único sinal perdido virou 10 dias parados. O seam é único (`diskAlert`); o dono da
+entrega de alertas pode repontá-lo. Quando o espaço volta, o backoff do pending deploy é zerado (sem
+esperar 30min). Se nenhum volume puder ser lido, o nível não muda: nunca entra em
+hold por falta de evidência e nunca sai dele pelo mesmo motivo.
+
+**Nunca crash-loop.**
+- **Boot gate:** a escrita do pidfile espera (sem crash) enquanto o disco está
+  critical; um ENOSPC nela força o hold.
+- **Caminho de crash:** o `runSlot`, o fim do deploy e o contador de deploy usam
+  `saveStateSafe`, que nunca lança. O estado em memória segue autoritativo e o
+  próximo save tenta de novo.
+- **ENOSPC fora de await:** uma rejeição não tratada com ENOSPC vira hold em vez de
+  derrubar o processo. Outros erros continuam fatais (crash-only).
+- **`main()` morto por ENOSPC:** o processo espera o espaço voltar e sai **uma**
+  vez.
+- **Watchdog:** julga o batimento **em memória** (`heartbeatAgeMs`). O arquivo
+  `pilot/heartbeat` continua sendo o sinal externo (dashboard), gravado
+  best-effort.
+
+As listas do deploy guard (`verified-merges.jsonl`, `quarantine.jsonl`,
+`last-install.json`) agora são gravadas com tmp + rename: um ENOSPC no meio da
+escrita não trunca mais a quarentena.
+
+**Hatches** (os mesmos do daemon): `OCR_DISK_FULL=1` força critical e
+`OCR_DISK_OK=1` força ok (FULL vence); `OCR_DISK_HOLD_TICK_MS` encurta o tick em
+testes. `scripts/pilot-diskfull.test.ts` sobe o entrypoint real com HOME
+temporário e `OCR_DISK_FULL=1`. Com `OCR_REAL_ENOSPC=1` (macOS), o teste repete o
+cenário num volume HFS+ de 16 MB realmente cheio e prova o resume automático num
+sparse de 8 GiB (~3,6 GB de backing temporário).
+
+**Retenção de artefatos** (automática, em `apps/pilot/src/retention.ts`: de hora
+em hora junto do sweep de dist; num hold critical, na entrada e de hora em hora
+enquanto ele durar). Cada regra
+mantém um piso dos N mais novos, apaga o que passou da idade e aplica um teto de
+contagem. Arquivo com menos de 1h nunca é tocado; subdiretórios e symlinks nunca
+casam.
+
+| regra | onde | piso | idade | teto |
+|---|---|---|---|---|
+| builder-logs | `pilot/builder-*.log` | 50 | 30d | 200 |
+| stray-logs | `pilot/p<N>-*.log`, `last-builder-output*.log` | 0 | 14d | 20 |
+| shots-builder | `pilot/shots/builder/*` (só arquivos) | 100 | 30d | 400 |
+| shots-explorer | `pilot/shots/explorer/*.png` | 120 | 45d | 400 |
+| tmp | `pilot/tmp/*` | 0 | 7d | 100 |
+| client-logs | `pilot/client-logs/*.txt` | 20 | 30d | 100 |
+
+`pilot/shots/*.png` continua com o teto de 20 do `shot.ts` (P2-011). Aquela
+passada só conhece `.png`, por isso o css/html de `shots/builder` acumulava.
+Manual: `npx tsx apps/pilot/src/retention.ts artifacts` (dry-run) /
+`… --apply`.
+
+**Retenção de sessões do opencode** (opt-in, CLI, **dry-run por padrão**). Medido
+read-only em 27/09: o `opencode.db` tem 87 GB, `page_count` 21,3M × 4 KiB,
+`freelist_count` 0 e `auto_vacuum` 0 (NONE). ~90% dele é a tabela `event`, e cada
+`message.updated` regrava os `summary.diffs[*].patch` da sessão inteira (até
+5 MB/evento no pilot). As sessões dos clones do pilot somam ~28–31 GB. O resto é
+de outros projetos do dono (`/Volumes/SSD Major/wow` ≈ 47 GB), fora do alcance
+desta ferramenta.
+
+Contrato do opencode 1.18.32, verificado num `opencode serve` hermético:
+- `GET /session?directory=D` lista só D, do mais novo para o mais antigo, e
+  **limita a 100 por padrão**. Por isso a ferramenta passa `limit=10000` e marca
+  listagens truncadas.
+- `scope=project` alarga para todos os clones do mesmo repositório, inclusive o
+  do dono, e **nunca é usado**.
+- `DELETE /session/<id>` apaga em cascata filhos, mensagens, parts e o event log.
+  **Ignora `directory`**, então a posse é checada do lado do cliente: diretório
+  exatamente igual a um clone do pilot (`repo-<n>`, clones de missão,
+  `repo-explorer`, `repo` legado), só raízes (o filho vai junto), idade = update
+  mais novo da árvore inteira, ids canônicos, teto por execução (`--max`, padrão
+  500), pausa entre deletes e trilha JSONL em `pilot/retention-audit.jsonl`, mais
+  `pilot-retention` no `audit.log`.
+
+Com o opencode no ar e o pilot parado ou ocioso:
+
+```sh
+npx tsx apps/pilot/src/retention.ts sessions --days 14          # dry-run: 582 raízes (~11–13 GB) em 27/09
+npx tsx apps/pilot/src/retention.ts sessions --days 14 --apply  # apaga + audita
+# --days 3 alcança 1000 raízes (~27–28 GB) em 27/09
+```
+
+**VACUUM, a realidade.** O delete só devolve páginas ao freelist **interno**: o
+arquivo continua com 87 GB, e o crescimento seguinte reusa esse espaço antes de
+crescer (28 GB ≈ 4–7 dias de frota). Para encolher o arquivo:
+- `VACUUM` no lugar exige acesso exclusivo e reescreve tudo. Precisa de ~2× o
+  tamanho do banco: um temp do tamanho do banco em `SQLITE_TMPDIR`/`TMPDIR`
+  (**disco interno por padrão, 78 GB livres < 87 GB, o que levaria a um novo
+  ENOSPC**) mais o WAL no SSD.
+- **Recomendado:** `VACUUM INTO` numa conexão **read-only**, com o opencode
+  parado. Isso grava uma cópia compacta (≈ dados vivos) direto no SSD, sem temp no
+  disco interno e já no modo INCREMENTAL. Num banco de teste isso foi verificado:
+  cópia com metade das páginas, `quick_check` ok, `auto_vacuum` 2 e origem
+  byte-idêntica. Depois é trocar os arquivos, levando `-wal`/`-shm` junto com o
+  antigo. Daí em diante, `PRAGMA incremental_vacuum` devolve o espaço liberado sem
+  reescrita total.
+
+```sh
+# 0) retenção primeiro (precisa do opencode no ar); depois o DONO para só o opencode
+#    (o daemon fala com ele pela API e nunca abre o banco)
+launchctl bootout gui/$(id -u)/com.ocr.opencode
+D="/Volumes/SSD Major/opencode_data"
+sqlite3 -readonly "$D/opencode.db" "PRAGMA auto_vacuum=INCREMENTAL; VACUUM INTO '$D/opencode.compact.db'"
+sqlite3 -readonly "$D/opencode.compact.db" "PRAGMA quick_check; PRAGMA auto_vacuum"   # ok / 2
+cd "$D" && mv opencode.db opencode.db.pre-vacuum \
+  && for x in -wal -shm; do [ -e "opencode.db$x" ] && mv "opencode.db$x" "opencode.db.pre-vacuum$x"; done \
+  && mv opencode.compact.db opencode.db
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ocr.opencode.plist   # ou: launchctl load -w <plist>
+# conferidas as sessões no app: rm "$D"/opencode.db.pre-vacuum*   (devolve os 87 GB antigos)
+```
+
+**Rotação de logs** (`deploy/rotate-logs.sh`, launchd `com.ocr.logrotate` às
+03:07). Cada log é tratado isoladamente: um log que não se consegue arquivar não
+aborta mais a rodada. O arquivo vivo só é truncado depois que a cópia `.gz` foi
+gravada. Arquivos antigos em texto puro são comprimidos, e o prune é **por log**,
+pelos 5 mais novos por mtime. O `sort -r` antigo mantinha os 5 caminhos
+lexicograficamente maiores somando todos os logs, e apagava um arquivo do daemon
+mais novo que os do relay.
+
 ## Deploy só de SHA verificado + quarentena (P2-058, 02/09)
 
 Antes o `deploy()` aceitava qualquer HEAD de `origin/main`: um push direto em
@@ -2170,6 +2385,162 @@ fresco) e o pilot emite evento `alert` + notify do supervisor dizendo que o
 main está vermelho no mesmo check — o próximo ciclo tenta de novo em vez de
 enterrar a task. No máximo um hold por task: no segundo ci-red compartilhado,
 bloqueia como antes.
+
+## Alertas de vida do pilot (eval-01)
+
+**Por quê.** Todo alerta do pilot (notify do supervisor, digests de push)
+roda DENTRO do processo do pilot — um pilot morto ou descarregado nunca avisa
+a própria morte. A frota ficou parada de 12/09 a 22/09 e de novo a partir de
+24/09 08:07 (`com.ocr.pilot` fora do launchd) sem nenhum alerta. Além disso a
+sessão do supervisor configurada em `pilot.json` tinha sido apagada (o
+opencode responde 404 `NotFoundError`), então todo notify falhava para sempre
+e 100 mensagens se acumularam em `pilot/notify-pending.jsonl` (45 delas a
+mesma recusa do disk guard) — e `subscriptions.json` estava vazio desde 15/09,
+então nenhum push chegava a telefone algum.
+
+### Watchdog de fora (daemon, `apps/daemon/src/pilotwatch.ts`)
+
+O daemon roda sob KeepAlive no mesmo host e vigia o pilot a cada 60s (primeira
+sonda 30s após o boot, só depois das chaves VAPID):
+
+| Sinal | Fonte | Veredito |
+|---|---|---|
+| heartbeat | `pilot/heartbeat` (epoch ms; mtime como reserva) | > 10 min sem batida = parado para pid morto; com pid vivo sob um job `running` do launchd, só depois do orçamento do judge (30 min + folga = 40 min) — o gate roda um `execFileSync` de até 30 min (o self-watchdog do pilot rearma em vez de sair) |
+| processo | `pid` do `launchctl print` (com o job carregado; o `pilot/pilot.pid` só vale sem launchd — PIDs reciclam no macOS) | pid morto + heartbeat velho = `dead`; pid vivo + silêncio fora do orçamento = `stalled` |
+| launchd | `launchctl print gui/<uid>/com.ocr.pilot` (só leitura; exit 113 = não carregado) | não carregado + heartbeat velho = `unloaded` — independe do `pilot.pid` (reciclado vira processo alheio) e só abre mão com heartbeat fresco + pid vivo (execução manual) |
+| reinícios | `runs` do launchd em janela de 60 min (o loop de 24/09 reiniciava a cada ~14 min) | ≥ 3 reinícios com saída anormal (exit ≠ 0, `last terminating signal` ou `last exit reason` não-idle — o OOM de 24/09 morreu por sinal, sem linha de exit code) = `crash-loop` |
+| disk hold | `events.jsonl`: recusas `deploy`/`disk-guard` desde o último `deploy`/`done`, ou o hold explícito do pilot (`alert` com task `disk`, phase `disk-hold`, reemitido a cada 6h, até um `disk-resume`) | ≥ 1h segurando (última recusa com < 6h; hold explícito com evento < 7h) = `disk-hold` |
+| deploy lag | HEAD de `~/.opencode-remote/prod` × `pilot/verified-merges.jsonl` | merge verificado esperando ≥ 6h = `deploy-lag` |
+| supervisor | `GET /session/<supervisorSession>` no opencode (só leitura, a cada 10 min) | 404 `NotFoundError` = `supervisor-missing` |
+
+`unloaded`/`crash-loop`/`dead`/`stalled`/`no-heartbeat` são severidade
+**down**; `disk-hold`/`deploy-lag`/`supervisor-missing`/`no-push-subscribers`
+são **degraded**. O pilot só conta como instalado com o plist do launchd OU se
+já rodou aqui (`pilot.json` + `pilot/heartbeat`) — máquina de usuário comum
+fica `absent` e nunca recebe alerta. `~/.opencode-remote/pilot.lock` (o freeze
+do próprio pilot) vira `paused`: parada intencional não pagina — é o jeito
+documentado de silenciar o watchdog enquanto o pilot fica desligado de
+propósito. O heartbeat sozinho não é confiável: em 27/09, com o pilot fora do
+launchd e o pid morto, algum outro processo reescreveu `pilot/heartbeat` e
+`pilot/state.json` — por isso `unloaded` e `crash-loop` não dependem do
+heartbeat.
+
+**Política de alerta** (planner puro, episódio persistido em
+`~/.opencode-remote/pilotwatch.json` — dedupe mesmo com restart do daemon ou
+um segundo processo de daemon): 2 sondas ruins seguidas antes do primeiro push
+(restart/self-reload nunca pagina); lembretes em 1h → 4h → 12h → depois a cada
+24h enquanto parado (degraded: a cada 24h); degraded → down pagina na hora;
+down → degraded manda um único "✅ Pilot voltou a rodar" dizendo o que ainda
+falta; a volta ao normal manda um único "✅ Pilot de volta ao normal" (só se o
+episódio chegou a paginar) e só depois de 2 sondas saudáveis seguidas — o
+probe do opencode oscila (64 episódios "health flipped" em ~25 dias neste
+host), e uma sonda `unknown` nunca fecha um episódio: ela mantém o último
+veredito definitivo; `paused`/`absent` fecham o episódio em silêncio; se o
+push foi tentado com 0 telefones inscritos e um telefone se inscreve depois, o
+alerta é reenviado ~5 min depois. O push das páginas usa a tag `ocr-pilot`, o
+digest do relay usa a tag própria `ocr-pilot-digest` (um "📮 Pilot: …" nunca
+substitui um 🛑/⚠️) e o service worker (`apps/web/public/sw.js`) respeita a tag
+do payload com `renotify` — antes TODA notificação usava a tag única
+`opencode-remote`, então um "Agent finished" substituía um alerta de pilot
+parado sem tocar o celular. Cada push vira linha `pilot-liveness` no
+`audit.log`, log `pilot liveness page` e evento `alert` (`task: "pilot"`,
+`phase: "liveness"`) no feed do dashboard; push com 0 inscritos loga
+`reached no phone (0 push subscriptions)`, e a poda de inscrições mortas
+(404/410 do serviço de push) agora loga `push subscriptions pruned` — antes era
+silenciosa.
+
+Knobs (default seguro, nunca derrubam o boot — valor inválido volta ao padrão
+com uma linha de aviso): `OCR_PILOTWATCH=off` desliga os pushes (a API de
+leitura continua), `OCR_PILOTWATCH=on` força o pilot como instalado,
+`OCR_PILOTWATCH_INTERVAL_MS` / `OCR_PILOTWATCH_INITIAL_DELAY_MS` (testes).
+
+### Relay do supervisor com fallback no telefone (`apps/daemon/src/pilotnotify.ts`)
+
+`POST /api/pilot-notify` usa `prompt_async` do opencode (204 = aceito, sem
+esperar o turno inteiro do supervisor — era isso que estourava os 120s) e
+responde `{delivered, reason?, fallback?, pushed?, phones?}` com motivo
+fechado: `session-not-found`, `no-supervisor-session`,
+`invalid-supervisor-session`, `upstream-http-<n>`, `upstream-unreachable`,
+`upstream-timeout`, `empty-text`, `operator`. Falha **permanente** (sessão
+inexistente, não configurada, id inválido, 4xx) faz o daemon assumir a
+mensagem: falha (`ok:false`) entra no digest do telefone (`fallback: "push"`),
+informativo (`ok:true`) é descartado de propósito (`fallback: "drop"`). Falha
+**transitória** (opencode fora, 5xx, timeout) não tem `fallback` — o pilot
+estaciona e reenvia depois. O digest agrupa por (task, kind) (o kind colapsa
+números: "disk low: 0.1gb" e "2.1gb" são o mesmo), manda no máximo um push a
+cada 10 min, a mesma chave no máximo a cada 6h (o contador acumula: "(×31)"),
+descarta itens com mais de 24h, mostra 4 linhas + "+N outros avisos" e abre
+com o porquê ("Supervisor inacessível: a sessão do supervisor não existe mais
+no opencode"). Estado persistido no mesmo `pilotwatch.json`; o tick do
+watchdog despacha o que ficou retido pela janela. Com **0 telefones inscritos**
+(a situação de produção de 15/09 a 27/09), nada é assumido como entregue: o
+digest NÃO marca as chaves como enviadas nem gasta a janela de 10 min — os
+itens ficam retidos (dentro do TTL de 24h) e saem no primeiro flush depois que
+um telefone se inscrever; o snapshot diz `push.reachable: false` com o motivo
+`no-push-subscribers` (degraded, sem página) para o Mission Control dizer com
+destaque que nenhum alerta alcança ninguém.
+
+Lado do pilot (`apps/pilot/src/notify.ts`): sem `supervisorSession` o pilot
+ainda fala com o daemon (antes era um skip local silencioso); mensagem que o
+daemon assumiu nunca é estacionada; a fila `notify-pending.jsonl` só guarda
+falha transitória, com dedupe por (task, kind) (`count`, `firstTs`), TTL de
+24h aplicado em toda escrita e teto de 100 linhas; o replay para na primeira
+entrega que falha (antes reenviava as 100 a cada notify) e a entrada reenviada
+diz "(repetido N× desde HH:MM)"; `NOTIFY_TIMEOUT_MS` = 30s. `push.ts`
+(`digest`) só devolve true quando algum telefone recebeu — `/api/push` agora
+responde `{ok, delivered: <telefones alcançados>, subscribers}` (antes
+`delivered` era a contagem de inscrições).
+
+**Hook do operador** — para condições em que um humano precisa agir (disk
+hold, etc.), direto para o telefone, nunca para o chat do supervisor:
+
+```ts
+import { notifyOperator } from "./notify";
+await notifyOperator("deploy", "disk-hold", "disk low: 2.1gb free (need 5.0gb) — deploys held");
+// Promise<boolean>: true quando o daemon aceitou para push e há ≥1 telefone
+// inscrito (enviado agora ou retido pela janela de 10 min). Nunca lança.
+// Dedupe por (task, kind) com cooldown de 6h no daemon: pode chamar todo ciclo.
+```
+
+### API de leitura (Mission Control)
+
+`GET /api/pilot-liveness` (loopback, mesmo Bearer/cookie das outras rotas
+`/api`) e `GET /__ocr/pilot-liveness` (túnel selado, para o celular) devolvem o
+mesmo snapshot (cache de até 15s). Contrato v1 — timestamps em epoch ms,
+`null` = desconhecido (nunca um palpite):
+
+```json
+{
+  "v": 1,
+  "state": "ok | degraded | down | paused | absent",
+  "checkedAt": 1790521605070,
+  "reasons": [
+    { "code": "unloaded | crash-loop | dead | stalled | no-heartbeat | disk-hold | deploy-lag | supervisor-missing | no-push-subscribers",
+      "severity": "down | degraded",
+      "detail": "frase curta em pt-BR, pronta para exibir" }
+  ],
+  "heartbeat": { "at": 1790248033162, "ageMs": 273572000 },
+  "process": { "pid": 35139, "alive": false },
+  "launchd": { "checked": true, "loaded": false, "state": null, "pid": null, "runs": null, "lastExitCode": null, "lastExitSignal": null, "lastExitReason": null },
+  "disk": { "hold": { "since": 0, "last": 0, "refusals": 69, "detail": "disk low: …", "source": "deploy-guard | pilot-hold" }, "daemon": "ok | low | critical | unknown" },
+  "deploy": { "prodSha": "1ebbbc1…", "undeployed": 16, "oldestUndeployedAt": 1790189752000 },
+  "notify": { "pending": 100, "oldestPendingAt": 0, "lastDeliveredAt": 1789182096751, "supervisor": "ok | missing | unknown | unset" },
+  "push": { "subscribers": 0, "reachable": false },
+  "alerts": true,
+  "alert": { "episode": { "code": "unloaded", "severity": "down", "since": 0, "sent": 1, "delivered": 0, "lastSentAt": 0, "nextAt": 0 } }
+}
+```
+
+`reasons` vem ordenado (down primeiro, depois ordem fixa); `reasons[0]` é o
+motivo principal — exceto `no-push-subscribers`, que é visibilidade (nunca
+abre, escala nem sustenta episódio, e nunca pagina sozinho: ele é o único
+motivo quando tudo o mais está bem). `disk.hold` é informado mesmo quando
+velho demais para virar motivo. `push.subscribers: 0` /
+`push.reachable: false` significa que nenhum alerta chega a telefone algum —
+a UI deve dizer isso com destaque. `alert.episode` é `null` quando não há
+episódio aberto; `nextAt` é quando sai o próximo lembrete. Campos novos só
+entram de forma aditiva; mudança incompatível sobe `v`.
+
 
 ## Juiz: caminhos protegidos, cota de flaky e veredito v2 (P3-353, P3-359, eval-08)
 

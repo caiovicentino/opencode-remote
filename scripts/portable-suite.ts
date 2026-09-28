@@ -102,9 +102,15 @@ export const PORTABLE_TESTS: readonly string[] = [
   "voice.test.ts",
   "voiceloop.test.ts",
   "workflow-yaml.test.ts",
+  "token-efficiency.test.ts",
   "protocol-crypto.test.ts",
   "pwa-mobile-ux.test.ts",
   "sdk.test.ts",
+"diskhold.test.ts",
+"addressbar.test.ts",
+  "pair-lead.test.ts",
+  "qr-camera.test.ts",
+"pilotwatch.test.ts",
 ];
 
 /**
