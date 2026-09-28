@@ -213,6 +213,9 @@ import {
   pwaWatchEnabled,
   startPwaWatch,
 } from "./pwawatch.js";
+// eval-01: pilot liveness watchdog + honest supervisor relay with phone fallback
+import { createPilotWatch, parsePilotWatchEnv, supervisorProbeFrom } from "./pilotwatch.js";
+import { RELAY_UPSTREAM_TIMEOUT_MS, relayPilotNotify } from "./pilotnotify.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import { PRICE_SOURCE_LABEL } from "../../pilot/src/pricing";
@@ -1943,6 +1946,10 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
       body: { cards: cards.map((c) => ({ ...c, progress: progressOf(index.timelines.get(c.id) ?? []), shots: [] })) },
     };
   }
+  // eval-01: the same read-only liveness snapshot as /api/pilot-liveness
+  if (req.path === "/__ocr/pilot-liveness" && req.method === "GET") {
+    return { id: req.id, status: 200, body: await pilotWatch.current() };
+  }
   if (req.path === "/__ocr/mission" && req.method === "DELETE") {
     try {
       const r = removeMissionFile();
@@ -2153,7 +2160,11 @@ interface PushAttempt {
 }
 let lastPushResult: { at: number; results: PushAttempt[] } | null = null;
 
-async function pushToSubscribers(title: string, body: string, data?: unknown) {
+async function pushToSubscribers(
+  title: string,
+  body: string,
+  data?: unknown,
+): Promise<{ delivered: number; subscribers: number }> {
   const subs = loadSubscriptions();
   const dead: string[] = [];
   const results: PushAttempt[] = [];
@@ -2177,8 +2188,18 @@ async function pushToSubscribers(title: string, body: string, data?: unknown) {
         });
     }
   }
-  if (dead.length) saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
+  if (dead.length) {
+    saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
+    // eval-01: pruning used to be silent — the last phone vanished on 15/09
+    // and every later alert reached nobody without a single log line
+    log("warn", "push subscriptions pruned (push service answered 404/410)", {
+      pruned: dead.length,
+      left: subs.length - dead.length,
+    });
+  }
   lastPushResult = { at: Date.now(), results };
+  // eval-01: callers learn whether anyone was reached (0 subscribers = nobody)
+  return { delivered: results.filter((r) => r.ok).length, subscribers: subs.length };
 }
 
 // in-app push diagnostics: the user must be able to see WHY it fails
@@ -2691,6 +2712,36 @@ if (pwaWatchEnabled(process.env.PWA_HEALTHZ_URL, defaultPwaPlistPath())) {
     },
   });
 }
+
+// eval-01: pilot liveness watchdog (pilotwatch.ts) — the pilot cannot page
+// about its own death, so the always-on daemon watches heartbeat/pid/launchd/
+// disk hold/deploy lag and pages the phones; it also owns the phone digest the
+// pilot-notify relay falls back to. Started in main() once VAPID is set.
+const pilotWatchEnv = parsePilotWatchEnv(process.env);
+const pilotWatch = createPilotWatch({
+  alerts: pilotWatchEnv.alerts,
+  forceInstalled: pilotWatchEnv.forceInstalled,
+  intervalMs: pilotWatchEnv.intervalMs,
+  initialDelayMs: pilotWatchEnv.initialDelayMs,
+  push: (title, body, data) => pushToSubscribers(title, body, data),
+  subscribers: () => loadSubscriptions().length,
+  probeSupervisor: async (session) => {
+    if (!/^ses[A-Za-z0-9_-]{4,64}$/.test(session)) return "unknown";
+    try {
+      const r = await fetch(new URL(`/session/${session}`, OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+        signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+      });
+      return supervisorProbeFrom(r.status, (await r.text().catch(() => "")).slice(0, 2_000));
+    } catch {
+      return "unknown";
+    }
+  },
+  diskState: () => diskStatus().state,
+  log,
+  audit,
+  emitEvent: (fields) => emit("alert", fields),
+});
 
 // watchdog: tell the phone when the agent server goes down (and back up)
 // P2-135: probes feed classifyUpstream so /api/health and the down-push carry
@@ -5023,29 +5074,39 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return true;
     }
     // POST /api/pilot-notify — wake the supervisor session after a pipeline result
+    // eval-01: prompt_async (no wait for the supervisor's whole turn), the real
+    // reason on failure, and the phone digest when the session is unreachable
+    // (pilotnotify.ts). `fallback` in the answer = the daemon owns the message.
     if (seg[1] === "pilot-notify" && req.method === "POST") {
-      const body = await readJsonBody<{ text?: string }>(req, res, "/api/pilot-notify");
+      const body = await readJsonBody<Record<string, unknown>>(req, res, "/api/pilot-notify");
       if (body === null) return true;
-      let delivered = false;
+      let session: string | undefined;
       try {
-        const sup = (
+        session = (
           JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8")) as {
             supervisorSession?: string;
           }
         ).supervisorSession;
-        if (sup && body.text) {
-          const res = await fetch(new URL(`/session/${sup}/message`, OPENCODE_URL), {
+      } catch {}
+      const result = await relayPilotNotify(body, {
+        session,
+        post: async (sid, text) => {
+          const up = await fetch(new URL(`/session/${sid}/prompt_async`, OPENCODE_URL), {
             method: "POST",
             headers: {
               "content-type": "application/json",
               ...(authHeader ? { authorization: authHeader } : {}),
             },
-            body: JSON.stringify({ parts: [{ type: "text", text: body.text }] }),
+            body: JSON.stringify({ parts: [{ type: "text", text }] }),
+            signal: AbortSignal.timeout(RELAY_UPSTREAM_TIMEOUT_MS),
           });
-          delivered = res.ok;
-        }
-      } catch {}
-      send(200, { delivered });
+          return { status: up.status, text: (await up.text().catch(() => "")).slice(0, 2_000) };
+        },
+        fallback: (item) => pilotWatch.enqueue(item),
+      });
+      pilotWatch.noteRelay(result.reason, result.delivered);
+      if (!result.delivered) log("info", "pilot notify not delivered to the supervisor", { reason: result.reason, fallback: result.fallback ?? null });
+      send(200, result);
       return true;
     }
     // GET/POST /api/pilot-mission — the north-star statement shown on the dash
@@ -5093,6 +5154,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       } catch (err) {
         send(500, { error: String(err instanceof Error ? err.message : err) });
       }
+      return true;
+    }
+    // GET /api/pilot-liveness — eval-01 liveness verdict for Mission Control
+    // (contract: docs/PILOT.md "Alertas de vida do pilot")
+    if (seg[1] === "pilot-liveness" && req.method === "GET") {
+      send(200, await pilotWatch.current());
       return true;
     }
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail
@@ -5328,8 +5395,9 @@ end tell`;
           send(400, { error: "title and body required" });
           return true;
         }
-        await pushToSubscribers(body.title, body.body, { url: body.url ?? "#/" });
-        send(200, { ok: true, delivered: loadSubscriptions().length });
+        // eval-01: `delivered` = phones actually reached (was the subscription count)
+        const out = await pushToSubscribers(body.title, body.body, { url: body.url ?? "#/" });
+        send(200, { ok: true, delivered: out.delivered, subscribers: out.subscribers });
         return true;
       }
       send(404, { error: "unknown route" });
@@ -5463,6 +5531,9 @@ async function main() {
     daemon.vapid.publicKey,
     daemon.vapid.privateKey,
   );
+  // eval-01: pages need VAPID — the pilot watchdog starts only now
+  for (const problem of pilotWatchEnv.problems) log("warn", problem);
+  pilotWatch.start();
 
   appSettings = readSettings();
   machineName = appSettings.name || MACHINE_NAME;

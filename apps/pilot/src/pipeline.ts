@@ -3,7 +3,7 @@ import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, cachedExec, exec, runAgent, runAgentForRole, runStepWithRetry, rerunKey, type AgentIds, type RerunResults } from "./runner";
 import { nowLocalISO } from "./log";
-import { markDone, type Task } from "./backlog";
+import { isBookkeepingSubject, markDone, type Task } from "./backlog";
 import { landMetaCommit, metaIo } from "./metapush";
 import { emit } from "./events";
 import { clearGuardRejections, raiseGuardAlert } from "./guardalert";
@@ -29,6 +29,9 @@ export const TASK_DONE_MARKER = "PILOT:TASK-DONE";
 import { detectGateProfile } from "./gateprofile";
 import { doctorDist } from "./doctor";
 import { judgeGate } from "./judge";
+import { GATE_CARRY_TAIL_BYTES, GATE_FINDING_TAIL_BYTES, gateTailDigest, gateTailHeadline } from "./gatetail";
+import { bounceEvidence, defaultEvidenceIo, EVIDENCE_BOUNCE_TIMEOUT_MIN, evidenceGaps } from "./evidencecheck";
+import { COUPLING_GATE_STEPS, couplingBlock, couplingHints, workspaceCouplingIo } from "./coupling";
 import { specFailureIsInfra, type InfraFailureKind } from "./audit";
 import {
   clearRecapCarry,
@@ -52,6 +55,54 @@ export const CONSTITUTION = `CONSTITUTION (never violate):
 export function lessonsBlock(lessons: string[]): string {
   return lessons.length ? `\nEXPERIENCE — relevant lessons from past merges (follow them):\n${lessons.join("\n")}\n` : "";
 }
+
+/**
+ * Forensic 2026-09-24 rec. 5 — spec coupling. The recurring way a UI task dies
+ * at the gate (lessons P3-413, P3-414, P3-435, P3-449, P3-450, P3-389): the
+ * diff renames copy, a class or a computed style that an e2e/unit assertion
+ * or a hand-kept mirror pins as a literal, and the builder only learns it
+ * from a red desktop-flow. Planner (P0/P1) and builder (every priority) are
+ * told to grep the coupled surfaces up front and name what the change
+ * invalidates. Stable text (no task data): both prompts keep their P1-077
+ * cacheable prefix.
+ */
+export const COUPLED_SURFACES =
+  "scripts/desktop-flow.test.ts, scripts/unit.test.ts and the other scripts/*.test.ts, plus the hand-kept mirrors apps/web/src/components/PaneMap.tsx, BOTH the en and pt-BR tables of apps/web/src/lib/i18n.ts, README.md, README.pt-BR.md and docs/PRODUCT.md";
+
+export const COUPLING_RULE_PLANNER = `Coupled assertions (lessons P3-413/P3-435/P3-449/P3-450 — the most common way a UI task dies at the gate): end ## Touched files with an "Invalidates:" list. Grep every user-visible string, CSS class/selector, data-attribute and computed-style value your approach renames or removes in ${COUPLED_SURFACES}, and cite each hit as path:line — the builder must update every one of them in the same commit. When nothing matches, write "Invalidates: none (grepped: <the terms>)".`;
+
+export const COUPLING_RULE_BUILDER = `Coupled assertions (lessons P3-413/P3-435/P3-449/P3-450): before committing, grep every user-visible string, CSS class/selector, data-attribute and computed-style value your diff renames or removes in ${COUPLED_SURFACES}. Update every hit in the SAME commit (a stale literal there fails the gate's desktop-flow/unit step) and list them in the commit body under "Invalidates:" ("Invalidates: none" when the grep found nothing). A planner spec's Invalidates: list is the starting point, not the limit.`;
+
+/**
+ * eval-18 measurements (opencode.db, pilot sessions 09-22..09-24): the builder
+ * burns 88.6% of fleet tokens, ~97% of it cache-reading its own growing
+ * context, at ~1.1 tool calls per turn. AGENTS.md rides the system prompt of
+ * EVERY agent turn and grew 4.3KB -> 35KB in 24 days through builders told to
+ * document there (~121M tokens in 3 days). Both rules below are quality-
+ * neutral; the diagnosis rule deliberately greps FAIL/error lines instead of
+ * tailing — a tail hides the mid-run failure this module's gate feedback is
+ * about. Stable text (P1-077 prefix).
+ */
+export const DOCS_RULE_BUILDER =
+  "Document user-visible changes in README.md / README.pt-BR.md / docs/ — not AGENTS.md: it is injected into every agent turn, so only a change to the constitution or to the agent contract itself belongs there.";
+
+export const CONTEXT_HYGIENE_RULE =
+  "Context hygiene (token cost, never at the expense of correctness): batch independent reads, greps and git commands into ONE turn (parallel tool calls); `grep -n` first, then read files by line range instead of whole; do not re-read a file already in your context unless it changed; to diagnose a long test/build run, grep its FAIL/error lines (`| grep -nE '^FAIL|[Ee]rror'`) rather than tailing it — a tail hides a mid-run failure (the EVIDENCE paste still uses the final lines).";
+
+/**
+ * Forensic 2026-09-24 rec. 4 — the fixed UI-EVIDENCE lines (placeholders
+ * only, so the builder prompt's stable prefix stays byte-identical) and the
+ * format rules the judge's parser actually enforces: a fenced, bulleted or
+ * bold block used to read as "no EVIDENCE block" / "UI task without
+ * shot-1440x900" / a fabricated output line.
+ */
+export const UI_SHOT_LINES = `shot-1440x900: ~/.opencode-remote/pilot/shots/builder/<TASK-ID>-r<ROUND>-1440.png
+shot-390: ~/.opencode-remote/pilot/shots/builder/<TASK-ID>-r<ROUND>-390.png`;
+
+export const EVIDENCE_FORMAT_RULES = `EVIDENCE format — the gate parses these exact lines, so a decorated block reads as MISSING or FABRICATED:
+- \`EVIDENCE:\` alone on its own line, then plain text only: no code fence, no bullets, no backticks, no bold. A fence or note line after a \`$ \` command is compared as that command's output and rejects the merge.
+- Each screenshot line is bare \`shot-1440x900: <path>\` / \`shot-390: <path>\`: an absolute or ~/ path without spaces to a real PNG (1440x900 or 2880x1800; 390 or 780 wide) taken during THIS pipeline run — older files are rejected as stale.
+- Before the gate runs, the pipeline pre-checks this block and sends it back to you ONCE in the same round when it is missing, lacks a required command or a required screenshot line, or cites an unreadable, wrong-size or stale PNG.`;
 
 // ── P1-059/P1-078: strategist prompt (pure builder, stable-first assembly) ──
 
@@ -179,6 +230,7 @@ Rules:
 - Keep the spec short and concrete (<= ~120 lines) — the builder is another agent that will follow it.
 - Acceptance criteria must be testable: commands to run, observable behaviors, numbers when applicable.
 - Touched files must cite real repo paths you actually inspected.
+- ${COUPLING_RULE_PLANNER}
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
@@ -503,6 +555,7 @@ export function builderPrompt(
   resume: AgentIds | null = null,
   attempt = 1,
   recap = "",
+  base = "main",
 ): string {  const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
   const specBlock = specFile
@@ -514,10 +567,10 @@ export function builderPrompt(
     ? `\nLONG-HORIZON TASK (P1-060): this task is size L and its spec's ## Approach is structured as numbered milestones (M1..Mn). Execute milestones IN ORDER, one or more per round, and keep the branch green at the end of every round (typecheck + build + unit). You have a larger round/timeout budget than a size-S task — use it to finish milestones, not to gold-plate.\n`
     : "";
   const attemptBlock = attempt > 1
-    ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff main...pilot/${t.id}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
+    ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff ${taskDiffRange(t.id, base)}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
     : "";
   const roundBlock = round > 1
-    ? `\nRounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.`
+    ? `\nRounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff ${taskDiffRange(t.id, base)}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.`
     : "";
   const uiBullet = uiTask
     ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI — \`node tools/browse.mjs shot <path>.png 1440 900\` (desktop) and \`node tools/browse.mjs shot <path>.png 390 844\` (phone), positional width/height — and cite both paths in the EVIDENCE block below; PNG dimensions are verified at the gate (1440x900 exactly, 2x Retina accepted; width 390). This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
@@ -535,9 +588,11 @@ Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/<TASK-ID>. Commit your work with a conventional message "pilot(<TASK-ID>): ...".
 - Run "npm run typecheck" and "npm run build" and fix any errors before committing.
-- Document user-visible changes in the relevant docs (README.md / AGENTS.md / docs/).
+- ${DOCS_RULE_BUILDER}
 - Do NOT push, do NOT touch production services, do NOT modify BACKLOG.md.
 - Keep the diff focused: one task, no drive-by refactors.
+- ${COUPLING_RULE_BUILDER}
+- ${CONTEXT_HYGIENE_RULE}
 
 MANDATORY EVIDENCE (P2-009): when finished, end your output with exactly this EVIDENCE
 block — the deterministic gatekeeper parses it, re-executes every cited command and
@@ -557,9 +612,12 @@ $ npm run typecheck --silent
 $ npm run test:unit --silent
 <paste the real command output here>${
     uiTask
-      ? `\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>`
-      : `\n(if this round's diff touches apps/web/ or apps/desktop/, also cite:\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>)`
+      ? `\n${UI_SHOT_LINES}`
+      : `\n(if this round's diff touches apps/web/ or apps/desktop/, also cite:\n${UI_SHOT_LINES})`
   }
+PILOT:TASK-DONE
+
+${EVIDENCE_FORMAT_RULES}
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
@@ -811,6 +869,7 @@ async function runScribe(
     timeoutMin: 10,
     label: `scribe-${t.id}`,
     onStdout: agentStream("scribe"),
+    sessionCapture: true, // eval-18: attribute the scribe's tokens to the task
     missionModels: cfg.missionModels,
   });
   trackSession?.(out.sessionId);
@@ -1103,6 +1162,26 @@ export function touchedUiFromDiff(nameOnly: string): boolean {
   return nameOnly
     .split("\n")
     .some((l) => l.trim().startsWith("apps/web/") || l.trim().startsWith("apps/desktop/"));
+}
+
+/**
+ * The branch diff range every pipeline decision reads — the reviewers' diff,
+ * the gate's name-only list (renderTouched → desktop smokes + mandatory UI
+ * shots), touchedUi (post-deploy shot), the empty-diff self-heal — and the one
+ * the builder is told to inspect: three-dot against the REMOTE base ref. The
+ * slot's local `main` only moves on that slot's own merges and doctor passes,
+ * so once the task branch sits on a newer origin/<base> (resume rebase,
+ * conflict-block merge, a builder's own rebase) `main...pilot/<ID>` also
+ * listed every commit other slots merged in between: P3-401 and P3-459
+ * (relay) and P2-357 (infra, PR #1390 = scripts/unit.test.ts only) were
+ * rejected with "UI task without shot-1440x900" for apps/web paths they never
+ * touched, and P3-461 (relay, zero UI files in 5c36e52) got a post-deploy UI
+ * shot. runPipeline's own diff/name-only lines spell the same range inline
+ * (kept byte-identical to eval-03's #1399; the battery pins the equality).
+ * `id` is TASK_ID_RE-checked by every caller.
+ */
+export function taskDiffRange(id: string, base = "main"): string {
+  return `origin/${base}...pilot/${id}`;
 }
 
 /** P1-044 (a): the corpus must hold at least this many samples per command to
@@ -1495,6 +1574,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
           timeoutMin: CONTEXT_RECAP_TIMEOUT_MIN,
           label: `recap-${t.id}-r${round}`,
           onStdout: stream,
+          sessionCapture: true, // eval-18: attribute the recap's tokens to the task
         });
         trackSession(out.sessionId);
         return parseRecap(out.output);
@@ -1536,7 +1616,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     const conflictBlock = mergeConflictBlock(prMergeable.output?.trim(), t.id, base);
     // mission v2: the mission may pin the builder model (verified against the
     // live catalog at dispatch; default model otherwise — never a crash)
-    const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap) + conflictBlock, {
+    const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap, base) + conflictBlock, {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -1581,10 +1661,62 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       }
       continue;
     }
+    // Forensic 2026-09-24 recs. 4+5 — PRE-GATE check: the static half of the
+    // judge's evidence step (block, required commands, UI shots: cited,
+    // readable, sized, fresh) on the gate's own predicate, plus the coupled-
+    // assertion scan of the branch diff (coupling.ts). Either kind of gap goes
+    // back to the SAME builder session once, in this round, instead of costing
+    // the round — or, on the last round, the attempt — at the gate. Skipped on
+    // an empty code diff (the self-heal below owns that path).
+    let builderOutput = build.output;
+    const preNames = exec(`git diff --name-only ${taskDiffRange(t.id, base)}`, { cwd: ws, allowFail: true }).output;
+    if (codeChanges(preNames, specFile).length > 0) {
+      const requireShots = needsUiEvidence(t.area, touchedUiFromDiff(preNames));
+      const io = defaultEvidenceIo();
+      const pre = await bounceEvidence(t.id, round, builderOutput, requireShots, {
+        gaps: (o) => evidenceGaps(o, requireShots, startedAtMs, io),
+        coupling: () => couplingHints(exec(`git diff ${taskDiffRange(t.id, base)}`, { cwd: ws, allowFail: true }).output, workspaceCouplingIo(ws)),
+        bounce: async (prompt, gaps) => {
+          emit("phase", { task: t.id, phase: "evidence-bounce", ok: false, detail: gaps[0] ?? "" });
+          const r = await runAgentForRole("builder", prompt, {
+            cwd: ws,
+            timeoutMin: Math.min(cfg.taskTimeoutMin, EVIDENCE_BOUNCE_TIMEOUT_MIN),
+            label: `builder-${t.id}-r${round}-evidence`,
+            sessionId: builderSession,
+            printLogs: true,
+            onStdout: stream,
+            missionModels: cfg.missionModels,
+          });
+          if (r.sessionId) builderSession = r.sessionId;
+          trackSession(r.sessionId);
+          return r;
+        },
+      });
+      if (pre.bounced) {
+        builderOutput = pre.output;
+        writeFileSync(join(homedir(), ".opencode-remote/pilot", `builder-${t.id}.log`), builderOutput);
+        const left = [...pre.after, ...pre.couplingAfter];
+        emit("phase", { task: t.id, phase: "evidence-bounce-done", ok: left.length === 0, detail: left[0] ?? "all pre-gate items fixed" });
+        console.log(
+          JSON.stringify({
+            ts: nowLocalISO(),
+            level: "info",
+            msg: "pre-gate bounce",
+            data: { task: t.id, round, before: pre.before, after: pre.after, couplingBefore: pre.couplingBefore, couplingAfter: pre.couplingAfter },
+          }),
+        );
+      }
+    }
     // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and
     // would never match a bare path — round-2 review caught exactly that.
-    const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
-    const nameOnly = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws }).output;
+    // eval-03: against origin/<base> (fetched by setupTaskBranch), never the
+    // slot's LOCAL main — that ref only moves when this slot merges/blocks, so
+    // a stale one dragged other tasks' apps/web|apps/desktop files into the
+    // diff: the gate demanded UI shots the builder was never asked for (P3-459,
+    // local main 5cc7ae1 vs origin d900e65: 10 UI files) and reviewers read
+    // code that was not the task's. Foreign repos have no `main` at all.
+    const diff = exec(`git diff origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
+    const nameOnly = exec(`git diff --name-only origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
     touchedUi = touchedUiFromDiff(nameOnly);
     // P2-011: UI tasks get visual evidence — per-task, post-deploy shape only
     // (round-3 review: unscoped mtime pick could serve another task's stale
@@ -1629,13 +1761,16 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       exec("git reset -q --hard HEAD", { cwd: ws, allowFail: true });
       exec("git clean -qfd", { cwd: ws, allowFail: true });
       // P1-076: the mark-done lands via the pilot/meta PR — no direct main push
+      // eval-06 fixround: markDone's result is read — a "missing"/"refused"
+      // bookkeeping used to surface as the success detail "marked done".
+      const marked = { value: null as ReturnType<typeof markDone> | null };
       const push = await landMetaCommit(ws, metaIo(ws), {
         files: ["BACKLOG.md"],
         message: `pilot(${t.id}): mark done (empty-diff self-heal)`,
         guardFile: "BACKLOG.md",
         base,
         apply: () => {
-          markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
+          marked.value = markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
           exec("git add BACKLOG.md", { cwd: ws, allowFail: true });
           // idempotent: if markDone was a no-op (task already marked), skip the
           // commit instead of failing on an empty commit
@@ -1644,11 +1779,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
             : { action: "apply" };
         },
       });
+      const markedLanded = marked.value === "applied" || marked.value === "noop";
       return {
         ok: push === "pushed",
         detail:
           push === "pushed"
-            ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+            ? markedLanded
+              ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+              : `task ${t.id} already merged on main but the mark-done did not apply (${marked.value ?? "missing"}) — move the line by hand`
             : `task ${t.id} already merged on main but the mark-done landing ${push === "refused" ? "was refused by the push guard" : "failed"}`,
         ...roundMeta(),
       };
@@ -1685,7 +1823,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     emit("phase", { task: t.id, phase: "gatekeeper" });
     let gate;
     try {
-      gate = judgeGate({ ws, sha: gateSha, task: t, builderOutput: build.output, startedAtMs, nameOnly });
+      gate = judgeGate({ ws, sha: gateSha, task: t, builderOutput, startedAtMs, nameOnly });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       emit("phase", { task: t.id, phase: "gatekeeper-done", ok: false, detail: "judge bridge — fail-closed" });
@@ -1694,6 +1832,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     for (const step of gate.flaky) {
       emit("phase", { task: t.id, phase: "gate-flaky", ok: true, detail: step });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "gate-flaky", data: { task: t.id, round, step } }));
+    }
+    // forensic rec. 8: a GREEN step's early warning (desktop-flow above 80% of
+    // its 420s budget) reaches the operator before the timeout blocks tasks
+    for (const w of gateWarnings(gate)) {
+      emit("alert", { task: t.id, ok: false, detail: w });
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gate warning", data: { task: t.id, round, warning: w } }));
     }
     emit("phase", {
       task: t.id,
@@ -1707,13 +1851,24 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // the round's findings (review findings from a previous round coexist —
       // the gate block comes first in the fix order) and let the builder fix
       // it in the next round. Only the LAST round turns it terminal.
+      // Forensic rec. 3: the verdict tail is the step's FULL output — the
+      // finding, the carryover and the headline are cut by relevance
+      // (gatetail.ts), never by bytes from the end.
       findings = `${findings}\n${gateFindingBlock(gate.step, gate.tail)}`;
+      // rec. 5: a stale literal assertion is the usual cause of a red unit /
+      // desktop-flow step on a UI diff — name the dangling ones next to it
+      if (COUPLING_GATE_STEPS.includes(gate.step)) {
+        const hints = couplingHints(diff, workspaceCouplingIo(ws));
+        if (hints.length) findings = `${findings}\n${couplingBlock(hints)}`;
+      }
+      const carry = gateTailDigest(gate.step, gate.tail, GATE_CARRY_TAIL_BYTES);
       if (round < cfg.maxReviewRounds) {
-        writeGateFailCarry(cfg.stateRoot, t.id, gate.step, gate.tail);
+        writeGateFailCarry(cfg.stateRoot, t.id, gate.step, carry);
         continue;
       }
-      recordGateFail(cfg.stateRoot, state, t.id, gate.step, gate.tail);
-      return { ok: false, detail: `gatekeeper rejected at step ${gate.step}: ${gate.tail.slice(-300)}`, ...roundMeta() };
+      const headline = gateTailHeadline(gate.step, gate.tail);
+      recordGateFail(cfg.stateRoot, state, t.id, gate.step, carry, headline);
+      return { ok: false, detail: `gatekeeper rejected at step ${gate.step}: ${headline}`, ...roundMeta() };
     }
 
     // two adversarial reviewers in parallel, isolated contexts
@@ -1727,6 +1882,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `sec-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: reviewer tokens were never attributed
         missionModels: cfg.missionModels,
       }),
       runAgentForRole("reviewer", reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, reviewDiff, uiShot, specFile, incrementalFrom), {
@@ -1734,6 +1890,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: reviewer tokens were never attributed
         missionModels: cfg.missionModels,
       }),
     ]);
@@ -1811,6 +1968,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `esc-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: tier-A fallback session gets attributed
         models: cfg.models,
         marker: ESCALATION_MARKER,
       });
@@ -2163,10 +2321,11 @@ function logHallucination(task: string, reviewer: string, finding: string, reaso
   );
 }
 
-/** Shared gatekeeper failure path: warn log + per-task carryover file + counter. */
-function recordGateFail(stateRoot: string, state: PilotState, taskId: string, step: string, tail: string) {
+/** Shared gatekeeper failure path: warn log + per-task carryover file + counter.
+ * `headline` (gate steps: gateTailHeadline) replaces the byte-cut log tail. */
+function recordGateFail(stateRoot: string, state: PilotState, taskId: string, step: string, tail: string, headline?: string) {
   console.log(
-    JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: taskId, step, tail: tail.slice(-300) } }),
+    JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: taskId, step, tail: headline ?? tail.slice(-300) } }),
   );
   // P2-045: structured step signal on the events feed — the dashboard failure
   // breakdown aggregates these instead of the operator grepping pilot.log
@@ -2197,10 +2356,25 @@ function writeGateFailCarry(stateRoot: string, taskId: string, step: string, tai
 /**
  * P1-101: the finding block the builder receives when the deterministic gate
  * goes red between rounds — it instructs the fix-first order and carries the
- * failing step's output tail (pure; pinned by the unit battery).
+ * failing step's output (pure; pinned by the unit battery). Forensic rec. 3:
+ * the output is cut by relevance (failing checks + beat, first error block,
+ * summary, then the last lines — gatetail.ts), not by its last 1500 bytes.
  */
 export function gateFindingBlock(step: string, tail: string): string {
-  return `[deterministic gate failed at step "${step}" — fix this FIRST and re-run the EVIDENCE commands]\n${tail.slice(-1500)}`;
+  return `[deterministic gate failed at step "${step}" — fix this FIRST and re-run the EVIDENCE commands]\n${gateTailDigest(step, tail, GATE_FINDING_TAIL_BYTES)}`;
+}
+
+/**
+ * Forensic rec. 8: early-warning lines a signed verdict carries from GREEN
+ * judge steps (judge stepWarnings — `WARN desktop-flow budget: …` above 80% of
+ * the 420s ceiling), surfaced by the bridge as `warnings` (eval-08, #1398).
+ * Tolerates a bridge/judge that predates the field (absent → []); strings
+ * only, at most 3 lines of 240 chars (pure; pinned by the battery).
+ */
+export function gateWarnings(gate: object): string[] {
+  const warnings = (gate as { warnings?: unknown }).warnings;
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter((w): w is string => typeof w === "string" && w.trim() !== "").map((w) => w.slice(0, 240)).slice(0, 3);
 }
 
 /** Injectable sinks for mergePrForTask (unit battery pins the semantics).
@@ -2906,16 +3080,24 @@ async function mergeTask(
   }
   // P1-076: the mark-done bookkeeping commit lands via the pilot/meta PR —
   // direct pushes to main no longer exist anywhere in the pipeline
-  await landMetaCommit(ws, metaIo(ws), {
+  // eval-06 fixround: markDone's result drives the apply — "noop" (already
+  // marked) is the R6 desired-state success; "missing"/"refused" abort the
+  // landing instead of committing nothing, and a landing that did not
+  // complete is logged (the merged task stays open in the queue).
+  const marked = { value: null as ReturnType<typeof markDone> | null };
+  const markLanding = await landMetaCommit(ws, metaIo(ws), {
     files: ["BACKLOG.md"],
     message: `pilot(${t.id}): mark done`,
     guardFile: "BACKLOG.md",
     base,
     apply: () => {
-      markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
-      return { action: "apply" };
+      marked.value = markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
+      if (marked.value === "applied") return { action: "apply" };
+      return { action: marked.value === "noop" ? "noop" : "abort" };
     },
   });
+  if (markLanding !== "pushed" || (marked.value !== "applied" && marked.value !== "noop"))
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "mark-done landing did not complete — the merged task stays open in the queue", data: { task: t.id, result: marked.value, landing: markLanding } }));
   // P2-045: honest daily merge counter for the dashboard — state.json resets
   // at midnight (loadState), matching `git log --since=00:00` exactly
   state.merges = (state.merges ?? 0) + 1;
@@ -2956,11 +3138,15 @@ function headSha(ws: string): string {
 export function taskMergedIn(ws: string, id: string, base = "main"): boolean {
   if (!TASK_ID_RE.test(id)) return false;
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --oneline`, {
+  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --format=%s`, {
     cwd: ws,
     allowFail: true,
   });
-  return r.ok && r.output.trim().length > 0;
+  // eval-06: the pilot's own `mark done` / `block after N failed attempts`
+  // commits share the prefix but carry no work — a blocked task moved back to
+  // ## Ready must not read as merged (the empty-diff self-heal would mark it
+  // done and a P0/P1 would skip its planner)
+  return r.ok && r.output.split("\n").some((s) => s.trim() !== "" && !isBookkeepingSubject(s));
 }
 
 /**

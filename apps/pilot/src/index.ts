@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, repoSlug, type MissionSpec } from "./mission";
+import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, repoSlug, standalonePins, type MissionSpec } from "./mission";
 import { CI_RED_CONCLUSIONS, CI_RED_KIND, ciRedStarvationPlan, redChecksFromDetail } from "./cired";
 import { emit } from "./events";
 import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
@@ -47,6 +47,7 @@ import {
   frozen,
   loadConfig,
   loadState,
+  normalizeTokenBudget,
   recordTaskFailure,
   recordTaskHold,
   saveState,
@@ -55,11 +56,20 @@ import {
   type PilotConfig,
   type PilotState,
 } from "./state";
-import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
+import { applySessionCosts, foldSlotCache, querySessionTokenRows, repriceTaskUSD } from "./costs";
+import { checkTaskTokenBudget, raiseTokenBudgetAlert } from "./tokenbudget";
 import { recordLessonImpact } from "./metrics";
 import { distSweepDue, doctorDist, runDoctor, runDoctorGuards } from "./doctor";
+import { bootDiskGate, diskAlert, diskHoldTickMs, fleetVolumes, initialDiskHold, noteDiskFailure, persistSafely, pollDiskHold, waitWhileDiskCritical, type DiskHold, type DiskHoldIo } from "./diskhold";
+import { sweepPilotArtifacts } from "./retention";
 
 let deployBusy = false;
+/** eval-02 disk hold (diskhold.ts): `low` = no new work, `critical` = the loop
+ * only probes, sweeps and feeds the heartbeat. Folded every tick; ENOSPC
+ * anywhere in the process forces it critical. */
+let diskHold: DiskHold = initialDiskHold();
+let diskIo: DiskHoldIo = { alert: diskAlert(false) };
+let diskVolumes = fleetVolumes({ stateRoot: join(homedir(), ".opencode-remote", "pilot"), repo: process.cwd() });
 /** Disk hygiene (eval r3): when the stale-dist sweep last ran — the boot
  * doctor pass counts as a run; the loop repeats it hourly on idle slots. */
 let lastDistSweep: number | null = null;
@@ -121,7 +131,14 @@ const log = (level: string, msg: string, data?: unknown) =>
   console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 
 async function main() {
-  await ensureSingleton();
+  // eval-02: the pidfile is the first write of every boot — on 24/09 it threw
+  // ENOSPC at each KeepAlive relaunch (~14x). Nothing is written while the
+  // disk is critical; the gate waits (and alerts) until space returns.
+  const bootCfg = loadConfig();
+  // alert seam — eval-01 integration: diskAlert(false, (kind, detail) => notifyOperator("disk", kind, detail))
+  diskIo = { alert: diskAlert(bootCfg.digest) };
+  diskVolumes = fleetVolumes({ stateRoot: join(homedir(), ".opencode-remote", "pilot"), repo: bootCfg.repo });
+  diskHold = await bootDiskGate(diskVolumes, () => ensureSingleton(), diskIo);
   const cfg = loadConfig();
   // Self-serve mission: read once at boot and hash-tracked — the loop's drift
   // self-heal below re-boots this process whenever mission.json changes, so a
@@ -129,8 +146,8 @@ async function main() {
   const missionBoot = readMission();
   const bootMissionHash = missionBoot.hash;
   activeMission = missionBoot.spec;
-  if (missionBoot.raw !== null && !activeMission) {
-    log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})");
+  if (missionBoot.verdict.kind === "invalid") {
+    log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})", { reason: missionBoot.verdict.reason });
   }
   if (activeMission) {
     logMissionLoaded(activeMission);
@@ -156,7 +173,11 @@ async function main() {
   activeMissionKey = missionKey;
   cfg.stateRoot = slotRoot;
   cfg.missionKey = missionKey ?? undefined;
-  cfg.missionModels = activeMission?.models;
+  // eval-06: a models-only mission.json pins the DEFAULT mission's roles —
+  // roles pilot.json tierB routes to tier B keep that route (standalonePins)
+  const pins = missionBoot.verdict.kind === "pins" ? standalonePins(missionBoot.verdict.models, cfg.models?.tierB) : null;
+  if (pins) log("info", "mission.json holds model pins only — default mission kept", { applied: pins.applied ?? {}, shadowedByTierB: pins.shadowed });
+  cfg.missionModels = activeMission?.models ?? pins?.applied;
   // P2-341: the doctor pass reads the queue backlog the scheduler trusts —
   // the boot-resolved repo + base branch (git show origin/<base>:BACKLOG.md),
   // never a slot worktree. Top-level runDoctorPass has no cfg in scope, so
@@ -204,6 +225,27 @@ async function main() {
   };
   startWatchdog();
 
+  // eval-02: bounded pilot artifacts (retention.ts) — hourly with the dist
+  // sweep; sweepForSpace runs both at once on every critical disk-hold entry.
+  // Always the pilot root: builder logs/shots/tmp land there for any mission.
+  const sweepArtifacts = (): void => {
+    try {
+      const art = sweepPilotArtifacts(join(homedir(), ".opencode-remote", "pilot"));
+      if (art.removed > 0 || !art.ok) log(art.ok ? "info" : "warn", "retention: artifacts", art);
+    } catch (err) {
+      log("warn", "retention: artifacts crashed", { err: String(err).slice(0, 200) });
+    }
+  };
+  const sweepForSpace = (idle: string[]): void => {
+    try {
+      const sweep = doctorDist(idle);
+      log(sweep.ok ? "info" : "warn", "doctor: dist", sweep);
+    } catch (err) {
+      log("warn", "doctor: dist crashed", { err: String(err).slice(0, 200) });
+    }
+    sweepArtifacts();
+  };
+
   // P1-030: deterministic repair pass on every boot — refs/state/backlog/
   // branches, each idempotent and logged; never blocks the loop from starting.
   runDoctor(cfg, slotNumbers.map((s) => slotCfg.get(s)!.workspace));
@@ -219,6 +261,19 @@ async function main() {
     workspaces: slotNumbers.map((s) => slotCfg.get(s)!.workspace),
     mission: activeMission ? missionDetail(activeMission) : "default",
   });
+  // eval-18: done tasks are never reconciled again, so a pricing change
+  // (model alias, pilot.json pricing.selfHosted) re-prices the taskUSD window
+  // once here — before any slot runs, so no in-flight save can race it.
+  try {
+    const bootState = loadState();
+    const rp = await repriceTaskUSD(bootState, (ids) => querySessionTokenRows(ids), cfg.pricing);
+    if (rp.changed) {
+      saveState(bootState);
+      log("info", "task usd repriced", rp);
+    }
+  } catch (err) {
+    log("warn", "task usd reprice failed", { err: String(err).slice(0, 200) });
+  }
 
   /**
    * P1-099: eager-fill — start a pipeline on every schedulable free slot right
@@ -236,6 +291,7 @@ async function main() {
     if (once && reason === "eager-fill") return;
     if (frozen() || state.auditMode) return;
     if (drainNewPicks || nightlyDrain) return; // P1-104 self-reload / P3-356 nightly window — no new picks
+    if (diskHold.level !== "ok") return; // eval-02 disk hold — no new picks while the disk is low
     if (state.tasks + running.size >= cfg.maxTasksPerDay) return;
     try {
       const free = slotNumbers.filter((s) => !running.has(s));
@@ -316,6 +372,22 @@ async function main() {
     if (frozen()) {
       log("info", "frozen — pilot.lock present, rechecking in 5s");
       await sleep(5_000);
+      continue;
+    }
+    // eval-02 disk hold: statfs of every volume the fleet writes, BEFORE any
+    // work. low → no new picks/nightly/aux (fillFreeSlots and the gates below);
+    // critical → nothing but the space sweeps and the heartbeat until the disk
+    // recovers. Space back → the pending deploy retries now, not in 30min.
+    const disk = await pollDiskHold(diskHold, diskVolumes, diskIo);
+    diskHold = disk.hold;
+    if (disk.transition === "resume") deployBackoff = null;
+    if (diskHold.level === "critical") {
+      if (disk.transition || distSweepDue(lastDistSweep, Date.now())) {
+        lastDistSweep = Date.now();
+        sweepForSpace(slotNumbers.filter((s) => !running.has(s)).map((s) => slotCfg.get(s)!.workspace));
+      }
+      if (once) return;
+      await sleep(diskHoldTickMs());
       continue;
     }
     // daily budget rollover — only while no worker holds the shared counters
@@ -470,7 +542,8 @@ async function main() {
         } catch (err) {
           log("warn", "nightly pass crashed", { err: String(err).slice(0, 200) });
         }
-      } else if (!foreignMission) {
+      } else if (!foreignMission && diskHold.level === "ok") {
+        // (eval-02: a disk hold is its own alert — no misleading "slots busy" skip record)
         const reason = nightlySkipDue(state, today, new Date(nowMs).getHours(), running.size > 0, {
           running: running.size,
           slots: slotNumbers.length,
@@ -534,6 +607,7 @@ async function main() {
       } catch (err) {
         log("warn", "doctor: dist crashed", { err: String(err).slice(0, 200) });
       }
+      sweepArtifacts(); // eval-02: bounded pilot artifacts, same hourly cadence
     }
 
     // queue read straight from origin/main: slot worktrees may be mid-pipeline
@@ -544,7 +618,8 @@ async function main() {
 
     // aux agents share slot 1's worktree — only run when every slot is idle,
     // synced to main so their BACKLOG edits land on the right branch
-    if (running.size === 0) {
+    // (eval-02: and never on a low disk — no new agent sessions/workspace writes)
+    if (running.size === 0 && diskHold.level === "ok") {
       const aux = slotCfg.get(1)!;
       syncWorkspace(aux.workspace, aux.baseBranch);
       writeSandboxConfig(aux.workspace); // headless runs abort without sandbox perms
@@ -622,7 +697,7 @@ async function runDoctorPass(st: PilotState): Promise<void> {
   });
   log("warn", "audit diagnosis", { summary: formatDiagnosis(diag), ...diag });
   st.auditDiagnosis = formatDiagnosis(diag);
-  saveState(st);
+  saveStateSafe(st, "doctor pass"); // eval-02: also runs inside the crash path
   // P2-341: loose prose under ## Ready never becomes a task (parseBacklog
   // only sees `- [ ]` lines) — flag it for the operator. Report only: the
   // raw markdown is consumed by the pure scanner and nothing else; the log
@@ -659,15 +734,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     taskTimeoutMin: budgets.timeoutMin,
     maxAttemptsPerTask: budgets.attempts,
   };
+  // P2-028: the pipeline records every opencode session id it spawns; the
+  // token totals are reconciled from opencode.db right after the run.
+  const taskSessions = new Set<string>();
   try {
-    // P2-028: the pipeline records every opencode session id it spawns; the
-    // token totals are reconciled from opencode.db right after the run.
-    const taskSessions = new Set<string>();
     const result = await runPipeline(taskCfg, task, state, taskSessions);
     try {
       // P1-077: rows query — folds the per-task cache breakdown (input /
       // cacheRead / cacheWrite) into state.taskCache alongside the total.
-      const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids));
+      const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids), cfg.pricing);
       if (cacheFold) {
         log("info", "task cache", cacheFold);
         // P1-078: per-slot view of the same reconciliation — replaced by the
@@ -688,6 +763,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     };
     recordLessonImpact(state, impact);
     log("info", "lesson impact", { task: task.id, ...impact });
+    // eval-18: per-task token budget — an alert at each budget multiple, never
+    // a kill switch (quality over cost); levels persist in state
+    raiseTokenBudgetAlert(
+      task.id,
+      checkTaskTokenBudget(state, task.id, impact.tokens, normalizeTokenBudget(cfg.tokenBudgetPerTask), {
+        outcome: result.ok ? "merged" : result.detail,
+        ok: result.ok,
+      }),
+    );
     state.tasks++;
     let blockedAttempts: number | null = null;
     const taskKey = attemptsKey(activeMissionKey, task.id);
@@ -787,8 +871,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     // burns no attempt and can never block the task; the global fever breaker
     // still sees each crash as its own distinct entry (P2-063).
     const wake = recordPipelineCrash(state);
+    // eval-18: a crashed pipeline still spent real tokens — reconcile what it
+    // recorded (best-effort) instead of dropping them from taskCosts
+    await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids), cfg.pricing).catch(() => null);
     const detail = String(err).slice(0, 300);
-    saveState(state);
+    // eval-02: nothing in this path may throw — an ENOSPC from saveState here
+    // skipped the cool-down below and the finally's eager-fill re-picked the
+    // same task 763x in ~2min (24/09 04:24). ENOSPC flips the disk hold instead.
+    noteDiskError(err, `pipeline ${task.id}`);
+    saveStateSafe(state, "pipeline crash");
     log("error", "pipeline crashed", { task: task.id, slot, err: detail, infraFails: state.infraFails });
     if (wake) await runDoctorPass(state);
     await sleep(30_000);
@@ -873,7 +964,7 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     .catch(() => {})
     .finally(() => {
       deployBusy = false;
-      saveState(state);
+      saveStateSafe(state, "deploy settled"); // eval-02: a throw here was an unhandled rejection
     });
 }
 
@@ -882,7 +973,28 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
  * exits inside deploy()) is still counted. */
 function countDeployAttempt(): void {
   state.deploys++;
-  saveState(state);
+  saveStateSafe(state, "deploy attempt");
+}
+
+/** eval-02: fold an error into the disk hold — ENOSPC-class forces it critical
+ * (announced once); anything else is left to its caller. True when forced. */
+function noteDiskError(err: unknown, what: string): boolean {
+  const noted = noteDiskFailure(diskHold, err, what, diskIo);
+  diskHold = noted.hold;
+  return noted.forced;
+}
+
+/** eval-02: saveState for the paths that must never throw (crash path, deploy
+ * settle, budget hook, doctor pass). A failed write keeps the in-memory state
+ * authoritative — the next save retries — and an ENOSPC flips the disk hold. */
+function saveStateSafe(st: PilotState, what: string): boolean {
+  return persistSafely(
+    () => saveState(st),
+    (err) => {
+      noteDiskError(err, `saveState (${what})`);
+      log("warn", "state save failed — in-memory state kept", { what, err: String(err).slice(0, 200) });
+    },
+  );
 }
 
 /** Newest gate-verified merge recorded so far — the rollback hold's "new
@@ -929,6 +1041,9 @@ function overCap(task: Task): boolean {
  * (nightlyWindow + nightlyIdleDue at the call site — P3-356).
  */
 async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
+  // eval-02: the nightly agents (explorer rebuilds the desktop app, red team,
+  // forensic) never start on a low disk — the disk hold is its own alert
+  if (diskHold.level !== "ok") return;
   const today = nowLocalISO().slice(0, 10);
   // P1-059: forensic carries its own 7-day guard — a due forensic must not be
   // skipped just because redteam/explorer already ran today (both self-guard).
@@ -1042,7 +1157,9 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
           : { action: "abort" };
       },
     });
-    if (addResult.value !== "applied") {
+    if (addResult.value === "refused") {
+      log("warn", "redteam finding dropped — the Ready-debris ratchet refused the edit", { id: landedId, result: addResult.value });
+    } else if (addResult.value !== "applied") {
       log("warn", "redteam finding dropped — task line failed validation", { id: landedId, result: addResult.value });
     } else if (landed === "refused") {
       log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id: landedId });
@@ -1303,7 +1420,27 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-main().catch((err) => {
+// eval-02: an ENOSPC out of a fire-and-forget path (slot worker, deploy settle)
+// crashed the process with a raw stack (24/09 05:20 and 05:21) — straight into a
+// KeepAlive relaunch on the same full disk. Disk-full rejections now force the
+// disk hold; anything else keeps the crash-only contract (log + exit 1).
+process.on("unhandledRejection", (reason) => {
+  if (noteDiskError(reason, "unhandled rejection")) return;
+  const err = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  log("error", "pilot fatal", { err: err.slice(0, 1500), unhandled: true });
+  process.exit(1);
+});
+
+main().catch(async (err) => {
   log("error", "pilot fatal", { err: String(err).slice(0, 500) });
+  // eval-02: a full disk is no reason to relaunch into the same disk every 30s
+  // (the 24/09 loop) — hold here, heartbeat fed, until the space is back, then
+  // exit once so KeepAlive boots clean.
+  if (noteDiskError(err, "main loop")) {
+    try {
+      await waitWhileDiskCritical(diskHold, diskVolumes, diskIo);
+    } catch {}
+    process.exit(0);
+  }
   process.exit(1);
 });
