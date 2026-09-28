@@ -96,7 +96,12 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   tem uma cara só (o mesmo veredito do P3-415: accent = a ação mais alta da
   tela). A separação estado × ação do P3-371 segue: o tom de aviso fica no
   dot pulsante + linha de retry, nunca no CTA; fill sólido neutro fica
-  reservado para superfícies só de status
+  reservado para superfícies só de status. "A ação mais alta" é singular
+  (P3-415): cada render do ceremony de pareamento tem UM fill de accent,
+  escolhido por `lib/pairlead` — o "Reconectar agora" com o agente fora, o
+  tile de celular da entrada "parear um celular" quando ela aparece, o
+  "Parear" só quando colar é o único caminho; fora da liderança o "Parear" é
+  secundário sólido (borda firme, rótulo cheio), nunca fantasma
 - Soltura de arquivo nunca morre em silêncio (P3-398): arrastar um arquivo do
   Finder sobre o app pinta o realce de soltura em qualquer tela; no portão do
   primeiro boot o drop responde com o mesmo aviso calmo de parear-primeiro
@@ -205,7 +210,8 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   destaque (`.welcome-mark`) abre o header de marca centrado do wizard de
   boas-vindas, do pareamento e da jornada degradada — as três primeiras telas
   da jornada compartilham a mesma linguagem de marca, em vez de o glifo
-  aparecer só no wizard. Desde o P3-383 ele é um marco display de verdade:
+  aparecer só no wizard; o diálogo "parear um celular" (QR) entrou na lista
+  na eval-09 — ainda usava o ícone do app sobre um título sans do splash. Desde o P3-383 ele é um marco display de verdade:
   ~2rem com line-height travado e respiro na escala de espaçamento abaixo,
   em vez de texto do tamanho do corpo frouxo sobre o wordmark serifado
 - Progresso do wizard em três pontos silenciosos (P3-421): a legenda caps

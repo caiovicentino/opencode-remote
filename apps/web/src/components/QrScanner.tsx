@@ -58,6 +58,16 @@ export default function QrScanner({ onScan, onCancel, onPaste, getCamAccess }: P
   // the camera on every parent render).
   const camAccessRef = useRef(getCamAccess);
   camAccessRef.current = getCamAccess;
+  // eval-09: the scan callback rides a ref for the same reason. The parent's
+  // handler changes identity on every App render (PairingView.handleScan
+  // closes over an inline onPair), and as the effect's dependency it tore the
+  // camera down and re-acquired a NEW stream on every pairing-state push — a
+  // flickering preview, a dead feed flipped from "unavailable" back to
+  // "preview", and the desktop-flow scan-live flake. The camera now mounts
+  // once per scanner, like CameraSheet (callbacks behind refs, the capture
+  // effect keyed only on what really changes the capture).
+  const onScanRef = useRef(onScan);
+  onScanRef.current = onScan;
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -143,7 +153,7 @@ export default function QrScanner({ onScan, onCancel, onPaste, getCamAccess }: P
               const code = jsQR(img.data, img.width, img.height);
               if (code?.data && !doneRef.current) {
                 doneRef.current = true;
-                onScan(code.data);
+                onScanRef.current(code.data);
                 return;
               }
               frames++;
@@ -175,7 +185,7 @@ export default function QrScanner({ onScan, onCancel, onPaste, getCamAccess }: P
       if (watchdog) clearInterval(watchdog);
       stream?.getTracks().forEach((tr) => tr.stop());
     };
-  }, [onScan]);
+  }, []);
 
   // P2-319: the system-panel action only makes sense when the system is in
   // the way — the same gating as the composer's mic panel (P2-312).
