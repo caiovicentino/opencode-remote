@@ -4089,7 +4089,38 @@ button.desk-new:disabled {
   font-variant-numeric: tabular-nums;
   padding-right: 4px;
 }
-/* matches inside the bubbles: quiet accent wash for the neighbours, solid
+/* eval-20 (verifier B3): the handoff hit lives in an older page — the calm
+   pointer sits between the count and the arrows, and the action reuses the
+   P1-064 older-page loader */
+.chat-search-older {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.chat-search-older-hint {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-search-older-btn {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: var(--font-size-xs);
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-search-older-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}/* matches inside the bubbles: quiet accent wash for the neighbours, solid
    accent for the occurrence the reader is on */
 .msg mark.search-mark {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
@@ -4374,6 +4405,263 @@ button.desk-new:disabled {
 .palette-empty {
   padding: 14px;
   font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* ── eval-20: conversation content search (the P3-400 route, first UI) ──────
+   The "In messages" block under the title matches in the conversation list,
+   and the same hits at the end of the palette: title + one-line snippet with
+   the occurrence in the quiet accent wash the in-chat find bar uses. Status
+   lines are muted prose, never a banner; focus rides the global ring. */
+.content-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: var(--space-1);
+}
+.content-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  outline-offset: -2px;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.content-hit:hover {
+  background: var(--bg2);
+}
+.content-hit-top {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+.content-hit-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.92rem;
+  font-weight: 450;
+}
+.content-hit-snippet {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  line-height: var(--line-height-tight);
+  color: var(--muted);
+}
+mark.content-hit-mark {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--fg);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+/* phone list: the 56px rhythm of .convo-row, snippet on the second line */
+.content-hits.list .content-hit {
+  min-height: 56px;
+  justify-content: center;
+  padding: 8px 12px;
+}
+.content-hits.list .content-hit-title {
+  font-size: var(--font-size-md);
+}
+.content-hits.list .content-hit-snippet {
+  font-size: var(--font-size-sm);
+}
+.content-hits-status,
+.palette-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 10px;
+  font-size: var(--font-size-sm);
+  color: var(--muted);
+}
+.content-hits-pulse {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  animation: content-pulse 1.2s var(--ease-out) infinite;
+}
+@keyframes content-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.content-hits-note,
+.content-hits-empty {
+  margin: 6px 10px 2px;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  color: var(--muted);
+}
+.content-hits-retry {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.palette-snippet {
+  white-space: nowrap;
+}
+
+/* key caps — palette row hints and the shortcuts sheet share one chip */
+/* visually hidden text: the accessibility name without any visual footprint
+   (the sheet's key chips are aria-hidden — screen readers read the label
+   plus the full combination) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.kbd-combo {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 3px;
+}
+.kbd {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 0.7rem;
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.palette-item.active .kbd {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+/* ── eval-20: keyboard shortcuts sheet (⌘/ or ?) in the AskDialog language ──
+   Above the palette overlay (150) so ⌘/ from inside the palette still shows. */
+/* compound selectors: the .ask-* rules sit later in the sheet */
+.ask-scrim.shortcuts-scrim {
+  z-index: 160;
+}
+.ask-card.shortcuts-card {
+  max-width: 520px;
+  max-height: min(86vh, 720px);
+  overflow-y: auto;
+}
+.shortcuts-card:focus {
+  outline: none;
+}
+/* wide windows: navigation on the left, conversation + general on the right,
+   so the whole map reads at once without scrolling */
+@media (min-width: 720px) {
+  .ask-card.shortcuts-card {
+    max-width: 680px;
+  }
+  .shortcuts-groups {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto 1fr;
+    column-gap: var(--space-6);
+  }
+  .shortcuts-group[data-group="nav"] {
+    grid-row: 1 / span 2;
+  }
+  /* the column tops align: the sibling margin below is for the stacked form */
+  .shortcuts-groups .shortcuts-group[data-group="chat"] {
+    margin-top: 0;
+  }
+}
+.shortcuts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.shortcuts-head .ask-title {
+  margin: 0;
+}
+.shortcuts-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+}
+.shortcuts-close:hover {
+  background: var(--gray-hover);
+  color: var(--fg);
+}
+.shortcuts-group + .shortcuts-group {
+  margin-top: var(--space-4);
+}
+.shortcuts-group-head {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.shortcuts-list {
+  margin: 0;
+}
+.shortcuts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.shortcuts-row:last-child {
+  border-bottom: none;
+}
+.shortcuts-row dt {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+.shortcuts-row dd {
+  margin: 0;
+}
+.shortcuts-foot {
+  margin: var(--space-4) 0 0;
+  font-size: var(--font-size-xs);
   color: var(--muted);
 }
 
@@ -5591,12 +5879,22 @@ button.desk-new:disabled {
 .composer-btn::before,
 .chat-btn::before,
 .composer-send::before,
-.conn-banner-retry::before {
+.conn-banner-retry::before,
+.shortcuts-close::before,
+.content-hits-retry::before {
   content: "";
   position: absolute;
   inset: -6px;
 }
-.composer-model-btn::before {
+.shortcuts-close,
+.content-hits-retry {
+  position: relative;
+}
+/* the retry link is one text line — the ::before grows only the tap area,
+   the visual stays a quiet underline (B2's "invisible hit area") */
+.content-hits-retry::before {
+  inset: -12px -10px;
+}.composer-model-btn::before {
   content: "";
   position: absolute;
   inset: -9px -4px;

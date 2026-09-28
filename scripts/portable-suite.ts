@@ -51,6 +51,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "chatfind.test.ts",
   "client-ready.test.ts",
   "composer.test.ts",
+  "convosearch.test.ts",
   "daemonrestart.test.ts",
   "datawipe.test.ts",
   "degraded-retry.test.ts",

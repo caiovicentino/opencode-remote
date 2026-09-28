@@ -40,7 +40,12 @@ export interface BundleEntry {
  * commit message.
  */
 export const BUNDLE_BUDGETS: Readonly<Record<string, number>> = {
-  "apps/web/dist": 800_000,
+  // eval-20 owner decision (2026-09-28): the web bundle crossed the old
+  // 800_000 ceiling with the round's UI features (product-evolution search +
+  // command palette + shortcuts sheet, PWA mobile UX, observability panes);
+  // the ceiling follows the shipped reality at 900_000 with the same intent:
+  // a ratchet that turns silent growth into a reviewed decision.
+  "apps/web/dist": 900_000,
   "apps/desktop/dist-daemon/index.js": 1_000_000,
 };
 
