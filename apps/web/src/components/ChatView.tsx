@@ -76,6 +76,7 @@ import { sendAskCountToShell } from "../lib/asks";
 import { frameToFile, screenFailKey, screenWaitVerdict } from "../lib/screenpeek";
 import { ArtifactIcon, IconArrowLeft, IconArrowRight, IconArrowUp, IconCamera, IconChat, IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconClock, IconDownload, IconLaptop, IconMic, IconMonitor, IconPlus, IconRefresh, IconSearch, IconSpeaker, IconWrench, IconX } from "./icons";
 import { usePendingFind } from "./ContentSearch";
+import { FIND_OPEN_EVENT } from "./ShortcutsShared";
 
 /** P2-312: microphone verdict from the desktop shell (mirrors
  * apps/desktop/src/preload.ts, kept in sync by tests). phrase is the shell's
@@ -653,15 +654,18 @@ export default function ChatView({
   // the find bar already holding the searched term — applied once the
   // transcript is on screen, and only when the loaded messages contain it
   // (never an empty "0 of 0" bar for a match that lives in an older page).
+  // eval-20 (verifier B3): when the occurrence is NOT in the loaded page the
+  // handoff must not silently swallow the term — the bar opens with the term
+  // and a calm pointer to "Load earlier", reusing the P1-064 older-page
+  // loader until the term is found (or hasMore runs out).
   const [pendingFind, clearPendingFind] = usePendingFind(sessionId);
-  useEffect(() => {
-    if (!pendingFind || loadingHistory) return;
-    clearPendingFind();
-    if (findHits(bubbles, pendingFind).length === 0) return;
-    setSearchTerm(pendingFind);
-    setSearchOpen(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingFind, loadingHistory, bubbles]);
+  const [findOlder, setFindOlder] = useState(false);
+  // the handoff lands the cursor on the OLDEST loaded occurrence: the
+  // daemon's snippet shows the first occurrence in the scan window
+  // (conversation order), so the bar must point at the same one — not at the
+  // newest (P2-281's default), which is a different message than the
+  // highlighted snippet the user just clicked
+  const handoffFindRef = useRef(false);
   const [historyTools, setHistoryTools] = useState<Map<string, ToolActivity>>(new Map());
   // P1-064: server paging state + explicit history error (never an eternal skeleton)
   const [historyError, setHistoryError] = useState("");
@@ -669,6 +673,26 @@ export default function ChatView({
   const [oldest, setOldest] = useState<string | null>(null);
   const [paging, setPaging] = useState(false);
   const pagingRef = useRef(false);
+  useEffect(() => {
+    if (!pendingFind || loadingHistory) return;
+    clearPendingFind();
+    if (findHits(bubbles, pendingFind).length === 0) {
+      setSearchTerm(pendingFind);
+      setSearchOpen(true);
+      setSearchIdx(0);
+      setFindOlder(hasMore);
+      return;
+    }
+    setSearchTerm(pendingFind);
+    setSearchOpen(true);
+    handoffFindRef.current = true;
+    setFindOlder(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFind, loadingHistory, bubbles, hasMore]);
+  // the deep-hint dies as soon as the term is on screen — the count takes over
+  useEffect(() => {
+    if (findOlder && searchHits.length > 0) setFindOlder(false);
+  }, [findOlder, searchHits.length]);
   const [sessionTitle, setSessionTitle] = useState("");
   // P1-079: per-session context gauge + pinned recap under the composer
   const [ctx, setCtx] = useState<{ pct: number; tokens: number; window: number } | null>(null);
@@ -959,6 +983,9 @@ export default function ChatView({
   // ── P2-281: in-conversation search ────────────────────────────────────
   function openSearch() {
     setSearchOpen(true);
+    // eval-20 (verifier B5c): the shortcuts sheet closes when the find bar
+    // opens (⌘F from anywhere) instead of leaving the reader on a buried bar
+    window.dispatchEvent(new Event(FIND_OPEN_EVENT));
     // already open: the gesture is "get me back to the field" — select the
     // term so typing replaces it; the fresh-mount focus lands via effect
     searchInputRef.current?.focus();
@@ -968,6 +995,7 @@ export default function ChatView({
     setSearchOpen(false);
     setSearchTerm("");
     setSearchIdx(0);
+    setFindOlder(false);
   }
   function stepSearch(dir: 1 | -1) {
     const n = searchHits.length;
@@ -984,8 +1012,15 @@ export default function ChatView({
   // a new term starts at the newest occurrence — the nearest one to the tail
   // the reader is already looking at; arrows/Enter then walk the rest.
   // The closure reads the hits of the render that changed the deps — always
-  // fresh, no render-phase ref write needed.
+  // fresh, no render-phase ref write needed. The handoff overrides this once
+  // (the snippet shows the FIRST occurrence in the scan window, so the bar
+  // lands on the oldest loaded occurrence to match what the user clicked).
   useEffect(() => {
+    if (handoffFindRef.current) {
+      handoffFindRef.current = false;
+      setSearchIdx(0);
+      return;
+    }
     setSearchIdx(Math.max(0, searchHits.length - 1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchTerm, searchOpen]);
@@ -1096,6 +1131,7 @@ export default function ChatView({
     setSearchOpen(false);
     setSearchTerm("");
     setSearchIdx(0);
+    setFindOlder(false);
     // P2-282: so is the copy confirmation
     setCopiedBubble(null);
     if (copyTimer.current) clearTimeout(copyTimer.current);
@@ -2908,6 +2944,21 @@ export default function ChatView({
                   : t("searchNoMatches")
                 : ""}
             </span>
+            {/* eval-20 (verifier B3): the handoff hit lives in an older page —
+                the calm pointer names it and reuses the P1-064 loader */}
+            {findOlder && hasMore && (
+              <span className="chat-search-older">
+                <span className="chat-search-older-hint">{t("findOlderHint")}</span>
+                <button
+                  type="button"
+                  className="chat-search-older-btn"
+                  onClick={() => void loadMore()}
+                  disabled={paging}
+                >
+                  {t("findOlderLoad")}
+                </button>
+              </span>
+            )}
             <button
               className="chat-btn"
               onClick={() => stepSearch(-1)}

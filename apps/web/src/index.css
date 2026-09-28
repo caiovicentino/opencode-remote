@@ -4031,7 +4031,38 @@ button.desk-new:disabled {
   font-variant-numeric: tabular-nums;
   padding-right: 4px;
 }
-/* matches inside the bubbles: quiet accent wash for the neighbours, solid
+/* eval-20 (verifier B3): the handoff hit lives in an older page — the calm
+   pointer sits between the count and the arrows, and the action reuses the
+   P1-064 older-page loader */
+.chat-search-older {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.chat-search-older-hint {
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-search-older-btn {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: var(--font-size-xs);
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-search-older-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}/* matches inside the bubbles: quiet accent wash for the neighbours, solid
    accent for the occurrence the reader is on */
 .msg mark.search-mark {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
@@ -4441,6 +4472,17 @@ mark.content-hit-mark {
 }
 
 /* key caps — palette row hints and the shortcuts sheet share one chip */
+/* visually hidden text: the accessibility name without any visual footprint
+   (the sheet's key chips are aria-hidden — screen readers read the label
+   plus the full combination) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
 .kbd-combo {
   display: inline-flex;
   flex-shrink: 0;
@@ -5779,12 +5821,22 @@ mark.content-hit-mark {
 .composer-btn::before,
 .chat-btn::before,
 .composer-send::before,
-.conn-banner-retry::before {
+.conn-banner-retry::before,
+.shortcuts-close::before,
+.content-hits-retry::before {
   content: "";
   position: absolute;
   inset: -6px;
 }
-.composer-model-btn::before {
+.shortcuts-close,
+.content-hits-retry {
+  position: relative;
+}
+/* the retry link is one text line — the ::before grows only the tap area,
+   the visual stays a quiet underline (B2's "invisible hit area") */
+.content-hits-retry::before {
+  inset: -12px -10px;
+}.composer-model-btn::before {
   content: "";
   position: absolute;
   inset: -9px -4px;

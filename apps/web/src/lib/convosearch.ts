@@ -8,14 +8,18 @@
 // row, and the de-duplication against the title matches already on screen.
 // No React, no DOM, no fetch: scripts/convosearch.test.ts drives it directly.
 
-/** Terms shorter than this never leave the device. Mirrors SEARCH_MIN_TERM
- * in apps/daemon/src/searchindex.ts (parity pinned by the test) — the route
- * answers 400 below it. */
-export const CONTENT_SEARCH_MIN = 2;
+/** Terms shorter than this never leave the device. The daemon's route allows
+ * SEARCH_MIN_TERM (2, apps/daemon/src/searchindex.ts) — the client raises the
+ * bar to 3 so a stray tap never fires a scan that reads up to 200
+ * conversations on the host (parity pinned by the test: client >= daemon). */
+export const CONTENT_SEARCH_MIN = 3;
 
 /** Typing pause before the request fires: one scan per settled term, not one
- * per keystroke (each scan reads up to 200 conversations on the host). */
-export const CONTENT_SEARCH_DEBOUNCE_MS = 250;
+ * per keystroke (each scan reads up to 200 conversations on the host). The
+ * verifier measured a 250ms pause firing 7 overlapping scans per word — every
+ * scan drops the whole history through the tunnel, so the pause is generous
+ * and the single-flight gate below keeps at most ONE scan in flight. */
+export const CONTENT_SEARCH_DEBOUNCE_MS = 500;
 
 /** Budget for one search round-trip through the tunnel. The daemon's own
  * scan budget is 1.5s; the rest is relay latency on a phone. */
@@ -158,4 +162,88 @@ export function createSearchSequence() {
       return seq === issued;
     },
   };
+}
+
+/**
+ * Single-flight gate for the debounced fetch: at most ONE scan in flight.
+ * A fire requested while one is out is HELD (at most one slot — the latest
+ * settled term wins); when the scan lands, `landed()` reports whether a
+ * refire is due (the caller then reads the latest term — the ones typed in
+ * between are dropped, never queued). Pure: scripts/convosearch.test.ts
+ * drives it.
+ */
+export function createScanGate() {
+  let inFlight = false;
+  let held = false;
+  return {
+    /** true when the fire may proceed; while a scan is out the fire is held */
+    tryFire(): boolean {
+      if (inFlight) {
+        held = true;
+        return false;
+      }
+      inFlight = true;
+      return true;
+    },
+    /** the in-flight scan landed — true when exactly one refire is due */
+    landed(): boolean {
+      inFlight = false;
+      const was = held;
+      held = false;
+      return was;
+    },
+  };
+}
+
+// --- find handoff ---------------------------------------------------------------------------
+// eval-20: one-shot "open this conversation with its find bar holding this
+// term" handoff, from a conversation-search hit (sidebar list or ⌘K palette)
+// to ChatView's in-conversation find (P2-281). Same shape as the drafts.ts
+// send-on-open flag: module-level, memory-only, TTL-bounded, and consumed
+// only by the conversation it names — a stale or foreign flag can never pop
+// a find bar open in an unrelated chat later. Pure (no React, no DOM) so
+// scripts/convosearch.test.ts drives it directly; the listener set exists so
+// ChatView can react when the SAME conversation is picked again.
+
+export const FIND_ON_OPEN_TTL_MS = 20_000;
+
+let pending: { sessionId: string; term: string; at: number } | null = null;
+let handoffVersion = 0;
+const handoffListeners = new Set<() => void>();
+
+/** Records the handoff (a blank term or session clears it) and notifies. */
+export function markFindOnOpen(sessionId: string, term: string, now: number = Date.now()): void {
+  const t = typeof term === "string" ? term.trim() : "";
+  pending = sessionId && t ? { sessionId, term: t, at: now } : null;
+  handoffVersion += 1;
+  handoffListeners.forEach((fn) => fn());
+}
+
+/**
+ * The pending term for `sessionId`, consumed on the way out. A flag for
+ * another conversation stays put (that chat may be the one opening next);
+ * an expired or clock-skewed flag is dropped whoever asks.
+ */
+export function takeFindOnOpen(sessionId: string, now: number = Date.now()): string | null {
+  const flag = pending;
+  if (!flag) return null;
+  if (now - flag.at > FIND_ON_OPEN_TTL_MS || now < flag.at) {
+    pending = null;
+    return null;
+  }
+  if (flag.sessionId !== sessionId) return null;
+  pending = null;
+  return flag.term;
+}
+
+/** useSyncExternalStore contract: subscribe + a snapshot that changes on mark. */
+export function subscribeFindHandoff(fn: () => void): () => void {
+  handoffListeners.add(fn);
+  return () => {
+    handoffListeners.delete(fn);
+  };
+}
+
+export function findHandoffVersion(): number {
+  return handoffVersion;
 }

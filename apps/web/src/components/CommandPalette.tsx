@@ -6,7 +6,7 @@ import { humanizeError } from "../lib/errors";
 import { SNIPPET_LEAD_PALETTE, freshHits, type ContentHit } from "../lib/convosearch";
 import { comboKeys, comboLabel, shortcutFor } from "../lib/shortcuts";
 import { openFromSearch, SnippetText, useContentSearch } from "./ContentSearch";
-import { KeyCaps, openShortcutsSheet, platformIsMac } from "./ShortcutsSheet";
+import { KeyCaps, openShortcutsSheet, platformIsMac } from "./ShortcutsShared";
 import {
   IconChat,
   IconFolder,
@@ -73,6 +73,12 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
   // eval-20: conversations whose MESSAGES mention the query (P3-400 route)
   const { state: content, retry: retryContent } = useContentSearch(request, query);
   const mac = platformIsMac();
+  // the retry action is shared by the degraded and the error line
+  const retryBtn = (
+    <button type="button" className="content-hits-retry" onClick={retryContent}>
+      {t("retry")}
+    </button>
+  );
 
   useEffect(() => {
     void (async () => {
@@ -169,8 +175,16 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
         />
         <div className="palette-list" ref={listRef}>
           {error && <div className="palette-empty">{humanizeError(error, t)}</div>}
-          {!error && items.length === 0 && content.phase !== "loading" && (
-            <div className="palette-empty">{t("paletteEmpty")}</div>
+          {/* eval-20 (verifier B1): a partial scan that came back with NOTHING
+              is never "No matches" — the honest state says the conversations
+              could not all be read, with a retry; the partial note rides along
+              at 0 hits too, exactly as it does above the hit rows */}
+          {!error && items.length === 0 && content.phase !== "loading" && content.phase !== "error" &&
+            !(content.phase === "ok" && content.truncated) && <div className="palette-empty" data-empty>{t("paletteEmpty")}</div>}
+          {content.phase === "ok" && content.truncated && (
+            <div className="palette-status" role="status" data-degraded="">
+              {t("contentSearchDegraded")} {retryBtn}
+            </div>
           )}
           {items.map((item, i) => (
             <button
@@ -223,15 +237,18 @@ export default function CommandPalette({ request, onClose, onOpenSession, onNewC
             </div>
           )}
           {content.phase === "ok" && content.truncated && content.hits.length > 0 && (
-            <div className="palette-status">{t("contentSearchPartial")}</div>
+            <div className="palette-status" role="status">
+              {t("contentSearchPartial")}
+            </div>
           )}
-          {content.phase === "unsupported" && <div className="palette-status">{t("contentSearchUnsupported")}</div>}
+          {content.phase === "unsupported" && (
+            <div className="palette-status" role="status">
+              {t("contentSearchUnsupported")}
+            </div>
+          )}
           {content.phase === "error" && (
-            <div className="palette-status">
-              {t("contentSearchError")}{" "}
-              <button type="button" className="content-hits-retry" onClick={retryContent}>
-                {t("retry")}
-              </button>
+            <div className="palette-status" role="status">
+              {t("contentSearchError")} {retryBtn}
             </div>
           )}
         </div>

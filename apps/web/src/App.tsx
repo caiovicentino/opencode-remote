@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, lazy, Suspense, type ReactNode } from "react";
 import {
   OcrClient,
   loadState,
@@ -87,7 +87,11 @@ import ScreenFlash from "./components/ScreenFlash";
 import MissionControlView, { type DaemonApiFn } from "./components/MissionControlView";
 import ErrorBoundary from "./components/ErrorBoundary";
 import CommandPalette from "./components/CommandPalette";
-import ShortcutsSheet from "./components/ShortcutsSheet";
+import { PALETTE_OPEN_EVENT } from "./components/ShortcutsShared";
+// eval-20 (verifier B7): the sheet is one rare overlay — it rides its own
+// chunk instead of spending the bundle budget (the CI ceiling sits at 99.5%
+// with this PR; together with the other two pending PRs it would not fit).
+const ShortcutsSheet = lazy(() => import("./components/ShortcutsSheet"));
 import DegradedView from "./components/DegradedView";
 import WelcomeView from "./components/WelcomeView";
 import ReconnectButton from "./components/ReconnectButton";
@@ -1328,6 +1332,10 @@ export default function App() {
       }
       if (id === "palette") {
         setPaletteOpen(true);
+        // eval-20 (verifier B5c): the shortcuts sheet closes when the palette
+        // opens — in the Electron shell this arrives by IPC (no keydown), so
+        // an event, not a key, is the only signal the sheet can act on
+        window.dispatchEvent(new Event(PALETTE_OPEN_EVENT));
         return;
       }
       if (id === "pane:chat") {
@@ -2421,8 +2429,11 @@ export default function App() {
           onOpenPane={(slot) => openPane(slot)}
         />
       )}
-      {/* eval-20: ⌘/ or ? opens the keyboard map (self-contained listener) */}
-      <ShortcutsSheet />
+      {/* eval-20: ⌘/ or ? opens the keyboard map (self-contained listener,
+          lazily chunked — it is one rare overlay against the bundle ceiling) */}
+      <Suspense fallback={null}>
+        <ShortcutsSheet />
+      </Suspense>
       {pairingOverlay}
     </div>
   );

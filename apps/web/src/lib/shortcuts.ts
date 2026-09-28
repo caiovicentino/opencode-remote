@@ -2,7 +2,8 @@
 // (⌘/ or ?) and the key hints on the command palette rows, so what the UI
 // teaches can never drift from what the app binds. The Go-menu accelerators
 // (apps/desktop/src/menu.ts) and the renderer fallback in App.tsx are the
-// bindings; scripts/shortcuts.test.ts pins this table against the menu spec.
+// bindings; scripts/convosearch.test.ts pins this table against the menu
+// spec, and the eval-20 beat of the desktop flow exercises the sheet live.
 // Pure: no React, no DOM on import.
 
 export type ShortcutGroup = "nav" | "chat" | "general";
@@ -98,14 +99,19 @@ export interface KeyLike {
   ctrlKey?: boolean;
   altKey?: boolean;
   shiftKey?: boolean;
+  /** auto-repeat (a key held down) — the toggle must not flip every repeat */
+  repeat?: boolean;
 }
 
 /**
  * Does this keydown toggle the shortcuts sheet? ⌘/ (Ctrl+/ off macOS) works
- * anywhere, like the palette's ⌘K; the bare "?" only when the focus is not in
- * a text field — typing a question mark into the composer must stay typing.
+ * anywhere, like the palette's ⌘K; the bare "?" only when the focus is not
+ * in a text field — typing a question mark into the composer must stay
+ * typing. Auto-repeat never toggles (a held ⌘/ must flip the sheet once,
+ * not strobe it).
  */
 export function isShortcutsToggle(e: KeyLike, mac: boolean, typing: boolean): boolean {
+  if (e.repeat) return false;
   if (e.altKey) return false;
   const mod = mac ? !!e.metaKey && !e.ctrlKey : !!e.ctrlKey && !e.metaKey;
   if (mod && (e.key === "/" || e.key === "?")) return true;

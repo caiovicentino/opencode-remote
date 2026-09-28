@@ -473,9 +473,16 @@ export const dict = {
     contentSearchHeading: "In messages",
     contentSearchLoading: "Searching inside conversations…",
     contentSearchNone: "Nothing found for “{q}”.",
+    // eval-20 (verifier B1): a scan that could not finish is never "nothing
+    // found" — the degraded state says so and offers the retry
+    contentSearchDegraded: "Couldn't read all conversations — the search may be incomplete.",
     contentSearchPartial: "Partial search — the most recent conversations were read first.",
     contentSearchError: "Couldn't search inside conversations right now.",
     contentSearchUnsupported: "Searching inside conversations needs a newer app version on the computer.",
+    // eval-20 (verifier B3): a handoff hit whose occurrence sits in an older
+    // page still opens the find bar — the calm line says where to go
+    findOlderHint: "The occurrence is in earlier messages.",
+    findOlderLoad: "Load earlier",
     shortcutsTitle: "Keyboard shortcuts",
     shortcutsGroupNav: "Navigation",
     shortcutsGroupChat: "Conversation",
@@ -1407,9 +1414,16 @@ export const dict = {
     contentSearchHeading: "Nas mensagens",
     contentSearchLoading: "Buscando dentro das conversas…",
     contentSearchNone: "Nada encontrado para “{q}”.",
+    // eval-20 (verificador B1): um scan que não terminou nunca vira "nada
+    // encontrado" — o estado degradado diz isso e oferece o retry
+    contentSearchDegraded: "Não deu pra ler todas as conversas — a busca pode estar incompleta.",
     contentSearchPartial: "Busca parcial — as conversas mais recentes foram lidas primeiro.",
     contentSearchError: "Não deu pra buscar dentro das conversas agora.",
     contentSearchUnsupported: "A busca dentro das conversas pede uma versão mais nova do app no computador.",
+    // eval-20 (verificador B3): o hit cuja ocorrência está numa página antiga
+    // ainda abre a barra — a linha calma diz onde está
+    findOlderHint: "A ocorrência está em mensagens anteriores.",
+    findOlderLoad: "Carregar anteriores",
     shortcutsTitle: "Atalhos de teclado",
     shortcutsGroupNav: "Navegação",
     shortcutsGroupChat: "Conversa",

@@ -562,7 +562,9 @@ export default function SessionsView({
             gets its verdict from the section below instead */}
         {!loading && filtered.length === 0 && !query.trim() && <p className="muted">{t("noSessions")}</p>}
         {!loading && filtered.length === 0 && query.trim() !== "" && !contentSearchTerm(query) && (
-          <p className="muted">{t("contentSearchNone", { q: query.trim() })}</p>
+          <p className="muted" role="status">
+            {t("contentSearchNone", { q: query.trim() })}
+          </p>
         )}
         {variant === "rows" && (
           <div className="sess-rows">

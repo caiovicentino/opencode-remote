@@ -1,7 +1,7 @@
 /**
  * eval-20 unit tests: the first UI of the P3-400 conversation CONTENT search
  * (lib/convosearch + components/ContentSearch wiring), the find handoff that
- * lands a search hit on its occurrence (lib/findhandoff), and the keyboard
+ * lands a search hit on its occurrence (lib/convosearch, handoff section), and the keyboard
  * map behind the shortcuts sheet and the palette key hints (lib/shortcuts).
  *
  * Before this slice the daemon answered GET /__ocr/search but no screen
@@ -18,21 +18,20 @@ import {
   CONTENT_SEARCH_DEBOUNCE_MS,
   CONTENT_SEARCH_MIN,
   CONTENT_SEARCH_TIMEOUT_MS,
+  FIND_ON_OPEN_TTL_MS,
   SNIPPET_LEAD_PALETTE,
   SNIPPET_LEAD_ROWS,
   contentSearchTerm,
+  createScanGate,
   createSearchSequence,
+  findHandoffVersion,
   freshHits,
+  markFindOnOpen,
   parseContentAnswer,
   snippetSegments,
-} from "../apps/web/src/lib/convosearch";
-import {
-  FIND_ON_OPEN_TTL_MS,
-  findHandoffVersion,
-  markFindOnOpen,
   subscribeFindHandoff,
   takeFindOnOpen,
-} from "../apps/web/src/lib/findhandoff";
+} from "../apps/web/src/lib/convosearch";
 import {
   SHORTCUTS,
   SHORTCUT_GROUPS,
@@ -63,13 +62,33 @@ const marked = (segs: { text: string; mark: boolean }[]) => segs.filter((s) => s
 const plain = (segs: { text: string; mark: boolean }[]) => segs.map((s) => s.text).join("");
 
 // --- term gating ----------------------------------------------------------------
-check("term: parity with the daemon's SEARCH_MIN_TERM", CONTENT_SEARCH_MIN === SEARCH_MIN_TERM, `${CONTENT_SEARCH_MIN} vs ${SEARCH_MIN_TERM}`);
+// eval-20 fix round: the verifier measured a production-sized history pulled
+// through the tunnel on EVERY settled term — the client raises its own bar
+// (3 chars, 500ms pause, one scan in flight) instead of mirroring the route's
+// floor. The pin keeps drift protection: the client never drops BELOW the
+// daemon's floor (the route still answers 400 under it).
+check("term: parity — the client never sits below the daemon's SEARCH_MIN_TERM", CONTENT_SEARCH_MIN >= SEARCH_MIN_TERM, `${CONTENT_SEARCH_MIN} vs ${SEARCH_MIN_TERM}`);
 check("term: empty query stays on the device", contentSearchTerm("") === null);
 check("term: whitespace-only query stays on the device", contentSearchTerm("   \t") === null);
 check("term: one character is too short", contentSearchTerm(" a ") === null);
-check("term: two characters are searched, trimmed", contentSearchTerm("  ab ") === "ab");
+check("term: two characters never fire a scan (a scan reads up to 200 conversations)", contentSearchTerm(" ab ") === null);
+check("term: three characters are searched, trimmed", contentSearchTerm("  abc ") === "abc");
 check("term: non-string input fails closed", contentSearchTerm(undefined) === null && contentSearchTerm(42) === null);
-check("timing: debounce is short, timeout covers the daemon's 1.5s scan", CONTENT_SEARCH_DEBOUNCE_MS > 0 && CONTENT_SEARCH_DEBOUNCE_MS <= 400 && CONTENT_SEARCH_TIMEOUT_MS >= 3_000);
+check(
+  "timing: the pause stays a pause (500ms floor — 250ms fired 7 overlapping scans per word) and the timeout covers the daemon's 1.5s scan",
+  CONTENT_SEARCH_DEBOUNCE_MS >= 500 && CONTENT_SEARCH_DEBOUNCE_MS <= 1_000 && CONTENT_SEARCH_TIMEOUT_MS >= 3_000,
+  `${CONTENT_SEARCH_DEBOUNCE_MS}ms / ${CONTENT_SEARCH_TIMEOUT_MS}ms`,
+);
+
+// --- single-flight gate (verifier B2) ---------------------------------------------
+{
+  const gate = createScanGate();
+  check("gate: the first fire goes out", gate.tryFire() === true);
+  check("gate: a second fire is held while one scan is in flight", gate.tryFire() === false);
+  check("gate: the landing releases at most ONE held fire (the latest term wins)", gate.landed() === true);
+  check("gate: the hold is consumed once — no queue of stale terms", gate.landed() === false);
+  check("gate: a fresh fire goes out after the hold was consumed", gate.tryFire() === true);
+}
 
 // --- fail-closed parsing -----------------------------------------------------------
 check("parse: 404 means an older daemon (unsupported), not an empty result", parseContentAnswer(404, null).kind === "unsupported");
@@ -222,7 +241,7 @@ check("caps: ⌘K on macOS", comboKeys({ mod: true, key: "K" }, true).join(" ") 
 check("caps: Ctrl+K elsewhere", comboKeys({ mod: true, key: "K" }, false).join(" ") === "Ctrl K" && comboLabel({ mod: true, key: "K" }, false) === "Ctrl+K");
 check("caps: shift order follows each platform (⇧Enter / Shift+Enter)", comboLabel({ shift: true, key: "Enter" }, true) === "⇧Enter" && comboLabel({ shift: true, key: "Enter" }, false) === "Shift+Enter");
 
-const key = (k: string, m: Partial<{ metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }> = {}) => ({ key: k, ...m });
+const key = (k: string, m: Partial<{ metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; repeat: boolean }> = {}) => ({ key: k, ...m });
 check("toggle: ⌘/ on macOS", isShortcutsToggle(key("/", { metaKey: true }), true, false));
 check("toggle: ⌘/ works while typing (like ⌘K)", isShortcutsToggle(key("/", { metaKey: true }), true, true));
 check("toggle: Ctrl+/ is not the mac binding", !isShortcutsToggle(key("/", { ctrlKey: true }), true, false));
@@ -232,6 +251,8 @@ check("toggle: bare ? outside a text field", isShortcutsToggle(key("?", { shiftK
 check("toggle: bare ? INSIDE a text field stays typing", !isShortcutsToggle(key("?", { shiftKey: true }), true, true));
 check("toggle: Alt combos never toggle", !isShortcutsToggle(key("/", { metaKey: true, altKey: true }), true, false));
 check("toggle: plain / never toggles", !isShortcutsToggle(key("/"), true, false));
+check("toggle: auto-repeat never toggles (a held ⌘/ flips the sheet once, not per repeat)", !isShortcutsToggle(key("/", { metaKey: true, repeat: true }), true, false));
+check("toggle: auto-repeat never toggles (bare ? held)", !isShortcutsToggle(key("?", { shiftKey: true, repeat: true }), true, false));
 
 check("typing: textarea and text inputs take text", isTypingTarget({ tagName: "TEXTAREA" }) && isTypingTarget({ tagName: "INPUT", type: "search" }) && isTypingTarget({ tagName: "input" }));
 check("typing: contentEditable takes text", isTypingTarget({ tagName: "DIV", isContentEditable: true }));
@@ -284,6 +305,11 @@ check("sheet: every shortcut belongs to a rendered group", SHORTCUTS.every((s) =
     "contentSearchHeading",
     "contentSearchLoading",
     "contentSearchNone",
+    // eval-20 fix round: the honest degraded state (a partial scan with
+    // nothing is never "nothing found") and the deep-handoff pointer
+    "contentSearchDegraded",
+    "findOlderHint",
+    "findOlderLoad",
     "contentSearchPartial",
     "contentSearchError",
     "contentSearchUnsupported",
@@ -303,11 +329,18 @@ check("sheet: every shortcut belongs to a rendered group", SHORTCUTS.every((s) =
   check("i18n: the foot names the palette combo from code (no ⌘ in the dictionary)", en.shortcutsFoot?.includes("{combo}") && pt.shortcutsFoot?.includes("{combo}"));
 }
 
-// --- wiring pins (fail on the tree where no screen consumed the route) ----------------------------
+// --- regression pins for the verifier's findings (behavior rides the eval-20
+// --- beat of the desktop flow; these pins fail when the FIX is reverted) ------
 {
   const cs = src("apps/web/src/components/ContentSearch.tsx");
   check("wiring: the hook calls the P3-400 route with q", cs.includes('"/__ocr/search"') && cs.includes("{ q: term }"));
   check("wiring: only the latest request may land", cs.includes("seq.current.isCurrent(mine)"));
+  check(
+    "wiring: single-flight — the hook fires through the scan gate (B2: one scan in flight, one held refire)",
+    cs.includes("createScanGate()") && cs.includes("gate.current.tryFire()") && cs.includes("gate.current.landed()"),
+  );
+  const convosearchLib = src("apps/web/src/lib/convosearch.ts");
+  check("wiring: the client debounces at 500ms and gates at 3 chars (B2)", convosearchLib.includes("export const CONTENT_SEARCH_MIN = 3;") && convosearchLib.includes("export const CONTENT_SEARCH_DEBOUNCE_MS = 500;"));
   const daemon = src("apps/daemon/src/index.ts");
   check("wiring: the daemon still serves the same path + param", daemon.includes('req.path === "/__ocr/search"') && daemon.includes("req.query?.q"));
   const sessions = src("apps/web/src/components/SessionsView.tsx");
@@ -315,23 +348,51 @@ check("sheet: every shortcut belongs to a rendered group", SHORTCUTS.every((s) =
     "wiring: the conversation list renders the content section with the title matches excluded",
     sessions.includes("<ContentSearchSection") && sessions.includes("titleMatchIds={filtered.map((s) => s.id)}") && sessions.includes("openFromSearch(id, term, onOpen)"),
   );
-  check(
-    "wiring: a filtered-empty list no longer says 'No conversations yet.'",
-    sessions.includes('filtered.length === 0 && !query.trim() && <p className="muted">{t("noSessions")}</p>'),
-  );
+  check("wiring: the section receives the live query (never a blank one)", sessions.includes("query={query}"));
   const palette = src("apps/web/src/components/CommandPalette.tsx");
   check("wiring: the palette appends content hits and the shortcuts action", palette.includes("useContentSearch(request, query)") && palette.includes("openShortcutsSheet") && palette.includes("freshHits(content.hits"));
+  check(
+    "wiring: the palette never shows 'No matches' for a degraded scan (B1: partial-with-nothing is honest, with a retry)",
+    palette.includes('content.phase !== "error"') && palette.includes("!(content.phase === \"ok\" && content.truncated)") && palette.includes("contentSearchDegraded"),
+  );
   const chat = src("apps/web/src/components/ChatView.tsx");
   check(
-    "wiring: ChatView applies the handoff only when the loaded messages contain the term",
-    chat.includes("usePendingFind(sessionId)") && chat.includes("findHits(bubbles, pendingFind).length === 0"),
+    "wiring: the handoff opens the bar even when the term is not on the loaded page (B3: no silent no-op)",
+    chat.includes("usePendingFind(sessionId)") && chat.includes("setSearchOpen(true);") && chat.includes("setFindOlder(hasMore)"),
   );
+  check(
+    "wiring: the deep handoff reuses the P1-064 older-page loader and lands the cursor on the oldest occurrence (the snippet's)",
+    chat.includes("void loadMore()") && chat.includes("handoffFindRef.current = true") && chat.includes("setSearchIdx(0);"),
+  );
+  check("wiring: ⌘F closes the sheet (B5c: the bar opens above the scrim)", chat.includes("FIND_OPEN_EVENT"));
   const app = src("apps/web/src/App.tsx");
   check("wiring: the paired shell mounts the shortcuts sheet once", (app.match(/<ShortcutsSheet \/>/g) ?? []).length === 1);
+  check(
+    "wiring: ⌘K (menu IPC or fallback) closes the sheet (B5c) and the sheet rides its own chunk (B7: bundle ceiling)",
+    app.includes("PALETTE_OPEN_EVENT") && app.includes('lazy(() => import("./components/ShortcutsSheet"))'),
+  );
   const sheet = src("apps/web/src/components/ShortcutsSheet.tsx");
   check(
-    "wiring: the sheet's Esc stops at document, so the chat find bar (window listener) stays open underneath",
-    sheet.includes('document.addEventListener("keydown", onKey)') && sheet.includes("e.stopPropagation();"),
+    "wiring: the sheet's Esc is a window CAPTURE listener (B4: it blocks the AskDialog/Modal bubble listeners, which were registered first)",
+    sheet.includes('window.addEventListener("keydown", onKey, true)') && sheet.includes("e.stopPropagation();"),
+  );
+  check(
+    "wiring: the sheet traps Tab like AskDialog (B5b: aria-modal without a trap lets focus walk out)",
+    sheet.includes("onKeyDown={trapTab}") && sheet.includes("if (e.key !== \"Tab\") return;"),
+  );
+  check(
+    "wiring: the sheet's guard keeps the '?' typing guard (mutating the guard away must fail)",
+    sheet.includes("isTypingTarget(document.activeElement as HTMLElement | null)"),
+  );
+  const shared = src("apps/web/src/components/ShortcutsShared.tsx");
+  check(
+    "wiring: the key chips read as label + combo (B5a: sr-only text, the kbd caps stay decorative)",
+    shared.includes('<span className="sr-only">{label}</span>') && shared.includes('<kbd key={i} className="kbd" aria-hidden>'),
+  );
+  const css = src("apps/web/src/index.css");
+  check(
+    "wiring: the sheet close button and the retry link reach the 44px touch convention (B5d)",
+    css.includes(".shortcuts-close::before") && css.includes(".content-hits-retry::before") && css.includes(".sr-only"),
   );
 }
 
