@@ -1673,6 +1673,91 @@ cache). Consequences:
   phase in `avgPhaseDurations`; `gate-flaky`/`gate-fail` events never open a
   phase.
 
+## Feedback do gate por relevância (forense 24/09, recs 3/4/5/8)
+
+Toda rodada reprovada precisa dizer ao builder exatamente o que quebrou. Antes,
+o veredito assinado do juiz trazia a saída INTEIRA do step (stdout e depois
+stderr, em buffers separados) e o pilot guardava só os últimos bytes: 1500 no
+finding, 1200 no carryover `gate-fail/<ID>.json` e 300 no log/detalhe. Nas 9
+caudas de `desktop-flow` do pilot.log, nenhuma nomeava o check que falhou, e o
+builder da P3-457 teve que rodar o flow de novo por conta própria.
+
+- **Diff contra `origin/<base>`** (`taskDiffRange`): o diff dos reviewers, o
+  name-only que o juiz usa (renderTouched → smokes desktop + shots
+  obrigatórios), o `touchedUi` (shot pós-deploy) e o comando que o prompt manda
+  o builder inspecionar agora usam `origin/<base>...pilot/<ID>`. O `main` local
+  do slot só anda nos merges do próprio slot e no doctor. Quando a branch
+  rebaseava ou mergeava um origin mais novo, o diff trazia commits de outros
+  slots. Foi isso que reprovou P3-401 e P3-459 (relay) e P2-357 (infra: o PR
+  #1390 mexe só em `scripts/unit.test.ts`) com "UI task without
+  shot-1440x900", e deu shot de UI pós-deploy à P3-461 (relay, zero arquivos
+  de UI).
+- **Cauda por relevância** (`apps/pilot/src/gatetail.ts`): o finding (1500),
+  o carryover (1200) e o headline de log/detalhe (300) vêm do
+  `gateTailDigest`/`gateTailHeadline`, nesta ordem:
+  1. cabeçalho com o primeiro check que falhou (+N mais), a contagem e o
+     último beat `---` iniciado antes do primeiro FAIL — o nome do check tem
+     de caber nos 200 caracteres que a failure lesson guarda do carryover;
+  2. os checks que falharam;
+  3. o primeiro bloco de erro;
+  4. o resumo (FAILURES, duração, aviso de orçamento);
+  5. as últimas linhas, com eventos JSON, ruído de boot do keeper e warnings
+     do Node descartados, e sequências de OK colapsadas.
+
+  Saída que cabe no orçamento passa byte a byte. Na saída real de um
+  desktop-flow com 2 falhas (fixture `apps/pilot/src/__fixtures__/gate-tail/`),
+  a cauda antiga nomeava 1 das 2 e o headline nenhuma. A nova nomeia as 2, com
+  o beat e o detalhe.
+- **Checagem pré-gate com rebote na mesma rodada**
+  (`apps/pilot/src/evidencecheck.ts` + `coupling.ts`): logo após o builder, o
+  pilot roda a metade estática do step `evidence` do juiz com o mesmo
+  predicado. Ela checa bloco `EVIDENCE:` presente, comandos obrigatórios
+  citados, e os shots 1440x900/390 como linha nua `shot-<key>: <path>`,
+  PNG legível, no tamanho certo e fresco. Também roda a varredura de asserções
+  acopladas: literais que o diff tirou do produto e que continuam fixados em
+  `scripts/*.test.ts`, nos dois sentidos (cópia/classe do produto → teste; pin
+  de fonte do teste → linha removida).
+
+  Se houver lacuna, o pilot manda UM rebote curto (`EVIDENCE_BOUNCE_MAX = 1`,
+  até 20 min) na MESMA sessão do builder. O juiz lê o último bloco da saída
+  concatenada. Eventos `evidence-bounce`/`evidence-bounce-done` e o log
+  `pre-gate bounce` (antes/depois) medem o efeito. O juiz continua a
+  autoridade: um "ok" errado só adia a mesma reprovação ao gate.
+
+  Medição nos 60 merges de UI mais recentes do main: zero hints nos diffs
+  mergeados. Com as mudanças de teste removidas de cada commit ("o builder
+  esqueceu o teste"), a varredura sinalizou os 6 commits cujos testes
+  realmente precisavam mudar, entre eles P3-413 e P3-435.
+
+  Em reprovação de `unit`/`desktop-flow`/`desktop-render`, os hints também
+  vão junto do finding.
+
+  Tudo isso roda dentro do processo do pilot, com entrada que o builder
+  controla: a saída do gate é partida por linha e cada padrão roda sobre uma
+  cópia de no máximo 4 KB (sem backtracking quadrático — uma linha de 1 MB de
+  espaços custava ~35 s de event loop por gate vermelho), e shot citado ou
+  arquivo do workspace só é aberto se for arquivo regular (um FIFO travava
+  `openSync`/`readFileSync` para sempre).
+- **Prompts**:
+  - O builder recebe linhas fixas de UI-EVIDENCE
+    (`shot-1440x900: ~/.opencode-remote/pilot/shots/builder/<TASK-ID>-r<ROUND>-1440.png`)
+    e as regras de formato que o parser do juiz impõe: sem code fence, bullet,
+    crase ou negrito.
+  - Planner (P0/P1) e builder recebem a regra de asserções acopladas. O spec
+    termina `## Touched files` com uma lista `Invalidates:` (grep nos testes,
+    PaneMap, i18n en/pt-BR, READMEs, PRODUCT).
+  - O builder lista o que invalidou no corpo do commit.
+  - Os prefixos estáveis (P1-077) continuam byte-idênticos entre tasks.
+- **Orçamento do desktop-flow** (`scripts/desktop-flow.test.ts`):
+  - Cada check é cobrado ao beat do seu prefixo (`P3-407: …`, `local: …`)
+    ou ao último banner. O relatório de saída imprime os 10 beats mais caros,
+    e a soma fecha com o tempo total.
+  - Acima de 80% dos 420s, sai `WARN desktop-flow budget: …`.
+  - Todo FAIL é repetido no stdout em `FAILED CHECKS (N)` com beat, instante
+    e detalhe.
+  - Um hook de `exit` garante o relatório também no estouro de prazo e na
+    falha de `open`.
+
 ## Verifiable findings (P2-015)
 
 Reviewers are LLMs and hallucinate. Finding bullets are parsed ONLY from a

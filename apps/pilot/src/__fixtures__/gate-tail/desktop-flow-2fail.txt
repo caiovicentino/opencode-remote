@@ -1,0 +1,1054 @@
+OK   web UI built (apps/web/dist/index.html)
+OK   desktop shell built (dist-electron/preload.js)
+OK   P1-096: injected block is session-independent (no per-session dir in system)
+OK   P1-068: session in a workspace WITHOUT AGENTS.md receives the protocol (marker + [file: line)
+OK   P1-096: first turn also carries the per-session path line as the last part
+OK   P1-068: session in a workspace whose AGENTS.md covers the protocol gets NO system block
+OK   P2-332: covered workspace still receives the per-session path line
+OK   open (hermetic launch)
+OK   boot rendered the app (#root mounted)
+--- P2-069: single instance per userData (3.0s elapsed)
+OK   P2-069: second instance on the same userData quits cleanly (lock held)
+OK   P2-069: lock-fail explained in the shared desktop.log
+OK   P2-069: first instance still answers after the double open
+OK   P2-069: exactly one window after the double open
+OK   P1-081: window stays invisible (wins probe)
+OK   P1-081: every BrowserWindow reports isVisible()=false during the hermetic run
+--- P2-148: welcome walk (keeper boot) (3.5s elapsed)
+OK   P2-148: welcome rendered on first boot
+OK   P2-148: step 1 is the intro
+OK   P2-148: banner count probe under the onboarding
+OK   P2-148: zero daemon banners while the onboarding shows
+OK   P2-148: 1440x900 welcome shot
+OK   P2-148: 1440x900 welcome shot is a real PNG
+OK   P2-148: advance to the agent step
+OK   P2-148: agent step rendered
+OK   P2-148: agent step copy is the calm degraded wording (en|pt)
+OK   P2-148: advance to the pairing step
+OK   P2-148: pairing invitation rendered
+OK   P2-148: host section title inside the welcome
+OK   P3-337: h2 count in the pairing card
+OK   P3-337: exactly one pairing title in the card
+OK   P2-148: explicit 'do this later' option
+OK   P2-148: .welcome-later present
+OK   P2-148: 390 welcome shot
+OK   P2-148: 390 welcome shot is a real PNG
+OK   P3-338: global skip absent on the final step
+OK   P3-338: .welcome-skip hidden on the pairing step
+OK   P2-148: leave via the in-context exit
+OK   P2-148: welcome absent after skip
+OK   P2-148: .welcome unmounted after skip
+OK   P2-148: home rendered after skip
+OK   P2-148: .degraded home after the onboarding
+OK   P3-365: 1440x900 gate-shell shot (resize)
+OK   P3-365: gate-shell 1440x900 shot is a real PNG
+OK   P3-365: sidebar skeleton while unpaired
+OK   P3-365: .desk-side present while not paired
+OK   P3-442: gate + Novo reads as resting-disabled with a hint at the button
+OK   P3-442: .desk-new disabled, label-dimmed, hinted inline at the gate
+OK   P3-365: open Mission Control from the rail
+OK   P3-365: Mission Control renders behind the gate
+OK   P3-365: mission pane visible while unpaired
+OK   P3-327: Mission Control stays calm behind the gate
+OK   P3-327: mission pane renders the calm empty state
+OK   P3-365: open Artifacts from the rail
+OK   P3-365: artifact list renders behind the gate
+OK   P3-365: artifact list visible while unpaired
+OK   P3-327: artifact list stays calm behind the gate
+OK   P3-327: artifact pane renders the calm empty copy
+OK   P3-365: close the pane via its back button
+OK   P3-365: close the stacked pane beneath it
+OK   P3-365: hero back after the panes close
+OK   P3-365: pane closed returns to the hero
+OK   P3-362: Go-menu Mission Control at the gate shell
+OK   P3-362: mission opens from the menu, no gate toast
+OK   P3-362: menu-click opens the pane with no pair toast
+OK   P3-362: close the menu-opened pane
+OK   P3-362: hero again after the menu-opened pane closes
+OK   P3-362: pane closed returns to the hero
+OK   P2-112: degraded journey rendered on first boot
+OK   P2-112: .degraded present
+OK   P2-112: journey kind attribute
+OK   P2-112: never-seen daemon reads as first contact
+OK   P3-450: reconnect CTA wears the shared accent primary
+OK   P3-450: computed CTA paint is the accent fill, not warn
+OK   P2-112: accusatory red banner absent on first contact
+OK   P2-112: .daemon-down not rendered for a never-seen daemon
+OK   P2-112: first-contact status copy
+OK   P2-112: non-accusatory first-contact title (en|pt)
+OK   P2-112: auto-retry line copy
+OK   P2-112: visible auto-retry indicator (en|pt)
+OK   P3-372: live meta read twice
+OK   P3-372: live meta segment renders elapsed seconds (en|pt)
+OK   P3-372: meta ticks with the 1s interval
+OK   P2-112: calm status really visible on screen
+OK   P2-112: 1440x900 degraded-journey shot
+OK   P2-112: 1440x900 shot is a real PNG
+OK   P2-112: 390 degraded-journey shot
+OK   P2-112: 390 shot is a real PNG
+OK   P2-112: reconnect button in the degraded view
+OK   P2-112: reconnect button present
+OK   P2-112: click Reconnect now
+OK   P2-112: result toast appears after the trying state
+OK   P2-112: toast copy
+OK   P2-112: honest result toast (en|pt)
+OK   P2-112: toast auto-dismisses
+OK   P3-394: seed the escalate hatch and reload
+OK   P3-394: escalation block rendered
+OK   P3-394: escalation detail copy
+OK   P3-394: desktop escalation names the in-app diagnostics, never a terminal (en|pt)
+OK   P3-394: diagnostics button inside the escalation block
+OK   P3-394: in-app diagnostics button rides the block
+OK   P3-394: 1440x900 escalation shot
+OK   P3-394: 1440x900 shot is a real PNG
+OK   P3-394: escalation survives the 390 resize
+OK   P3-394: escalation block still mounted at 390px
+OK   P3-394: 390 escalation shot
+OK   P3-394: 390 shot is a real PNG
+OK   P3-394: clear the escalate hatch
+OK   P2-112: manual pairing escape hatch
+OK   P3-366: ceremony rendered after the escape
+OK   P3-366: paste-first classes on the escape path
+OK   P3-366: paste is primary, scan cannot exist with the agent down (P3-427)
+OK   P3-427: agent-down verdict card renders on the escape
+OK   P3-427: card names the down agent and carries the reconnect action (en|pt)
+OK   P3-427: daemon-assuming intro gone with the agent down
+OK   P3-427: .pair-intro does not render in the agent-down state
+OK   P3-440: click Parear with an empty box
+OK   P3-440: inline empty-submit hint
+OK   P3-440: empty submit answers with the pairEmptyCode copy (en|pt)
+OK   P3-440: empty hint announces to screen readers
+OK   P3-440: .pair-empty-hint is role=alert
+OK   P3-440: empty submit focuses the paste box
+OK   P3-440: .pair-code holds focus after the empty submit
+OK   P3-440: empty submit flags the paste box aria-invalid
+OK   P3-440: .pair-code carries aria-invalid after the empty submit
+OK   P3-440: 1440x900 empty-submit shot
+OK   P3-440: empty-submit 1440x900 shot is a real PNG
+OK   P3-440: type into the paste box
+OK   P3-440: clear the empty-submit nudge
+OK   P3-440: the nudge and its flag dissolve on typing
+OK   P3-440: typing dissolves the empty-submit hint and flag
+OK   P3-334: section order host → client
+OK   P3-427: agent-down ceremony renders only the client section (en|pt)
+OK   P2-106: titled section count
+OK   P3-427: host section suppressed while the agent is down (1 section)
+OK   P3-427: host entry gone with the agent down
+OK   P3-427: .pair-remote-entry does not render in the agent-down state
+OK   P2-106: 1440x900 sections shot
+OK   P2-106: sections 1440x900 shot is a real PNG
+OK   P3-441: desktop-composed ceremony (action column + map support)
+OK   P3-441: two-column composition fills the width, stays centered, map above the fold
+OK   P3-441: the map rides its own column beside the ceremony
+OK   P3-441: support column sits to the right of the action column
+OK   P2-106: 390 sections shot
+OK   P2-106: sections 390 shot is a real PNG
+OK   P3-441: phone column below the shell breakpoint
+OK   P3-441: the ceremony folds back to the ~420px phone column at 390
+OK   P3-427: scan entry absent with the agent down
+OK   P3-427: .pair-scan-entry does not render in the agent-down state
+OK   P3-427: the lone 'or scan' divider dies with its branch
+OK   P3-427: no orphan divider, paste form intact (en|pt)
+OK   type invalid pairing code
+OK   click Pair (locale-proof .pair-submit)
+OK   pairing error rendered (.pair-error)
+OK   pairing error carries the invalid-code copy
+OK   P2-106: invalid-code format helper
+OK   P2-106: helper names the expected pairing-URI format (en|pt)
+OK   P2-106: error live-region semantics
+OK   P2-106: .pair-error is role=alert + aria-live=assertive
+OK   P2-106: 1440x900 error shot
+OK   P2-106: error 1440x900 shot is a real PNG
+OK   screenshot captured
+OK   shot is a real PNG (1440x900)
+OK   IPC app:version
+OK   version is a non-empty string
+OK   IPC app:pairingState
+OK   pairingState is the deterministic daemon-down object
+OK   P3-404: IPC app:screenAccess
+OK   P3-404: screenAccess verdict is closed-shaped
+OK   P3-404: IPC app:captureScreen (hermetic synthetic frame)
+OK   P3-404: hermetic capture answers the synthetic frame, never the real screen
+OK   P3-404: IPC app:listScreens (hermetic fake pair)
+OK   P3-404: hermetic source list is the deterministic fake pair
+OK   P2-328: the ephemeral relay child answers its own /healthz
+OK   P2-328: live testRelay round-trip — a real relay /healthz answers ok
+OK   P2-328: the live probe of the ephemeral relay is state ok
+OK   P2-328: live testRelay round-trip — a closed port is refused
+OK   P2-328: the live probe of a closed port is state refused
+OK   P2-332: live testRelay round-trip — an incompatible wire protocol is protocol-mismatch
+OK   P2-332: the live probe of the incompatible relay is state protocol-mismatch
+OK   P2-332: the ephemeral mismatch relay child answers its own /healthz
+OK   P1-070: pairIntro absent while the agent is down
+OK   P1-070: the local-first intro yields to the agent-down verdict (P3-427)
+OK   P3-427: agent-down verdict copy is the state's copy
+OK   P3-427: the agent-down title renders, intro and host entry stay absent (en|pt)
+OK   P1-046: preload exposes onMenuAction
+OK   P1-046: onMenuAction is a function
+OK   P1-046: Go menu item go-new-chat
+OK   P1-046: go-new-chat carries a shell-vocabulary label
+OK   P1-046: Go menu item go-quick-entry
+OK   P1-046: go-quick-entry carries a shell-vocabulary label
+OK   P1-046: Go menu item go-palette
+OK   P1-046: go-palette carries a shell-vocabulary label
+OK   P1-046: Go menu item go-pane-chat
+OK   P1-046: go-pane-chat carries a shell-vocabulary label
+OK   P1-046: Go menu item go-pane-artifacts
+OK   P1-046: go-pane-artifacts carries a shell-vocabulary label
+OK   P1-046: Go menu item go-pane-browser
+OK   P1-046: go-pane-browser carries a shell-vocabulary label
+OK   P1-046: Go menu item go-pane-files
+OK   P1-046: go-pane-files carries a shell-vocabulary label
+OK   P1-046: Go menu item go-pane-settings
+OK   P1-046: go-pane-settings carries a shell-vocabulary label
+OK   P1-046: go-pane-artifacts click dispatches
+OK   P3-328: pair-first hint probe after pane click
+OK   P3-328: dropped pane action surfaces the pair-first hint (en|pt)
+OK   P3-362: the gate toast names the requested pane, not a generic line
+OK   P3-328 r2: hint stacks above the pairing overlay and wins the hit-test
+OK   P3-367: re-arm the gate hint
+OK   P3-367: re-armed hint carries the pair-now action
+OK   P3-367: toast shows with its inline pair-now exit
+OK   P3-367: real click on the pair-now action
+OK   P3-367: state after the pair-now click
+OK   P3-367: pair-now click dismisses the toast with the manual ceremony visible
+--- P3-398: gate file drop (calm warning) (29.6s elapsed)
+OK   P3-398: synthesized drop at the gate (dragover + drop)
+OK   P3-398: dragover highlights the gate and drop clears the highlight
+OK   P3-398: gate drop surfaces the calm warning instead of silence
+OK   P3-398: re-arm the gate drop (1440 evidence)
+OK   P3-398: 1440x900 gate-drop shot
+OK   P3-398: gate-drop 1440x900 shot is a real PNG
+OK   P3-398: re-arm the gate drop (390 evidence)
+OK   P3-398: 390 gate-drop shot
+OK   P3-398: gate-drop 390 shot is a real PNG
+OK   P3-398: resize back to desktop width
+OK   P3-053: preload exposes sendUnread
+OK   P3-053: sendUnread is a function
+OK   P3-053: push unread=3 over ocr:unread
+OK   P3-053: read app:unreadBadge
+OK   P3-053: main received the pushed count (3)
+OK   P3-053: clear the badge (unread=0)
+OK   P3-053: read app:unreadBadge after clear
+OK   P3-053: badge clears to 0
+OK   P2-150: push unread=12 over ocr:unread
+OK   P2-150: read app:unreadBadge after push
+OK   P2-150: main received the pushed count (12)
+OK   P2-150: wins probe after the push
+OK   P2-150: app alive with exactly one window after the push
+OK   P2-150: 1440x900 badge shot
+OK   P2-150: 1440x900 shot is a real PNG
+OK   P2-150: clear the badge (unread=0)
+OK   P2-150: read app:unreadBadge after clear
+OK   P2-150: badge clears to 0
+OK   P2-326: open (hermetic launch, fresh userData)
+OK   P2-326: push unread=3 (first rise, hidden window)
+OK   P2-326: push unread=5 (rise inside the minimum interval)
+OK   P2-326: exactly one reply-notification verdict, the interval push stays quiet
+OK   P2-326: hermetic session never builds the native toast
+OK   P3-399: open (hermetic launch, fresh userData)
+OK   P3-399: push asks=1 (first rise, window out of focus)
+OK   P3-399: push asks=2 (rise inside the minimum interval)
+OK   P3-399: push asks=2 again (equal count never notifies)
+OK   P3-399: exactly one ask-notification verdict, interval and equal-count pushes stay quiet
+OK   P3-399: hermetic session never builds the native ask toast
+OK   P3-399: verdict lines carry no count and no ask content
+OK   P3-393: open (hermetic launch, fresh userData)
+OK   P3-393: exactly one forced consent offer, answered in place
+OK   P3-393: payload speaks the boot's shell language
+OK   P3-393: payload carries the interpolated version
+OK   P3-393: payload carries the what's-new line and the sanitized notes
+OK   P3-393: payload carries no address and no path from the fixture
+OK   P1-072: fake server picked a free port
+OK   P1-072: webview loads the fake server (executeJavaScript)
+OK   P1-072: real page text reaches the renderer (interactive pane, not a shot)
+OK   P1-072: webview scroll
+OK   P1-072: scrollTo reaches the page (scrollTop=500)
+OK   P1-072: webview click
+OK   P1-072: in-page button click works
+OK   reconnect: open (hermetic launch)
+OK   reconnect: skip the first-run welcome
+OK   reconnect: degraded journey carries the reconnecting status
+OK   reconnect: reconnecting kind on the journey card
+OK   reconnect: status title copy
+OK   reconnect: attempt counter in the status title (en|pt)
+OK   reconnect: status text visible
+OK   reconnect: IPC app:pairingState
+OK   reconnect: pairingState is the reconnecting object without QR (no overlay, no re-pairing)
+OK   reconnect: 1440x900 evidence shot
+OK   reconnect: 1440x900 shot is a real PNG
+OK   reconnect: 390 evidence shot
+OK   reconnect: 390 shot is a real PNG
+OK   mismatch: open (hermetic launch)
+OK   mismatch: skip the first-run welcome
+OK   mismatch: .daemon-version-mismatch banner rendered
+OK   mismatch: banner element present
+OK   mismatch: red daemon-down banner absent
+OK   mismatch: daemon-down strip not rendered
+OK   mismatch: banner copy
+OK   mismatch: banner names both versions and the restart action
+OK   mismatch: reconnect button inside the banner
+OK   mismatch: reconnect button present
+OK   mismatch: IPC app:pairingState
+OK   mismatch: pairingState carries versions + verdict over ocr:pairing-state
+OK   mismatch: 1440x900 evidence shot
+OK   mismatch: 1440x900 shot is a real PNG
+OK   mismatch: 390 evidence shot
+OK   mismatch: 390 shot is a real PNG
+OK   P3-406: open (forced-down gate instance)
+OK   P3-454: seed the escalate hatch and reload
+OK   P3-454: advance to the agent step
+OK   P3-454: the agent step renders the live retry line
+OK   P3-454: the wizard retry segment ticks
+OK   P3-454: the wizard's retry clock ticks with the 1s interval
+OK   P3-454: the escalated agent step carries the diagnostics path
+OK   P3-454: the escalation block renders with its diagnostics button
+OK   P3-454: drop the hatch so the gate card mounts plain
+OK   P3-454: open diagnostics from the escalated step
+OK   P3-454: the diagnostics escape leaves the wizard into the Settings surface
+OK   P3-454: back from help to the gate
+OK   P3-406: the gate card is up with the queue composer
+OK   P3-406: deterministic gate precondition
+OK   P3-406: go-quick-entry click at the gate
+OK   P3-406: offline queue box focused after the fire
+OK   P3-406: the gate's offline queue composer is the focused element
+OK   P3-406: the gate stays on the degraded card after the fire
+OK   P3-406: no gate-hint toast for quickEntry (it has a real target) and no ceremony jump
+OK   P3-406: 1440x900 gate shot
+OK   P3-406: gate 1440x900 shot is a real PNG
+OK   P3-406: 390 gate shot
+OK   P3-406: gate 390 shot is a real PNG
+OK   scan: open (camera-blocked launch)
+OK   scan: skip the first-run welcome
+OK   scan: local auto-pair landed
+OK   scan: open the machine picker from the footer
+OK   scan: machine picker rendered
+OK   scan: request a new machine
+OK   scan: add-machine ceremony rendered
+OK   P1-070: pairIntro renders on the add-machine ceremony
+OK   P1-070: pairIntro is the new local-first copy (en|pt)
+OK   P1-070: .pair-remote-entry present
+OK   P1-070: pairRemoteTitle copy rendered on the add-machine ceremony
+OK   scan: open the scanner (desktop option)
+OK   scan: unavailable state rendered
+OK   scan: paste CTA present
+OK   scan: paste CTA visible in the unavailable state
+OK   scan-blocked: verdict phrase rendered
+OK   scan-blocked: OS verdict phrase replaces the static sentence
+OK   scan-blocked: system-panel action present
+OK   scan-blocked: panel action visible
+OK   scan-blocked: 1440x900 evidence shot
+OK   scan-blocked: 1440x900 shot is a real PNG
+OK   scan-blocked: 390 evidence shot
+OK   scan-blocked: 390 shot is a real PNG
+OK   scan: click paste CTA
+OK   scan: primary paste form restored
+OK   scan: CTA returns to the paste form (colar codigo)
+OK   scan-live: open (fake-camera launch)
+OK   scan-live: skip the first-run welcome
+OK   scan-live: local auto-pair landed
+OK   scan-live: open the machine picker from the footer
+OK   scan-live: machine picker rendered
+OK   scan-live: request a new machine
+OK   scan-live: add-machine ceremony rendered
+OK   scan-live: open the scanner
+OK   scan-live: preview state reached
+OK   scan-live: 1440x900 evidence shot
+OK   scan-live: 1440x900 shot is a real PNG
+OK   scan-live: 390 evidence shot
+OK   scan-live: 390 shot is a real PNG
+OK   scan-live: video box at 390px
+OK   scan-live: preview survives 390px (video keeps a visible box)
+OK   scan-live: kill the feed (NO SIGNAL repro)
+OK   scan-live: NO SIGNAL falls back to unavailable
+OK   scan-live: unavailable reason is the empty feed
+OK   scan-live: empty feed reports no-signal
+OK   scan-live: paste CTA present after NO SIGNAL
+OK   scan-live: paste CTA offered after the feed dies
+OK   local: hermetic daemon published the 0600 state file
+OK   local: hermetic daemon answers /api/health 200
+OK   local: open (hermetic local-boot launch)
+OK   P2-355: install the layout-shift observer (buffered)
+OK   P2-355: observer installed (fail-closed — no observer, no verdict)
+OK   local: skip the first-run welcome
+OK   local: IPC app:pairingState
+OK   local: pairingState is mode=local with no URI and no QR
+OK   local: data-phase=paired hook rendered
+OK   P2-355: read the shift buffer after the settle
+OK   P2-355: zero named-region shifts after first paint (2 entries, regions: sidebar)
+P2-355: unnamed shifts (warning): div.welcome-col 0.0015722656250000003
+OK   P2-355: 1440x900 shift-gate shot
+OK   P2-355: 1440x900 shot is a real PNG
+OK   P2-355: 390 shift-gate shot
+OK   P2-355: 390 shot is a real PNG
+OK   P2-355: resize back to desktop width
+OK   local: QR overlay absent
+OK   local: .pair-overlay not rendered
+OK   local: pairing form absent
+OK   local: .pair-submit not rendered
+OK   local: open Settings pane
+OK   local: remote-pairing card in Settings
+OK   local: pairRemoteTitle + action copy rendered in Settings
+OK   local: 1440x900 evidence shot
+OK   local: 1440x900 shot is a real PNG
+OK   P2-106: request remote pairing (Settings entry)
+OK   P2-106: QR overlay renders
+OK   P2-106: 1440x900 overlay shot
+OK   P2-106: overlay 1440x900 shot is a real PNG
+OK   P2-106: 'pair later' classes
+OK   P2-106: 'pair later' is the quiet link, not .primary
+OK   P2-337: overlay shows the unavailable notice with the open-settings action
+OK   P2-337: unavailable notice renders with the inline open-settings action
+OK   P2-337: close the settings pane (the click must open it)
+OK   P2-337: real click on the open-settings action
+OK   P2-337: settings pane open, relay block marked, address field focused
+OK   P3-453: re-request remote pairing (overlay stays dismissed)
+OK   P3-453: relay block carries the copy-independent link-state attribute
+OK   P3-453: the Settings line names the live state by attribute — dialing, warn-toned
+OK   P3-453: 1440x900 relay-link shot
+OK   P3-453: relay-link 1440x900 shot is a real PNG
+OK   P2-340: the redial button renders beside the dialing link line
+OK   P2-340: click Reconnect now (attribute selector)
+OK   P2-340: the click lands a terminal closed-set verdict
+OK   P2-340: 1440x900 redial shot
+OK   P2-340: redial 1440x900 shot is a real PNG
+OK   P2-337: 1440x900 focused relay shot
+OK   P2-337: focused relay 1440x900 shot is a real PNG
+OK   P2-337: resize to 390 (vehicle shot)
+OK   P2-337: relay block still marked after the mobile remount
+OK   P2-337: scroll the marked block into view (390 evidence)
+OK   P2-337: 390 focused relay shot
+OK   P2-337: focused relay 390 shot is a real PNG
+OK   P3-453: the link-state attribute survives the mobile remount
+OK   P3-453: the live line keeps its state attribute after the 390 remount
+OK   P3-453: 390 relay-link shot
+OK   P3-453: relay-link 390 shot is a real PNG
+OK   P2-340: the redial button survives the mobile remount
+OK   P2-340: scroll the relay block into view (390 evidence)
+OK   P2-340: 390 redial shot
+OK   P2-340: redial 390 shot is a real PNG
+OK   P2-337: resize back to desktop width
+OK   P2-337: re-open the overlay (Celular rail entry)
+OK   P2-337: overlay re-opened for the pair-link beats
+OK   P2-193: store a reachable app address
+OK   P2-193: overlay collapses to a single combined QR
+OK   P2-193: 1440x900 pair-link shot
+OK   P2-193: pair-link 1440x900 shot is a real PNG
+OK   P2-193: 390 pair-link shot
+OK   P2-193: pair-link 390 shot is a real PNG
+OK   P2-193: resize back to desktop width
+OK   P2-197: point the app address at a dead local port
+OK   P2-197: reach warning renders next to the (still visible) QR
+OK   P2-197: 1440x900 reach shot
+OK   P2-197: reach 1440x900 shot is a real PNG
+OK   P2-197: 390 reach shot
+OK   P2-197: reach 390 shot is a real PNG
+OK   P2-197: restore the stored app address
+OK   P2-199: relay-link line renders next to the (still visible) QR
+OK   P2-199: 1440x900 relay-link shot
+OK   P2-199: relay-link 1440x900 shot is a real PNG
+OK   P2-199: 390 relay-link shot
+OK   P2-199: relay-link 390 shot is a real PNG
+OK   P2-343: the overlay carries the redial action beside the warn line
+OK   P2-343: click Reconnect now in the overlay (own attribute)
+OK   P2-343: the overlay redial lands a terminal closed-set verdict
+OK   P2-343: 1440x900 overlay redial shot
+OK   P2-343: overlay redial 1440x900 shot is a real PNG
+OK   P2-343: 390 overlay redial shot
+OK   P2-343: overlay redial 390 shot is a real PNG
+OK   P2-106: dismiss via the quiet link
+OK   P2-106: overlay dismissed
+OK   local: 390 evidence shot
+OK   local: 390 shot is a real PNG
+OK   P2-108: back to the Chats board (Go menu)
+OK   P2-108: open the drawer
+OK   P2-108: chats destination
+OK   P2-108: mobile overline chrome probe
+OK   P2-108: mobile chats chrome renders demoted (≤14px title)
+OK   P2-108: mobile overline evidence shot
+OK   P2-123: rail Conversas closes the settings pane
+OK   P2-123: resize back to desktop width
+OK   P2-123: serif greeting rendered at desktop width
+OK   P2-123: composer, toggle, selector, mic and ideas mounted
+OK   P2-123: model selector + mic present (mode toggle removed — P1-056)
+OK   P2-123: central composer placeholder copy (en|pt)
+OK   P2-123: 3 ideas rendered
+OK   P2-123: every idea carries a non-empty prompt and is enabled
+OK   P2-123: 1440x900 home evidence shot
+OK   P2-123: 1440x900 home shot is a real PNG
+OK   P2-123: click idea 1
+OK   P2-123: idea click yields chat or inline error (never frozen)
+OK   P2-123: 390 evidence shot (mobile board)
+OK   P2-123: 390 home shot is a real PNG
+OK   P1-080: deep-link opens the chat column
+OK   P1-080: .messages mounted (390px)
+OK   P1-080: long diff bubble contained (390px)
+     P1-080 measurements (390px): {
+  "mounted": true,
+  "preInject": 0,
+  "preOffenders": [],
+  "docOverflow": 0,
+  "msgRight": 374,
+  "vw": 390,
+  "preScrollsInside": true,
+  "postOffenders": []
+}
+OK   P1-080: chat chain mounted (390px)
+OK   P1-080: nothing leaves the viewport (390px)
+OK   P1-080: long line scrolls INSIDE the code block (390px)
+OK   P1-080: 390px repro shot
+OK   P1-080: resize to desktop width
+OK   P1-080: .messages mounted (1440px)
+OK   P1-080: long diff bubble contained (1440px)
+     P1-080 measurements (1440px): {
+  "mounted": true,
+  "preInject": 0,
+  "preOffenders": [],
+  "docOverflow": 0,
+  "msgRight": 1224,
+  "vw": 1440,
+  "preScrollsInside": true,
+  "postOffenders": []
+}
+OK   P1-080: chat chain mounted (1440px)
+OK   P1-080: nothing leaves the viewport (1440px)
+OK   P1-080: long line scrolls INSIDE the code block (1440px)
+OK   P1-080: artifact pane mounted (split-pane)
+     P1-080 measurements (split-pane): {
+  "mounted": true,
+  "splitClass": true,
+  "docOverflow": 0,
+  "paneRight": 1224,
+  "paneWidth": 291,
+  "vw": 1440,
+  "panePreScrollsInside": true,
+  "postOffenders": []
+}
+OK   P1-080: split-pane structure mounted
+OK   P1-080: artifact pane does not leave the viewport (split-pane)
+OK   P1-080: wide artifact line scrolls INSIDE the pane (split-pane)
+OK   P1-080: 1440px repro shot
+OK   P1-088: deep-link to session A
+OK   P1-088: A's restore effect committed (empty draft)
+OK   P1-088: type draft in A
+OK   P1-088: 1440x900 evidence shot
+OK   P1-088: switch to session B
+OK   P1-088: B's composer starts empty (no bleed from A)
+OK   P1-088: type draft in B
+OK   P1-088: back to session A
+OK   P1-088: A's draft intact after the B round-trip
+OK   P1-088: send in A (offline — optimistic clear)
+OK   P1-088: sending cleared A's composer
+OK   P1-088: switch to B after send
+OK   P1-088: B's draft survived A's send
+OK   P1-088: back to A after send
+OK   P1-088: sent draft is never restored in A
+OK   P1-088: 390 evidence shot
+OK   P3-086: resize to desktop width
+OK   P3-086: attach a PNG through the hidden input
+OK   P3-086: attached file previews as a chip in the composer
+OK   P3-086: remove the attachment chip
+OK   P3-086: chip removed
+OK   P3-086: mic rendered but disabled without perms
+OK   P3-086: mic is a real disabled placeholder (no transcribe cap)
+OK   P3-086: open the agent/model menu
+OK   P3-086: menu rendered with agent options
+OK   P3-086: pick plan in the inline menu
+OK   P3-086: trigger reflects the picked agent
+OK   P3-086: paste 30 lines into the composer
+OK   P3-086: auto-grow clamps the box past ~6 lines
+OK   P3-086: box grew from one line but stays clamped (~6 lines)
+OK   P3-086: past the cap the textarea scrolls internally
+OK   P3-086: reset the draft
+OK   P3-086: Shift+Enter does not send
+OK   P3-086: Shift+Enter kept the draft (no send)
+OK   P3-086: Enter sends
+OK   P3-086: Enter cleared the composer (send fired)
+OK   P3-086: offline send lands the optimistic bubble
+OK   P3-086: composer evidence shot
+--- P3-087: motion pass — reduced on/off evidence (101.2s elapsed)
+OK   P3-087: reduced off — animated element computed
+OK   P3-087: motion on — entrance animations live (msg-in|screen-in)
+OK   P3-087: reduced-OFF evidence shot
+OK   P3-087: emulate prefers-reduced-motion
+OK   P3-087: reduced on — matchMedia + computed style
+OK   P3-087: reduce matches and neutralizes every animation (name none)
+OK   P3-087: reduced-ON evidence shot
+OK   P3-087: restore motion preference
+OK   P3-087: 390 evidence shot
+OK   P2-092: test page server picked a free port
+OK   P2-092: resize to desktop width
+OK   P2-092: desk layout mounted
+OK   P2-092: open Browser pane
+OK   P2-092: .browser-frame webview mounted
+OK   P2-092: colored test page loads in the pane
+OK   P2-092: measure pane boxes
+     P2-092 measurements (baseline): {
+  "frame": {
+    "w": 517,
+    "h": 796
+  },
+  "el": {
+    "w": 517,
+    "h": 796
+  },
+  "guest": {
+    "iw": 518,
+    "ih": 796
+  }
+}
+OK   P2-092: webview element occupies the pane bounding box
+OK   P2-092: guest viewport fills the pane (no top strip)
+OK   P2-092: maximize the pane
+OK   P2-092: measure pane boxes (maximized)
+     P2-092 measurements (maximized): {
+  "frame": {
+    "w": 1151,
+    "h": 796
+  },
+  "el": {
+    "w": 1151,
+    "h": 796
+  },
+  "guest": {
+    "iw": 1151,
+    "ih": 796
+  }
+}
+OK   P2-092: guest tracks the pane after a width change (resize path)
+OK   P2-092: restore the pane
+OK   P2-092: pane-filled evidence shot
+OK   local: daemon loss degrades without QR
+OK   local: degradation banner rendered
+OK   local: reconnecting/down banner present
+OK   local: banner count probe
+OK   P2-108: daemon falling renders a single banner
+--- P1-089: fake backend + second hermetic boot (108.8s elapsed)
+OK   P1-089: boot-2 daemon published the 0600 state file
+OK   P1-089: open (second hermetic boot, live fake backend)
+OK   P1-089: skip the first-run welcome
+OK   P1-089: boot-2 paired hook rendered
+OK   P1-089: seed the offline queue of the flushed session
+OK   P1-089: deep-link to the queued session
+OK   P1-089: offline queue drained
+OK   P1-089: flushed message reached the fake backend (POST recorded)
+OK   P1-089: no pending bubbles left after the flush
+OK   P1-089: deep-link to the replay session
+OK   P1-089: history settles at the row count
+OK   P1-089: burst delivered over the daemon's SSE bridge
+OK   P1-089: replayed idle does NOT duplicate a history bubble
+OK   P1-089: switch to the flushed session
+OK   P1-089: reentry — flushed session at row count
+OK   P1-089: back to the replay session
+OK   P1-089: reentry — replay session at row count
+OK   P1-089: switch to the flushed session
+OK   P1-089: reentry — flushed session at row count
+OK   P1-089: back to the replay session
+OK   P1-089: reentry — replay session at row count
+OK   P1-089: switch to the flushed session
+OK   P1-089: reentry — flushed session at row count
+OK   P1-089: back to the replay session
+OK   P1-089: reentry — replay session at row count
+OK   P1-089: bubble count stable (delta 0) across the 3 re-entries
+OK   P1-089: 1440x900 evidence shot
+OK   P1-089: 1440x900 shot is a real PNG
+OK   P1-089: 390 evidence shot
+OK   P1-089: 390 shot is a real PNG
+OK   P1-089: chat remounted at 390px
+OK   P1-089: back to the conversation list
+OK   P1-089: board rendered (chat unmounted)
+OK   P1-089: open the drawer
+OK   P1-089: chats destination
+OK   P1-089: session row rendered on the board
+OK   P1-089: click the session row
+OK   P1-089: board re-entry stays at row count
+--- P2-090: artifact auto-open on idle (137.5s elapsed)
+OK   P2-090: resize to desktop width
+OK   P2-090: desk chat remounted at 1440px
+OK   P2-090: open the artifact session
+FAIL P2-090: session chat rendered without the pane
+OK   P2-090: split-pane opened by itself on idle
+OK   P2-090: pane renders the artifact
+OK   P2-090: pane shows index.html
+OK   P2-090: auto-open evidence shot
+OK   P2-090: user closes the auto pane
+OK   P2-090: pane closed by the user
+OK   P2-090: closed pane not overridden by idle
+OK   P2-090: manual close survives the next idle
+OK   P2-090: browser pane opened (preview priority)
+OK   P2-090: artifact pane suppressed while browser is up
+OK   P2-090: browser keeps priority over the artifact pane
+OK   P2-090: browser pane untouched
+OK   P2-090: browser pane was not overridden either
+OK   P2-090: 390 evidence shot
+--- P2-091: artifact navigation (card + list → split-pane) (159.7s elapsed)
+OK   P2-091: resize to desktop width
+OK   P2-091: chat remounted at 1440px
+OK   P2-091: open the artifact session
+OK   P2-091: session chat rendered
+OK   P2-091: artifact card rendered under the bubble
+OK   P2-091: click the artifact card
+OK   P2-091: card opens the split-pane beside the chat
+OK   P2-091: card→split evidence shot
+OK   P2-091: open the artifacts list
+OK   P2-091: list groups by conversation title (no raw session id)
+OK   P2-091: click the artifact in the list
+OK   P2-091: list item → Conversas with the split-pane (no full-screen detour)
+OK   P2-091: list→split evidence shot
+OK   P2-091: viewer back arrow closes the pane
+OK   P2-091: pane closed, chat stays
+OK   P2-091: 390 evidence shot
+--- P3-084: sidebar grouping + Cmd+K preview (163.5s elapsed)
+OK   P3-084: resize to desktop width
+OK   P3-084: sidebar rows mounted
+OK   P3-084: Hoje/Ontem/Anteriores heads rendered in order
+OK   P3-084: row hover actions present
+OK   P3-084: rename + archive buttons rendered on rows
+OK   P3-084: open the today conversation
+OK   P3-084: active row is the open conversation
+OK   P3-084: active row carries aria-current
+OK   P3-084: aria-current=true on the active row
+OK   P3-084: grouped sidebar evidence shot
+OK   P3-084: open the palette via the Go menu
+OK   P3-084: palette rendered
+OK   P3-084: preview line shows the last message
+OK   P3-084: .palette-sub element rendered
+OK   P3-084: preview sits on its own muted line
+OK   P3-084: palette evidence shot
+OK   P3-084: close the palette (Escape)
+OK   P3-084: palette closed by Escape
+OK   P3-084: 390 evidence shot
+OK   P3-084: return to the artifact session
+OK   P3-084: artifact session chat rendered again
+--- P2-124: sidebar shell (new + nav + account footer) (165.6s elapsed)
+OK   P2-124: resize to desktop width
+OK   P2-124: desktop shell mounted
+OK   P2-124: sidebar column width
+OK   P2-124: sidebar is 280px wide
+OK   P2-124: section nav shape
+OK   P2-124: 6 nav buttons, each with an SVG icon
+OK   P2-124: zero emoji/glyphs in the sidebar
+OK   P2-124: sidebar copy is glyph-free
+OK   P2-124: new button → nav → list order
+OK   P2-124: .desk-new precedes .desk-nav precedes .sess-rows
+OK   P2-124: + New spans the column
+OK   P2-124: .desk-new fills the column (±2px)
+OK   P2-124: account footer contents
+OK   P2-124: footer name matches the machine name
+OK   P2-124: footer plan names the connection mode
+OK   P2-124: open the machine picker from the footer
+OK   P2-124: machine picker rendered
+OK   P2-124: close the machine picker
+OK   P2-124: machine picker closed
+OK   P2-124: list + temporal groups intact after the picker
+OK   P2-124: today,yesterday,earlier heads survive
+OK   P2-124: sidebar shell evidence shot
+OK   P2-124: narrow evidence shot
+OK   P2-108: sidebar with search row evidence shot
+OK   P2-108: open the search filter menu
+OK   P2-108: filter menu shape
+OK   P2-108: filter menu carries 3 options
+OK   P2-108: filter menu evidence shot
+OK   P2-108: close the filter menu
+--- P2-323: rename dialog over the session list (168.2s elapsed)
+OK   P2-323: read the top row title
+OK   P2-323: open the rename dialog
+OK   P2-323: rename dialog rendered
+OK   P2-323: read the dialog input
+OK   P2-323: dialog input echoes the row title
+OK   P2-323: focus is on the input
+OK   P2-323: input takes focus on open
+OK   P2-323: rename dialog evidence shot
+OK   P2-323: confirm with an identical title
+OK   P2-323: identical title keeps confirm disabled
+OK   P2-323: close the dialog (Escape)
+OK   P2-323: dialog closed by Escape
+OK   P2-323: focus after close
+OK   P2-323: focus returns to the opener
+OK   P2-323: reopen the dialog
+OK   P2-323: dialog rendered again
+OK   P2-323: type a new title
+OK   P2-323: confirm the rename
+OK   P2-323: dialog closed after confirm
+OK   P2-323: rename PATCH reached the backend
+OK   P2-323: drop to phone width
+OK   P2-323: leave the chat for the board
+OK   P2-323: open the drawer
+OK   P2-323: chats destination
+OK   P2-323: open the row action sheet
+OK   P2-323: action sheet rendered at 390
+OK   P2-323: open rename from the sheet
+OK   P2-323: rename dialog rendered at 390
+OK   P2-323: rename dialog narrow evidence shot
+OK   P2-323: close the narrow dialog
+OK   P2-323: return to the artifact session
+OK   P2-323: artifact session chat rendered again
+OK   P2-323: restore desktop width
+--- P3-085: thinking block + streaming polish (172.7s elapsed)
+OK   P3-085: resize to desktop width
+OK   P3-085: chat remounted at 1440px
+OK   P3-085: open the thinking session
+OK   P3-085: session chat rendered
+OK   P3-085: thinking block expanded while streaming reasoning
+OK   P3-085: live thinking label rendered
+OK   P3-085: block collapses to 'Pensou por Xs' when the answer starts
+OK   P3-085: streaming caret visible in the live bubble
+OK   P3-085: long response overflows the viewport
+OK   P3-085: reader scrolls away from the tail
+OK   P3-085: floating jump-end pill appears
+OK   P3-085: autoscroll does not fight the reader
+OK   P3-085: scroll stays put while the tail grows (far from tail)
+OK   P3-085: click jump-end
+OK   P3-085: jump returns to the tail (pill gone)
+OK   P3-085: caret gone after idle
+OK   P3-085: click the collapsed thinking head
+OK   P3-085: click expands the reasoning text
+OK   P3-085: 1440 evidence shot
+OK   P3-085: 390 evidence shot
+OK   P3-085: chat remounted at 390px
+OK   P3-085: thinking block from history starts collapsed
+OK   P3-085: return to the artifact session
+OK   P3-085: artifact session chat rendered again
+--- P2-097: oversized artifact shows a friendly 413 error (177.4s elapsed)
+OK   P2-097: resize to desktop width
+OK   P2-097: chat remounted at 1440px
+OK   P2-097: artifact card rendered for big.txt
+OK   P2-097: click the big.txt card
+OK   P2-097: pane shows the friendly too-large error
+OK   P2-097: header Save hidden for refused bytes
+OK   P2-097: Save is hidden (no empty-file save)
+OK   P2-097: 1440 evidence shot
+OK   P2-097: 390 evidence shot
+--- P1-093: auto-approve failure surfaces an actionable card (179.0s elapsed)
+OK   P1-093: resize to desktop width
+OK   P1-093: chat remounted at 1440px
+OK   P1-093: open Settings pane
+OK   P1-093: settings loaded (footer shows the daemon version)
+OK   P1-093: toggle AutoMode on (real UI)
+OK   P1-093: AutoMode checkbox is checked
+OK   P1-093: settings PATCH reached the daemon (audited)
+OK   P1-093: open the failing session
+OK   P1-093: session chat rendered
+OK   P1-093: AutoMode badge visible (daemon echoed the toggle)
+OK   P1-093: red auto-fail note visible in the composer
+OK   P1-093: actionable card rendered despite AutoMode
+OK   P1-093: exactly 2 POSTs on the fake (retry 1x, no loop)
+OK   P1-093: evidence shot
+OK   P1-093: 390 evidence shot
+--- P3-406: quick entry — one key, one conversation, composer focused (182.3s elapsed)
+OK   P3-406: deep-link to the six-row session
+OK   P3-406: history settled on the deep-linked session
+OK   P3-406: first quick-entry fire
+OK   P3-406: composer focused after the fire
+OK   P3-406: the first fire created exactly one conversation
+OK   P3-406: second quick-entry fire (double-fire window)
+OK   P3-406: the second fire created no conversation (interval collapse or empty-chat focus)
+OK   P3-406: the composer is still the focused element
+OK   P3-406: quick entry leaves the user typing in the new conversation
+OK   P3-406: 1440x900 evidence shot
+OK   P3-406: 390 evidence shot
+--- P2-138: upstream notice (fake opencode 401) (183.6s elapsed)
+OK   P2-138: hermetic daemon (401 upstream) published the 0600 state file
+OK   P2-138: /api/health carries opencode.state=unauthorized
+OK   P2-138: open (hermetic launch)
+OK   P2-138: skip the first-run welcome
+OK   P2-138: app paired with the hermetic daemon
+OK   P2-138: IPC app:pairingState
+OK   P2-138: pairingState carries opencode.state=unauthorized
+OK   P2-138: open Settings pane
+OK   P2-138: Settings help card rendered
+OK   P2-138: single help card probe
+OK   P2-138: exactly one visible card carries the hint
+OK   P2-138: banner count probe
+OK   P2-138: upstream notice never becomes a second banner (P2-108)
+OK   P2-138: hint copy probe
+OK   P2-138: help card names the refusal and the action
+OK   P2-138: 1440x900 evidence shot
+OK   P2-138: 1440x900 shot is a real PNG
+OK   P2-138: 390 evidence shot
+OK   P2-138: 390 shot is a real PNG
+--- P3-392: binary-missing install journey (hatch daemon) (187.7s elapsed)
+OK   P3-392: hermetic daemon (missing-binary hatch) published the 0600 state file
+OK   P3-392: /api/health carries unreachable + binaryFound=false
+OK   P3-392: open (hermetic launch)
+OK   P3-392: welcome step 1 → start
+OK   P3-392: install-journey block rendered
+OK   P3-392: seed the action captures
+OK   P3-392: copy install command
+OK   P3-392: copied feedback is a terminal state
+OK   P3-392: clipboard payload
+OK   P3-392: clipboard carries the official install command
+OK   P3-392: open install instructions
+OK   P3-392: window.open target
+OK   P3-392: instructions opened at the official docs
+OK   P3-392: check again
+OK   P3-392: recheck lands in the terminal still-missing state
+OK   P3-392: 1440x900 evidence shot
+OK   P3-392: 1440x900 shot is a real PNG
+OK   P3-392: 390 evidence shot
+OK   P3-392: 390 shot is a real PNG
+OK   P3-392: skip the rest of the welcome
+OK   P3-392: app paired with the hatch daemon
+OK   P3-392: open Settings pane
+OK   P3-392: Settings help card rendered
+OK   P3-392: Settings help copy probe
+OK   P3-392: Settings help names the missing install, never the generic line
+--- P3-396: model-credential journey (hatch daemon) (202.2s elapsed)
+OK   P3-396: hermetic daemon (model hatch) published the 0600 state file
+OK   P3-396: open (hermetic launch)
+OK   P3-396: skip the first-run welcome
+OK   P3-396: app paired with the hatch daemon
+OK   P3-396: credential-journey block rendered on the home composer
+OK   P3-396: hint copy probe
+OK   P3-396: desktop copy speaks to the reader, never to the machine manager
+OK   P3-396: seed the action captures
+OK   P3-396: copy login command
+OK   P3-396: copied feedback is a terminal state
+OK   P3-396: clipboard payload
+OK   P3-396: clipboard carries the official login command
+OK   P3-396: open setup instructions
+OK   P3-396: window.open target
+OK   P3-396: instructions opened at the official docs
+OK   P3-396: check again
+OK   P3-396: recheck lands in the terminal still-not-ready state
+OK   P3-396: 1440x900 evidence shot
+OK   P3-396: 1440x900 shot is a real PNG
+OK   P3-396: 390 evidence shot
+OK   P3-396: 390 shot is a real PNG
+--- P2-140: sidecar exit verdict (fake entry exits 1 with EADDRINUSE) (207.1s elapsed)
+OK   P2-140: open (hermetic launch with a dying fake daemon)
+OK   P2-140: skip the first-run welcome
+OK   P2-140: exit hint rendered inside the calm card
+OK   P2-140: single degraded card probe
+OK   P2-140: exactly one calm card
+OK   P2-140: single exit block probe
+OK   P2-140: exactly one exit-verdict block
+OK   P2-140: banner count probe
+OK   P2-140: verdict never becomes a second banner (P2-108)
+OK   P2-140: exit copy probe
+OK   P2-140: port-busy title + actionable hint (en|pt)
+OK   P2-140: IPC app:pairingState
+OK   P2-140: pairingState carries daemonDown + kind=port-busy over ocr:pairing-state
+OK   P2-140: verdict copy is path-free and non-empty
+OK   P2-140: 1440x900 evidence shot
+OK   P2-140: 1440x900 shot is a real PNG
+OK   P2-140: 390 evidence shot
+OK   P2-140: 390 shot is a real PNG
+--- P2-148: welcome flag survives the relaunch (same userData) (210.6s elapsed)
+OK   P2-148: open (second boot, same userData)
+OK   P2-148: boot rendered the app
+OK   P2-148: onboarding absent on the second boot
+OK   P2-148: .welcome not rendered again
+OK   P2-148: home directly on the second boot
+OK   P2-148: degraded home shown instead of the onboarding
+--- P2-152: one-time close-to-tray hint (224.2s elapsed)
+OK   P2-152: open (fresh userData)
+OK   P2-152: boot rendered the app
+OK   P2-152: close the window (red-button path)
+OK   P2-152: hint flag stamped in userData
+OK   P2-152: wins probe after the close
+OK   P2-152: window survives the close (close-to-tray)
+OK   P2-152: exactly one hint line in desktop.log
+OK   P2-152: flag content is the sentinel
+OK   P2-152: quit the first instance
+OK   P2-152: open (second boot, same userData)
+OK   P2-152: boot rendered the app again
+OK   P2-152: close the window again
+OK   P2-152: second close stays silent (shown once)
+--- P3-398: home file drop (healthy fake opencode) (240.4s elapsed)
+OK   P3-398: hermetic daemon (fake sessions upstream) published the 0600 state file
+OK   P3-398: open (hermetic launch)
+OK   P3-398: skip the first-run welcome
+OK   P3-398: app paired with the hermetic daemon
+OK   P3-398: home hero rendered (no session yet)
+OK   P3-398: synthesized drop on the home (dragover + drop)
+OK   P3-398: dragover highlights the home and drop clears the highlight
+OK   P3-398: drop opened the conversation with the file attached
+OK   P3-398: 1440x900 home-drop shot
+OK   P3-398: home-drop 1440x900 shot is a real PNG
+OK   P3-398: 390 home-drop shot
+OK   P3-398: home-drop 390 shot is a real PNG
+--- P3-407: diagnostics save-to-file (hatch) writes the redacted bundle (243.8s elapsed)
+OK   P3-407: hermetic daemon published the 0600 state file
+OK   P3-407: open (hermetic launch with the save hatch)
+OK   P3-407: skip the first-run welcome
+OK   P3-407: app paired with the hermetic daemon
+OK   P3-407: open Settings pane
+OK   P3-407: settings loaded (footer shows the daemon version)
+OK   P3-407: click the save-to-file action
+OK   P3-407: save action wrote the file at the hatch path
+OK   P3-407: saved file carries NO pairing URI (sidecar marker instead)
+OK   P3-407: saved file carries NO planted token and NO home prefix
+OK   P3-407: saved file is still a useful report
+OK   P3-407: success toast is the terminal state
+OK   P3-407: 1440x900 evidence shot
+OK   P3-407: 1440x900 shot is a real PNG
+OK   P3-407: 390 evidence shot
+OK   P3-407: 390 shot is a real PNG
+--- P3-462: normal composer — no verdict ever reached it, nothing changed (247.8s elapsed)
+OK   P3-462: hermetic normal daemon published the 0600 state file
+     P3-462: host disk verdict (for the record): ok
+OK   P3-462: open (normal boot)
+OK   P3-462: skip the first-run welcome
+OK   P3-462: app paired with the hermetic normal daemon
+OK   P3-462: deep-link opens the chat (daemon already gone)
+OK   P3-462: the composer mounts with no disk advice
+     P3-462: normal composer probe: {
+  "mounted": true,
+  "disabled": false,
+  "warns": 0,
+  "phrases": []
+}
+OK   P3-462: 1440x900 composer shot (normal state)
+OK   P3-462: normal 1440x900 shot is a real PNG
+OK   P3-462: 390 composer shot (normal state)
+OK   P3-462: normal 390 shot is a real PNG
+--- P3-462: disk-critical composer (hatch) — attach disabled with the machine's phrase (252.1s elapsed)
+OK   P3-462: hermetic disk daemon published the 0600 state file
+OK   P3-462: the hatched daemon answers diskState=critical with its phrase
+OK   P3-462: open (hermetic launch with the disk hatch)
+OK   P3-462: skip the first-run welcome
+OK   P3-462: app paired with the hermetic disk daemon
+OK   P3-462: deep-link opens the chat
+OK   P3-462: the critical verdict renders as the warn line under the composer
+OK   P3-462: critical state — attach disabled, warning carries the machine's phrase
+OK   P3-462: critical blocks the attach button with the daemon's verbatim phrase
+OK   P3-462: 1440x900 composer shot (critical state)
+OK   P3-462: critical 1440x900 shot is a real PNG
+OK   P3-462: 390 composer shot (critical state)
+OK   P3-462: critical 390 shot is a real PNG
+OK   P2-338: open (hermetic fake-daemon launch)
+OK   P2-338: skip the first-run welcome
+OK   P2-338: open Settings pane
+OK   P2-338: request remote pairing
+OK   P2-338: the overlay names the wire mismatch next to the (still visible) QR
+OK   P2-338: 1440x900 incompatible shot
+FAIL P2-338: incompatible 1440x900 shot is a real PNG
+OK   P2-338: 390 incompatible shot
+OK   P2-338: incompatible 390 shot is a real PNG
+OK   no daemon sidecar spawned (hermetic)
+
+desktop flow beat timing: 262.4s of the 420s budget (62%), 76 beats; slowest 10:
+    28.7s  P1-089 (38 check(s))
+    22.2s  P2-090 (18 check(s))
+    17.6s  P2-148 (37 check(s))
+    16.1s  P2-152 (13 check(s))
+    14.5s  P3-392 (25 check(s))
+    10.5s  local (22 check(s))
+     9.4s  P3-462 (24 check(s))
+     9.1s  scan-live (21 check(s))
+     8.4s  P2-112 (23 check(s))
+     6.7s  scan (14 check(s))
+FAILED CHECKS (2) — the check, the beat it ran in, when, and its detail:
+FAIL P2-090: session chat rendered without the pane
+     beat P2-090 · phase "P2-090: artifact auto-open on idle" · at 151.2s
+     condition never held (12 probes), last value: false
+FAIL P2-338: incompatible 1440x900 shot is a real PNG
+     beat P2-338 · at 261.9s
+
+
+desktop flow duration: 262.4s (budget 420s)
+FAILURES: 2
+   condition never held (12 probes), last value: false
+(node:52597) MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 exit listeners added to [process]. MaxListeners is 10. Use emitter.setMaxListeners() to increase limit
+(Use `node --trace-warnings ...` to show where the warning was created)
