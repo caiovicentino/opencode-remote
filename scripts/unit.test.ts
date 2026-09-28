@@ -16247,7 +16247,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     {
       name: "healthz",
       status: 200,
-      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
     },
     {
       name: "web-root",
@@ -16276,7 +16276,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   // P2-331: the healthz probe must demand the announced wire protocol
   const noProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: healthz body without protocol → problem (fail-closed)",
@@ -16284,7 +16284,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(noProtocol),
   );
   const wrongProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL + 1, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL + 1, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: healthz announcing a different wire protocol → problem",
@@ -16292,7 +16292,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(wrongProtocol),
   );
   const junkProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: "2", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: "2", uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: non-integer protocol → problem",
@@ -20634,9 +20634,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   const empty = relayKnobs({});
   check(
-    "P2-171: empty env → exactly the historical defaults (600/1000/20/0/30) with zero problems",
-    empty.ratePerMin === 600 &&
-      empty.rateBurst === 1000 &&
+    "P2-171: empty env → exactly the documented defaults (45000/1500/20/0/30 — rate pair resized by eval-13) with zero problems",
+    empty.ratePerMin === 45_000 &&
+      empty.rateBurst === 1_500 &&
       empty.maxPerIp === 20 &&
       empty.trustProxyHops === 0 &&
       empty.pingIntervalS === 30 &&
@@ -20653,8 +20653,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-171: blank values are the only present-case that keeps the default without a problem",
     blank.problems.length === 0 &&
-      blank.ratePerMin === 600 &&
-      blank.rateBurst === 1000 &&
+      blank.ratePerMin === 45_000 &&
+      blank.rateBurst === 1_500 &&
       blank.maxPerIp === 20 &&
       blank.trustProxyHops === 0 &&
       blank.pingIntervalS === 30,
@@ -20771,7 +20771,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const fallback = relayKnobs({ RELAY_RATE_PER_MIN: "abc" });
   check(
     "P2-171: a problem knob resolves to the documented default (the boot refuses anyway)",
-    fallback.ratePerMin === 600,
+    fallback.ratePerMin === 45_000,
   );
 }
 

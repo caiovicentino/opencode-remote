@@ -172,12 +172,18 @@ const P2_294_EXISTING_LINES = [
   "relay_connections_total",
   "relay_connections_active",
   "relay_frames_routed",
+  // eval-13: the unrouted subset of routed frames joined the documented set,
+  // split by sender class (owner = the daemon's mid-response tail)
+  "relay_frames_unrouted_total",
+  "relay_frames_unrouted_owner_total",
   "relay_bytes_routed",
   "relay_rejects",
   "relay_rate_limited_total",
   // P2-351: the fatal-crash counter joined the documented set, right after
   // the rate limiter it sits beside
   "relay_crashes_total",
+  // eval-13: unwritable log lines are counted instead of killing the relay
+  "relay_log_write_errors_total",
   "relay_rooms_rejected",
   "relay_rooms_rejected_invalid_room_id",
   "relay_rooms_rejected_socket_room_cap",

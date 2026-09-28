@@ -232,13 +232,20 @@ identity servers, no accounts.
   gains a route a client needs, a new entry is required, and until then the
   request fails closed with 400 (never a silent passthrough).
 - A rogue device cannot sustain a flood through the relay: message frames are
-  token-bucketed per connection (600 msgs/min, burst 1000, tunable via env)
-  and the over-budget socket is dropped with close code 4029. Every frame
-  counts — joins and self-declared room owners included — because envelope
-  metadata is attacker-controllable. The budget resets on reconnect, so a
-  determined flooder can trade reconnects for fresh bursts; total abuse is
-  bounded by the relay's 1000-socket cap. The relay stays blind — limits use
-  only envelope metadata, never payload content.
+  token-bucketed per connection (45,000 msgs/min sustained, burst 1,500,
+  tunable via env) and the over-budget socket is dropped with close code
+  4029. Every frame counts — joins and self-declared room owners included —
+  because envelope metadata is attacker-controllable. The small burst is the
+  point: it is the queue one flooding socket may build before the cut, so a
+  co-tenant's round trips stay in the tens-to-hundreds of milliseconds under
+  a blast (measured: victim p50 36–254 ms across repeated runs with two
+  addresses blasting, versus 325–1,738 ms when an earlier draft sized the
+  burst at 20,000; both endpoints scale with machine load). The budget resets
+  on reconnect, so a determined flooder can trade reconnects for fresh
+  bursts; per-connection abuse is bounded by that bucket and per-address
+  abuse by the live-connection cap (`RELAY_MAX_PER_IP`) — a per-address
+  aggregate frame budget is an open follow-up. The relay stays blind —
+  limits use only envelope metadata, never payload content.
 - Malicious image attachments are downscaled and re-encoded by the browser
   canvas before reaching the daemon; session history is rendered as text
   with sandboxed iframes for HTML previews.
