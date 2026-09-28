@@ -503,6 +503,9 @@ if (process.platform !== "win32") {
   // A check() placed after a suite's final `if (failures > 0) { … exit(1) }`
   // gate prints FAIL and the suite still exits 0 — unit.test.ts's P2-331 pin
   // did exactly that (eval-04). No suite may call check() after its last gate.
+  // Blind spot (documented, low risk): the scan only recognizes the gate idiom
+  // `if (failures…) {` at column 0 — an indented gate or a different idiom
+  // (e.g. an arrow-body gate) is not scanned; all suites today use column 0.
   const postGate = testFiles.filter((file) => {
     const lines = readFileSync(join(root, file), "utf8").split(/\r?\n/);
     let gate = -1;

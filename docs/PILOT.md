@@ -2260,7 +2260,12 @@ uma linha no FIM da lista; `.gitattributes` faz `merge=union` nesse arquivo, ent
 acrescentam linhas não conflitam mais (a linha única do package.json conflitava
 em quase toda task paralela). Branch cortado antes da troca:
 `npx tsx scripts/unit-suite.ts --fold-chain origin/main` dobra a cadeia antiga
-na lista.
+na lista. Cuidado: o fold reescreve o package.json INTEIRO com o conteúdo do
+ref (só o `test:unit` muda) — se o branch editou OUTRO script E adicionou
+entradas na cadeia, o fold desfaz essa edição (ele imprime o que escreveu, então
+é recuperável). As entradas dobradas entram no FIM da lista, então arquivos
+compartilhados podem rodar mais cedo que na cadeia do ref (inofensivo: todas as
+suítes são herméticas — re-dobre contra o ref atualizado para realinhar a ordem).
 
 ## Cobertura da bateria portátil (P2-237)
 
