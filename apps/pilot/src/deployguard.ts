@@ -16,7 +16,7 @@
  *
  * Pure module (fs only, no exec) so the eval battery can pin every rule.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -107,12 +107,23 @@ export function readQuarantine(file: string): QuarantinedSha[] {
   return parseQuarantine(readJsonl(file));
 }
 
+/**
+ * eval-02: tmp + rename, never an in-place rewrite. `writeFileSync(file)`
+ * truncates first, so an ENOSPC mid-write left a torn or EMPTY list — an
+ * emptied quarantine re-enables a known-bad sha, an emptied verified list
+ * freezes deploys. A failed write now leaves the previous file byte-identical.
+ */
 function writeAll(file: string, content: string): boolean {
+  const tmp = `${file}.tmp`;
   try {
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, content);
+    writeFileSync(tmp, content);
+    renameSync(tmp, file);
     return true;
   } catch {
+    try {
+      unlinkSync(tmp);
+    } catch {}
     return false;
   }
 }

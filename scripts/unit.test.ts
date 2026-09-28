@@ -13527,7 +13527,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   // Every first-contact screen opens its centered brand header with the same
   // glyph before the wordmark — the wizard's mark language, nothing per-view.
-  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+  // P3-373 (eval-09): the "pair a phone" dialog joined the list — it still
+  // wore the P1-050 splash's app icon over a sans title.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx", "PairingOverlay.tsx"]) {
     const src = read(join("components", view));
     // P2-355: the header now carries the named layout-shift region — match
     // the opening tag, not the bare literal.
@@ -13969,14 +13971,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 // disabled ghost beside the error. P3-433 removes the override: the `primary`
 // class resolves to the shared button.primary accent identity (P3-449/P3-450:
 // one primary dialect per journey), and the P3-366 desktop-flow beat still
-// pins the class presence over the quiet scan entry.
+// pins the class presence over the quiet scan entry. P3-415 (eval-09): the
+// `primary` class is now granted only where the paste form is the sole path
+// (submitClass — scripts/pair-lead.test.ts pins the verdict); the no-override
+// rule below still holds for that primary.
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
   const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
   check(
     "P3-433: the desktop paste submit keeps no recessed-chip override (shared accent primary)",
     !/\.pair-submit\.primary\s*\{/.test(css) &&
-      pairingSrc.includes('className={preferPaste ? "pair-submit primary" : "pair-submit"}'),
+      pairingSrc.includes('lead === "paste" ? "pair-submit primary" : "pair-submit secondary"') &&
+      pairingSrc.includes("className={submitClass}"),
   );
 }
 
@@ -14071,7 +14077,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-427: the host entry is suppressed while the agent is down",
-    view.includes("const hostSection = onPairRemote && !agentDown && ("),
+    // P3-415 (eval-09): the render condition is named (hostEntry) so the
+    // one-lead verdict and the render read the same boolean.
+    view.includes("const hostEntry = !!onPairRemote && !agentDown;") && view.includes("const hostSection = hostEntry && ("),
   );
   check(
     "P3-427: the daemon-assuming intro yields to the agent-down verdict",
@@ -14087,7 +14095,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-427: the verdict card yields to the App-level error block (one status per phase)",
-    /agentDown && phase !== "error" && \(/.test(view),
+    // P3-415 (eval-09): named (agentDownCard) — the lead verdict reads it too.
+    view.includes('const agentDownCard = !!agentDown && phase !== "error";') && view.includes("{agentDownCard && ("),
   );
   // App side: only the pairManual call site carries the verdict — the
   // add-machine ceremony must keep the full rendering (P3-422 lesson).

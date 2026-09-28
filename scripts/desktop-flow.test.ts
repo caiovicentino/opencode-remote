@@ -702,6 +702,145 @@ try {
   const gateMenuBack = run("P3-362: hero again after the menu-opened pane closes", ["ipc", "(() => { const p = document.querySelector('.desk-pane'); return 'pane:' + (p ? getComputedStyle(p).display : 'gone'); })()"], 15_000);
   if (gateMenuBack.ok) check("P3-362: pane closed returns to the hero", /pane:none|pane:gone/.test(gateMenuBack.stdout), gateMenuBack.stdout);
 
+  // --- P3-378: the Browser pane's address bar never answers with silence ------
+  // The explorer's repro (journey-browser-pane-20260910): over a loaded page,
+  // "file:///tmp/explorer-page.html" + Enter left the old page on screen with
+  // no error and no loading — nobody could tell the URL was even read. The
+  // first fix (#1028) only ever had source pins, and its classifier sent
+  // "localhost:5173" (parsed as the scheme "localhost:") to the local-FILE
+  // sentence. This beat drives the REAL pane at the first-boot gate shell
+  // (rail slot, 1440x900): the schemeless dev-server address is completed
+  // and loads (lib/addressbar), file:// over that page is refused by name
+  // with the bar flagged (aria-invalid, danger focus ring) and announced
+  // (role=alert) while the guest stays on its page, another scheme gets its
+  // own sentence, and editing the bar dissolves the verdict.
+  phase("P3-378: Browser pane address bar at the gate shell");
+  {
+    const barProbe = spawnSync(
+      process.execPath,
+      ["-e", "const s=require('node:http').createServer();s.listen(0,'127.0.0.1',()=>{console.log('PORT='+s.address().port);s.close()})"],
+      { encoding: "utf8" },
+    );
+    const barPort = Number((barProbe.stdout.match(/PORT=(\d+)/) ?? [])[1]);
+    check("P3-378: test page server picked a free port", Number.isInteger(barPort) && barPort > 0, barProbe.stdout + barProbe.stderr);
+    if (Number.isInteger(barPort) && barPort > 0) {
+      // child process on purpose: every harness command is a spawnSync that
+      // would starve a same-process server (P1-072 note)
+      const barServer = spawn(
+        process.execPath,
+        [
+          "-e",
+          [
+            "require('node:http').createServer((req, res) => {",
+            "  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });",
+            "  res.end('<!doctype html><title>P3-378</title><body style=\"margin:0;background:#1f6f5c\"></body>');",
+            `}).listen(${barPort}, '127.0.0.1');`,
+          ].join("\n"),
+        ],
+        { stdio: "ignore", detached: true },
+      );
+      barServer.unref();
+      try {
+        run("P3-378: open the Browser pane from the gate rail", ["click", 'button[data-pane="browser"]'], 15_000);
+        // visible, not merely mounted: the paired shell keeps a hidden
+        // BrowserView in the DOM, so presence alone could drive an unseen bar
+        await waitProbe(
+          "P3-378: address bar on screen",
+          "(() => { const p = document.querySelector('.desk-pane'); const i = document.querySelector('.browser-bar input'); return !!p && getComputedStyle(p).display !== 'none' && !!i && i.getBoundingClientRect().width > 0; })()",
+          (v) => /true/.test(v),
+          cliEnv,
+          12,
+          500,
+        );
+        // React-controlled field: the native value setter + an input event,
+        // then a real keydown Enter on the input — the typed-address path.
+        const setBar = (text: string) =>
+          `(() => { const i = document.querySelector('.browser-bar input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ${JSON.stringify(text)}); i.dispatchEvent(new Event('input', { bubbles: true })); return 'set'; })()`;
+        const enterBar = "(() => { const i = document.querySelector('.browser-bar input'); i.focus(); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 'enter'; })()";
+        // value | aria-invalid | role:error text | guest URL
+        const barState =
+          "(() => { const i = document.querySelector('.browser-bar input'); const e = document.querySelector('.browser-error'); let g = ''; try { g = document.querySelector('.browser-frame webview')?.getURL() ?? ''; } catch { g = 'no-guest'; } return [i?.value ?? '', i?.getAttribute('aria-invalid') ?? '', e ? (e.getAttribute('role') ?? '') + ':' + e.textContent : '', g].join('|'); })()";
+        const barFields = (v: string) => v.replace(/^\s*"|"\s*$/g, "").split("|");
+        const pageUrl = `http://localhost:${barPort}/`;
+        run("P3-378: type the schemeless dev-server address", ["ipc", setBar(`localhost:${barPort}`)], 15_000);
+        run("P3-378: press Enter", ["ipc", enterBar], 15_000);
+        const loaded = await waitProbe(
+          "P3-378: localhost:<port> is completed to http:// and loads",
+          barState,
+          (v) => {
+            const [value, invalid, err, guest] = barFields(v);
+            return value === pageUrl && invalid === "" && err === "" && guest === pageUrl;
+          },
+          cliEnv,
+          20,
+          500,
+        );
+        if (loaded) {
+          run("P3-378: type a file:// URL over the loaded page", ["ipc", setBar("file:///tmp/explorer-page.html")], 15_000);
+          run("P3-378: press Enter on the file:// URL", ["ipc", enterBar], 15_000);
+          const refused = await waitProbe(
+            "P3-378: file:// refused by name, bar flagged, guest untouched",
+            barState,
+            (v) => {
+              const [value, invalid, err, guest] = barFields(v);
+              return (
+                value === "file:///tmp/explorer-page.html" &&
+                invalid === "true" &&
+                /^alert:(Only http\(s\) pages open|Só páginas http\(s\) abrem)/.test(err ?? "") &&
+                guest === pageUrl
+              );
+            },
+            cliEnv,
+            10,
+            300,
+          );
+          if (refused) {
+            // P3-431's rule on the bar: the focus ring agrees with the verdict
+            const ring = run(
+              "P3-378: focus ring of the refused bar",
+              ["ipc", "(() => { const i = document.querySelector('.browser-bar input'); i.focus(); const p = document.createElement('i'); document.body.appendChild(p); p.style.color = 'var(--danger)'; const danger = getComputedStyle(p).color; p.remove(); const cs = getComputedStyle(i); return 'ring:' + (cs.outlineColor === danger) + '|border:' + (cs.borderTopColor === danger); })()"],
+              15_000,
+            );
+            if (ring.ok) check("P3-378: the refused bar wears the danger ring and border", /ring:true\|border:true/.test(ring.stdout), ring.stdout);
+            const barShot = join(shotsDir, "P3-378-browser-file-refused-1440.png");
+            const bs = run("P3-378: 1440x900 refused-address shot", ["shot", barShot, "1440", "900"], 15_000);
+            if (bs.ok) check("P3-378: refused-address 1440x900 shot is a real PNG", pngSize(barShot).join("x") === "1440x900");
+          }
+          run("P3-378: type a javascript: URL", ["ipc", setBar("javascript:alert(1)")], 15_000);
+          run("P3-378: press Enter on the javascript: URL", ["ipc", enterBar], 15_000);
+          await waitProbe(
+            "P3-378: another scheme gets its own sentence, never the local-file one",
+            barState,
+            (v) => {
+              const [, invalid, err, guest] = barFields(v);
+              return invalid === "true" && /^alert:(Only http\(s\) addresses open|Só endereços http\(s\) abrem)/.test(err ?? "") && guest === pageUrl;
+            },
+            cliEnv,
+            10,
+            300,
+          );
+          run("P3-378: edit the refused address", ["ipc", setBar("javascript:alert(12)")], 15_000);
+          await waitProbe(
+            "P3-378: editing dissolves the verdict (flag + sentence)",
+            barState,
+            (v) => {
+              const [, invalid, err] = barFields(v);
+              return invalid === "" && err === "";
+            },
+            cliEnv,
+            10,
+            300,
+          );
+        }
+      } finally {
+        barServer.kill();
+      }
+      run("P3-378: close the Browser pane", ["click", ".desk-pane .browser-header .pane-back"], 15_000);
+      const barBack = run("P3-378: hero again after the Browser pane closes", ["ipc", "(() => { const p = document.querySelector('.desk-pane'); return 'pane:' + (p ? getComputedStyle(p).display : 'gone'); })()"], 15_000);
+      if (barBack.ok) check("P3-378: pane closed returns to the hero", /pane:none|pane:gone/.test(barBack.stdout), barBack.stdout);
+    }
+  }
+
   // --- P2-112: first boot with a dead daemon degrades, never dead-ends --------
   // The old journey stranded a first-time user on the pairing wall with a red
   // "daemon fell" alert for a daemon this machine had never met. Now the
@@ -845,7 +984,8 @@ try {
   // (P2-117's rule, locale-proof). P3-427: with the local agent down the scan
   // entry is GONE, not demoted — the QR it would scan is minted by the down
   // agent (P3-412's derivation), so the offer cannot render here; the paste
-  // is now the section's only path, which keeps it the primary by definition.
+  // is now the section's only path — the section's lead, though no longer
+  // the screen's accent (P3-415 below).
   await waitProbe(
     "P3-366: ceremony rendered after the escape",
     "!!document.querySelector('.pair-submit')",
@@ -854,13 +994,35 @@ try {
     10,
     500,
   );
+  // P3-415 (eval-09): "primary by definition" put TWO accent CTAs on this
+  // screen — the full-width submit out-shouting the verdict card's reconnect,
+  // the action the card's own copy names first. One lead per render now
+  // (lib/pairlead): the reconnect wears the accent, the submit is the solid
+  // secondary — still the section's lead action (scan stays absent).
+  // ceremonyPaint (reused by the add-machine beat below): every element
+  // inside .pair-screen painted with the accent FILL, plus the submit's
+  // resting paint, each resolved against the live tokens.
+  const ceremonyPaint =
+    "(() => { const p = document.createElement('i'); document.body.appendChild(p); const tok = (v) => { p.style.color = 'var(' + v + ')'; return getComputedStyle(p).color; }; const accent = tok('--accent'), surface = tok('--surface'), bg = tok('--bg'), text = tok('--text'), strong = tok('--border-strong'); p.remove(); const owners = [...document.querySelectorAll('.pair-screen *')].filter((el) => getComputedStyle(el).backgroundColor === accent).map((el) => (typeof el.className === 'string' ? el.className : el.tagName).trim()); const s = document.querySelector('.pair-submit'); const cs = s ? getComputedStyle(s) : null; const fill = !cs ? 'none' : cs.backgroundColor === surface ? 'surface' : cs.backgroundColor === bg ? 'bg' : cs.backgroundColor === accent ? 'accent' : cs.backgroundColor; return ['accent:' + owners.join(','), 'submitBg:' + fill, 'submitText:' + (!!cs && cs.color === text), 'submitBorder:' + (!!cs && cs.borderTopColor === strong), 'submitOpacity:' + (cs ? cs.opacity : ''), 'submitWeight:' + (cs ? cs.fontWeight : '')].join('|'); })()";
   const pasteFirst = run(
     "P3-366: paste-first classes on the escape path",
-    ["ipc", "[document.querySelector('.pair-submit')?.classList.contains('primary'), document.querySelector('.pair-scan-entry') === null].join('|')"],
+    ["ipc", "[document.querySelector('.pair-submit')?.classList.contains('secondary'), document.querySelector('.pair-agent-down-reconnect')?.classList.contains('primary'), document.querySelector('.pair-scan-entry') === null].join('|')"],
     15_000,
   );
   if (pasteFirst.ok) {
-    check("P3-366: paste is primary, scan cannot exist with the agent down (P3-427)", /^true\|true$/.test(pasteFirst.stdout.replace(/"/g, "").trim()), pasteFirst.stdout);
+    check("P3-415: reconnect leads, paste is the solid secondary, scan cannot exist with the agent down (P3-427)", /^true\|true\|true$/.test(pasteFirst.stdout.replace(/"/g, "").trim()), pasteFirst.stdout);
+  }
+  // Paint, not classes: exactly ONE accent-filled element inside the
+  // ceremony, and the submit reads enabled — surface fill, firm border,
+  // full-contrast semibold label at full opacity (never P3-433's recessed
+  // --bg ghost). Tokens resolve live, so a palette change cannot fake it.
+  const agentDownPaint = run("P3-415: agent-down ceremony paint", ["ipc", ceremonyPaint], 15_000);
+  if (agentDownPaint.ok) {
+    check(
+      "P3-415: the reconnect is the ceremony's only accent, the submit the solid secondary",
+      /^accent:primary pair-agent-down-reconnect\|submitBg:surface\|submitText:true\|submitBorder:true\|submitOpacity:1\|submitWeight:600$/.test(agentDownPaint.stdout.replace(/"/g, "").trim()),
+      agentDownPaint.stdout,
+    );
   }
   // P3-427: the agent-down verdict card replaces the daemon-assuming intro and
   // carries the recovery IN the same block (P3-443) — the escape no longer
@@ -1969,6 +2131,24 @@ try {
             remoteEntry.stdout,
           );
         }
+        // P3-415 (eval-09): the one ceremony that renders BOTH directions — on
+        // main the host entry (P3-334's primary story) sat as a plain row under
+        // a full-width green submit. The entry's phone tile must now be the
+        // only accent fill, with the submit as the solid secondary.
+        const addPaint = run("P3-415: add-machine ceremony paint", ["ipc", ceremonyPaint], 15_000, scanBlockEnv);
+        if (addPaint.ok) {
+          check(
+            "P3-415: the host entry's tile is the ceremony's only accent, the submit the solid secondary",
+            /^accent:pair-remote-icon\|submitBg:surface\|submitText:true\|submitBorder:true\|submitOpacity:1\|submitWeight:600$/.test(addPaint.stdout.replace(/"/g, "").trim()),
+            addPaint.stdout,
+          );
+        }
+        const leadShot1440 = join(shotsDir, "P3-415-addmachine-1440.png");
+        const leadShot390 = join(shotsDir, "P3-415-addmachine-390.png");
+        const ls1 = run("P3-415: 1440x900 add-machine shot", ["shot", leadShot1440, "1440", "900"], 15_000, scanBlockEnv);
+        if (ls1.ok) check("P3-415: add-machine 1440x900 shot is a real PNG", pngSize(leadShot1440).join("x") === "1440x900");
+        const ls2 = run("P3-415: 390 add-machine shot", ["shot", leadShot390, "390", "844"], 15_000, scanBlockEnv);
+        if (ls2.ok) check("P3-415: add-machine 390 shot is a real PNG", pngSize(leadShot390)[0] === 390);
         // Desktop-first ordering: the paste form leads (P2-117 item 4), the
         // scanner is the option — a locale-independent class hooks the gate.
         run("scan: open the scanner (desktop option)", ["click", ".pair-scan-entry"], 15_000, scanBlockEnv);
@@ -2025,6 +2205,14 @@ try {
         if (!ceremonyUp2) check("scan-live: add-machine ceremony rendered", false, "machine picker or ceremony did not open");
         run("scan-live: open the scanner", ["click", ".pair-scan-entry"], 15_000, scanFakeEnv);
         await waitProbe("scan-live: preview state reached", scannerState, (v) => v.includes("preview"), scanFakeEnv);
+        // eval-09: the camera is acquired ONCE per scanner mount. The capture
+        // effect used to depend on the parent's onScan, whose identity changes
+        // on every App render — each pairing-state push (and the 390px resize
+        // below) re-acquired a NEW stream, so a killed feed could flip back to
+        // "preview" and the NO SIGNAL checks flaked. The stream id read here
+        // must survive the re-renders until after the 390px beat.
+        const streamIdExpr = "document.querySelector('.qr-video')?.srcObject?.id ?? ''";
+        const streamBefore = run("scan-live: stream id at preview", ["ipc", streamIdExpr], 15_000, scanFakeEnv);
         const s1 = run("scan-live: 1440x900 evidence shot", ["shot", scanShot1440, "1440", "900"], 15_000, scanFakeEnv);
         if (s1.ok) check("scan-live: 1440x900 shot is a real PNG", pngSize(scanShot1440).join("x") === "1440x900");
         // 390px beat: the preview must keep breathing at phone width — the
@@ -2047,6 +2235,16 @@ try {
             "scan-live: preview survives 390px (video keeps a visible box)",
             !!box && box.w >= 200 && box.h >= 100,
             rect.stdout,
+          );
+        }
+        const streamAfter = run("scan-live: stream id after the re-renders", ["ipc", streamIdExpr], 15_000, scanFakeEnv);
+        if (streamBefore.ok && streamAfter.ok) {
+          const before = streamBefore.stdout.replace(/"/g, "").trim();
+          const after = streamAfter.stdout.replace(/"/g, "").trim();
+          check(
+            "scan-live: the camera stream survives parent re-renders (one getUserMedia per mount)",
+            before.length > 0 && before === after,
+            `before=${before} after=${after}`,
           );
         }
         // NO SIGNAL beat: kill the feed the way an unplugged capture device
@@ -2354,6 +2552,22 @@ try {
           const shotOverlay = join(shotsDir, "P2-106-pairing-overlay.png");
           const o1 = run("P2-106: 1440x900 overlay shot", ["shot", shotOverlay, "1440", "900"], 15_000, localEnv);
           if (o1.ok) check("P2-106: overlay 1440x900 shot is a real PNG", pngSize(shotOverlay).join("x") === "1440x900");
+          // P3-373 (eval-09): the "pair a phone" dialog wears the brand header
+          // every other first-contact screen shares — the ✻ glyph above the
+          // serif wordmark — not the P1-050 splash's app icon over a sans title.
+          const overlayBrand = run(
+            "P3-373: pairing dialog brand header",
+            ["ipc", "(() => { const c = document.querySelector('.pair-overlay-card'); const m = c?.querySelector('.pair-overlay-brand .welcome-mark'); const w = c?.querySelector('.pair-overlay-brand .brand-wordmark'); if (!c || !m || !w) return 'ABSENT'; const a = m.getBoundingClientRect(), b = w.getBoundingClientRect(); return ['above:' + (a.height > 0 && a.bottom <= b.top + 1), 'serif:' + /serif/i.test(getComputedStyle(w).fontFamily), 'appIcon:' + !!c.querySelector('img[src$=\"icon.svg\"]')].join('|'); })()"],
+            15_000,
+            localEnv,
+          );
+          if (overlayBrand.ok) {
+            check(
+              "P3-373: the pairing dialog opens with the shared glyph over the serif wordmark",
+              /^above:true\|serif:true\|appIcon:false$/.test(overlayBrand.stdout.replace(/"/g, "").trim()),
+              overlayBrand.stdout,
+            );
+          }
           const laterClass = run("P2-106: 'pair later' classes", ["ipc", "document.querySelector('.pair-overlay-later')?.className ?? ''"], 15_000, localEnv);
           if (laterClass.ok) {
             check(
