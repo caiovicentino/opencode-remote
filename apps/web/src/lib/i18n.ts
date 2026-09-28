@@ -467,6 +467,31 @@ export const dict = {
     paletteOpenSettings: "Open Settings",
     paletteKindAction: "action",
     paletteKindSession: "conversation",
+    // eval-20: conversation content search (P3-400 route) + keyboard map
+    paletteKindMessage: "message",
+    paletteShortcuts: "Keyboard shortcuts",
+    contentSearchHeading: "In messages",
+    contentSearchLoading: "Searching inside conversations…",
+    contentSearchNone: "Nothing found for “{q}”.",
+    // eval-20 (verifier B1): a scan that could not finish is never "nothing
+    // found" — the degraded state says so and offers the retry
+    contentSearchDegraded: "Couldn't read all conversations — the search may be incomplete.",
+    contentSearchPartial: "Partial search — the most recent conversations were read first.",
+    contentSearchError: "Couldn't search inside conversations right now.",
+    contentSearchUnsupported: "Searching inside conversations needs a newer app version on the computer.",
+    // eval-20 (verifier B3): a handoff hit whose occurrence sits in an older
+    // page still opens the find bar — the calm line says where to go
+    findOlderHint: "The occurrence is in earlier messages.",
+    findOlderLoad: "Load earlier",
+    shortcutsTitle: "Keyboard shortcuts",
+    shortcutsGroupNav: "Navigation",
+    shortcutsGroupChat: "Conversation",
+    shortcutsGroupGeneral: "General",
+    shortcutFind: "Find in this conversation",
+    shortcutSend: "Send message",
+    shortcutNewline: "New line",
+    shortcutClose: "Close dialog or panel",
+    shortcutsFoot: "Navigation shortcuts also show in the command palette ({combo}).",
     // mission control (desktop, P2-048)
     paletteOpenMission: "Open Mission Control",
     missionDesktopOnly: "Mission Control reads the pilot's local records — open the app on the host machine.",
@@ -990,6 +1015,9 @@ export const dict = {
     // P3-378: a typed URL that parses but isn't http(s) (file://, data:…) is a
     // deliberate sandbox rejection — name it and give the way out
     browserLocalFile: "Only http(s) pages open in this sandboxed pane — local files don't. Serve the folder over HTTP (e.g. python3 -m http.server) and open its localhost URL.",
+    // P3-378 (eval-09): any other non-http(s) scheme (javascript:, data:, about:…)
+    // is named as such — the local-file sentence was the wrong story for it
+    browserSchemeBlocked: "Only http(s) addresses open in this pane.",
     browserLoadFailed: "Could not load the page.",
     browserCrashed: "The page renderer crashed — reload.",
     browserErrUnreachable: "The machine did not answer — the host browser is unreachable.",
@@ -1011,6 +1039,44 @@ export const dict = {
     fleetCostUnpriced: "{tokens} tokens (unpriced)",
     missionSt_stalled: "stalled",
     missionLegacySource: "Fixed mission from pilot.json — set a mission in any conversation to replace it",
+    // eval-10 (PWA mobile UX): chat action failures are localized and never
+    // carry the raw response body; agent errors show the provider's message
+    errAgentFailed: "The agent stopped with an error: {message}",
+    errAgentFailedGeneric: "The agent stopped with an error — try again.",
+    errApproveFailed: "Couldn't deliver your approval to the machine — try again.",
+    errDenyFailed: "Couldn't deliver your denial to the machine — try again.",
+    errAnswerFailed: "Couldn't send your answer to the agent — try again.",
+    errRevertFailed: "Couldn't go back to this point — try again.",
+    errUnrevertFailed: "Couldn't redo the conversation — try again.",
+    errExportFailed: "Couldn't export the conversation — try again.",
+    errHandoffFailed: "Couldn't open this conversation on the computer — try again.",
+    errStopFailed: "Couldn't stop the agent — try again.",
+    // AutoMode left an ask pending past the grace (daemon never answered it)
+    autoStale: "AutoMode hasn't answered: {action} — approve manually",
+    // same short technical word in both locales on purpose: a longer label
+    // ("Mudanças") pushed Deny onto a second row of the approval card at 390px
+    diffBtn: "Diff",
+    // ErrorBoundary fallback (was hardcoded English + the raw React message)
+    crashTitle: "Something broke",
+    crashBody: "This screen hit an unexpected error. Your conversations are safe on the computer.",
+    crashRetry: "Try again",
+    crashDetails: "Technical details",
+    // share target + files pane (were hardcoded English)
+    shareContent: "Shared content",
+    shareEmpty: "(empty)",
+    shareExtraPlaceholder: "Optional: instructions for the agent (e.g. \"summarize this in Portuguese\")",
+    shareNewSession: "+ New conversation & send",
+    shareOrExisting: "…or send to an existing conversation:",
+    shareSending: "sending…",
+    shareSessionTitle: "Shared from phone",
+    shareSendFailed: "Couldn't send it to the agent — try again.",
+    shareListFailed: "Couldn't load the conversations — you can still start a new one.",
+    filesTitle: "Files on this machine",
+    filesEmpty: "No files yet.",
+    filesListFailed: "Couldn't list the machine's files — try again.",
+    filesNoPreview: "No preview for this file type — use Save.",
+    // label-less permission asks (reply events and pre-view asks carry no type)
+    permGenericAction: "action",
   },
   pt: {
     search: "Buscar conversas…",
@@ -1398,6 +1464,31 @@ export const dict = {
     paletteOpenSettings: "Abrir Configurações",
     paletteKindAction: "ação",
     paletteKindSession: "conversa",
+    // eval-20: busca no conteúdo das conversas (rota P3-400) + mapa de atalhos
+    paletteKindMessage: "mensagem",
+    paletteShortcuts: "Atalhos de teclado",
+    contentSearchHeading: "Nas mensagens",
+    contentSearchLoading: "Buscando dentro das conversas…",
+    contentSearchNone: "Nada encontrado para “{q}”.",
+    // eval-20 (verificador B1): um scan que não terminou nunca vira "nada
+    // encontrado" — o estado degradado diz isso e oferece o retry
+    contentSearchDegraded: "Não deu pra ler todas as conversas — a busca pode estar incompleta.",
+    contentSearchPartial: "Busca parcial — as conversas mais recentes foram lidas primeiro.",
+    contentSearchError: "Não deu pra buscar dentro das conversas agora.",
+    contentSearchUnsupported: "A busca dentro das conversas pede uma versão mais nova do app no computador.",
+    // eval-20 (verificador B3): o hit cuja ocorrência está numa página antiga
+    // ainda abre a barra — a linha calma diz onde está
+    findOlderHint: "A ocorrência está em mensagens anteriores.",
+    findOlderLoad: "Carregar anteriores",
+    shortcutsTitle: "Atalhos de teclado",
+    shortcutsGroupNav: "Navegação",
+    shortcutsGroupChat: "Conversa",
+    shortcutsGroupGeneral: "Geral",
+    shortcutFind: "Buscar nesta conversa",
+    shortcutSend: "Enviar mensagem",
+    shortcutNewline: "Nova linha",
+    shortcutClose: "Fechar diálogo ou painel",
+    shortcutsFoot: "Os atalhos de navegação também aparecem na paleta de comandos ({combo}).",
     // mission control (desktop, P2-048)
     paletteOpenMission: "Abrir Mission Control",
     missionDesktopOnly: "O Mission Control lê os registros locais do pilot — abra o app na máquina host.",
@@ -1903,6 +1994,9 @@ export const dict = {
     // P3-378: URL digitada que parseia mas não é http(s) (file://, data:…) é
     // rejeição deliberada da sandbox — nomear e dar o caminho
     browserLocalFile: "Só páginas http(s) abrem neste painel com sandbox — arquivos locais não. Sirva a pasta via HTTP (ex.: python3 -m http.server) e abra a URL localhost.",
+    // P3-378 (eval-09): outro esquema que não é http(s) (javascript:, data:,
+    // about:…) ganha o próprio nome — a frase de arquivo local contava a história errada
+    browserSchemeBlocked: "Só endereços http(s) abrem neste painel.",
     browserLoadFailed: "Não foi possível carregar a página.",
     browserCrashed: "O renderizador da página caiu — recarregue.",
     browserErrUnreachable: "A máquina não respondeu — o navegador do host está fora de alcance.",
@@ -1924,5 +2018,41 @@ export const dict = {
     fleetCostUnpriced: "{tokens} tokens (sem preço)",
     missionSt_stalled: "interrompida",
     missionLegacySource: "Missão fixa do pilot.json — defina uma missão em qualquer conversa para substituí-la",
+    // eval-10 (UX mobile do PWA): falhas de ação no chat localizadas e sem o
+    // corpo cru da resposta; erro do agente mostra a mensagem do provedor
+    errAgentFailed: "O agente parou com um erro: {message}",
+    errAgentFailedGeneric: "O agente parou com um erro — tente de novo.",
+    errApproveFailed: "Não consegui entregar sua aprovação à máquina — tente de novo.",
+    errDenyFailed: "Não consegui entregar sua recusa à máquina — tente de novo.",
+    errAnswerFailed: "Não consegui enviar sua resposta ao agente — tente de novo.",
+    errRevertFailed: "Não consegui voltar a este ponto — tente de novo.",
+    errUnrevertFailed: "Não consegui refazer a conversa — tente de novo.",
+    errExportFailed: "Não consegui exportar a conversa — tente de novo.",
+    errHandoffFailed: "Não consegui abrir esta conversa no computador — tente de novo.",
+    errStopFailed: "Não consegui parar o agente — tente de novo.",
+    // AutoMode deixou um pedido pendente além da carência (o daemon nunca respondeu)
+    autoStale: "O AutoMode não respondeu: {action} — aprove manualmente",
+    diffBtn: "Diff",
+    // fallback do ErrorBoundary (era inglês fixo + a mensagem crua do React)
+    crashTitle: "Algo quebrou",
+    crashBody: "Esta tela encontrou um erro inesperado. Suas conversas continuam salvas no computador.",
+    crashRetry: "Tentar de novo",
+    crashDetails: "Detalhes técnicos",
+    // alvo de compartilhamento + painel de arquivos (eram inglês fixo)
+    shareContent: "Conteúdo compartilhado",
+    shareEmpty: "(vazio)",
+    shareExtraPlaceholder: "Opcional: instruções para o agente (ex.: \"resuma isto em português\")",
+    shareNewSession: "+ Nova conversa e enviar",
+    shareOrExisting: "…ou envie para uma conversa existente:",
+    shareSending: "enviando…",
+    shareSessionTitle: "Compartilhado do celular",
+    shareSendFailed: "Não consegui enviar ao agente — tente de novo.",
+    shareListFailed: "Não consegui carregar as conversas — ainda dá pra começar uma nova.",
+    filesTitle: "Arquivos desta máquina",
+    filesEmpty: "Nenhum arquivo ainda.",
+    filesListFailed: "Não consegui listar os arquivos da máquina — tente de novo.",
+    filesNoPreview: "Sem prévia para este tipo de arquivo — use Salvar.",
+    // pedidos de permissão sem rótulo (eventos de resposta e pedidos anteriores à tela não trazem o tipo)
+    permGenericAction: "ação",
   },
 } satisfies Record<Lang, Record<string, string>>;

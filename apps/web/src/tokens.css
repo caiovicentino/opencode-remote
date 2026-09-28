@@ -24,6 +24,9 @@
   --border-strong: var(--gray-line-strong);
   --text: #ededed;
   --muted: #8a8a8a;
+  /* eval-10 verify round: support notes that must clear AA (≥4.5:1) on the
+     dark canvas even at the 0.72rem scale — one step up the same ladder */
+  --muted-strong: #a1a1aa;
   --accent: #4ade80;
   --danger: #f87171;
   --warn: #fbbf24;
@@ -98,6 +101,7 @@
   --border: #d4d4d8;
   --text: #18181b;
   --muted: #71717a;
+  --muted-strong: #52525b;
   --accent: #16a34a;
   --danger: #dc2626;
   --warn: #b45309;

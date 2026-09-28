@@ -1,0 +1,97 @@
+ci-gate	UNKNOWN STEP	}
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:21.6222848Z ##[endgroup]
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.7808980Z ci-gate: RED verify=failure
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.7810539Z ci-gate: ok scope=success
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.7811397Z ci-gate: ok desktop-package=success
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.7813275Z ci-gate: WARN desktop-package-win=failure — advisory until 2026-10-01 (known flake, does not gate)
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.7814527Z ci-gate: ok verify-win=success
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.7815568Z ci-gate: ok relay-image=skipped (scope-gated, skipped by the scope job)
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.7816846Z ci-gate: RED — at least one required job did not succeed
+ci-gate	UNKNOWN STEP	2026-09-11T09:35:30.8422762Z ##[error]Process completed with exit code 1.
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:11.9997283Z ##[group]Run DIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:11.9998041Z [36;1mDIR="$(find apps/desktop/dist -maxdepth 2 -type d -name 'win-unpacked' | head -1)"[0m
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:11.9998738Z [36;1m[ -n "$DIR" ] || { echo "packaged-boot: no win-unpacked dir under apps/desktop/dist — nothing to boot"; exit 1; }[0m
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:11.9999326Z [36;1mecho "packaged-boot: booting $DIR"[0m
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:11.9999685Z [36;1mnode apps/desktop/scripts/packaged-boot.mjs "$DIR"[0m
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:12.0013939Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:12.0014332Z env:
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:12.0014600Z   OCR_PACKAGED_BOOT_SHOT: D:\a\_temp/packaged-boot-win.png
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:12.0014938Z ##[endgroup]
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:12.1247388Z packaged-boot: booting apps/desktop/dist/win-unpacked
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:27.5691871Z packaged-boot: boot shot unavailable: page.screenshot: Timeout 12000ms exceeded.
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:27.5692920Z packaged-boot: OK D:\a\opencode-remote\opencode-remote\apps\desktop\dist\win-unpacked
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:33:27.5694039Z   app empacotado abriu, montou a interface e o console está limpo
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:35:12.5561268Z packaged-boot: FAIL — travou após o veredito, forçando a saída
+desktop-package-win	UNKNOWN STEP	2026-09-11T09:35:12.5763943Z ##[error]Process completed with exit code 1.
+verify	UNKNOWN STEP	2026-09-11T09:32:26.2201797Z ##[group]Run npm run test:unit
+verify	UNKNOWN STEP	2026-09-11T09:32:26.2202125Z [36;1mnpm run test:unit[0m
+verify	UNKNOWN STEP	2026-09-11T09:32:26.2221068Z shell: /usr/bin/bash -e {0}
+verify	UNKNOWN STEP	2026-09-11T09:32:26.2221353Z ##[endgroup]
+verify	UNKNOWN STEP	2026-09-11T09:32:26.2901436Z 
+verify	UNKNOWN STEP	2026-09-11T09:32:26.2902432Z > opencode-remote@0.2.0 test:unit
+verify	UNKNOWN STEP	2026-09-11T09:32:52.9616610Z     at <anonymous> (/home/runner/work/opencode-remote/opencode-remote/scripts/unit.test.ts:8429:8)
+verify	UNKNOWN STEP	2026-09-11T09:32:52.9622322Z [desktop] window-state write failed (/tmp/ocr-winstate-WYV0SK/gone/window-state.json): Error: ENOENT: no such file or directory, open '/tmp/ocr-winstate-WYV0SK/gone/window-state.json'
+verify	UNKNOWN STEP	2026-09-11T09:32:52.9623333Z     at writeFileSync (node:fs:2430:20)
+verify	UNKNOWN STEP	2026-09-11T09:32:56.4979527Z OK   P2-153: cli exits 0 listing every asset on a complete release
+verify	UNKNOWN STEP	2026-09-11T09:32:56.6068560Z release-assets: FAIL v0.3.0
+verify	UNKNOWN STEP	2026-09-11T09:32:56.6069238Z   - missing: macOS DMG installer for Apple Silicon (*.dmg carrying 0.3.0 and arm64)
+verify	UNKNOWN STEP	2026-09-11T09:32:56.6075567Z OK   P2-153: cli exits 1 printing ALL missing labels at once (fail-closed)
+verify	UNKNOWN STEP	2026-09-11T09:32:56.7124455Z release-assets: FAIL nope
+verify	UNKNOWN STEP	2026-09-11T09:32:56.7125299Z   - tag "nope" is not a semver version — expected vX.Y.Z
+verify	UNKNOWN STEP	2026-09-11T09:32:56.8567466Z OK   P2-157: cli exits 0 when all four feeds point at the release's artifacts
+verify	UNKNOWN STEP	2026-09-11T09:32:56.9667134Z feed-consistency: FAIL v0.3.0
+verify	UNKNOWN STEP	2026-09-11T09:32:56.9667645Z   - update-mac.json: "url" points to "OpenCode Remote-0.3.0-arm64.zip" which is not published in this release
+verify	UNKNOWN STEP	2026-09-11T09:32:56.9669443Z OK   P2-157: cli exits 1 printing the stale-feed problem (fail-closed)
+verify	UNKNOWN STEP	2026-09-11T09:32:57.0727032Z feed-consistency: FAIL v0.3.0
+verify	UNKNOWN STEP	2026-09-11T09:32:57.0728307Z   - cannot read /tmp/feed-consistency-MqJT42/missing.json — ENOENT: no such file or directory, open '/tmp/feed-consistency-MqJT42/missing.json'
+verify	UNKNOWN STEP	2026-09-11T09:32:57.3192545Z OK   P2-170: cli exits 0 on a healthy developer-id run
+verify	UNKNOWN STEP	2026-09-11T09:32:57.4242920Z gatekeeper-verify: FAIL (mode=developer-id notarize=true)
+verify	UNKNOWN STEP	2026-09-11T09:32:57.4243848Z   - stapler: unrecognizable output — "apps/desktop/dist/mac-arm64/OpenCode Remote.app: valid on disk"
+verify	UNKNOWN STEP	2026-09-11T09:32:57.5263910Z OK   P2-295: cli dmg mode exits 0 on the real unsigned container even with developer-id + notarization
+verify	UNKNOWN STEP	2026-09-11T09:32:57.6307451Z gatekeeper-verify: FAIL (mode=developer-id notarize=true)
+verify	UNKNOWN STEP	2026-09-11T09:32:57.6308489Z   - stapler: unrecognizable output for the DMG container — "the image seems fine, trust me"
+verify	UNKNOWN STEP	2026-09-11T09:32:59.8443504Z OK   P2-308: cli exits 0 printing OK when the declared digest matches the published bytes
+verify	UNKNOWN STEP	2026-09-11T09:32:59.9506834Z feedhash: FAIL latest.yml
+verify	UNKNOWN STEP	2026-09-11T09:32:59.9507959Z   - latest.yml: sha512 of "OpenCode Remote Setup 0.3.0.exe" does not match the published bytes — declared and measured digests diverge
+verify	UNKNOWN STEP	2026-09-11T09:33:15.9003967Z OK   rooms: the per-reason surfaces never leak room ids either
+verify	UNKNOWN STEP	2026-09-11T09:33:15.9004804Z relay-rooms: ALL OK
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1044017Z OK   liveness: fresh pong survives
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1044662Z OK   liveness: silent beyond interval+grace is stale
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1045286Z OK   liveness: exactly interval+grace silent survives (strict bound)
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1045866Z OK   liveness: interval 0 disables the sweep
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1046363Z OK   liveness: negative interval disables the sweep
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1046893Z OK   liveness: unmarked peer is never swept
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1047394Z OK   liveness: grace 0 makes one interval the budget
+verify	UNKNOWN STEP	2026-09-11T09:33:16.1047896Z OK   liveness: only the stale peer is returned
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4388504Z node:events:497
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4388947Z       throw er; // Unhandled 'error' event
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4389199Z       ^
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4389289Z 
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4389520Z Error: listen EADDRINUSE: address already in use 127.0.0.1:41972
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4389873Z     at Server.setupListenHandle [as _listen2] (node:net:1941:16)
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4390160Z     at listenInCluster (node:net:1998:12)
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4390370Z     at node:net:2207:7
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4390675Z     at process.processTicksAndRejections (node:internal/process/task_queues:89:21)
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4391031Z Emitted 'error' event on Server instance at:
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4391266Z     at emitErrorNT (node:net:1977:8)
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4391940Z     at process.processTicksAndRejections (node:internal/process/task_queues:89:21) {
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4392487Z   code: 'EADDRINUSE',
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4392709Z   errno: -98,
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4392904Z   syscall: 'listen',
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4393126Z   address: '127.0.0.1',
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4393402Z   port: 41972
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4393597Z }
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4393683Z 
+verify	UNKNOWN STEP	2026-09-11T09:33:16.4393752Z Node.js v22.23.2
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4573105Z /home/runner/work/opencode-remote/opencode-remote/scripts/relay-liveness.test.ts:78
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4573644Z       if (attempt > 30) throw new Error("relay never came up");
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4573981Z                               ^
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4574112Z 
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4574237Z Error: relay never came up
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4574667Z     at waitReady (/home/runner/work/opencode-remote/opencode-remote/scripts/relay-liveness.test.ts:78:31)
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4575219Z     at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4575800Z     at async <anonymous> (/home/runner/work/opencode-remote/opencode-remote/scripts/relay-liveness.test.ts:131:1)
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4576136Z 
+verify	UNKNOWN STEP	2026-09-11T09:33:25.4576216Z Node.js v22.23.2
+verify	UNKNOWN STEP	2026-09-11T09:33:30.4740050Z ##[error]Process completed with exit code 1.
+verify	UNKNOWN STEP	2026-09-11T09:33:30.4857637Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

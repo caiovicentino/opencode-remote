@@ -321,7 +321,14 @@ um); `repoUrl` só vale no formato `https://github.com/<org>/<repo>(.git)?`.
 **`models` (opcional, v2)**: `{ "<papel>": "<provider/modelo>" }` com papel em
 `strategist | researcher | builder | reviewer | scribe` (subconjunto
 permitido; papel desconhecido ou id malformado **invalida o arquivo inteiro**
-— `parseMissionModels`, fail-closed). O id é o que `opencode models` imprime;
+— `parseMissionModels`, fail-closed). Um arquivo **só com `models`** (sem
+`prompt`/`repoUrl`, `v` ausente ou 1) não é missão nem lixo (eval-06,
+`classifyMissionFile`): o boot loga `mission.json holds model pins only`,
+mantém a missão padrão e aplica os pins como padrão de tier A; papel que o
+`pilot.json` já manda pro tier B (`models.tierB`, hoje o `strategist`) fica no
+tier B — a tabela do operador vence um arquivo de pins sem missão, e numa
+missão completa a precedência v2 segue igual (`standalonePins`). Arquivo
+inválido agora loga o motivo (`reason`). O id é o que `opencode models` imprime;
 o protocolo manda o agente só gravar id que verificou nessa saída e listar as
 opções quando o usuário pergunta ("quais modelos?"). Escrita atômica 0600
 (tmp + `chmod 600` + `mv`, o mesmo contrato do `daemon.json`). **Encerrar a
@@ -664,6 +671,11 @@ problema, sem enviar nada. Rodar na raiz do checkout de produção (o `gh`
 resolve o repo pelo remote do diretório corrente) com o `gh` autenticado
 (`GH_TOKEN` ou `gh auth login`).
 
+Funciona também sobre o release ainda em draft (eval-16: cada feed vai por
+`--pattern`; o formato antigo, com os nomes como argumentos posicionais, o
+`gh` recusava sempre). Cortar, conferir e publicar um release — e a
+assinatura antes do primeiro — está em `docs/RELEASING.md`.
+
 ## Budgets e kill switch
 
 - `~/.opencode-remote/pilot.json` (opcional): `maxTasksPerDay` (6), `maxDeploysPerDay` (6),
@@ -907,6 +919,9 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   não estaciona porque o daemon pode ainda entregar a 1ª cópia). Na 3ª recusa
   em janela o push do telefone recebe uma cópia com `needs operator`. Timeout
   vira 120s (`NOTIFY_TIMEOUT_MS`) e o researcher deixou de esperar o notify.
+  (eval-01: o relay passou a usar `prompt_async`, o timeout caiu para 30s e a
+  fila ganhou dedupe por (task, kind) e fallback para o telefone — ver
+  "Alertas de vida do pilot".)
 - **HUD NOTIFY no dashboard (P3-357)**: `/dashboard/v3` mostra ao lado do HB a
   idade do último aviso realmente entregue ao supervisor ("último aviso
   entregue há N min" no tooltip, via `pilot/notify-last` + `notifyLastMs` em
@@ -1025,6 +1040,64 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   convertidos silenciosamente para $0: os tokens aparecem como `sem preço`
   no tooltip (`unpricedTokens`). Sinal best-effort como o resto do P2-028:
   nada de gate consome `taskUSD`.
+- **Eficiência de tokens e custo próprio (eval-18, 2026-09-27)**:
+  - *Alias de modelo*: o tier A rodava como `glm52/glm-5.2` até 11/09 e como
+    `b200x4/glm-5.3-flash` desde então — mesmo endpoint servido, só o id
+    mudou — e a tabela só conhecia `glm-5.2`: 68 das 200 tasks da janela
+    (1,37B tokens) ficaram "sem preço". `MODEL_ALIASES` em `pricing.ts`
+    resolve `glm-5.3-flash` para a linha `glm-5.2` (nunca inventa preço).
+  - *Custo de ops self-hosted* (opcional, `pilot.json`):
+    `"pricing": {"selfHosted": {"models": ["glm-5.3-flash","glm-5.2"], "usdPerHour": <custo all-in do nó/h>, "mtokPerHour": <MTok PONDERADOS processados/h>}}`
+    — amortização por hora de GPU: US$/MTok de cada coluna = `usdPerHour ÷
+    mtokPerHour × peso` (pesos padrão = razões do preço de lista GLM: input 1,
+    output 3,14, cache-read 0,19, cache-write 1; sobrescreva com `weights`).
+    Alternativa direta: `"usdPerMTok": {"input","output","cacheRead","cacheWrite"}`
+    (as quatro colunas ou nada). `mtokPerHour` = Σ(coluna × peso) de TODO
+    tráfego do nó numa janela ÷ horas de relógio da janela (amortiza a
+    ociosidade que o operador paga). Bloco inválido = ausente. Mudou o preço?
+    O boot re-precifica a janela uma vez (`task usd repriced`, fingerprint em
+    `state.taskUSDPricing`): tudo-ou-nada por task — `taskUSD`, `taskCosts` e
+    `taskCache` saem do mesmo fold (subagentes inclusos) só quando todas as
+    sessões-raiz ainda existem no `opencode.db` e o total não diminui.
+  - *Contrato de campo* (`state.taskUSD[id]`, lido pelo dashboard):
+    `total`/`tierA`/`tierB`/`unpricedTokens`/`tokens` = visão BYOK de lista,
+    semântica P2-113 intacta; **novos e opcionais** `opsUSD` (US$ que o
+    operador paga pelos tokens servidos no nó self-hosted) e `opsTokens`
+    (tokens cobertos por `opsUSD`) — AUSENTES quando `pricing.selfHosted` não
+    está configurado (nunca um $0 falso), `0` quando configurado mas a task
+    não usou modelo self-hosted. A base do cálculo está em `cfg.pricing`
+    (o `/api/pilot-events` já devolve o `pilot.json`).
+  - *Atribuição completa*: reviewers, escalation (fallback tier A), scribe e
+    recap rodavam sem `--print-logs`, então o id da sessão nunca era capturado
+    (0 de 228 sessões de reviewer atribuídas em 22–24/09, ~11% dos tokens da
+    frota fora do `taskCosts`). O runner ganhou `sessionCapture`: passa
+    `--print-logs` e remove as linhas de log do `output`, então os parsers
+    leem exatamente o texto de antes. O id vem da linha `message=created …
+    parentID=undefined` (sessão raiz) ou do próprio `-s` numa retomada — nunca
+    mais do primeiro `ses_…` do stdout: a premissa é de ORDEM, não de fluxo.
+    O opencode 1.18.32 imprime log (e saída de ferramenta) no stderr (o módulo
+    de UI usa `process.stderr.write`); a linha `created` da raiz sai ANTES de
+    qualquer ferramenta e o primeiro match vence (224 builder logs: 144 com
+    exatamente 1 linha raiz, 80 retomadas com 0, nenhum com 2) — um reviewer
+    citando a fixture `ses_abc123456` não vira mais "sessão"
+    da task (4 ids de fixture em `taskCostSessions`), e o mesmo caminho podia
+    entregar um id falso ao `-s` do builder. Subagentes (`task` tool do opencode)
+    vivem em sessões filhas — o `tokensSql` agora percorre `parent_id`
+    recursivamente e soma os descendentes na task; `tokens_reasoning` entra no
+    total e é precificado como output.
+  - *Orçamento por task* (`pilot.json` `tokenBudgetPerTask`, padrão 40M ≈ p95
+    da janela; `0` desliga): ao cruzar 1×, 2×, 3×… o pilot emite `alert`
+    (fase `token-budget`) + notify do supervisor com tokens, orçamento e o
+    último desfecho. É visibilidade, nunca kill switch (qualidade > custo);
+    o nível alertado persiste em `state.tokenBudgetAlerts` (sem tempestade de
+    alertas em restart/meia-noite).
+  - *AGENTS.md é imposto por turno*: o opencode injeta o `AGENTS.md` no prompt
+    de sistema de todo turno de todo agente (0,26 token/byte, regressão sobre
+    399 sessões, R² 0,998). A 35.125 B são ~9,1K tokens por turno; com o
+    tamanho de cada época, reler o arquivo custou 114,8M tokens em 14.778
+    turnos de 22–24/09 (7,6% da frota). O histórico de beats do desktop-flow
+    (~19 KB) foi movido verbatim para `docs/desktop-flow.md`; o
+    `scripts/token-efficiency.test.ts` reprova o `AGENTS.md` acima de 18 KiB.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)
@@ -1048,8 +1121,10 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
    mesmo, sempre vazio) — e, com slots ocupados, **espera drenar** (P1-104): novos picks
    são suspensos, o reload só sai com 0 slots rodando (pipeline sempre termina — task
    timeout), nunca no meio de um builder round; sai com `process.exit(0)` (log já flushado,
-   sem órfão) e o KeepAlive reassume no código novo; heartbeat + watchdog — 30min sem
-   sinal → exit → KeepAlive ressozinho
+   sem órfão) e o KeepAlive reassume no código novo; heartbeat + watchdog — 3 min sem
+   sinal → exit → KeepAlive ressozinho (eval-01: um tick atrasado — loop bloqueado por
+   chamada síncrona como o `execFileSync` do judge gate, ou máquina dormindo — rearma o
+   heartbeat em vez de matar os slots em voo; log `watchdog: event loop was blocked`)
 4. **Processo stale (P3-101)**: o loop guarda o HEAD do repo de produção capturado no boot
    (`bootHead`) e, num momento 100% ocioso (nenhum slot rodando, nenhum deploy em voo),
    reexecuta `git rev-parse HEAD`; se driftou (`headDrifted`), sai com `exit(0)` e o
@@ -1213,6 +1288,16 @@ de recap falha, a sessão segue como antes (fail-open); o carryover é consumido
 primeira round que o usar e removido no merge. O mesmo cálculo alimenta o gauge de
 contexto do chat (apps/web via `GET /__ocr/context` do daemon, amarelo ~70%,
 vermelho ~85%) e o recap fixado sob o composer — ver README.
+**Correção eval-18**: a sonda original lia `GET /session/:id`, cujo `model` no
+opencode 1.18.x é `{id, providerID, variant}` — ela procurava `modelID` e
+devolvia null em TODA round (zero linhas `contextPressure` em 1.447 builder
+rounds, 31/08–24/09: o checkpoint nunca rodou); e o `tokens` daquele objeto é
+a conta cumulativa da sessão (27M no P3-465 contra 205K de contexto real), que
+leria 100% em toda round retomada. A sonda agora lê a cauda
+`GET /session/:id/message?limit=4` e mede a última mensagem do assistente
+(`tokens.total`, o mesmo número que o opencode mostra como uso de contexto) com
+o `providerID`/`modelID` dela. O gauge do daemon (`/__ocr/context`) tem os
+mesmos dois defeitos e segue pendente (fora do pilot).
 
 ## Circuit breaker de febre — modo auditoria (P2-032)
 
@@ -1268,6 +1353,17 @@ e logados em `apps/pilot/src/doctor.ts`:
   leitura — backlog inválido é reportado (log warn + exit 1), nunca auto-editado;
   mais de um cabeçalho `## Blocked` gera **aviso** sem invalidar o arquivo
   (P2-142: a próxima escrita do stop-loss colapsa tudo num único cabeçalho);
+  desde a eval-06 o boot e o CLI validam a **fonte do scheduler** —
+  `git show origin/<base>:BACKLOG.md` após um fetch best-effort (o campo
+  `source` do log diz qual; ref ilegível cai no working tree com aviso), e não
+  mais o working tree do checkout de produção, que é o snapshot do sha
+  **deployado** (era por isso que o log dizia `taskCount: 1` a cada boot); o
+  scan de estrutura é **por linha** (`backlogShapeIssues`): toda linha de
+  `## Ready` precisa ser task que o scheduler agenda (prosa solta e itens
+  `[x]` viram problema com `ID@linha`), `## Done` só guarda `[x]` e
+  `## Blocked` só guarda `[ ]`; e task aberta (Ready/Blocked) com commit de
+  trabalho `pilot(<ID>): …` já no `origin/<base>` (fora `mark done`/`block
+  after`) vira **aviso** com o sha — o caso de PR bloqueado mergeado à mão;
 - **`branches`** — deleta branches locais `pilot/*` **sem PR aberto**; fail-safe:
   só deleta com `gh` respondendo (PR aberto, gh indisponível, branch checked-out
   ou de task com tentativa viva no breaker — preservada para retry, P1-060 —
@@ -1305,6 +1401,29 @@ agenda) com uma linha no log (`doctor: ready orphan blocks`) e um evento
 entre passes; o texto do bloco nunca é logado). É somente relatório — o
 operador limpa esses blocos à mão ou os reescreve como linha de tarefa; o
 pilot nunca edita o arquivo sozinho.
+
+**Catraca dos escritores do backlog** (eval-06): `markDone`, `blockTask`,
+`addTask` e `appendReadyLines` escrevem só por `writeChecked` (`backlog.ts`),
+que recusa — não grava nada — uma edição que **introduza** linha que não seja
+task sob `## Ready` (comparação de multiconjunto: sujeira antiga nunca trava
+uma edição legítima, a edição só pode manter ou encolher). Foi assim que cinco
+achados de red team (RT-341/390/424/439/453) apodreceram em Ready: o fluxo
+pré-P2-336 escrevia os parágrafos abaixo de uma task de uma linha e o
+`markDone` levava só a primeira linha pro Done. `appendReadyLines` e o store
+de refill pendente revalidam cada linha com `isValidTaskLine`; `markDone` sem
+`## Done` responde `missing` sem gravar (antes a task sumia); o resumo do
+stop-loss perde sequências ANSI e bytes de controle. O
+`scripts/backlog-integrity.test.ts` (fim da cadeia `test:unit`) valida o
+`BACKLOG.md` **real** do repo **só pela forma da fila** (`backlogShapeIssues`:
+linha órfã sob `## Ready`, item `[x]` na fila, cabeçalho `## Ready`/`## Done`
+duplicado). Linha escrita à mão ou reenfileirada é assunto do scheduler e do
+doctor: um `;`, um `(area:)` ausente ou bytes de controle numa task line
+segem sendo agendáveis (`parseTaskLine`) e o doctor responde `ok` — o alerta
+de boot da P2-341 (`readyOrphanBlocks`) pode denunciá-la, mas é somente
+relatório. O teste de fila **não** pinna o validador de landing
+(`isValidTaskLine`, mais rígido, feito para saída de LLM) no arquivo vivo:
+fazê-lo deixava o portão de toda a frota vermelho por conteúdo que o doctor
+considera ok.
 
 O boot do pilot roda o pass completo (refs/state/backlog/branches em cada slot,
 log `doctor: <cmd>` no JSONL) — falha do doctor nunca impede o pipeline de subir.
@@ -1611,6 +1730,91 @@ cache). Consequences:
 - **Metrics pairing**: `gatekeeper-done` (not `merge`) closes the gatekeeper
   phase in `avgPhaseDurations`; `gate-flaky`/`gate-fail` events never open a
   phase.
+
+## Feedback do gate por relevância (forense 24/09, recs 3/4/5/8)
+
+Toda rodada reprovada precisa dizer ao builder exatamente o que quebrou. Antes,
+o veredito assinado do juiz trazia a saída INTEIRA do step (stdout e depois
+stderr, em buffers separados) e o pilot guardava só os últimos bytes: 1500 no
+finding, 1200 no carryover `gate-fail/<ID>.json` e 300 no log/detalhe. Nas 9
+caudas de `desktop-flow` do pilot.log, nenhuma nomeava o check que falhou, e o
+builder da P3-457 teve que rodar o flow de novo por conta própria.
+
+- **Diff contra `origin/<base>`** (`taskDiffRange`): o diff dos reviewers, o
+  name-only que o juiz usa (renderTouched → smokes desktop + shots
+  obrigatórios), o `touchedUi` (shot pós-deploy) e o comando que o prompt manda
+  o builder inspecionar agora usam `origin/<base>...pilot/<ID>`. O `main` local
+  do slot só anda nos merges do próprio slot e no doctor. Quando a branch
+  rebaseava ou mergeava um origin mais novo, o diff trazia commits de outros
+  slots. Foi isso que reprovou P3-401 e P3-459 (relay) e P2-357 (infra: o PR
+  #1390 mexe só em `scripts/unit.test.ts`) com "UI task without
+  shot-1440x900", e deu shot de UI pós-deploy à P3-461 (relay, zero arquivos
+  de UI).
+- **Cauda por relevância** (`apps/pilot/src/gatetail.ts`): o finding (1500),
+  o carryover (1200) e o headline de log/detalhe (300) vêm do
+  `gateTailDigest`/`gateTailHeadline`, nesta ordem:
+  1. cabeçalho com o primeiro check que falhou (+N mais), a contagem e o
+     último beat `---` iniciado antes do primeiro FAIL — o nome do check tem
+     de caber nos 200 caracteres que a failure lesson guarda do carryover;
+  2. os checks que falharam;
+  3. o primeiro bloco de erro;
+  4. o resumo (FAILURES, duração, aviso de orçamento);
+  5. as últimas linhas, com eventos JSON, ruído de boot do keeper e warnings
+     do Node descartados, e sequências de OK colapsadas.
+
+  Saída que cabe no orçamento passa byte a byte. Na saída real de um
+  desktop-flow com 2 falhas (fixture `apps/pilot/src/__fixtures__/gate-tail/`),
+  a cauda antiga nomeava 1 das 2 e o headline nenhuma. A nova nomeia as 2, com
+  o beat e o detalhe.
+- **Checagem pré-gate com rebote na mesma rodada**
+  (`apps/pilot/src/evidencecheck.ts` + `coupling.ts`): logo após o builder, o
+  pilot roda a metade estática do step `evidence` do juiz com o mesmo
+  predicado. Ela checa bloco `EVIDENCE:` presente, comandos obrigatórios
+  citados, e os shots 1440x900/390 como linha nua `shot-<key>: <path>`,
+  PNG legível, no tamanho certo e fresco. Também roda a varredura de asserções
+  acopladas: literais que o diff tirou do produto e que continuam fixados em
+  `scripts/*.test.ts`, nos dois sentidos (cópia/classe do produto → teste; pin
+  de fonte do teste → linha removida).
+
+  Se houver lacuna, o pilot manda UM rebote curto (`EVIDENCE_BOUNCE_MAX = 1`,
+  até 20 min) na MESMA sessão do builder. O juiz lê o último bloco da saída
+  concatenada. Eventos `evidence-bounce`/`evidence-bounce-done` e o log
+  `pre-gate bounce` (antes/depois) medem o efeito. O juiz continua a
+  autoridade: um "ok" errado só adia a mesma reprovação ao gate.
+
+  Medição nos 60 merges de UI mais recentes do main: zero hints nos diffs
+  mergeados. Com as mudanças de teste removidas de cada commit ("o builder
+  esqueceu o teste"), a varredura sinalizou os 6 commits cujos testes
+  realmente precisavam mudar, entre eles P3-413 e P3-435.
+
+  Em reprovação de `unit`/`desktop-flow`/`desktop-render`, os hints também
+  vão junto do finding.
+
+  Tudo isso roda dentro do processo do pilot, com entrada que o builder
+  controla: a saída do gate é partida por linha e cada padrão roda sobre uma
+  cópia de no máximo 4 KB (sem backtracking quadrático — uma linha de 1 MB de
+  espaços custava ~35 s de event loop por gate vermelho), e shot citado ou
+  arquivo do workspace só é aberto se for arquivo regular (um FIFO travava
+  `openSync`/`readFileSync` para sempre).
+- **Prompts**:
+  - O builder recebe linhas fixas de UI-EVIDENCE
+    (`shot-1440x900: ~/.opencode-remote/pilot/shots/builder/<TASK-ID>-r<ROUND>-1440.png`)
+    e as regras de formato que o parser do juiz impõe: sem code fence, bullet,
+    crase ou negrito.
+  - Planner (P0/P1) e builder recebem a regra de asserções acopladas. O spec
+    termina `## Touched files` com uma lista `Invalidates:` (grep nos testes,
+    PaneMap, i18n en/pt-BR, READMEs, PRODUCT).
+  - O builder lista o que invalidou no corpo do commit.
+  - Os prefixos estáveis (P1-077) continuam byte-idênticos entre tasks.
+- **Orçamento do desktop-flow** (`scripts/desktop-flow.test.ts`):
+  - Cada check é cobrado ao beat do seu prefixo (`P3-407: …`, `local: …`)
+    ou ao último banner. O relatório de saída imprime os 10 beats mais caros,
+    e a soma fecha com o tempo total.
+  - Acima de 80% dos 420s, sai `WARN desktop-flow budget: …`.
+  - Todo FAIL é repetido no stdout em `FAILED CHECKS (N)` com beat, instante
+    e detalhe.
+  - Um hook de `exit` garante o relatório também no estouro de prazo e na
+    falha de `open`.
 
 ## Verifiable findings (P2-015)
 
@@ -2038,6 +2242,148 @@ threshold, notify e emit são injetáveis (`DeployOpts`) — a bateria de eval
 (`scripts/unit.test.ts`) testa o abort com threshold mockado provando que ele
 acontece antes do `npm ci`.
 
+## Disco: hold, retenção e VACUUM (eval-02, 27/09)
+
+**Por quê.** Em 24/09, das 04:20 às 07:40, o volume de `~/.opencode-remote` (e, na
+época, do `opencode.db`) chegou a 0 bytes. O disk guard do deploy recusou por 12h
+(85 recusas desde 23/09 15:56), mas nada parava os 8 slots. Depois disso, toda
+escrita virou fatal: `pilot fatal … ENOSPC … pilot.pid` a cada relaunch do
+KeepAlive (~14×, com 30s de ThrottleInterval). O `saveState` do caminho de crash
+lançou ENOSPC e pulou o cool-down (763 re-picks do mesmo task em ~2min). O
+heartbeat falhava em silêncio até o watchdog matar o loop. A queda de 12/09 → 22/09
+foi da mesma classe.
+
+**Disk hold** (`apps/pilot/src/diskhold.ts`). Em todo tick, antes de qualquer
+trabalho, o loop faz `statfs` de cada volume que a frota escreve: estado do pilot,
+checkout de prod, o `opencode.db` **resolvido** (symlink para o SSD desde 24/09) e
+o temp. O **pior** volume decide o nível:
+
+| nível | entra | sai (histerese) | efeito |
+|---|---|---|---|
+| `low` | < 10 GiB | ≥ 12 GiB → ok | sem picks novos, sem nightly/aux; pipelines em voo terminam; deploy segue com o guard de 5 GiB |
+| `critical` | < 5 GiB, ou uma escrita falhou com ENOSPC (mín. 10 min) | ≥ 7 GiB → low | nada novo, sem deploy; o loop só sonda, varre espaço (dist + artefatos) e alimenta o heartbeat |
+
+Cada transição gera **um** alerta: log `disk hold` / `disk hold released`, evento
+`alert` (`task: "disk"`), `notifySupervisor("pilot-disk")` e um push `💾 Pilot …`
+com `digest` ligado. Enquanto o hold durar, sai um lembrete a cada 6h: em 12/09 um
+único sinal perdido virou 10 dias parados. O seam é único (`diskAlert`); o dono da
+entrega de alertas pode repontá-lo. Quando o espaço volta, o backoff do pending deploy é zerado (sem
+esperar 30min). Se nenhum volume puder ser lido, o nível não muda: nunca entra em
+hold por falta de evidência e nunca sai dele pelo mesmo motivo.
+
+**Nunca crash-loop.**
+- **Boot gate:** a escrita do pidfile espera (sem crash) enquanto o disco está
+  critical; um ENOSPC nela força o hold.
+- **Caminho de crash:** o `runSlot`, o fim do deploy e o contador de deploy usam
+  `saveStateSafe`, que nunca lança. O estado em memória segue autoritativo e o
+  próximo save tenta de novo.
+- **ENOSPC fora de await:** uma rejeição não tratada com ENOSPC vira hold em vez de
+  derrubar o processo. Outros erros continuam fatais (crash-only).
+- **`main()` morto por ENOSPC:** o processo espera o espaço voltar e sai **uma**
+  vez.
+- **Watchdog:** julga o batimento **em memória** (`heartbeatAgeMs`). O arquivo
+  `pilot/heartbeat` continua sendo o sinal externo (dashboard), gravado
+  best-effort.
+
+As listas do deploy guard (`verified-merges.jsonl`, `quarantine.jsonl`,
+`last-install.json`) agora são gravadas com tmp + rename: um ENOSPC no meio da
+escrita não trunca mais a quarentena.
+
+**Hatches** (os mesmos do daemon): `OCR_DISK_FULL=1` força critical e
+`OCR_DISK_OK=1` força ok (FULL vence); `OCR_DISK_HOLD_TICK_MS` encurta o tick em
+testes. `scripts/pilot-diskfull.test.ts` sobe o entrypoint real com HOME
+temporário e `OCR_DISK_FULL=1`. Com `OCR_REAL_ENOSPC=1` (macOS), o teste repete o
+cenário num volume HFS+ de 16 MB realmente cheio e prova o resume automático num
+sparse de 8 GiB (~3,6 GB de backing temporário).
+
+**Retenção de artefatos** (automática, em `apps/pilot/src/retention.ts`: de hora
+em hora junto do sweep de dist; num hold critical, na entrada e de hora em hora
+enquanto ele durar). Cada regra
+mantém um piso dos N mais novos, apaga o que passou da idade e aplica um teto de
+contagem. Arquivo com menos de 1h nunca é tocado; subdiretórios e symlinks nunca
+casam.
+
+| regra | onde | piso | idade | teto |
+|---|---|---|---|---|
+| builder-logs | `pilot/builder-*.log` | 50 | 30d | 200 |
+| stray-logs | `pilot/p<N>-*.log`, `last-builder-output*.log` | 0 | 14d | 20 |
+| shots-builder | `pilot/shots/builder/*` (só arquivos) | 100 | 30d | 400 |
+| shots-explorer | `pilot/shots/explorer/*.png` | 120 | 45d | 400 |
+| tmp | `pilot/tmp/*` | 0 | 7d | 100 |
+| client-logs | `pilot/client-logs/*.txt` | 20 | 30d | 100 |
+
+`pilot/shots/*.png` continua com o teto de 20 do `shot.ts` (P2-011). Aquela
+passada só conhece `.png`, por isso o css/html de `shots/builder` acumulava.
+Manual: `npx tsx apps/pilot/src/retention.ts artifacts` (dry-run) /
+`… --apply`.
+
+**Retenção de sessões do opencode** (opt-in, CLI, **dry-run por padrão**). Medido
+read-only em 27/09: o `opencode.db` tem 87 GB, `page_count` 21,3M × 4 KiB,
+`freelist_count` 0 e `auto_vacuum` 0 (NONE). ~90% dele é a tabela `event`, e cada
+`message.updated` regrava os `summary.diffs[*].patch` da sessão inteira (até
+5 MB/evento no pilot). As sessões dos clones do pilot somam ~28–31 GB. O resto é
+de outros projetos do dono (`/Volumes/SSD Major/wow` ≈ 47 GB), fora do alcance
+desta ferramenta.
+
+Contrato do opencode 1.18.32, verificado num `opencode serve` hermético:
+- `GET /session?directory=D` lista só D, do mais novo para o mais antigo, e
+  **limita a 100 por padrão**. Por isso a ferramenta passa `limit=10000` e marca
+  listagens truncadas.
+- `scope=project` alarga para todos os clones do mesmo repositório, inclusive o
+  do dono, e **nunca é usado**.
+- `DELETE /session/<id>` apaga em cascata filhos, mensagens, parts e o event log.
+  **Ignora `directory`**, então a posse é checada do lado do cliente: diretório
+  exatamente igual a um clone do pilot (`repo-<n>`, clones de missão,
+  `repo-explorer`, `repo` legado), só raízes (o filho vai junto), idade = update
+  mais novo da árvore inteira, ids canônicos, teto por execução (`--max`, padrão
+  500), pausa entre deletes e trilha JSONL em `pilot/retention-audit.jsonl`, mais
+  `pilot-retention` no `audit.log`.
+
+Com o opencode no ar e o pilot parado ou ocioso:
+
+```sh
+npx tsx apps/pilot/src/retention.ts sessions --days 14          # dry-run: 582 raízes (~11–13 GB) em 27/09
+npx tsx apps/pilot/src/retention.ts sessions --days 14 --apply  # apaga + audita
+# --days 3 alcança 1000 raízes (~27–28 GB) em 27/09
+```
+
+**VACUUM, a realidade.** O delete só devolve páginas ao freelist **interno**: o
+arquivo continua com 87 GB, e o crescimento seguinte reusa esse espaço antes de
+crescer (28 GB ≈ 4–7 dias de frota). Para encolher o arquivo:
+- `VACUUM` no lugar exige acesso exclusivo e reescreve tudo. Precisa de ~2× o
+  tamanho do banco: um temp do tamanho do banco em `SQLITE_TMPDIR`/`TMPDIR`
+  (**disco interno por padrão, 78 GB livres < 87 GB, o que levaria a um novo
+  ENOSPC**) mais o WAL no SSD.
+- **Recomendado:** `VACUUM INTO` numa conexão **read-only**, com o opencode
+  parado. Isso grava uma cópia compacta (≈ dados vivos) direto no SSD, sem temp no
+  disco interno e já no modo INCREMENTAL. Num banco de teste isso foi verificado:
+  cópia com metade das páginas, `quick_check` ok, `auto_vacuum` 2 e origem
+  byte-idêntica. Depois é trocar os arquivos, levando `-wal`/`-shm` junto com o
+  antigo. Daí em diante, `PRAGMA incremental_vacuum` devolve o espaço liberado sem
+  reescrita total.
+
+```sh
+# 0) retenção primeiro (precisa do opencode no ar); depois o DONO para só o opencode
+#    (o daemon fala com ele pela API e nunca abre o banco)
+launchctl bootout gui/$(id -u)/com.ocr.opencode
+D="/Volumes/SSD Major/opencode_data"
+sqlite3 -readonly "$D/opencode.db" "PRAGMA auto_vacuum=INCREMENTAL; VACUUM INTO '$D/opencode.compact.db'"
+sqlite3 -readonly "$D/opencode.compact.db" "PRAGMA quick_check; PRAGMA auto_vacuum"   # ok / 2
+cd "$D" && mv opencode.db opencode.db.pre-vacuum \
+  && for x in -wal -shm; do [ -e "opencode.db$x" ] && mv "opencode.db$x" "opencode.db.pre-vacuum$x"; done \
+  && mv opencode.compact.db opencode.db
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ocr.opencode.plist   # ou: launchctl load -w <plist>
+# conferidas as sessões no app: rm "$D"/opencode.db.pre-vacuum*   (devolve os 87 GB antigos)
+```
+
+**Rotação de logs** (`deploy/rotate-logs.sh`, launchd `com.ocr.logrotate` às
+03:07). Cada log é tratado isoladamente: um log que não se consegue arquivar não
+aborta mais a rodada. O arquivo vivo só é truncado depois que a cópia `.gz` foi
+gravada. Arquivos antigos em texto puro são comprimidos, e o prune é **por log**,
+pelos 5 mais novos por mtime. O `sort -r` antigo mantinha os 5 caminhos
+lexicograficamente maiores somando todos os logs, e apagava um arquivo do daemon
+mais novo que os do relay.
+
 ## Deploy só de SHA verificado + quarentena (P2-058, 02/09)
 
 Antes o `deploy()` aceitava qualquer HEAD de `origin/main`: um push direto em
@@ -2183,6 +2529,162 @@ main está vermelho no mesmo check — o próximo ciclo tenta de novo em vez de
 enterrar a task. No máximo um hold por task: no segundo ci-red compartilhado,
 bloqueia como antes.
 
+## Alertas de vida do pilot (eval-01)
+
+**Por quê.** Todo alerta do pilot (notify do supervisor, digests de push)
+roda DENTRO do processo do pilot — um pilot morto ou descarregado nunca avisa
+a própria morte. A frota ficou parada de 12/09 a 22/09 e de novo a partir de
+24/09 08:07 (`com.ocr.pilot` fora do launchd) sem nenhum alerta. Além disso a
+sessão do supervisor configurada em `pilot.json` tinha sido apagada (o
+opencode responde 404 `NotFoundError`), então todo notify falhava para sempre
+e 100 mensagens se acumularam em `pilot/notify-pending.jsonl` (45 delas a
+mesma recusa do disk guard) — e `subscriptions.json` estava vazio desde 15/09,
+então nenhum push chegava a telefone algum.
+
+### Watchdog de fora (daemon, `apps/daemon/src/pilotwatch.ts`)
+
+O daemon roda sob KeepAlive no mesmo host e vigia o pilot a cada 60s (primeira
+sonda 30s após o boot, só depois das chaves VAPID):
+
+| Sinal | Fonte | Veredito |
+|---|---|---|
+| heartbeat | `pilot/heartbeat` (epoch ms; mtime como reserva) | > 10 min sem batida = parado para pid morto; com pid vivo sob um job `running` do launchd, só depois do orçamento do judge (30 min + folga = 40 min) — o gate roda um `execFileSync` de até 30 min (o self-watchdog do pilot rearma em vez de sair) |
+| processo | `pid` do `launchctl print` (com o job carregado; o `pilot/pilot.pid` só vale sem launchd — PIDs reciclam no macOS) | pid morto + heartbeat velho = `dead`; pid vivo + silêncio fora do orçamento = `stalled` |
+| launchd | `launchctl print gui/<uid>/com.ocr.pilot` (só leitura; exit 113 = não carregado) | não carregado + heartbeat velho = `unloaded` — independe do `pilot.pid` (reciclado vira processo alheio) e só abre mão com heartbeat fresco + pid vivo (execução manual) |
+| reinícios | `runs` do launchd em janela de 60 min (o loop de 24/09 reiniciava a cada ~14 min) | ≥ 3 reinícios com saída anormal (exit ≠ 0, `last terminating signal` ou `last exit reason` não-idle — o OOM de 24/09 morreu por sinal, sem linha de exit code) = `crash-loop` |
+| disk hold | `events.jsonl`: recusas `deploy`/`disk-guard` desde o último `deploy`/`done`, ou o hold explícito do pilot (`alert` com task `disk`, phase `disk-hold`, reemitido a cada 6h, até um `disk-resume`) | ≥ 1h segurando (última recusa com < 6h; hold explícito com evento < 7h) = `disk-hold` |
+| deploy lag | HEAD de `~/.opencode-remote/prod` × `pilot/verified-merges.jsonl` | merge verificado esperando ≥ 6h = `deploy-lag` |
+| supervisor | `GET /session/<supervisorSession>` no opencode (só leitura, a cada 10 min) | 404 `NotFoundError` = `supervisor-missing` |
+
+`unloaded`/`crash-loop`/`dead`/`stalled`/`no-heartbeat` são severidade
+**down**; `disk-hold`/`deploy-lag`/`supervisor-missing`/`no-push-subscribers`
+são **degraded**. O pilot só conta como instalado com o plist do launchd OU se
+já rodou aqui (`pilot.json` + `pilot/heartbeat`) — máquina de usuário comum
+fica `absent` e nunca recebe alerta. `~/.opencode-remote/pilot.lock` (o freeze
+do próprio pilot) vira `paused`: parada intencional não pagina — é o jeito
+documentado de silenciar o watchdog enquanto o pilot fica desligado de
+propósito. O heartbeat sozinho não é confiável: em 27/09, com o pilot fora do
+launchd e o pid morto, algum outro processo reescreveu `pilot/heartbeat` e
+`pilot/state.json` — por isso `unloaded` e `crash-loop` não dependem do
+heartbeat.
+
+**Política de alerta** (planner puro, episódio persistido em
+`~/.opencode-remote/pilotwatch.json` — dedupe mesmo com restart do daemon ou
+um segundo processo de daemon): 2 sondas ruins seguidas antes do primeiro push
+(restart/self-reload nunca pagina); lembretes em 1h → 4h → 12h → depois a cada
+24h enquanto parado (degraded: a cada 24h); degraded → down pagina na hora;
+down → degraded manda um único "✅ Pilot voltou a rodar" dizendo o que ainda
+falta; a volta ao normal manda um único "✅ Pilot de volta ao normal" (só se o
+episódio chegou a paginar) e só depois de 2 sondas saudáveis seguidas — o
+probe do opencode oscila (64 episódios "health flipped" em ~25 dias neste
+host), e uma sonda `unknown` nunca fecha um episódio: ela mantém o último
+veredito definitivo; `paused`/`absent` fecham o episódio em silêncio; se o
+push foi tentado com 0 telefones inscritos e um telefone se inscreve depois, o
+alerta é reenviado ~5 min depois. O push das páginas usa a tag `ocr-pilot`, o
+digest do relay usa a tag própria `ocr-pilot-digest` (um "📮 Pilot: …" nunca
+substitui um 🛑/⚠️) e o service worker (`apps/web/public/sw.js`) respeita a tag
+do payload com `renotify` — antes TODA notificação usava a tag única
+`opencode-remote`, então um "Agent finished" substituía um alerta de pilot
+parado sem tocar o celular. Cada push vira linha `pilot-liveness` no
+`audit.log`, log `pilot liveness page` e evento `alert` (`task: "pilot"`,
+`phase: "liveness"`) no feed do dashboard; push com 0 inscritos loga
+`reached no phone (0 push subscriptions)`, e a poda de inscrições mortas
+(404/410 do serviço de push) agora loga `push subscriptions pruned` — antes era
+silenciosa.
+
+Knobs (default seguro, nunca derrubam o boot — valor inválido volta ao padrão
+com uma linha de aviso): `OCR_PILOTWATCH=off` desliga os pushes (a API de
+leitura continua), `OCR_PILOTWATCH=on` força o pilot como instalado,
+`OCR_PILOTWATCH_INTERVAL_MS` / `OCR_PILOTWATCH_INITIAL_DELAY_MS` (testes).
+
+### Relay do supervisor com fallback no telefone (`apps/daemon/src/pilotnotify.ts`)
+
+`POST /api/pilot-notify` usa `prompt_async` do opencode (204 = aceito, sem
+esperar o turno inteiro do supervisor — era isso que estourava os 120s) e
+responde `{delivered, reason?, fallback?, pushed?, phones?}` com motivo
+fechado: `session-not-found`, `no-supervisor-session`,
+`invalid-supervisor-session`, `upstream-http-<n>`, `upstream-unreachable`,
+`upstream-timeout`, `empty-text`, `operator`. Falha **permanente** (sessão
+inexistente, não configurada, id inválido, 4xx) faz o daemon assumir a
+mensagem: falha (`ok:false`) entra no digest do telefone (`fallback: "push"`),
+informativo (`ok:true`) é descartado de propósito (`fallback: "drop"`). Falha
+**transitória** (opencode fora, 5xx, timeout) não tem `fallback` — o pilot
+estaciona e reenvia depois. O digest agrupa por (task, kind) (o kind colapsa
+números: "disk low: 0.1gb" e "2.1gb" são o mesmo), manda no máximo um push a
+cada 10 min, a mesma chave no máximo a cada 6h (o contador acumula: "(×31)"),
+descarta itens com mais de 24h, mostra 4 linhas + "+N outros avisos" e abre
+com o porquê ("Supervisor inacessível: a sessão do supervisor não existe mais
+no opencode"). Estado persistido no mesmo `pilotwatch.json`; o tick do
+watchdog despacha o que ficou retido pela janela. Com **0 telefones inscritos**
+(a situação de produção de 15/09 a 27/09), nada é assumido como entregue: o
+digest NÃO marca as chaves como enviadas nem gasta a janela de 10 min — os
+itens ficam retidos (dentro do TTL de 24h) e saem no primeiro flush depois que
+um telefone se inscrever; o snapshot diz `push.reachable: false` com o motivo
+`no-push-subscribers` (degraded, sem página) para o Mission Control dizer com
+destaque que nenhum alerta alcança ninguém.
+
+Lado do pilot (`apps/pilot/src/notify.ts`): sem `supervisorSession` o pilot
+ainda fala com o daemon (antes era um skip local silencioso); mensagem que o
+daemon assumiu nunca é estacionada; a fila `notify-pending.jsonl` só guarda
+falha transitória, com dedupe por (task, kind) (`count`, `firstTs`), TTL de
+24h aplicado em toda escrita e teto de 100 linhas; o replay para na primeira
+entrega que falha (antes reenviava as 100 a cada notify) e a entrada reenviada
+diz "(repetido N× desde HH:MM)"; `NOTIFY_TIMEOUT_MS` = 30s. `push.ts`
+(`digest`) só devolve true quando algum telefone recebeu — `/api/push` agora
+responde `{ok, delivered: <telefones alcançados>, subscribers}` (antes
+`delivered` era a contagem de inscrições).
+
+**Hook do operador** — para condições em que um humano precisa agir (disk
+hold, etc.), direto para o telefone, nunca para o chat do supervisor:
+
+```ts
+import { notifyOperator } from "./notify";
+await notifyOperator("deploy", "disk-hold", "disk low: 2.1gb free (need 5.0gb) — deploys held");
+// Promise<boolean>: true quando o daemon aceitou para push e há ≥1 telefone
+// inscrito (enviado agora ou retido pela janela de 10 min). Nunca lança.
+// Dedupe por (task, kind) com cooldown de 6h no daemon: pode chamar todo ciclo.
+```
+
+### API de leitura (Mission Control)
+
+`GET /api/pilot-liveness` (loopback, mesmo Bearer/cookie das outras rotas
+`/api`) e `GET /__ocr/pilot-liveness` (túnel selado, para o celular) devolvem o
+mesmo snapshot (cache de até 15s). Contrato v1 — timestamps em epoch ms,
+`null` = desconhecido (nunca um palpite):
+
+```json
+{
+  "v": 1,
+  "state": "ok | degraded | down | paused | absent",
+  "checkedAt": 1790521605070,
+  "reasons": [
+    { "code": "unloaded | crash-loop | dead | stalled | no-heartbeat | disk-hold | deploy-lag | supervisor-missing | no-push-subscribers",
+      "severity": "down | degraded",
+      "detail": "frase curta em pt-BR, pronta para exibir" }
+  ],
+  "heartbeat": { "at": 1790248033162, "ageMs": 273572000 },
+  "process": { "pid": 35139, "alive": false },
+  "launchd": { "checked": true, "loaded": false, "state": null, "pid": null, "runs": null, "lastExitCode": null, "lastExitSignal": null, "lastExitReason": null },
+  "disk": { "hold": { "since": 0, "last": 0, "refusals": 69, "detail": "disk low: …", "source": "deploy-guard | pilot-hold" }, "daemon": "ok | low | critical | unknown" },
+  "deploy": { "prodSha": "1ebbbc1…", "undeployed": 16, "oldestUndeployedAt": 1790189752000 },
+  "notify": { "pending": 100, "oldestPendingAt": 0, "lastDeliveredAt": 1789182096751, "supervisor": "ok | missing | unknown | unset" },
+  "push": { "subscribers": 0, "reachable": false },
+  "alerts": true,
+  "alert": { "episode": { "code": "unloaded", "severity": "down", "since": 0, "sent": 1, "delivered": 0, "lastSentAt": 0, "nextAt": 0 } }
+}
+```
+
+`reasons` vem ordenado (down primeiro, depois ordem fixa); `reasons[0]` é o
+motivo principal — exceto `no-push-subscribers`, que é visibilidade (nunca
+abre, escala nem sustenta episódio, e nunca pagina sozinho: ele é o único
+motivo quando tudo o mais está bem). `disk.hold` é informado mesmo quando
+velho demais para virar motivo. `push.subscribers: 0` /
+`push.reachable: false` significa que nenhum alerta chega a telefone algum —
+a UI deve dizer isso com destaque. `alert.episode` é `null` quando não há
+episódio aberto; `nextAt` é quando sai o próximo lembrete. Campos novos só
+entram de forma aditiva; mudança incompatível sobe `v`.
+
+
 ## Juiz: caminhos protegidos, cota de flaky e veredito v2 (P3-353, P3-359, eval-08)
 
 O gate roda no juiz pinado (`~/.opencode-remote/judge`, commit em
@@ -2277,3 +2779,107 @@ Limites conhecidos: builder e juiz rodam com o mesmo usuário e o builder tem
 o juiz fora do workspace; o isolamento real é o juiz num usuário macOS
 próprio (tarefa do operador). A base do diff vem das refs do workspace;
 `pipeline.ts` (79 commits) e `deploy.ts` (29) não são caminhos protegidos.
+
+## Ponte CI → builder e classificação de falhas pela causa real (eval-03)
+
+O forense de 2026-09-24 contou 6 de 7 bloqueios como `infra "ci-red" failed
+3x`. A etiqueta estava certa (o CI remoto estava vermelho), mas quatro defeitos
+em volta dela escondiam a causa e queimavam ciclos inteiros:
+
+- **O builder nunca via o log do CI.** Quando `mergeReadiness` recusa o merge
+  por CI vermelho, `mergePrForTask` agora lê `gh run view <run> --log-failed`
+  (id do run tirado do `detailsUrl` do próprio rollup, só dígitos) e
+  `cibridge.ts` (puro) reduz o log por **relevância**, não por bytes: escopo no
+  step que falhou (último `##[group]Run` antes do `##[error]` do job), primeira
+  linha com forma de causa raiz, blocos de erro com contexto, resumo do harness;
+  linhas `OK`, eventos JSON e saída esperada de checks que passam ("feedhash:
+  FAIL latest.yml") nunca entram. Jobs que o agregado `ci-gate` marca como
+  `WARN … advisory` aparecem numa linha só. O resumo (≤ 60 linhas, ≤ 240
+  caracteres por linha, ≤ 6000 no total, nomes de job completos) vira o carry
+  `gate-fail/<ID>.json` com step `ci-red`, e o próximo ciclo injeta como
+  `[BLOCKING]` cercado por `<<<CI-LOG … CI-LOG>>>`: o log é texto NÃO
+  confiável — ANSI/controle removidos, runs com cara de token redigidos,
+  `PILOT:`/`EVIDENCE:` e os delimitadores neutralizados. A linha 2 nomeia a PR,
+  o head rejeitado e a branch, porque o ciclo seguinte começa numa branch nova.
+  Falha do `gh` nunca muda o veredito (fail-open: o job continua nomeado).
+- **Carry velho.** Um gate vermelho num round corrigido no round seguinte ficava
+  em disco e voltava no próximo ciclo como `[previous gatekeeper failure]`,
+  virando step/tail da lição de bloqueio (P3-401/P3-459 registrados como "UI
+  task without shot-1440x900"). Agora o gate verde apaga o carry — só o carry
+  de step do PRÓPRIO gate: um carry `ci-red` (CI remoto) ou `unverified-blocking`
+  (achados de review) sobrevive ao gate verde, porque o gate local não prova
+  nada sobre eles (se o round seguinte abortar como infra antes do merge, o
+  log do CI não se perde junto com a branch resetada).
+- **Head velho contado como strike.** Com o push da branch recusado (P3-459,
+  GitHub 500), a PR ficava no head do ciclo anterior e o CI vermelho dele era
+  o 3º strike. Um `skip/ci-red` sobre um head `OPEN` que não é o nosso agora é
+  infra `stale-head` ("the branch push did not land") — nem conta no streak
+  por task, nem zera o streak de ci-red genuíno (a sequência ci-red → ci-red →
+  head-velho → ci-red conta 1,2,2,3 em vez de recomeçar em 1). Quando o push
+  DEU certo, o veredito e o head vêm do MESMO snapshot: o primeiro
+  `awaitMergeReadiness` roda com `expectSha=<sha do push>`, então um lag de
+  leitura do GitHub (~3 s pós-push) espera o head atualizar em vez de descartar
+  o ciclo. E o armamento é fail-closed: `gh pr merge` sempre leva
+  `--match-head-commit <sha>`, então o GitHub recusa o squash se o head mudou —
+  nem uma falha transitória do `gh` na pré-sonda arma merge sobre head alheio.
+- **Motivo cortado.** A linha do `## Blocked` e a linha da lição cortam em 200
+  caracteres e o boilerplate empurrava os nomes dos jobs para fora ("CI red:
+  ci-ga…"). `infraStarvationReason` agora põe `(red: verify, …)` logo depois da
+  contagem, e um ci-red sem detalhe não sugere mais "unreachable API". As
+  leituras da ponte (`gh run view`/REST) têm timeout próprio de ~1 min e um
+  teto de 3 tentativas de job-log (contando tentativas, não sucessos — sob rate
+  limit, um teto de sucessos fazia 5 chamadas falhas para 5 jobs vermelhos).
+
+**Queda do provedor de modelo.** O preflight `waitForApi` só vê o `opencode
+serve`; com o provedor fora, o builder morria com o erro terminal da própria
+CLI (`Error: Cannot connect to API: Unable to connect…`), os rounds seguintes
+morriam na hora e o último virava "builder did not finish" — mérito, uma
+tentativa queimada (8 casos, P3-457 bloqueado assim). `failureclass.ts` (puro)
+só reconhece a queda na **última linha não-log** da saída do processo quando
+ela carrega a **moldura ANSI da própria CLI** (`\u001b[91m\u001b[1mError:
+\u001b[0m…` — corpus real de P3-457); com `--print-logs` (o builder sempre
+roda com), a linha estruturada `level=ERROR … message=process … error=` tem
+que estar logo antes da moldura. Falhas de conexão para alvos **loopback**
+(127.0.0.1, ::1, localhost) ficam fora — são serviço local (opencode serve,
+porta de gate, servidor de teste), nunca o provedor. Assim, uma linha de tool
+ou do modelo que "termina" em `Error: …` não é mais queda; um erro de stream
+que o SDK recuperou no meio (dezenas de logs que terminam em
+`PILOT:TASK-DONE`) e um finding que cita `ECONNREFUSED` continuam fora. Um
+round de builder (ou revisor sem veredito) morto assim encerra o ciclo como
+infra `api-down`: sem tentativa, sem amostra de febre, fora do streak por task
+(uma queda sistêmica nunca bloqueia tasks uma a uma). O `runSlot` arma um
+hold global de novas picks — 2 min, dobrando a cada queda observada depois do
+hold anterior expirar, teto de 30 min, sem escalar pelos slots que já estavam
+no meio de um round. **Teto por task (fixround):** o retry grátis não é
+licença — depois de `API_DOWN_FREE_CYCLES` (3) ciclos api-down SEGUIDOS da
+mesma task, e com outro pipeline escolhido DEPOIS do começo da trilha que
+completou sem api-down (prova de que o provedor responde), o api-down da task
+cai no streak infra normal e a task bloqueia com motivo explícito; a trilha
+persiste em `state.apiDownStreaks` e recomeça em qualquer outro desfecho da
+task. O hold só é zerado por prova de vida: um pipeline escolhido DEPOIS do
+instante em que o hold foi armado (`ProviderHold.armedAt`) que termina sem
+api-down — um merge cujo modelo rodou antes da queda não reabre as picks.
+
+**Revisor sem veredito vs. revisor em timeout.** Um revisor que nunca
+terminou (queda de provedor, spawn, preflight) devolve veredito nenhum —
+infra, como antes. Já um **timeout** de revisor (ou do árbitro tier-B) não
+aborta mais o ciclo: no histórico, 15 de 1025 rounds de review correram
+20,0–20,4 min (`reviewTimeoutMin=20`) e seis deles ainda mergearam no mesmo
+ciclo. Em round não-final o veredito (e qualquer marcador plantado) daquele
+revisor é descartado — `verdict = null` ⇒ rejeição fail-closed, o caminho de
+mérito que segue para o round seguinte sem queimar tentativa; só no ÚLTIMO
+round o desfecho volta a ser infra `timeout` (uma rejeição de mérito ali
+queimaria a tentativa que o orçamento de rounds já gastou). Spawn, preflight
+e queda do provedor seguem infra em todo round.
+
+**Diff do round contra `origin/<base>`.** `git diff main...pilot/<ID>` usava o
+`main` LOCAL do slot, que só anda quando aquele slot mergeia ou bloqueia: um
+`main` velho arrastava arquivos `apps/web`/`apps/desktop` de outras tasks para
+o diff (o gate exigia screenshots que o builder nunca teve motivo para fazer, e
+os revisores liam código alheio). O diff e o `nameOnly` que vão ao judge agora
+usam `origin/<base>...pilot/<ID>` — e o próprio prompt do builder manda
+`git diff origin/<base>...pilot/<ID>` (repositório estrangeiro também tem um
+`main` local criado pelo `ensureSlotWorkspace`, apontando para `origin/<base>`;
+o problema nunca foi a falta do ref, e sim o `main` velho). Testes:
+`scripts/failure-classifier.test.ts` (corpus real em
+`apps/pilot/src/__fixtures__/classifier/`).

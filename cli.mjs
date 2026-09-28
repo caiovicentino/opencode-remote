@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { relayUrlFromArgv, relayUrlProblem, WEB_DIST_INDEX } from "./cli-setup.mjs";
 
 const ROOT = import.meta.dirname;
 const STATE_DIR = join(homedir(), ".opencode-remote");
@@ -79,6 +80,10 @@ async function doctor() {
 
   which("ffmpeg") ? ok("ffmpeg present (clips pipeline)") : warn("ffmpeg not found — clips pipeline disabled (optional)");
 
+  existsSync(join(ROOT, WEB_DIST_INDEX))
+    ? ok("phone web app built (apps/web/dist)")
+    : bad("phone web app not built — the pwa service would answer 404: npm run build --workspace @ocr/web");
+
   const daemonUp = await portOpen(8792);
   daemonUp ? ok("daemon running (metrics :8792)") : bad("daemon not running — opencode-remote start");
   const relayUp = (await portOpen(8790)) || (await portOpen(8787));
@@ -99,9 +104,14 @@ async function doctor() {
   }
 }
 
-async function qr() {
-  const relayUrl = process.env.RELAY_URL ?? RELAY_URL_DEFAULT;
+// eval-16: setup hands its own --relay value in — the QR it prints at the end
+// used to read only RELAY_URL and embed the loopback default instead.
+async function qr(relayOverride) {
+  const relayUrl = relayOverride ?? process.env.RELAY_URL ?? RELAY_URL_DEFAULT;
   if (!existsSync(STATE_FILE)) return bad("no daemon state — run: opencode-remote setup");
+  if (!relayOverride && !process.env.RELAY_URL) {
+    warn(`RELAY_URL not set — this QR embeds ${RELAY_URL_DEFAULT}, which a phone cannot reach; re-run with RELAY_URL=<the address you gave setup>`);
+  }
   const uri = pairingUri(relayUrl);
   const QRCode = (await import("qrcode")).default;
   console.log(`\n  relay: ${relayUrl}\n`);
@@ -139,28 +149,58 @@ function status() {
 }
 
 async function setup() {
-  const relayArg = process.argv.find((a) => a.startsWith("--relay="));
-  let relayUrl = relayArg?.split("=")[1] ?? process.env.RELAY_URL;
+  let relayUrl = relayUrlFromArgv(process.argv.slice(3)) ?? process.env.RELAY_URL;
   if (!relayUrl) {
     if (!process.stdin.isTTY) return bad("set RELAY_URL or pass --relay=wss://host:8788");
     const readline = (await import("node:readline/promises")).createInterface({ input: process.stdin, output: process.stdout });
     const answer = await readline.question("\n  Relay URL reachable from your phone (wss://host:8788) [tailscale recommended]: ");
-    relayUrl = answer.trim() || RELAY_URL_DEFAULT;
+    relayUrl = answer.trim();
     readline.close();
+  }
+  // eval-16: the phone dials this URL from the QR — refuse an address it can
+  // never reach BEFORE installing anything (an empty answer used to fall back
+  // to the loopback default and print an unpairable QR).
+  const relayProblem = relayUrlProblem(relayUrl);
+  if (relayProblem) {
+    process.exitCode = 1;
+    return bad(relayProblem);
   }
 
   console.log("\n  checking prerequisites…\n");
   await doctor();
 
+  // eval-16: the pwa service serves apps/web/dist — a fresh clone has none,
+  // so the phone would open "not found". Build it once before the services.
+  if (!existsSync(join(ROOT, WEB_DIST_INDEX))) {
+    console.log("\n  building the phone web app (apps/web/dist)…\n");
+    const web = sh("npm run build --workspace @ocr/web", { cwd: ROOT });
+    if (web.status !== 0 || !existsSync(join(ROOT, WEB_DIST_INDEX))) {
+      process.stderr.write(web.stderr ?? "");
+      process.exitCode = 1;
+      return bad("web build failed — run `npm ci` (dev dependencies included) and retry");
+    }
+    ok("phone web app built");
+  }
+
   console.log("\n  installing launchd services (KeepAlive)…\n");
-  const r = sh(`RELAY_URL=${JSON.stringify(relayUrl)} bash ${ROOT}/deploy/install.sh`, { cwd: ROOT });
+  // eval-16 (fix-round): hermetic test hook, checked BEFORE install.sh — the
+  // script below bootouts the com.ocr.* services, pkills dev runners and
+  // kills whatever holds :5173 (the production PWA port). A suite that ever
+  // reaches this step (e.g. a regression in the loopback refusal above) must
+  // be stopped by the guard instead of ever touching the real launchd domain.
+  if (process.env.OCR_SETUP_NO_INSTALL) {
+    process.exitCode = 1;
+    return bad("install refused — OCR_SETUP_NO_INSTALL is set (hermetic test mode)");
+  }
+  // eval-16: quoted — a checkout under a path with spaces split the argv.
+  const r = sh(`RELAY_URL=${JSON.stringify(relayUrl)} bash ${JSON.stringify(join(ROOT, "deploy", "install.sh"))}`, { cwd: ROOT });
   process.stdout.write(r.stdout ?? "");
   if (r.status !== 0) {
     process.stderr.write(r.stderr ?? "");
     return bad("install failed — see output above");
   }
   console.log(`\n  done. pair your phone:\n`);
-  await qr();
+  await qr(relayUrl);
 }
 
 async function update(args) {

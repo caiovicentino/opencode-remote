@@ -4,6 +4,8 @@
 // known line without N per-session fetches. Pure and dependency-free so
 // scripts/unit.test.ts can exercise it directly.
 
+import { isInjectedPart } from "./bubbleMerge";
+
 /** Minimal structural view of an event envelope (EventEnvelope-compatible). */
 export interface PreviewEvent {
   type: string;
@@ -12,7 +14,7 @@ export interface PreviewEvent {
 
 interface PartProperties {
   sessionID?: string;
-  part?: { text?: string; state?: { title?: string } };
+  part?: { type?: string; text?: string; synthetic?: boolean; state?: { title?: string } };
 }
 
 /** One-line, truncated, whitespace-collapsed text for the preview slot. */
@@ -30,6 +32,9 @@ export function previewFromEvents(events: PreviewEvent[]): Record<string, string
   for (const evt of events) {
     if (evt.type !== "message.part.updated") continue;
     const props = (evt.properties ?? {}) as PartProperties;
+    // eval-10: the daemon's injected path line (and opencode's synthetic
+    // parts) is never "the last message" — it would preview a home path
+    if (props.part && isInjectedPart(props.part)) continue;
     const text = props.part?.text ?? props.part?.state?.title ?? "";
     if (!props.sessionID || !text) continue;
     map[props.sessionID] = clipPreview(text);

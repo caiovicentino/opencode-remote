@@ -42,6 +42,13 @@ npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:8787 "$(docker exec relay-
 docker rm -f relay-smoke
 ```
 
+> **Status on 2026-09-27 (eval-13):** the repository has no release tag yet,
+> so the `relay-image` job of `release.yml` has never run and nothing was ever
+> pushed to GHCR — the `docker pull` above fails until the owner cuts the first
+> tag with `PUBLISH_RELAY_IMAGE=true`. Until then, build the image yourself
+> (next sections); the PR-scoped job below proves on every relay PR that the
+> Dockerfile builds and boots.
+
 Pin the version tag instead of `latest`: `latest` moves with every release
 and a casual `pull` can land you on a version you never tested. Publishing
 is opt-in fail-closed — the workflow only pushes when the repository variable
@@ -62,8 +69,11 @@ runs the smoke battery of `scripts/relay-image-smoke.ts` against the live
 container (5s fetch timeout per probe):
 
 - `/healthz` answers `200` with today's counter body (`ok`, `version`,
-  `protocol`, `uptimeS`, `rooms`, `roomsRejected`), with `protocol` equal to
-  the `RELAY_WIRE_PROTOCOL` constant the tree shipped (P2-331);
+  `protocol`, `uptimeS`, `rooms`, `roomsRejected`, `instanceId`), with
+  `protocol` equal to the `RELAY_WIRE_PROTOCOL` constant the tree shipped
+  (P2-331) and `instanceId` inside the boot's own replica-id grammar (1–64
+  characters of letters, digits and dashes — P3-401, smoke-pinned since
+  eval-13), so the two-minute replica test below always has its input;
 - `/` answers `200` with `text/html` and every security header P2-192
   introduced (CSP, referrer/permissions policies, framing, COOP/CORP);
 - the content-hashed bundle asset referenced by the entry document answers
@@ -97,7 +107,18 @@ docker run -d --name relay \
 
 The image has no secrets, needs no volumes, and runs as the non-root `node`
 user. `docker compose` users: the `relay` service in `docker-compose.yml`
-builds this same image (the `caddy` profile adds TLS termination on top).
+builds this same image, and the `tls` profile (the `caddy` service) adds TLS
+termination on top — `docker compose up -d relay caddy`. Since eval-13 the
+compose file is correct for that layout by default: the relay port is
+published on the host's loopback only (`RELAY_PUBLISH`, default `127.0.0.1` —
+Caddy reaches `relay:8787` over the compose network, so no plain `ws://` port
+sits next to the TLS one on the public interface) and the relay trusts exactly
+one proxy hop, so the per-IP cap keys on the client address Caddy forwards.
+Before, every socket arrived from Caddy's address and the whole relay admitted
+**20 sockets in total** (measured: 25 connections through one proxy address →
+20 admitted, 5 refused with close `1013`). Exposing the relay directly on a
+trusted LAN/VPN without a proxy is the opt-in:
+`RELAY_PUBLISH=0.0.0.0 RELAY_TRUST_PROXY_HOPS=0 docker compose up -d relay`.
 
 ## Environment variables
 
@@ -128,11 +149,64 @@ builds this same image (the `caddy` profile adds TLS termination on top).
 | `RELAY_WEB_BURST` | `60` | Token-bucket burst for the static route, per client identity — how many back-to-back requests a cold page load may cost before throttling. Ceiling `10000`; invalid values **refuse the boot** (fail-closed) exactly like the rate knob. |
 
 The relay also accepts `RELAY_RATE_PER_MIN` and `RELAY_RATE_BURST`
-(per-connection token bucket, defaults `600` and `1000`, ceilings `60000` and
-`100000`) and `RELAY_PING_INTERVAL_S` (stale-socket sweep, default `30`,
-ceiling `3600`). The defaults are already sized to pass the daemon's
-worst-case chunked transfer — leave them alone unless you have a specific
-abuse pattern.
+(per-connection token bucket, defaults `45000` and `1500`, ceilings `60000`
+and `100000`) and `RELAY_PING_INTERVAL_S` (stale-socket sweep, default `30`,
+ceiling `3600`). The rate defaults are sized from measured daemon traffic —
+see the next section — so leave them alone unless you have a specific abuse
+pattern.
+
+### The frame budget fits real daemons and charges every frame (eval-13)
+
+The daemon multiplexes every paired phone and every streamed event over **one**
+socket, and the production relay log recorded it at **1,144 frames in one
+second, 22,906 in one minute and 80,949 in five** (a long agent response,
+one frame per streamed event). The previous defaults — 600 frames/min with a
+1,000 burst — closed that legitimate daemon **26 times in September**
+(`rate limited, dropping device`, all with the daemon's own sender prefix);
+each close is `4029`, after which the daemon waits at least 60 s before
+redialing, so the phone froze in the middle of a response. Replayed through
+the relay's own bucket arithmetic, **`45000`/min with a `1500` burst closes
+nobody in the recorded week**: the recorded peak second (1,144) fits the
+burst, and the sustained rate carries the rest of the daemon's shape. The
+burst stays at the old scale on purpose — see "What it costs" below.
+
+Two properties changed with it:
+
+- **Every inbound frame costs a token — malformed ones too.** Invalid JSON and
+  refused envelopes used to be free, so the bucket bounded only valid traffic
+  and one socket could make the relay parse garbage at line rate. Legitimate
+  peers never send them, so only abusers notice.
+- **A socket closed for policy gets no more work.** Frames still buffered
+  behind a `4029` (or a room-full, slow-consumer or budget close) are dropped
+  unprocessed: one close means exactly one `warn` line and one
+  `relay_rate_limited_total` increment (the production log showed up to eight
+  lines for one socket within two milliseconds).
+
+What it costs: at the measured single-core capacity (the capacity reference
+section below — about 50,000 small frames per second when each read carries
+one frame), one socket at the sustained ceiling is about 1.5% of a core, and
+an address holding the full `RELAY_MAX_PER_IP` of 20 sockets about 30%.
+Sustained CPU is only half of it, though: the **burst is the queue one
+flooding socket can build before the relay cuts it**, and queued frames hold
+the event loop in front of everyone else's. Measured under a two-address
+blast (20 emitting sockets per address reconnecting when closed) with a
+victim pinging 100×/s, the victim's p50 stayed at **36–254 ms** across
+repeated runs at the shipped `45000`/min + `1500` default — **325–1,738 ms**
+with the 20,000 burst an earlier draft of this budget used, and 18–110 ms at
+the old 600/1000 (both endpoints scale with machine load; the burst is the
+constant). That is why the burst is small and the daemon's headroom comes
+from the sustained rate instead. In the paced regime the same budget carries
+200 sockets across 10 addresses at 480 frames/s each (44,000 frames/s,
+~0.6 core) with zero closes and a victim p50 of ~2 ms — and that is exactly
+the gap: nothing bounds those 200 sockets in aggregate. Still true and still
+unbounded: frames per IP have **no aggregate budget** — 20 sockets burst
+independently, and a legitimate daemon reconnecting after a `4029` pays a
+60 s backoff (the reconnect cost) before its next burst. Do not announce
+multi-tenant hosting on a single relay process until that per-IP aggregate
+exists (see the open findings); lower `RELAY_MAX_PER_IP` on a public host
+with no NAT'd offices behind it if that share is too generous, and the
+`RelayRateLimited` alert says when legitimate traffic starts touching the
+ceiling.
 
 ### Tuning knobs are fail-closed too (P2-171)
 
@@ -173,9 +247,10 @@ must be absent, `null`, or a string of at most 128 characters (the same
 ceiling as room ids — the daemon uses a room id as its sender id); `seq`
 must be absent, `null`, or a non-negative safe integer, exactly the values
 the daemon's own replay guard accepts. A frame outside that shape is dropped
-silently — the same treatment an invalid JSON frame always got — and costs
-no rate-limit budget, since the gate runs before the token bucket like the
-check it replaces.
+silently — the same treatment an invalid JSON frame always got — after it
+paid one token of the per-connection budget (since eval-13; see the frame
+budget section above), so a stream of malformed frames closes its socket
+like any other flood.
 
 The gate exists because `from` and `seq` are attacker-controlled metadata
 that used to pass unvalidated into `JSON.stringify`, whose recursion is
@@ -231,8 +306,33 @@ later events only add their own line and counter increment.
 
 The counter alone rarely fires while a scraper is watching (the process is
 gone seconds later), so the alerting signal for a crash loop remains
-`RelayCrashLoop` — an `relay_uptime_seconds` that keeps resetting toward
-zero — while the crash line and the counter give the post-mortem its context.
+`RelayCrashLoop` — three or more restarts of `relay_uptime_seconds` inside
+the hour (see the alert rules) — while the crash line and the counter give the
+post-mortem its context. The fatal-event wiring is exercised by a test-only
+hatch (`OCR_RELAY_CRASH_HATCH`) that the relay honors **only** under the test
+harness marker; anywhere else it is ignored with one `warn` line naming the
+variable (never its value), so a copy-pasted test variable can no longer
+crash-loop a hosted relay.
+
+### A full disk never takes the router down (eval-13)
+
+Routing needs no disk, but logging does. With stdout on a file (a launchd
+`StandardOutPath`, a systemd `append:` target) a full disk fails the write with
+`ENOSPC`, Node reports it as an `error` event on the stream, and before
+eval-13 nothing listened for it: the event became an uncaught exception and
+the whole relay died — every room of every tenant — then died again on the
+first boot line of every restart while the disk stayed full. The production
+relay's error log holds two such ENOSPC crash traces, followed by four more
+exits with no readable trace; the failure was reproduced on a full disk
+image. Now a log line that cannot be written is only counted — the
+additive `relay_log_write_errors_total` counter (`log_write_errors_total` in
+the JSON body), watched by the `RelayLogWriteErrors` alert — and the relay
+keeps routing. The silence is not permanent: once the write succeeds again
+(disk space freed, stdout restored), the log resumes on its own — measured
+under an injected ENOSPC that was later released, the next lines came out
+uncounted — and the counter sums **every** lost line, not just the first
+failure (171 lines were lost in one run against a real `RLIMIT_FSIZE`-bound
+file).
 
 ### Backpressure: the relay closes who does not read (P2-217)
 
@@ -763,7 +863,7 @@ they were built with. The field rides the `503` draining body too, exactly
 like every other one:
 
 ```json
-{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18","draining":true}
 ```
 
 Since P2-335 the daemon itself is one of those clients: when its reconnect
@@ -812,7 +912,7 @@ carries a room identifier, connection id, address or IP — the relay stays
 blind. The drain response keeps the fields, like every other one:
 
 ```json
-{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18","draining":true}
 ```
 
 ### Certificate verdict on the probe (P2-290)
@@ -833,7 +933,7 @@ count — never a subject, issuer, serial number, fingerprint, file path or
 host. The drain response keeps them, exactly like every other field:
 
 ```json
-{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"certExpiryVerdict":"warn","certExpiryInS":86400,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18","draining":true}
 ```
 
 The same verdict also feeds the Prometheus series described in the metrics
@@ -864,7 +964,7 @@ host. It is observability, not policy: no connection is refused because of
 it. The drain response keeps the field, exactly like every other one:
 
 ```json
-{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"certExpiryVerdict":"use","certExpiryInS":86400,"certChainState":"leaf-only","draining":true}
+{"ok":false,"version":"0.2.0","protocol":2,"uptimeS":42,"rooms":1,"roomsRejected":0,"roomsBudgetTerminated":0,"certExpiryVerdict":"use","certExpiryInS":86400,"certChainState":"leaf-only","roomsRejectedInvalidRoomId":0,"roomsRejectedSocketRoomCap":0,"instanceId":"relay-i-0f3a9c2b7d5e4a18","draining":true}
 ```
 
 ### During the drain: 503 on purpose (P2-145)
@@ -948,34 +1048,83 @@ fails until only one remains — instead of blessing the address.
 ### Rooms with one participant: the metric that denounces it (P3-461)
 
 The `instanceId` test above needs an operator who already suspects the trap.
-The `/metrics` endpoint denounces it on its own: the aggregate
-`relay_rooms_active` count hides the shape of the rooms, so the occupancy
-split — `relay_rooms_single_peer` (rooms with exactly one participant),
+The `/metrics` endpoint shows the shape of the rooms on its own: the
+aggregate `relay_rooms_active` count hides it, so the occupancy split —
+`relay_rooms_single_peer` (rooms with exactly one participant),
 `relay_rooms_paired` (exactly two) and `relay_rooms_crowded` (more than
-two) — rides next to it in both formats. Pairing conversations come in
-twos: a replica holding mostly one-participant rooms is serving only one
-side of each conversation.
+two) — rides next to it in both formats.
 
-A **high and persistent** fraction of one-participant rooms — together with
-a stable `relay_connections_active` (the peers stay connected, they just
-never meet) — indicates either divergent replicas behind one address or
-clients stuck waiting for a peer that will never arrive. A suggested
-starting rule (a threshold, not policy — tune it to your instance; unlike
-the shipped set below, this one is a paste-in for your own rule files,
-nothing here regenerates it):
+**Read it with the daemon's lifecycle in mind (eval-13 correction).** A
+daemon dials its relay at boot and stays in its room around the clock; a
+phone joins only while the app is open. On a healthy hosted relay, then,
+most rooms hold one participant most of the time — every paired machine
+whose owner is not looking at the phone. The rule this section suggested
+before eval-13, `relay_rooms_single_peer / relay_rooms_active > 0.5` for 10
+minutes, therefore fires on a perfectly healthy relay and says nothing about
+divergent replicas behind one address. Do not load it.
 
-    relay_rooms_single_peer / relay_rooms_active > 0.5
-      for: 10m
-      severity: warning
+The symptom that does discriminate is a frame with content that found
+nobody — **counted by sender class** (eval-13 correction: the relay is blind
+to a peer leaving, so the daemon itself also lands in the unrouted counter
+whenever a phone closes mid-response). `relay_frames_unrouted_total`
+(`frames_unrouted` in the JSON body) counts only frames from a sender that
+is **not** the room's owner identity (`from !== room`): the phone's hello
+landing on a replica that does not hold its daemon, or a phone talking to a
+daemon that is offline. It is a subset of `relay_frames_routed`, and on a
+healthy relay it stays in the tens to a few hundreds **per day** (measured
+over the recorded production week: 44–347/day). The daemon's own
+mid-response tail is published beside it as
+`relay_frames_unrouted_owner_total` (`frames_unrouted_owner`) — on the same
+healthy relay that one climbs by thousands to tens of thousands per day
+(~99,000 of the 811,663 recorded frames, or 12%, were owner frames finding
+nobody), so **never alert on it**; it is lifecycle noise, not a trap signal.
+A sustained rise in the non-owner counter against your own baseline, with a
+stable `relay_connections_active` (the peers stay connected, they just
+never meet), means phones are talking to no one: confirm with the
+two-minute `instanceId` test above — alternating ids prove the replica split, identical
+ids point at daemons that are offline or stuck — and with the
+`RelayDuplicateOwner` alert the relay now raises when two live sockets hold
+one room's owner identity. `scripts/relay-hosting.test.ts`
+reproduces the split end to end with two real replicas behind a round-robin
+balancer: the pair never meets, the probe shows two ids, and the phone's
+replica counts the unrouted hello. These series are observation only —
+nothing in the relay reads them, closes a socket or changes a limit because
+of them — and no series ever carries a room id, address or IP.
 
-On an idle relay the division is `0/0` (Prometheus evaluates it as `NaN`,
-which never fires) — the alert only speaks when there are rooms to judge.
-Confirm with the two-minute `instanceId` test above: alternating ids prove
-the replica split, identical ids point at clients stuck alone in their
-rooms (a daemon that left the conversation without the relay noticing).
-These gauges are observation only — nothing in the relay reads them, closes
-a socket or changes a limit because of them — and no series ever carries a
-room id, address or IP.
+### Scaling past one process: route by URL path (eval-13)
+
+One process holds a lot (see the capacity reference below), so scale
+vertically first. When one process is not enough, the rule above still
+holds per room: every socket of a room must reach the same replica. A
+balancer cannot see room ids — they travel inside frames — but it can see the
+URL, and both ends already dial the same one: the daemon dials `RELAY_URL`
+verbatim and embeds that same string in the pairing code, and the phone dials
+the pairing code's relay verbatim. The relay accepts the WebSocket upgrade on
+any path. So:
+
+1. Give every daemon (every tenant) its own path on the relay's public
+   address — `RELAY_URL=wss://relay.example.com/t/<tenant>` at install time —
+   and pair its phones from that daemon's QR.
+2. Configure the balancer to hash the request URI: Caddy
+   `lb_policy uri_hash`, nginx `hash $request_uri consistent;`, HAProxy
+   `balance uri` with `hash-type consistent`. `ip_hash`-style policies do
+   **not** work: the Mac and the phone have different addresses.
+3. After changing the replica set, drain the replicas whose paths moved
+   (SIGTERM → P2-145): a hash change only affects NEW connections, and a
+   daemon still connected to its old replica would miss its phone until it
+   reconnects.
+4. One caveat about protocol probing: the daemon's
+   wire-protocol mismatch probe (P2-335) fetches `/healthz` at the **root**
+   of the relay address. With URI hashing that lands on whichever replica
+   owns `/healthz`, not on the tenant's replica — informational only (the
+   verdict degrades to `unknown` and the reconnect loop's own behavior is
+   unchanged), but worth knowing when you read that state in `/api/health`.
+
+The same test file proves the recipe with the real relay: behind a
+path-hashing balancer the daemon and the phone dialing
+`/t/tenant-42` land on one replica and the hello is delivered. The two-minute
+`instanceId` test is per path in this layout: different ids for different
+tenants' paths are expected; different ids for the SAME path are the trap.
 
 ### Two daemons in one room: the duplicate-owner signal (eval-13b)
 
@@ -1037,6 +1186,17 @@ after `relay_room_budget_terminated`) and the `relay_rooms_duplicate_owner`
 gauge (right after `relay_rooms_crowded`), `duplicate_owner_total` and
 `rooms_duplicate_owner` in the JSON — is described in the one-replica section
 above. Both publish zero on a healthy relay, never omitted.
+
+Two additive counters joined the surface in eval-13, both published as zero
+on a healthy relay and never omitted: `relay_frames_unrouted_total`
+(`frames_unrouted` in the JSON, right after `frames_routed`) — the subset of
+routed frames whose room held no other live peer, **counting only senders
+that are not the room's owner** (the daemon's own mid-response tail rides
+the sibling `relay_frames_unrouted_owner_total` / `frames_unrouted_owner`,
+see the one-replica section above) — and `relay_log_write_errors_total`
+(`log_write_errors_total`, right after the crash counter) — log lines the
+process could not write (full disk, closed stdout), counted instead of
+killing the relay.
 
 The fatal-crash counter rides the same surface (P2-351): `relay_crashes_total`
 in the Prometheus text format and `crashes_total` in the JSON, published right
@@ -1112,8 +1272,12 @@ instance is expected. What each rule anticipates:
 
 - `RelayCapacityRefused` — new connections are being turned away for
   capacity, so peers face "server busy" instead of a working relay.
-- `RelayCrashLoop` — the process keeps restarting, announced by an
-  `relay_uptime_seconds` that resets toward zero between scrapes.
+- `RelayCrashLoop` — the process restarted three or more times inside the
+  hour: `resets(relay_uptime_seconds[1h]) >= 3`. Until eval-13 the rule was
+  `relay_uptime_seconds < 60` for 10 minutes, which only a process younger
+  than a minute at EVERY evaluation could satisfy — a relay dying every five
+  minutes for an hour never fired it, and neither did a stale series during
+  the restarts (both proven with `promtool test rules`).
 - `RelayCertExpiryState` — the TLS certificate left the healthy `use` state,
   the step before phones start failing their handshake.
 - `RelayCertExpirySeconds` — the certificate entered its final three days
@@ -1132,12 +1296,57 @@ instance is expected. What each rule anticipates:
 - `RelayDuplicateOwner` — for 10 minutes, some room's owner identity has been
   held by more than one live socket: two daemons share one identity and the
   phone gets answers from the wrong one.
+- `RelayDown` — no series for five minutes:
+  `absent_over_time(relay_connections_total[5m])`. The one outage every other
+  rule was blind to: a relay that is down, or refuses every boot fail-closed
+  (an expired certificate, a mistyped knob), publishes nothing, so nothing
+  else can fire. Written for the documented one-replica topology — a scraper
+  watching several independent relays adds an `instance` matcher per relay.
+- `RelayRateLimited` — connections are being closed by the per-connection
+  frame budget: abuse, or a legitimate daemon above the ceiling (its phone
+  then freezes for the daemon's 60 s backoff).
+- `RelayLogWriteErrors` — the relay cannot write its own log (full disk,
+  closed stdout); it keeps routing, but without a trail.
+
+Every rule loads with `promtool check rules` (Prometheus 3.15), and the
+crash-loop and down rules were exercised with `promtool test rules` against
+synthetic series before shipping.
 
 The rule set is closed and documented in one place: adding a rule means
 editing `alertrules.ts` (and this section) first, regenerating the file and
 committing both together. Nothing in the relay reads these rules — no limit,
 admission, refusal or socket close changes because of them; they exist only
 for the operator's alerting stack.
+
+## Capacity reference (measured, eval-13)
+
+`scripts/relay-load.ts` is a hermetic benchmark (one relay subprocess from
+the checkout on an ephemeral port, a throwaway `HOME`, worker-thread
+drivers; every simulated device its own identity through one trusted proxy
+hop). Measured on an Apple M4 (10 cores, 16 GB, Node 22.23) that was shared
+with other workloads (load average 3–8), three runs of 9,000 sockets unless
+noted; the relay is single-threaded, so these are **one core**:
+
+| What | Measured |
+|---|---|
+| Live sockets | 9,000 (4,500 daemon+phone rooms) opened in 0.64–0.67 s, 0 failures, handshake p99 ≈ 9 ms |
+| Memory | 74 MB RSS at boot → 90–138 MB with 9,000 sockets (JS heap +4 KB per socket) |
+| Idle cost | ~0% CPU with 9,000 idle sockets (the 30 s ping sweep included) |
+| Paced 256 B frames, 9,000/s (200 streaming pairs × 50 Hz) | 16–18% of the core, p50 0.6–0.75 ms, p99 3.4–6.3 ms, 0 lost |
+| Paced 4 KB frames, 9,100/s | 33–50% of the core, p50 1.3–2.4 ms, p99 4.7–27 ms, 0 lost |
+| Paced 64 KB frames, 700–880/s (≈50 MB/s) | 34–50% of the core, p50 33–53 ms |
+| Saturated, batched (best run) | 267k frames/s at 256 B · 42.6k/s at 4 KB (175 MB/s) · 2.8k/s at 64 KB (180 MB/s) |
+| Connection churn (connect, join, close) | 1.9k–4.5k per second, limited by the load generator (relay 26–44% busy) |
+
+What that means for sizing: memory is not the constraint — the documented
+`RELAY_MAX_SOCKETS_GLOBAL` ceiling of 10,000 costs well under 200 MB. CPU
+follows traffic: in the realistic regime (each read carries one frame) one
+core routes about 50,000 small frames per second, so a relay where 10% of
+5,000 rooms stream at 50 frames/s uses about half a core. Under saturation,
+the backpressure cap closes the slowest readers first (5–26 slow consumers
+closed per 64 KB saturation run) instead of buffering without bound.
+Reproduce with `npx tsx scripts/relay-load.ts --sockets 9000 --json out.json`
+(it never touches the production ports).
 
 ## Pointing a daemon at the hosted relay
 

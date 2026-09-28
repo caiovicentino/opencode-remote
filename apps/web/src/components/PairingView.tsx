@@ -3,8 +3,10 @@ import QrScanner, { type CameraAccessVerdict } from "./QrScanner";
 import PairRetry from "./PairRetry";
 import PaneMap from "./PaneMap";
 import ReconnectButton from "./ReconnectButton";
+import { IconPhone } from "./icons";
 import { parsePairingUri } from "../lib/client";
 import { useT } from "../lib/i18n";
+import { ceremonyLead } from "../lib/pairlead";
 
 interface Props {
   phase: "unpaired" | "connecting" | "error" | "paired";
@@ -144,6 +146,23 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
   // (this device as client: scan/paste). The error keeps the
   // locale-independent .pair-error hook the desktop-flow gate asserts on.
 
+  // P3-415 (eval-09): ONE accent-filled action per ceremony render, owned by
+  // the path this render leads with (lib/pairlead — PRODUCT.md: accent = the
+  // screen's highest action). With the local agent down the verdict card's
+  // reconnect leads (its own copy reads "reconnect the daemon, or paste a
+  // code…"); the host entry leads wherever it renders (P3-334). Only when the
+  // paste form is the ceremony's sole path does its submit wear the accent
+  // fill — the P3-433 case. Everywhere else the desktop submit is the solid
+  // secondary: card surface, firm border, full-contrast label — never the
+  // recessed grey chip that read as disabled — still one step above the
+  // quiet scan entry (P3-366's paste-first rank). The phone (scan-first) is
+  // untouched. The same booleans gate the renders below (P3-362 lesson: one
+  // verdict decides render and paint), so the lead is always on screen.
+  const hostEntry = !!onPairRemote && !agentDown;
+  const agentDownCard = !!agentDown && phase !== "error";
+  const lead = ceremonyLead({ preferPaste: !!preferPaste, hostEntry, reconnect: agentDownCard && !!reconnect });
+  const submitClass = !preferPaste ? "pair-submit" : lead === "paste" ? "pair-submit primary" : "pair-submit secondary";
+
   // P2-117: paste-first on the desktop (the camera path is the option);
   // scan-first on the phone.
   const pasteForm = (
@@ -172,7 +191,7 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
         autoComplete="off"
       />
       <button
-        className={preferPaste ? "pair-submit primary" : "pair-submit"}
+        className={submitClass}
         disabled={busy}
         onClick={submit}
       >
@@ -192,9 +211,11 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
     </>
   );
 
+  // P3-415: the phone's scanner wears the accent only as the lead (always,
+  // in every render the App produces — same classes as before on both shells).
   const scanButton = (
     <button
-      className={preferPaste ? "pair-scan-entry" : "primary pair-scan-entry"}
+      className={lead === "scan" ? "primary pair-scan-entry" : "pair-scan-entry"}
       disabled={busy}
       onClick={() => setScanning(true)}
     >
@@ -212,10 +233,16 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
   // no-op: no state changes, no QR ever mints, the overlay never opens.
   // The entry returns the moment the agent answers (agentDown recomputes
   // from the same kind signal the gate card renders).
-  const hostSection = onPairRemote && !agentDown && (
-    <section className="pair-section">
+  // P3-415 (eval-09): as the lead the entry wears the ceremony's one accent
+  // mark — a leading phone tile (the same glyph as the paired rail's "pair a
+  // phone" slot) — so the primary story is the brightest thing on screen.
+  const hostSection = hostEntry && (
+    <section className={lead === "host" ? "pair-section pair-section-lead" : "pair-section"}>
       <h2 className="pair-section-title">{t("pairHostTitle")}</h2>
       <button className="pair-remote-entry" onClick={onPairRemote} disabled={busy}>
+        <span className="pair-remote-icon" aria-hidden="true">
+          <IconPhone />
+        </span>
         <span className="pair-remote-copy">
           <b>{t("pairRemoteTitle")}</b>
           <span className="muted">{t("pairRemoteHint")}</span>
@@ -311,7 +338,7 @@ export default function PairingView({ phase, error, hint, autoRetryMs, onPair, o
           {!agentDown && (
             <p className="muted pair-intro">{!preferPaste && !onPairRemote ? t("pairIntroPhone") : t("pairIntro")}</p>
           )}
-          {agentDown && phase !== "error" && (
+          {agentDownCard && (
             <div className="degraded-status pair-agent-down" role="status" aria-live="polite">
               {/* P3-412: the settled non-healthy verdict the gate card renders —
                   same dot language, so the verdict can never contradict the

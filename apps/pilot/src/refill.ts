@@ -11,7 +11,7 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { appendCommitAndPush, type AuxPushIo } from "./backlog";
+import { appendCommitAndPush, isValidTaskLine, type AuxPushIo } from "./backlog";
 import { nowLocalISO } from "./log";
 
 export interface PendingRefill {
@@ -47,12 +47,16 @@ export function savePendingRefill(file: string, lines: string[], message: string
 /**
  * Parsed pending refill, or null when missing/corrupt — a bad write must
  * never wedge the dispatcher; the next savePendingRefill overwrites it.
+ * eval-06: the file lives outside the repo, so its lines are re-validated
+ * with the same isValidTaskLine the drafting path used — a hand-edited or
+ * damaged store can never smuggle a multiline block into ## Ready, and a
+ * store with no valid line left behaves like a corrupt one (null).
  */
 export function readPendingRefill(file: string): PendingRefill | null {
   try {
     const raw = JSON.parse(readFileSync(file, "utf8")) as Partial<PendingRefill>;
     if (typeof raw.message !== "string" || !Array.isArray(raw.lines)) return null;
-    const lines = raw.lines.filter((l): l is string => typeof l === "string" && l.length > 0);
+    const lines = raw.lines.filter((l): l is string => typeof l === "string" && l.length > 0 && isValidTaskLine(l));
     if (!lines.length) return null;
     return { lines, message: raw.message, ts: typeof raw.ts === "string" ? raw.ts : "" };
   } catch {

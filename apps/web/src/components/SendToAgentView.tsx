@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import type { OcrRequest } from "../lib/files";
+
+/** eval-10: the shared OcrRequest plus the op timeout App's request accepts */
+type ShareRequest = (...args: [...Parameters<OcrRequest>, timeoutMs?: number]) => ReturnType<OcrRequest>;
 // P3-452: header actions speak the shared SVG icon language (like the rail);
 // the icon-only back button needs its accessible name from the dict.
 import { useT } from "../lib/i18n";
+import { SEND_TIMEOUT_MS } from "../lib/sendfail";
 import { IconArrowLeft } from "./icons";
 
 interface Payload {
@@ -26,7 +30,7 @@ export default function SendToAgentView({
   onBack,
   onOpenSession,
 }: {
-  request: OcrRequest;
+  request: ShareRequest;
   payload: Payload;
   onBack: () => void;
   onOpenSession: (id: string) => void;
@@ -48,8 +52,8 @@ export default function SendToAgentView({
         }[];
         list.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
         setSessions(list.slice(0, 8));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+      } catch {
+        setError(t("shareListFailed"));
       }
     })();
   }, []);
@@ -60,18 +64,23 @@ export default function SendToAgentView({
     setError("");
     try {
       if (fresh) {
-        const created = await request("POST", "/session", { title: "Shared from phone" });
+        const created = await request("POST", "/session", { title: t("shareSessionTitle") });
         sessionId = (created.body as { id?: string }).id ?? sessionId;
       }
-      const res = await request("POST", `/session/${sessionId}/message`, {
-        parts: [{ type: "text", text: composeMessage(payload, extra) }],
-      });
-      if (res.status !== 200) {
-        throw new Error(`send failed (${res.status}): ${JSON.stringify(res.body).slice(0, 140)}`);
-      }
+      // eval-10: the daemon answers the prompt op only when the agent's turn
+      // ends — the default 60 s op timeout turned any longer turn into an
+      // error here (and a second tap into a duplicate prompt)
+      const res = await request(
+        "POST",
+        `/session/${sessionId}/message`,
+        { parts: [{ type: "text", text: composeMessage(payload, extra) }] },
+        undefined,
+        SEND_TIMEOUT_MS,
+      );
+      if (res.status !== 200) throw new Error(String(res.status));
       onOpenSession(sessionId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      setError(t("shareSendFailed")); // eval-10: localized, never the raw body
       setBusy(null);
     }
   }
@@ -80,11 +89,11 @@ export default function SendToAgentView({
     <div className="screen">
       <header>
         <button onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>
-        <h1 className="pane-title">Send to agent</h1>
+        <h1 className="pane-title">{t("shareTitle")}</h1>
       </header>
       <div className="list">
         <div className="card">
-          <p className="muted" style={{ margin: "0 0 6px" }}>Shared content</p>
+          <p className="muted" style={{ margin: "0 0 6px" }}>{t("shareContent")}</p>
           <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: "0.8rem" }}>
             {payload.title && <div style={{ fontWeight: 600 }}>{payload.title}</div>}
             {payload.url && (
@@ -93,19 +102,19 @@ export default function SendToAgentView({
               </div>
             )}
             {payload.text && <div style={{ marginTop: 4 }}>{payload.text.slice(0, 400)}</div>}
-            {!payload.title && !payload.url && !payload.text && <div>(empty)</div>}
+            {!payload.title && !payload.url && !payload.text && <div>{t("shareEmpty")}</div>}
           </div>
         </div>
         <textarea
           rows={3}
-          placeholder="Optional: instructions for the agent (e.g. 'resume this in portuguese')"
+          placeholder={t("shareExtraPlaceholder")}
           value={extra}
           onChange={(e) => setExtra(e.target.value)}
         />
         <button className="primary" onClick={() => void send(crypto.randomUUID(), true)}>
-          + New session & send
+          {t("shareNewSession")}
         </button>
-        <p className="muted" style={{ margin: 0 }}>…or send to an existing session:</p>
+        <p className="muted" style={{ margin: 0 }}>{t("shareOrExisting")}</p>
         {sessions.map((s) => (
           <div
             key={s.id}
@@ -116,7 +125,7 @@ export default function SendToAgentView({
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {s.title || s.id.slice(0, 12)}
             </span>
-            {busy === s.id && <span className="muted">sending…</span>}
+            {busy === s.id && <span className="muted">{t("shareSending")}</span>}
           </div>
         ))}
         {error && <p style={{ color: "var(--danger)" }}>{error}</p>}

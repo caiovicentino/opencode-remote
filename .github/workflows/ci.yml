@@ -205,7 +205,11 @@ jobs:
       - name: Package mac bundle (dir target only — no DMG, no signing)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: npm run dist --workspace @ocr/desktop -- --mac --dir
+        # eval-16 (fix-round): --publish never — with the repository field the
+        # app now resolves its GitHub repo, and a CI-detected build (CI=true,
+        # GITHUB_EVENT_NAME=push) would otherwise log "Implicit publishing
+        # triggered by CI detection" and try to publish from a PR/build job.
+        run: npm run dist --workspace @ocr/desktop -- --mac --dir --publish never
 
       - name: Smoke-check the packaged bundle (installer checks skipped)
         run: npm run dist:smoke --workspace @ocr/desktop -- --no-installer
@@ -300,7 +304,8 @@ jobs:
         timeout-minutes: 30
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: npm run dist --workspace @ocr/desktop -- --win --dir
+        # eval-16 (fix-round): --publish never — same reason as the mac job.
+        run: npm run dist --workspace @ocr/desktop -- --win --dir --publish never
 
       - name: Smoke-check the packaged bundle (installer checks skipped)
         shell: bash
