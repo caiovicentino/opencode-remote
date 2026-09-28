@@ -33,7 +33,7 @@ const outage = {
     mainSha: "b585ea253a1f49a24f6a7bc38a3f8cdd481cc098",
     behind: 16,
     behindTotal: 67,
-    pendingSince: "2026-09-24T07:11:01.000Z",
+    pendingSince: "2026-09-23T18:55:47.000Z",
     fetchedAt: "2026-09-27T20:29:25.706Z",
     hold: { reason: "disk-guard", detail: "disk low: 2.1gb free (need 5.0gb) — deploy aborted before npm ci/build", at: "2026-09-24T10:40:38.632Z", until: "2026-09-24T11:10:39.215Z", count: 69 },
   },

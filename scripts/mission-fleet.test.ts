@@ -39,7 +39,7 @@ const outage: FleetStatusView = {
   v: 1,
   installed: true,
   pilot: { state: "down", heartbeatAgeMs: 272_980_137, since: "2026-09-24T11:07:13.162Z" },
-  deploy: { behind: 16, behindTotal: 67, pendingSince: "2026-09-24T07:11:01.000Z", hold: { reason: "disk-guard", count: 69 } },
+  deploy: { behind: 16, behindTotal: 67, pendingSince: "2026-09-23T18:55:47.000Z", hold: { reason: "disk-guard", count: 69 } },
   disk: { freeBytes: 81_197_068_288, minFreeBytes: 5_368_709_120 },
   queue: { ready: 2, blocked: 12 },
   cost: { week: { merges: 63, tokens: 1_282_221_897, usd: null, unpricedTokens: 1_282_221_897 } },
