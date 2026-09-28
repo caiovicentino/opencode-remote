@@ -122,13 +122,61 @@ identity servers, no accounts.
   within ±300 000 ms (±5 min) of the daemon's clock, and the hello nonce is
   admitted at most once per window (in-memory cache, newest 4096 nonces,
   pruned every check; at the cap the newcomer is refused, never the oldest).
+  A nonce is kept until its token can no longer be fresh — `max(now, ts) +
+  5 min`, so a client clock running ahead cannot outlive its own dedupe entry
+  (eval-12; the ts only ever extends retention, capped at 2 × the skew).
   Both refusals answer with a `session-reauth-required` control instead of a
   silent drop, are counted in `ocr_hello_rejected_total`, and never touch the
-  live session's replay guard (`lastSeq`). Residual limitation: the nonce
-  cache lives in memory, so a hello captured shortly before a daemon restart
-  can still be replayed within the ±5 min window right after the restart —
-  closing that for good requires a server challenge (handshake v3, out of
-  scope).
+  live session's replay guard (`lastSeq`). The nonce has exactly one
+  accepted spelling (eval 14). The dedupe keys on the nonce string, and the
+  tolerant base64 decoder used to map dozens of spellings of the same
+  16-byte salt (`==` stripped, inserted whitespace, base64url, non-zero
+  trailing bits) to the same session key. A recorded hello re-sent with a
+  re-spelled nonce therefore passed the dedupe, replaced the victim's
+  session with `lastSeq = 0` and let the recorded op frames run a second
+  time, no restart needed. `serverAccept` now admits only the canonical
+  standard base64 of exactly 16 bytes (`helloNonce`, what every client has
+  always sent). Anything else is refused before a key is derived, on the
+  same path as a hello that fails to open: `session-reauth-required`,
+  counted in `ocr_auth_failures_total`, `lastSeq` untouched.
+  `scripts/hello-replay.test.ts` replays four spellings against a real
+  daemon. Residual limitations: the nonce cache lives in memory, so a hello captured shortly
+  before a daemon restart can still be replayed once right after the
+  restart while its stamp is fresh; and the cache keeps a nonce for 5 min
+  after admission while a token stamped up to 5 min in the future stays
+  fresh for up to 10 min, so a client whose clock runs δ ahead of the
+  daemon leaves a δ-long window in which its hello is accepted once more.
+  Closing both for good requires daemon-contributed randomness in the
+  session key (handshake v3, below).
+- No forward secrecy (eval 14): the session key is HKDF-SHA-256 over a
+  static-static ECDH P-256 secret — the client's long-term identity key
+  times the daemon's long-term identity key — salted with the client's
+  16-byte nonce, which travels in the clear inside the hello. Nothing
+  ephemeral enters the derivation, so whoever records relay traffic (a
+  hosted relay, any room member) and later obtains the daemon's private key
+  (`daemon.json` or any copy of it, see Key rotation) can decrypt every
+  recorded session of every paired device. The client key is
+  non-extractable, so the daemon side is the exposure. Handshake v3 would
+  add an ephemeral ECDH key on both sides plus a daemon-chosen nonce: that
+  gives forward secrecy and closes the replay residuals above. It changes
+  the wire, so the judge's vendored `protocol.ts` must be re-vendored and
+  re-pinned in the same change.
+- Session keys and usage limits (eval 14): each handshake derives one
+  AES-256-GCM key that both directions share. The direction is bound by the
+  AAD sender id (a client `from` vs the daemon room), so a frame reflected
+  back to its sender never opens. Every frame gets a fresh random 96-bit IV,
+  and NIST SP 800-38D caps a random-IV key at 2^32 invocations. The key
+  changes on every rehandshake (reconnect, daemon restart, app relaunch).
+  Nothing forces a rekey by count or time, but a session would need about
+  1.4 years at a sustained 100 frames/s to reach the cap. Receivers accept
+  only a strictly increasing `seq` per session, so a frame that arrives
+  after a higher one is dropped: senders must emit in `seq` order.
+- One handshake version, no negotiation (eval 14): the pairing URI says
+  `v=2`, the HKDF info is `opencode-remote v2`, and there is no
+  version field in the hello — nothing to downgrade today. When v3 ships,
+  the daemon must stop accepting v2 hellos from a device once that device
+  has spoken v3 (and eventually altogether), or an attacker could strip a
+  hello back to the replayable v2.
 - A room member can DoS the daemon with malformed envelope metadata (RT-424):
   a frame whose clear-text `seq` is not a non-negative safe integer (fraction,
   numeric string, boolean, NaN/±Infinity, ≥ 2^53), a non-object envelope or a
@@ -194,6 +242,24 @@ identity servers, no accounts.
 - Malicious image attachments are downscaled and re-encoded by the browser
   canvas before reaching the daemon; session history is rendered as text
   with sandboxed iframes for HTML previews.
+- PDF previews (artifact viewer, file card) render in an iframe WITHOUT a
+  `sandbox` attribute on purpose (eval-12): Chromium refuses to run its PDF
+  viewer inside any sandboxed frame — the old `allow-same-origin` frame
+  rendered a blank pane on the desktop (Electron 44, `ERR_BLOCKED_BY_CLIENT`)
+  and a blocked page in Chrome. The containment is the blob type instead: the
+  client pins it to exactly `application/pdf` from the same kind that picks
+  the frame (never from a declared MIME), so the frame can only ever host the
+  browser's out-of-process PDF viewer — measured: an HTML payload inside such
+  a blob never executes in the app's origin.
+- Any local process could stop the daemon without a token (eval-12): its
+  loopback HTTP listener is async, and one malformed request line (`GET //[`
+  makes `new URL()` throw) or a throwing route (an unreadable state file under
+  the Bearer check) became an unhandled rejection that killed the process.
+  Unparseable targets now answer `400`, every other throw is contained per
+  request (`500`, error name only, `ocr_api_handler_errors_total`), and a
+  failing stdout/stderr (disk full, closed pipe) is absorbed and counted in
+  `ocr_log_write_errors_total` instead of crashing on an unhandled `'error'`
+  event.
 - The daemon executes whatever opencode's permission system allows. The
   remote adds a biometric gate on top — approvals should still be read:
   the approval card previews the first lines of the requested
@@ -364,7 +430,16 @@ identity servers, no accounts.
     `pilot/meta` PRs and `operator/*` PRs (eval-17, 2026-09-27) — no PR can
     wait forever on a context that never arrives.
 
+
 ## Key rotation
 
-Delete `~/.opencode-remote/daemon.json` (or `manage.ts revoke-all`) and
-re-pair: a fresh daemon identity invalidates every previously paired client.
+`manage.ts revoke-all` only empties the allowlist (the next QR pairing
+bootstraps again): the daemon keypair stays the same. To rotate the machine
+identity, stop the daemon and delete `~/.opencode-remote/daemon.json`
+**and every other copy of it**, because each one carries the private key:
+`daemon.json.backup` (the P2-254 automatic copy), any
+`daemon.json.<stamp>.quarantine` kept by the unreadable-file path, and any
+manual backup. Then start the daemon and re-pair: a fresh daemon identity
+invalidates every previously paired client. The handshake has no forward
+secrecy (see Threat notes), so a leftover copy of the old private key
+still decrypts relay traffic recorded before the rotation.

@@ -46,7 +46,19 @@ import {
 } from "./handoff.js";
 import { allowedUpstreamPath, relativePathVerdict } from "./pathguard.js";
 import { IdempotencyCache } from "./idempotency.js";
+import {
+  AUTO_APPROVE_FAILED_EVENT,
+  AUTO_APPROVED_EVENT,
+  AutoFailLedger,
+  approveAttemptVerdict,
+  autoFailPush,
+  notFoundOutcome,
+  permissionEventFacts,
+  PERMISSION_LABEL_FALLBACK,
+  type AutoFailEntry,
+} from "./automode.js";
 import { writeStateAtomic } from "./statefile.js";
+import { crashSummary } from "./crashsummary.js";
 import { pushSubscriptionVerdict, redactPushEndpoint } from "./pushsubs.js";
 import { identityVerdict, quarantineName } from "./identityfile.js";
 import {
@@ -100,7 +112,7 @@ import { WindowCache, contextPct, sessionTokenTotal } from "./contextgauge.js";
 import { ArtifactWatcher } from "./artifactwatch.js";
 import { createShutdown, isSidecarStopMessage, stopAccepting } from "./shutdown.js";
 import { localUpgradeAllowed } from "./localws.js";
-import { HelloSeen, helloFreshness, helloVerdict } from "./helloguard.js";
+import { HELLO_MAX_SKEW_MS, HelloSeen, helloFreshness, helloVerdict } from "./helloguard.js";
 import { createRelayRetry } from "./relayretry.js";
 import { classifyRelayClose, effectiveRetryDelayMs, type RelayCloseKind } from "./relayclose.js";
 import { relayDialVerdict, type RelayDialKind } from "./relaydialerror.js";
@@ -201,6 +213,9 @@ import {
   pwaWatchEnabled,
   startPwaWatch,
 } from "./pwawatch.js";
+// eval-01: pilot liveness watchdog + honest supervisor relay with phone fallback
+import { createPilotWatch, parsePilotWatchEnv, supervisorProbeFrom } from "./pilotwatch.js";
+import { RELAY_UPSTREAM_TIMEOUT_MS, relayPilotNotify } from "./pilotnotify.js";
 // P2-045: dashboard v2 metrics — aggregations shared with the pilot's eval battery
 import { avgPhaseDurations, burnDown, countFailSteps, rollbackHealthAlert, type HistoryEntry } from "../../pilot/src/metrics";
 import { PRICE_SOURCE_LABEL } from "../../pilot/src/pricing";
@@ -484,8 +499,12 @@ async function loadIdentity(): Promise<DaemonIdentity> {
   }
 
   // P2-165: atomic write — the identity must survive a power loss mid-write.
+  // eval-12: only when this boot changed it (first run, v1→v2 migration). An
+  // unchanged file needs no write — every writer serializes the same way —
+  // and on a full disk the unconditional rewrite made each launchd restart
+  // die with "fatal ENOSPC" before serving a single read (prod 04/09, 08/09).
   const serialized = JSON.stringify(raw, null, 2);
-  writeStateAtomic(STATE_FILE, serialized);
+  if (serialized !== content) writeStateAtomic(STATE_FILE, serialized);
   assertPrivateMode(STATE_FILE);
   persistIdentityBackup(serialized);
 
@@ -1927,6 +1946,10 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
       body: { cards: cards.map((c) => ({ ...c, progress: progressOf(index.timelines.get(c.id) ?? []), shots: [] })) },
     };
   }
+  // eval-01: the same read-only liveness snapshot as /api/pilot-liveness
+  if (req.path === "/__ocr/pilot-liveness" && req.method === "GET") {
+    return { id: req.id, status: 200, body: await pilotWatch.current() };
+  }
   if (req.path === "/__ocr/mission" && req.method === "DELETE") {
     try {
       const r = removeMissionFile();
@@ -2137,7 +2160,11 @@ interface PushAttempt {
 }
 let lastPushResult: { at: number; results: PushAttempt[] } | null = null;
 
-async function pushToSubscribers(title: string, body: string, data?: unknown) {
+async function pushToSubscribers(
+  title: string,
+  body: string,
+  data?: unknown,
+): Promise<{ delivered: number; subscribers: number }> {
   const subs = loadSubscriptions();
   const dead: string[] = [];
   const results: PushAttempt[] = [];
@@ -2161,8 +2188,18 @@ async function pushToSubscribers(title: string, body: string, data?: unknown) {
         });
     }
   }
-  if (dead.length) saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
+  if (dead.length) {
+    saveSubscriptions(subs.filter((s) => !dead.includes(s.endpoint)));
+    // eval-01: pruning used to be silent — the last phone vanished on 15/09
+    // and every later alert reached nobody without a single log line
+    log("warn", "push subscriptions pruned (push service answered 404/410)", {
+      pruned: dead.length,
+      left: subs.length - dead.length,
+    });
+  }
   lastPushResult = { at: Date.now(), results };
+  // eval-01: callers learn whether anyone was reached (0 subscribers = nobody)
+  return { delivered: results.filter((r) => r.ok).length, subscribers: subs.length };
 }
 
 // in-app push diagnostics: the user must be able to see WHY it fails
@@ -2600,13 +2637,30 @@ setTimeout(checkRoutines, 10_000);
 // bundle detector dashboardFile() uses (CJS bundle defines __dirname, ESM
 // source does not). Unbundled top-level it crashed the daemon at boot
 // (fileURLToPath(undefined)) and took the desktop bundle smoke down with it.
+// eval-12: a source install that is not a git checkout (release tarball,
+// Docker image built without .git, `npm i github:…`) or a host without git
+// made the boot probe below throw at import — the daemon died before its
+// first log line. No checkout means no HEAD to drift from: the watch is
+// simply skipped, once, with a line saying so.
+let selfRestartBootHead = "";
 if (typeof __dirname === "undefined") {
+  try {
+    selfRestartBootHead = execSync("git rev-parse HEAD", {
+      cwd: join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    log("info", "self-restart watch off: not a git checkout");
+  }
+}
+if (typeof __dirname === "undefined" && selfRestartBootHead) {
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-  const BOOT_HEAD = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+  const BOOT_HEAD = selfRestartBootHead;
   let daemonDriftSince: number | undefined;
   setInterval(() => {
     try {
-      const head = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+      const head = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       if (head && BOOT_HEAD && head !== BOOT_HEAD) {
         daemonDriftSince ??= Date.now();
         if (Date.now() - daemonDriftSince >= 60_000) {
@@ -2658,6 +2712,36 @@ if (pwaWatchEnabled(process.env.PWA_HEALTHZ_URL, defaultPwaPlistPath())) {
     },
   });
 }
+
+// eval-01: pilot liveness watchdog (pilotwatch.ts) — the pilot cannot page
+// about its own death, so the always-on daemon watches heartbeat/pid/launchd/
+// disk hold/deploy lag and pages the phones; it also owns the phone digest the
+// pilot-notify relay falls back to. Started in main() once VAPID is set.
+const pilotWatchEnv = parsePilotWatchEnv(process.env);
+const pilotWatch = createPilotWatch({
+  alerts: pilotWatchEnv.alerts,
+  forceInstalled: pilotWatchEnv.forceInstalled,
+  intervalMs: pilotWatchEnv.intervalMs,
+  initialDelayMs: pilotWatchEnv.initialDelayMs,
+  push: (title, body, data) => pushToSubscribers(title, body, data),
+  subscribers: () => loadSubscriptions().length,
+  probeSupervisor: async (session) => {
+    if (!/^ses[A-Za-z0-9_-]{4,64}$/.test(session)) return "unknown";
+    try {
+      const r = await fetch(new URL(`/session/${session}`, OPENCODE_URL), {
+        headers: authHeader ? { authorization: authHeader } : {},
+        signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
+      });
+      return supervisorProbeFrom(r.status, (await r.text().catch(() => "")).slice(0, 2_000));
+    } catch {
+      return "unknown";
+    }
+  },
+  diskState: () => diskStatus().state,
+  log,
+  audit,
+  emitEvent: (fields) => emit("alert", fields),
+});
 
 // watchdog: tell the phone when the agent server goes down (and back up)
 // P2-135: probes feed classifyUpstream so /api/health and the down-push carry
@@ -2970,7 +3054,23 @@ const SAFE_PAYLOAD = 900_000;
 const CHUNK_BODY = 600_000;
 const MAX_CHUNKS = 512; // ~300MB ceiling on a single response
 
-async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
+// eval-12 (P1, measured by eval-14: out-of-order completions in 50/50
+// trials): the seq used to be taken BEFORE `await seal()`, and concurrent
+// senders — broadcast() never awaits, responses and pongs race — finish
+// WebCrypto out of order. The client's strict replay guard then silently
+// dropped the lower seq: a lost res-chunk was a 60 s request timeout, a lost
+// event a missing update. Every frame of a session now goes through one
+// chain, and the seq is assigned, sealed and sent inside the chained task,
+// so wire order is always seq order (the receiver stays strict).
+const sendChains = new WeakMap<ClientSession, Promise<void>>();
+
+function sealAndSend(session: ClientSession, env: DaemonEnvelope): Promise<void> {
+  const sent = (sendChains.get(session) ?? Promise.resolve()).then(() => sealAndSendNow(session, env));
+  sendChains.set(session, sent.catch(() => {}));
+  return sent;
+}
+
+async function sealAndSendNow(session: ClientSession, env: DaemonEnvelope) {
   // RT-341: heartbeats get their own counter so pong volume never pollutes
   // the response count.
   metrics.inc(
@@ -2991,9 +3091,15 @@ async function sealAndSend(session: ClientSession, env: DaemonEnvelope) {
   }
   metrics.inc("ocr_sealed_bytes_total", payload.length);
   if (session.socket.readyState === WebSocket.OPEN) {
-    session.socket.send(
-      JSON.stringify({ room: daemon.room, from: daemon.room, seq, payload } satisfies RelayFrame),
-    );
+    try {
+      session.socket.send(
+        JSON.stringify({ room: daemon.room, from: daemon.room, seq, payload } satisfies RelayFrame),
+      );
+    } catch (err) {
+      // a socket closing under us: this frame is lost like any frame of a
+      // dying socket, but the chain (and the process) keep going
+      log("warn", "sealed send failed", { error: err instanceof Error ? err.name : "unknown" });
+    }
   }
 }
 
@@ -3368,6 +3474,7 @@ async function autoApprove(sessionID: string, permissionID: string, action: stri
   for (let attempt = 1; attempt <= 2; attempt++) {
     // P1-093: keep the gate fast — one retry after ~500ms, nothing longer
     if (attempt > 1) await new Promise((r) => setTimeout(r, 500));
+    let status: number | null = null;
     try {
       const res = await fetch(
         new URL(`/session/${sessionID}/permissions/${permissionID}`, OPENCODE_URL),
@@ -3380,17 +3487,21 @@ async function autoApprove(sessionID: string, permissionID: string, action: stri
           body: JSON.stringify({ response: "once" }),
         },
       );
-      if (!res.ok) {
-        lastError = `HTTP ${res.status}`;
-        continue;
-      }
+      status = res.status;
+      if (!res.ok) lastError = `HTTP ${res.status}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+    const verdict = approveAttemptVerdict(status);
+    if (verdict === "approved") {
+      autoFailLedger.clear(permissionID);
       log("info", "permission auto-approved", { sessionID, permissionID, action, attempt });
       audit("permission.auto", { sessionID, permissionID, action });
       broadcast({
         type: "event",
         event: {
           id: randomUUID(),
-          type: "ocr.permission.auto",
+          type: AUTO_APPROVED_EVENT,
           properties: { sessionID, permissionID, action },
         },
       });
@@ -3400,21 +3511,77 @@ async function autoApprove(sessionID: string, permissionID: string, action: stri
         });
       }
       return;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+    }
+    if (verdict === "not-found") {
+      // eval-12: 404 = no longer pending here. Answered elsewhere → nothing
+      // to alarm about; still listed → the approve route itself is broken,
+      // and repeating the same POST cannot help.
+      if (notFoundOutcome(await pendingPermissions(), permissionID) === "resolved-elsewhere") {
+        log("info", "auto-approve skipped — ask already resolved", { sessionID, permissionID, action });
+        return;
+      }
+      break;
     }
   }
   autoApproved.delete(permissionID);
   log("warn", "auto-approve failed after retry", { sessionID, permissionID, action, error: lastError });
   audit("permission.auto.failed", { sessionID, permissionID, action, error: lastError });
-  broadcast({
+  const failure: AutoFailEntry = { sessionID, permissionID, action, error: lastError, at: Date.now() };
+  autoFailLedger.record(failure);
+  broadcast(autoFailedEnvelope(failure, false));
+  // eval-12: the owner turned AutoMode on because they are away — a live
+  // broadcast alone reached nobody. Degrade to the manual path's push.
+  if (appSettings.notify.permission) {
+    const push = autoFailPush(action, machineName);
+    void pushToSubscribers(push.title, push.body, { url: `#/session/${sessionID}` });
+  }
+}
+
+// eval-12: AutoMode failures still pending, replayed once to every client
+// after its handshake (see replayAutoFailures) until opencode reports the
+// reply — a phone asleep during the broadcast must still get a manual card.
+const autoFailLedger = new AutoFailLedger();
+// Sessions whose replay is due on their first sealed op: the client seals
+// only after it processed the handshake confirm, so the replay can never race
+// the confirm (an early sealed frame would be dropped as a non-confirm).
+const autoFailReplayDue = new WeakSet<ClientSession>();
+
+function autoFailedEnvelope(e: AutoFailEntry, replayed: boolean): DaemonEnvelope {
+  return {
     type: "event",
     event: {
       id: randomUUID(),
-      type: "ocr.permission.autoFailed",
-      properties: { sessionID, permissionID, action, error: lastError },
+      type: AUTO_APPROVE_FAILED_EVENT,
+      properties: {
+        sessionID: e.sessionID,
+        permissionID: e.permissionID,
+        action: e.action,
+        error: e.error,
+        ...(replayed ? { replayed: true } : {}),
+      },
     },
-  });
+  };
+}
+
+/** opencode's pending asks (`GET /permission` rows), or null when unreadable. */
+async function pendingPermissions(): Promise<unknown> {
+  try {
+    const res = await fetch(new URL("/permission", OPENCODE_URL), {
+      headers: authHeader ? { authorization: authHeader } : {},
+      signal: AbortSignal.timeout(5_000),
+    });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function replayAutoFailures(session: ClientSession): Promise<void> {
+  if (autoFailLedger.size === 0) return;
+  // asks answered while nobody listened are dropped first; an unreadable
+  // list keeps everything (fail-closed toward a visible card)
+  autoFailLedger.retainPending(await pendingPermissions());
+  for (const e of autoFailLedger.live(Date.now())) await sendToSession(session, autoFailedEnvelope(e, true));
 }
 
 async function forwardEvents() {
@@ -3455,21 +3622,20 @@ async function forwardEvents() {
             if (!evt.type || evt.type === "server.connected") continue;
 
             // notable events become push notifications
-            const t = evt.type.toLowerCase();
             const sessionID = ((evt.properties ?? {}) as { sessionID?: string }).sessionID ?? "";
-            const permProps = (evt.properties ?? {}) as {
-              type?: string;
-              id?: string;
-              permissionID?: string;
-            };
-            const permId = permProps.permissionID ?? permProps.id ?? "";
-            const isAsk = t.includes("permission") && !t.includes("response") && !t.includes("revoke");
-            if (isAsk && sessionID && permId && appSettings.autoMode) {
-              void autoApprove(sessionID, permId, permProps.type ?? "action");
-            } else if (t.includes("permission") && appSettings.notify.permission) {
+            // eval-12: pure classification (automode.ts). A reply
+            // (`permission.replied`) is never an ask — it used to push a
+            // second "Approve needed" after every answer — and it resolves a
+            // recorded AutoMode failure.
+            const perm = permissionEventFacts(evt.type, evt.properties);
+            if (perm.kind === "reply") {
+              if (perm.permissionID) autoFailLedger.clear(perm.permissionID);
+            } else if (perm.kind === "ask" && sessionID && perm.permissionID && appSettings.autoMode) {
+              void autoApprove(sessionID, perm.permissionID, perm.label);
+            } else if (perm.kind === "ask" && appSettings.notify.permission) {
               void pushToSubscribers(
                 "Approve needed",
-                `opencode wants to ${permProps.type ?? "perform an action"} on ${machineName}`,
+                `opencode wants to ${perm.label === PERMISSION_LABEL_FALLBACK ? "perform an action" : perm.label} on ${machineName}`,
                 {
                   url: sessionID ? `#/session/${sessionID}` : "#/",
                   evt,
@@ -3631,6 +3797,9 @@ async function handleSealedFrame(frame: RelayFrame & { seq: number }, ws: WebSoc
   }
   session.lastSeq = seq;
   session.lastSeen = Date.now();
+  // eval-12: first op of this handshake — pending AutoMode failures ride
+  // to this client once (autoFailReplayDue explains why not at confirm).
+  if (autoFailReplayDue.delete(session)) void replayAutoFailures(session).catch(() => {});
   metrics.inc("ocr_ops_total");
   await proxy(envelope.req, frame.from)
     .then((res) => {
@@ -3747,7 +3916,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
       const helloNonce =
         typeof maybeControl.hello.nonce === "string" ? maybeControl.hello.nonce : "";
       const verdict = helloVerdict(helloFreshness(accepted.ts, Date.now()), () =>
-        helloSeen.admit(helloNonce, Date.now()),
+        helloSeen.admit(helloNonce, Date.now(), HELLO_MAX_SKEW_MS, accepted.ts),
       );
       if (verdict !== "accept") {
         const device = attributeAuthFailure(accepted.clientPub);
@@ -3842,6 +4011,7 @@ async function handleMessage(data: WebSocket.RawData, ws: WebSocket) {
         lastSeen: Date.now(),
         local: localSockets.has(ws),
       });
+      autoFailReplayDue.add(sessions.get(frame.from)!);
       log("info", "client paired", {
         fp: pubFingerprint(accepted.clientPub),
         activeSessions: sessions.size,
@@ -3977,6 +4147,20 @@ const { shutdown, isShuttingDown } = createShutdown({
 });
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
+// eval-12: a stray exception or rejection still ends the daemon (relay
+// P2-351 policy: a supervisor restart beats half-updated state), but as one
+// structured line + the SIGTERM drain (clients get close 1001) + exit 1 —
+// not a raw stack without timestamp. Known benign classes are contained
+// before this: stdio write errors (stdioguard.ts), a throwing HTTP route
+// (metrics.ts backstop) and a throwing frame handler (onSocketMessage).
+process.on("uncaughtException", (err: unknown) => {
+  log("error", "daemon crash", crashSummary("uncaughtException", err));
+  void shutdown("uncaughtException", 1);
+});
+process.on("unhandledRejection", (reason: unknown) => {
+  log("error", "daemon crash", crashSummary("unhandledRejection", reason));
+  void shutdown("unhandledRejection", 1);
+});
 // P2-315: the desktop shell's stop request arrives over the spawn IPC channel
 // (a local socketpair/named pipe — no port, no network listener). Windows has
 // no real signals, so this is what makes the shell's quit graceful there:
@@ -4890,29 +5074,39 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return true;
     }
     // POST /api/pilot-notify — wake the supervisor session after a pipeline result
+    // eval-01: prompt_async (no wait for the supervisor's whole turn), the real
+    // reason on failure, and the phone digest when the session is unreachable
+    // (pilotnotify.ts). `fallback` in the answer = the daemon owns the message.
     if (seg[1] === "pilot-notify" && req.method === "POST") {
-      const body = await readJsonBody<{ text?: string }>(req, res, "/api/pilot-notify");
+      const body = await readJsonBody<Record<string, unknown>>(req, res, "/api/pilot-notify");
       if (body === null) return true;
-      let delivered = false;
+      let session: string | undefined;
       try {
-        const sup = (
+        session = (
           JSON.parse(readFileSync(join(homedir(), ".opencode-remote", "pilot.json"), "utf8")) as {
             supervisorSession?: string;
           }
         ).supervisorSession;
-        if (sup && body.text) {
-          const res = await fetch(new URL(`/session/${sup}/message`, OPENCODE_URL), {
+      } catch {}
+      const result = await relayPilotNotify(body, {
+        session,
+        post: async (sid, text) => {
+          const up = await fetch(new URL(`/session/${sid}/prompt_async`, OPENCODE_URL), {
             method: "POST",
             headers: {
               "content-type": "application/json",
               ...(authHeader ? { authorization: authHeader } : {}),
             },
-            body: JSON.stringify({ parts: [{ type: "text", text: body.text }] }),
+            body: JSON.stringify({ parts: [{ type: "text", text }] }),
+            signal: AbortSignal.timeout(RELAY_UPSTREAM_TIMEOUT_MS),
           });
-          delivered = res.ok;
-        }
-      } catch {}
-      send(200, { delivered });
+          return { status: up.status, text: (await up.text().catch(() => "")).slice(0, 2_000) };
+        },
+        fallback: (item) => pilotWatch.enqueue(item),
+      });
+      pilotWatch.noteRelay(result.reason, result.delivered);
+      if (!result.delivered) log("info", "pilot notify not delivered to the supervisor", { reason: result.reason, fallback: result.fallback ?? null });
+      send(200, result);
       return true;
     }
     // GET/POST /api/pilot-mission — the north-star statement shown on the dash
@@ -4960,6 +5154,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       } catch (err) {
         send(500, { error: String(err instanceof Error ? err.message : err) });
       }
+      return true;
+    }
+    // GET /api/pilot-liveness — eval-01 liveness verdict for Mission Control
+    // (contract: docs/PILOT.md "Alertas de vida do pilot")
+    if (seg[1] === "pilot-liveness" && req.method === "GET") {
+      send(200, await pilotWatch.current());
       return true;
     }
     // GET /api/pilot-events — dashboard feed: state, heartbeat freshness, event tail
@@ -5195,8 +5395,9 @@ end tell`;
           send(400, { error: "title and body required" });
           return true;
         }
-        await pushToSubscribers(body.title, body.body, { url: body.url ?? "#/" });
-        send(200, { ok: true, delivered: loadSubscriptions().length });
+        // eval-01: `delivered` = phones actually reached (was the subscription count)
+        const out = await pushToSubscribers(body.title, body.body, { url: body.url ?? "#/" });
+        send(200, { ok: true, delivered: out.delivered, subscribers: out.subscribers });
         return true;
       }
       send(404, { error: "unknown route" });
@@ -5206,8 +5407,11 @@ end tell`;
       send(200, (await op("GET", "/session")).body);
       return true;
     }
-    if (req.method === "POST" && !seg[2]) {
-      const body = await readJsonBody<{ title?: string }>(req, res, "/api/session");
+    // eval-12: POST /api/session itself is the P1-057 cookie exchange (it
+    // answers above and never reaches here), so creating a session lives at
+    // POST /api/session/new — session ids start with "ses", no collision.
+    if (req.method === "POST" && (!seg[2] || (seg[2] === "new" && !seg[3]))) {
+      const body = await readJsonBody<{ title?: string }>(req, res, "/api/session/new");
       if (body === null) return true;
       send(200, (await op("POST", "/session", { title: body.title })).body);
       return true;
@@ -5327,6 +5531,9 @@ async function main() {
     daemon.vapid.publicKey,
     daemon.vapid.privateKey,
   );
+  // eval-01: pages need VAPID — the pilot watchdog starts only now
+  for (const problem of pilotWatchEnv.problems) log("warn", problem);
+  pilotWatch.start();
 
   appSettings = readSettings();
   machineName = appSettings.name || MACHINE_NAME;
