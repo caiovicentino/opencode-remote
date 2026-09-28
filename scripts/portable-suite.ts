@@ -105,6 +105,9 @@ export const PORTABLE_TESTS: readonly string[] = [
   "protocol-crypto.test.ts",
   "sdk.test.ts",
 "diskhold.test.ts",
+"addressbar.test.ts",
+  "pair-lead.test.ts",
+  "qr-camera.test.ts",
 ];
 
 /**
