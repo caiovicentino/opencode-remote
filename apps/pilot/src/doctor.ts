@@ -6,7 +6,8 @@
  *
  *   refs      — fetch + hard-reset a workspace clone to origin/main
  *   attempts  — clear the P1-014 circuit-breaker counters (--clear [id])
- *   backlog   — validate sections + unique task ids via loadBacklog
+ *   backlog   — validate origin/<base>:BACKLOG.md (the scheduler's queue): sections,
+ *               unique ids, line-level structure, open tasks already merged
  *   branches  — delete pilot/* branches with no open PR (gh-verified)
  *   state     — normalize state.json to the current schema + defaults
  *   tierb     — probe the tier-B claude binary (`claude --version`) (P2-114)
@@ -25,7 +26,7 @@ import { nowLocalISO } from "./log";
 import { exec } from "./runner";
 import { emit } from "./events";
 import { notifySupervisor } from "./notify";
-import { loadBacklog, parseBacklog } from "./backlog";
+import { backlogShapeIssues, blockedTaskIds, isBookkeepingSubject, loadBacklog, parseBacklog, type BacklogShapeIssue } from "./backlog";
 import { bareTaskId } from "./mission";
 import { JUDGE_DIR } from "./judge";
 import {
@@ -166,9 +167,49 @@ export interface BacklogDiagnosis {
   taskCount: number;
   /** Ids appearing on more than one task line (any checkbox state). */
   duplicateIds: string[];
+  /** eval-06: what was validated — `origin/<base>` (the ref the scheduler
+   * reads) or `working tree` (legacy call / the ref was unreadable). */
+  source?: string;
 }
 
 const TASK_LINE_RE = /^- \[[ x]\] \(([^)]+)\)/gm;
+
+/** eval-06: structure defects that make the queue/status unreliable. */
+const SHAPE_PROBLEMS: [BacklogShapeIssue["kind"], string][] = [
+  ["orphan", "## Ready lines that are not task lines (the scheduler never sees them)"],
+  ["done-in-ready", "## Ready items already checked [x] (move them to ## Done)"],
+  ["open-in-done", "## Done items still open [ ]"],
+  ["done-in-blocked", "## Blocked items checked [x]"],
+  ["duplicate-section", "repeated ## Ready/## Done header (the scheduler reads only the first Ready)"],
+];
+
+/** `ID@line` for items, `line N` for prose — capped so the log line stays short. */
+function citeIssues(issues: BacklogShapeIssue[], max = 8): string {
+  const parts = issues.slice(0, max).map((i) => (i.id ? `${i.id}@${i.line}` : `line ${i.line}`));
+  return issues.length > max ? `${parts.join(", ")}, …` : parts.join(", ");
+}
+
+/**
+ * eval-06: open tasks (## Ready / ## Blocked) whose work already reached the
+ * base branch. The operator hand-merged four blocked PRs (P3-371 #1038,
+ * P3-378 #1028, P3-401 #1067, P3-415 #1131) and nobody moved the lines —
+ * the weekly forensic then recommended re-running merged work. `log` is
+ * `git log --format=%h%x09%s` output (newest first); a work subject is
+ * `pilot(<ID>): …` minus the pilot's mark-done / block bookkeeping. Pure.
+ */
+export function mergedOpenTasks(md: string, log: string): { id: string; sha: string }[] {
+  const work = new Map<string, string>();
+  for (const row of log.split("\n")) {
+    const tab = row.indexOf("\t");
+    if (tab < 0) continue;
+    const subject = row.slice(tab + 1);
+    const m = /^pilot\(((?:P\d|RT)-\d{3})\): /.exec(subject);
+    if (!m || isBookkeepingSubject(subject) || work.has(m[1]!)) continue;
+    work.set(m[1]!, row.slice(0, tab).trim());
+  }
+  const open = [...parseBacklog(md).map((t) => t.id), ...blockedTaskIds(md)];
+  return [...new Set(open)].filter((id) => work.has(id)).map((id) => ({ id, sha: work.get(id)! }));
+}
 
 /**
  * Validate the BACKLOG.md structure: `## Ready` and `## Done` must exist
@@ -196,22 +237,56 @@ export function validateBacklog(md: string): BacklogDiagnosis {
   const warnings: string[] = [];
   if (blockedSections > 1)
     warnings.push(`${blockedSections} duplicate ## Blocked sections — the next stop-loss write collapses them into one`);
+  // eval-06: line-level structure — every ## Ready line must be a task the
+  // scheduler sees and each status section holds only its own kind of item
+  const shape = backlogShapeIssues(md);
+  for (const [kind, label] of SHAPE_PROBLEMS) {
+    const hits = shape.filter((i) => i.kind === kind);
+    if (hits.length) problems.push(`${label}: ${hits.length} (${citeIssues(hits)})`);
+  }
+  const prose = shape.filter((i) => i.kind === "prose");
+  if (prose.length) warnings.push(`free text under ## Blocked/## Done: ${prose.length} line(s) (${citeIssues(prose)})`);
   return { ok: problems.length === 0, problems, warnings, taskCount: parseBacklog(md).length, duplicateIds };
 }
 
 /**
  * Validate the backlog the production parser would read: loadBacklog first
  * (missing file / unreadable path become findings) then the pure validator.
+ * eval-06: with `opts.base` (the boot pass and the CLI) the source is the
+ * scheduler's own — `git show origin/<base>:BACKLOG.md` after a best-effort
+ * fetch, exactly what fillFreeSlots parses. The working tree of cfg.repo is
+ * the prod checkout at the DEPLOYED sha: validating it logged "taskCount: 1"
+ * at every boot while the real queue differed. The ref read also enables the
+ * merged-work check (mergedOpenTasks). An unreadable ref falls back to the
+ * working tree with a warning naming the fallback.
  */
-export function doctorBacklog(repoDir: string): BacklogDiagnosis {
+export function doctorBacklog(repoDir: string, opts: { base?: string; run?: RunFn } = {}): BacklogDiagnosis {
+  if (opts.base) {
+    const base = opts.base;
+    const run = opts.run ?? ((cmd: string) => exec(cmd, { cwd: repoDir, allowFail: true, timeoutMin: 1 }));
+    run(`git fetch -q origin ${base}`); // best-effort, like the scheduler's pick
+    const shown = run(`git show origin/${base}:BACKLOG.md`);
+    if (shown.ok) {
+      const diag = validateBacklog(shown.output);
+      const log = run(`git log origin/${base} --format=%h%x09%s --extended-regexp --grep='^pilot\\((P[0-9]|RT)-[0-9]{3}\\): '`);
+      const merged = log.ok ? mergedOpenTasks(shown.output, log.output) : [];
+      if (merged.length)
+        diag.warnings.push(
+          `open task(s) whose work is already on origin/${base} — verify and move to ## Done: ${merged.map((m) => `${m.id} (${m.sha})`).join(", ")}`,
+        );
+      return { ...diag, source: `origin/${base}` };
+    }
+    const fallback = doctorBacklog(repoDir);
+    return { ...fallback, warnings: [`origin/${base}:BACKLOG.md unreadable — validated the working tree instead`, ...fallback.warnings] };
+  }
   let taskCount = 0;
   try {
     taskCount = loadBacklog(repoDir).length;
   } catch (err) {
-    return { ok: false, problems: [`loadBacklog failed: ${String(err).slice(0, 120)}`], warnings: [], taskCount: 0, duplicateIds: [] };
+    return { ok: false, problems: [`loadBacklog failed: ${String(err).slice(0, 120)}`], warnings: [], taskCount: 0, duplicateIds: [], source: "working tree" };
   }
   const diag = validateBacklog(readFileSync(join(repoDir, "BACKLOG.md"), "utf8"));
-  return { ...diag, taskCount };
+  return { ...diag, taskCount, source: "working tree" };
 }
 
 // ── branches: delete pilot/* with no open PR ─────────────────────────────────
@@ -632,7 +707,7 @@ export function runDoctor(
 
   let backlog: BacklogDiagnosis;
   try {
-    backlog = doctorBacklog(cfg.repo);
+    backlog = doctorBacklog(cfg.repo, { base: cfg.baseBranch ?? "main" });
   } catch (err) {
     backlog = { ok: false, problems: [String(err).slice(0, 120)], warnings: [], taskCount: 0, duplicateIds: [] };
   }
@@ -704,7 +779,7 @@ function main() {
       break;
     }
     case "backlog": {
-      const diag = doctorBacklog(cfg.repo);
+      const diag = doctorBacklog(cfg.repo, { base: cfg.baseBranch ?? "main" });
       log(diag.ok ? "info" : "warn", "doctor: backlog", { repo: cfg.repo, ...diag });
       ok = diag.ok;
       break;

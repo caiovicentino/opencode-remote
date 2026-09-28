@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { normalizeHttpUrl } from "../lib/preview";
+import { resolveAddress, type AddressRejection } from "../lib/addressbar";
 import { useT } from "../lib/i18n";
 // P3-452: pane header/bar actions reuse the shared SVG set — one icon
 // language with the rail, no bare text glyphs beside it.
@@ -58,16 +58,16 @@ function browserErrorText(raw: string, t: TFn): string {
   return t("browserErrGeneric", { msg: raw });
 }
 
-/** P3-378: classifies a rejected address-bar target. A URL that parses but
- * isn't http(s) (file://, data:…) is a deliberate sandbox rejection and gets
- * its own explanation; unparseable input is the generic typo case. */
-function rejectMessage(t: TFn, target: string): string {
-  try {
-    new URL(target);
-    return t("browserLocalFile");
-  } catch {
-    return t("browserInvalidUrl");
-  }
+/** P3-378: one localized sentence per rejection class (lib/addressbar). A local
+ * file (file:// or a pasted path) gets the sandbox explanation with the
+ * localhost way out; any other non-http(s) scheme is named as such; the rest
+ * is the generic typo case. A schemeless host ("localhost:5173") is never a
+ * rejection — resolveAddress completes it — so it can no longer be told to
+ * "open the localhost URL" it just typed. */
+function rejectMessage(t: TFn, reason: AddressRejection): string {
+  if (reason === "local-file") return t("browserLocalFile");
+  if (reason === "scheme") return t("browserSchemeBlocked");
+  return t("browserInvalidUrl");
 }
 
 export default function BrowserView({
@@ -219,13 +219,16 @@ function WebViewPane({
   }, []);
 
   function go(target: string) {
-    // only http/https reach the webview — file:// and friends are rejected
-    const normalized = normalizeHttpUrl(target.trim());
-    if (!normalized) {
+    // only http/https reach the webview — file:// and friends are rejected,
+    // a schemeless host is completed (P3-378, lib/addressbar)
+    const verdict = resolveAddress(target);
+    if (!verdict) return;
+    if (verdict.kind === "reject") {
       setRejected(true);
-      setError(rejectMessage(t, target.trim()));
+      setError(rejectMessage(t, verdict.reason));
       return;
     }
+    const normalized = verdict.url;
     setRejected(false);
     setError("");
     setInput(normalized);
@@ -276,7 +279,15 @@ function WebViewPane({
       <div className="browser-bar">
         <input
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value);
+            // P3-378: editing dissolves a rejection (the pairing form's
+            // one-shot grammar) — a stale red bar never judges new text.
+            if (rejected) {
+              setRejected(false);
+              setError("");
+            }
+          }}
           onKeyDown={(e) => e.key === "Enter" && go(input)}
           placeholder="https://…"
           spellCheck={false}
@@ -298,7 +309,12 @@ function WebViewPane({
           </button>
         )}
       </div>
-      {error && <p className="browser-error">{error}</p>}
+      {/* P3-378: the rejection (or load failure) is announced, not only painted */}
+      {error && (
+        <p className="browser-error" role="alert">
+          {error}
+        </p>
+      )}
       <div className="browser-frame" ref={frameRef}>
         {/* allowpopups stays at its default (off); the page never escapes the pane */}
         <webview
@@ -380,18 +396,19 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
     async (target: string) => {
       // P3-378: same client-side rejection as the webview pane — a non-http(s)
       // target (file://…) never reaches the daemon, whose raw 400 would only
-      // ride the generic {msg} sentence.
-      const normalized = normalizeHttpUrl(target.trim());
-      if (!normalized) {
+      // ride the generic {msg} sentence; a schemeless host is completed.
+      const verdict = resolveAddress(target);
+      if (!verdict) return;
+      if (verdict.kind === "reject") {
         setRejected(true);
-        setError(rejectMessage(t, target.trim()));
+        setError(rejectMessage(t, verdict.reason));
         return;
       }
       setRejected(false);
       setBusy(true);
       setError("");
       try {
-        const j = await callJson("/api/browse/open", "POST", { url: target });
+        const j = await callJson("/api/browse/open", "POST", { url: verdict.url });
         setInfo({
           url: String(j.url ?? ""),
           title: String(j.title ?? ""),
@@ -421,6 +438,8 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
     const rect = img.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * viewport.width;
     const y = ((e.clientY - rect.top) / rect.height) * viewport.height;
+    setRejected(false);
+    setError("");
     setBusy(true);
     void (async () => {
       try {
@@ -456,7 +475,15 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
         <input
           style={{ flex: 1 }}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value);
+            // P3-378: editing dissolves a rejection (the pairing form's
+            // one-shot grammar) — a stale red bar never judges new text.
+            if (rejected) {
+              setRejected(false);
+              setError("");
+            }
+          }}
           onKeyDown={(e) => e.key === "Enter" && void open(input)}
           placeholder="https://…"
           spellCheck={false}
@@ -467,7 +494,13 @@ function ScreenshotBrowser({ browse, onBack }: { browse: BrowseFn | null; onBack
         </button>
       </div>
       <div className="list" style={{ overflow: "auto" }}>
-        {error && <p style={{ color: "var(--danger)", padding: "0 10px" }}>{browserErrorText(error, t)}</p>}
+        {/* P3-378: a rejection is already a localized sentence — only daemon
+            errors ride browserErrorText's classification / {msg} wrapper. */}
+        {error && (
+          <p role="alert" style={{ color: "var(--danger)", padding: "0 10px" }}>
+            {rejected ? error : browserErrorText(error, t)}
+          </p>
+        )}
         <div style={{ position: "relative" }}>
           {shot ? (
             <img

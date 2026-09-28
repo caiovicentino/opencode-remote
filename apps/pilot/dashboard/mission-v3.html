@@ -409,6 +409,14 @@ function apply(e, quiet) {
   if (e.type === "alert") {
     const s = shipFor(e);
     if (s) {
+      // eval-01: alert events with ok=true are resolutions (liveness recovery,
+      // eval-02's disk-resume) — not guard strikes; calm green, no red tag
+      if (ok) {
+        s.color = COL.green;
+        tag(s, `RESOLVED ${(e.phase || "").toUpperCase()}`.slice(0, 18), COL.green, 6);
+        if (!quiet) flash(s, COL.green);
+        return;
+      }
       tremor(s, 1);
       s.color = COL.red;
       tag(s, `GUARD ${(e.phase || "").toUpperCase()}`, COL.red, 6);

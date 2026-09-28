@@ -23,7 +23,7 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { normalizeSessionModel, taskCostUSD, type TaskUsd } from "./pricing";
+import { normalizeSessionModel, pricingFingerprint, taskCostUSD, type PricingConfig, type TaskUsd } from "./pricing";
 
 /** One row of the opencode `session` table (only the token columns we need). */
 export interface SessionTokens {
@@ -32,6 +32,13 @@ export interface SessionTokens {
   tokens_output: number;
   tokens_cache_read: number;
   tokens_cache_write: number;
+  /** eval-18: reasoning tokens (billed as output by every provider that
+   * reports them separately; 0 on the GLM gateway, which folds them into
+   * output). Absent on legacy fixtures. */
+  tokens_reasoning?: number;
+  /** eval-18: parent session — subagent (`task` tool) sessions are separate
+   * rows whose tokens never reach the parent's columns. */
+  parent_id?: string;
   /** P2-113: raw `session.model` column (JSON blob/legacy string) — priced in
    * pricing.ts; undefined when the DB row predates the column. */
   model?: string;
@@ -49,6 +56,12 @@ export interface TaskCostStore {
   /** P2-113: task id → BYOK list-price dollar view (see pricing.ts). Folded
    * by the same REPLACE-by-recompute reconciliation; no gate consumes it. */
   taskUSD?: Record<string, TaskUsd>;
+  /** eval-18: pricingFingerprint() the taskUSD entries were last priced
+   * with — the boot re-price runs only when it changes. */
+  taskUSDPricing?: string;
+  /** eval-18: task id → highest token-budget multiple already alerted
+   * (tokenbudget.ts). Pruned with taskCosts. */
+  tokenBudgetAlerts?: Record<string, number>;
 }
 
 /** P1-077: per-task cache-token breakdown (subset of the session columns). */
@@ -86,11 +99,14 @@ export function defaultOpencodeDb(): string {
   return join(homedir(), ".local/share/opencode/opencode.db");
 }
 
-/** Total tokens billed to one session (input + output + both cache kinds). */
+/** Total tokens billed to one session (input + output + reasoning + both
+ * cache kinds — eval-18: reasoning joins the sum, like context.ts and the
+ * daemon gauge already count it). */
 export function sessionTotalTokens(s: Omit<SessionTokens, "id">): number {
   return (
     (s.tokens_input || 0) +
     (s.tokens_output || 0) +
+    (s.tokens_reasoning || 0) +
     (s.tokens_cache_read || 0) +
     (s.tokens_cache_write || 0)
   );
@@ -100,10 +116,20 @@ export function sessionTotalTokens(s: Omit<SessionTokens, "id">): number {
  * SQL for one id-batched lookup. `ids` MUST pass isSessionId (regex-checked:
  * alnum-only after the ses_ prefix), which is what makes inlining safe —
  * no shell is involved either way (the SQL goes in via stdin).
+ *
+ * eval-18: the recursive CTE also returns every DESCENDANT session (subagents
+ * spawned through opencode's `task` tool live in their own rows, linked by
+ * parent_id — indexed, so the walk stays cheap on an 87GB database). Their
+ * tokens used to vanish from the task's cost entirely.
  */
 export function tokensSql(ids: string[]): string {
   const list = ids.map((id) => `'${id}'`).join(", ");
-  return `SELECT id, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, model FROM session WHERE id IN (${list});`;
+  return (
+    `WITH RECURSIVE tree(id) AS (SELECT id FROM session WHERE id IN (${list}) ` +
+    `UNION SELECT s.id FROM session s JOIN tree ON s.parent_id = tree.id) ` +
+    `SELECT id, parent_id, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, model ` +
+    `FROM session WHERE id IN (SELECT id FROM tree);`
+  );
 }
 
 /** P1-077: provider prefix-cache hit ratio — cacheRead over cacheRead+input
@@ -137,6 +163,9 @@ export function parseSessionTokenRows(json: string): Record<string, SessionToken
     cur.tokens_output += r.tokens_output || 0;
     cur.tokens_cache_read += r.tokens_cache_read || 0;
     cur.tokens_cache_write += r.tokens_cache_write || 0;
+    // eval-18: reasoning + subagent linkage (canonical parent ids only)
+    if (r.tokens_reasoning) cur.tokens_reasoning = (cur.tokens_reasoning ?? 0) + (r.tokens_reasoning || 0);
+    if (typeof r.parent_id === "string" && isSessionId(r.parent_id)) cur.parent_id = r.parent_id;
     // P2-113: last row wins — the reconciler emits at most one row per id
     if (typeof r.model === "string") cur.model = r.model;
   }
@@ -188,15 +217,10 @@ export async function querySessionTokenRows(
     const chunk = ids.slice(i, i + 100).filter(isSessionId);
     if (!chunk.length) continue;
     for (const [id, row] of Object.entries(parseSessionTokenRows(await run(dbPath, tokensSql(chunk))))) {
-      const cur = out[id];
-      if (!cur) {
-        out[id] = { ...row };
-        continue;
-      }
-      cur.tokens_input += row.tokens_input;
-      cur.tokens_output += row.tokens_output;
-      cur.tokens_cache_read += row.tokens_cache_read;
-      cur.tokens_cache_write += row.tokens_cache_write;
+      // a descendant can come back from more than one chunk (its root sits
+      // in one, but the recursive walk is per chunk) — rows are per-session
+      // TOTALS, so a repeat is the same row, never additional usage
+      if (!out[id]) out[id] = { ...row };
     }
   }
   return out;
@@ -236,6 +260,7 @@ export async function applySessionCosts(
   taskId: string,
   newSessions: string[] | undefined,
   query: (ids: string[]) => Promise<Record<string, SessionTokens | number>>,
+  pricing?: PricingConfig,
 ): Promise<TaskCacheFold | null> {
   if (!taskId || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(taskId)) return null;
   store.taskCostSessions ??= {};
@@ -246,7 +271,58 @@ export async function applySessionCosts(
   }
   if (!known.length) return null;
   store.taskCostSessions[taskId] = known;
-  const rows = await query(known);
+  const fold = foldTaskRows(known, await query(known), pricing);
+  const { total, input, cacheRead, cacheWrite, sawRow } = fold;
+  if (total > 0) {
+    store.taskCosts[taskId] = total;
+    if (sawRow) {
+      store.taskCache ??= {};
+      store.taskCache[taskId] = { input, cacheRead, cacheWrite };
+    }
+    store.taskUSD ??= {};
+    store.taskUSD[taskId] = fold.usd;
+  }
+  pruneTaskCosts(store);
+  return sawRow && total > 0
+    ? { task: taskId, input, cacheRead, cacheWrite, ratio: cacheHitRatio(cacheRead, input) }
+    : null;
+}
+
+/** One task's rows folded into totals + the dollar view (pure). */
+interface TaskRowFold {
+  total: number;
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  sawRow: boolean;
+  usd: TaskUsd;
+  /** Every root session had a row (no transient DB gap). */
+  complete: boolean;
+}
+
+/**
+ * Pure fold shared by the reconciliation and the boot re-price. `known` are
+ * the task's captured ROOT sessions; eval-18 adds every row whose parent
+ * chain reaches one of them (subagent sessions from the recursive tokensSql).
+ * A row whose parent is NOT in the task stays out — an injected or stray row
+ * can never inflate a task it does not descend from.
+ */
+function foldTaskRows(
+  known: string[],
+  rows: Record<string, SessionTokens | number>,
+  pricing?: PricingConfig,
+): TaskRowFold {
+  const inTask = new Set(known);
+  const members = [...known];
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [id, r] of Object.entries(rows)) {
+      if (inTask.has(id) || typeof r !== "object" || !r?.parent_id || !inTask.has(r.parent_id)) continue;
+      inTask.add(id);
+      members.push(id);
+      grew = true;
+    }
+  }
   let total = 0;
   let input = 0;
   let cacheRead = 0;
@@ -260,7 +336,7 @@ export async function applySessionCosts(
   const perModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> =
     Object.create(null);
   let legacyTokens = 0;
-  for (const id of known) {
+  for (const id of members) {
     const r = rows[id];
     if (!r) continue;
     if (typeof r === "number") {
@@ -276,33 +352,73 @@ export async function applySessionCosts(
     const model = normalizeSessionModel(r.model);
     const cols = (perModel[model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     cols.input += r.tokens_input || 0;
-    cols.output += r.tokens_output || 0;
+    // eval-18: reasoning is generated output — billed at the output rate.
+    // Caveat: providers that ALREADY include reasoning inside tokens_output
+    // (AI SDK/OpenAI-style) would be counted twice. As of 2026-09-27 no
+    // session in the fleet reports tokens_reasoning alongside a
+    // tokens_output that already contains it (0/1014), so the fold is exact;
+    // revisit if a provider starts emitting both.
+    cols.output += (r.tokens_output || 0) + (r.tokens_reasoning || 0);
     cols.cacheRead += r.tokens_cache_read || 0;
     cols.cacheWrite += r.tokens_cache_write || 0;
   }
-  if (total > 0) {
-    store.taskCosts[taskId] = total;
-    if (sawRow) {
-      store.taskCache ??= {};
-      store.taskCache[taskId] = { input, cacheRead, cacheWrite };
-    }
-    // P2-113: BYOK list-price view. Legacy totals-only injectors carry no
-    // model info — their tokens are counted as unpriced, never priced at $0
-    // in a way that implies "free".
-    store.taskUSD ??= {};
-    const usd = sawRow
-      ? taskCostUSD(perModel)
-      : { total: 0, tierA: 0, tierB: 0, unpricedTokens: 0, tokens: 0 };
-    if (legacyTokens > 0) {
-      usd.unpricedTokens += legacyTokens;
-      usd.tokens += legacyTokens;
-    }
-    store.taskUSD[taskId] = usd;
+  // P2-113: BYOK list-price view. Legacy totals-only injectors carry no
+  // model info — their tokens are counted as unpriced, never priced at $0
+  // in a way that implies "free".
+  const usd: TaskUsd = sawRow ? taskCostUSD(perModel, pricing) : { total: 0, tierA: 0, tierB: 0, unpricedTokens: 0, tokens: 0 };
+  if (legacyTokens > 0) {
+    usd.unpricedTokens += legacyTokens;
+    usd.tokens += legacyTokens;
   }
-  pruneTaskCosts(store);
-  return sawRow && total > 0
-    ? { task: taskId, input, cacheRead, cacheWrite, ratio: cacheHitRatio(cacheRead, input) }
-    : null;
+  return { total, input, cacheRead, cacheWrite, sawRow, usd, complete: known.every((id) => rows[id] !== undefined) };
+}
+
+/**
+ * eval-18: re-price the dollar view of every task in the rolling window when
+ * the pricing changed (alias added, self-hosted rates configured) — the 68
+ * tasks reconciled after the 2026-09-11 model-id rename stay "unpriced"
+ * forever otherwise, since done tasks are never reconciled again.
+ *
+ * Only tasks whose every root session still has a row, and whose re-fold is
+ * not below the recorded total, are touched: opencode.db may have lost old
+ * sessions, and a recompute must never shrink a recorded cost. For those,
+ * taskUSD, taskCosts and taskCache are replaced from the same fold
+ * (descendant sessions included) — the tokens chip and the $ tooltip of one
+ * task describe the same sessions. One batched query.
+ */
+export async function repriceTaskUSD(
+  store: TaskCostStore,
+  query: (ids: string[]) => Promise<Record<string, SessionTokens | number>>,
+  pricing?: PricingConfig,
+): Promise<{ changed: boolean; repriced: number; skipped: number; fingerprint: string }> {
+  const fingerprint = pricingFingerprint(pricing);
+  if (store.taskUSDPricing === fingerprint) return { changed: false, repriced: 0, skipped: 0, fingerprint };
+  const sessions = store.taskCostSessions ?? {};
+  const all = [...new Set(Object.values(sessions).flat().filter(isSessionId))];
+  const rows = all.length ? await query(all) : {};
+  let repriced = 0;
+  let skipped = 0;
+  store.taskUSD ??= {};
+  for (const [task, known] of Object.entries(sessions)) {
+    const valid = (known ?? []).filter(isSessionId);
+    if (!valid.length) continue;
+    const fold = foldTaskRows(valid, rows, pricing);
+    // all-or-nothing per task: a gap in the DB or a re-fold BELOW the recorded
+    // total leaves the task exactly as it was (never shrink, never split the
+    // tokens chip from the $ view)
+    if (!fold.complete || !fold.sawRow || fold.total <= 0 || fold.total < (store.taskCosts?.[task] ?? 0)) {
+      skipped++;
+      continue;
+    }
+    store.taskUSD[task] = fold.usd;
+    store.taskCosts ??= {};
+    store.taskCosts[task] = fold.total;
+    store.taskCache ??= {};
+    store.taskCache[task] = { input: fold.input, cacheRead: fold.cacheRead, cacheWrite: fold.cacheWrite };
+    repriced++;
+  }
+  store.taskUSDPricing = fingerprint;
+  return { changed: true, repriced, skipped, fingerprint };
 }
 
 /**
@@ -335,6 +451,7 @@ export function pruneTaskCosts(store: TaskCostStore, cap = TASK_COST_CAP): void 
     delete sessions[key]; // P1-077: keep the sibling maps aligned
     delete cache[key];
     delete usd[key];
+    if (store.tokenBudgetAlerts) delete store.tokenBudgetAlerts[key]; // eval-18
   }
   for (const key of Object.keys(sessions)) {
     if (Object.keys(sessions).length <= cap) break;
@@ -348,6 +465,12 @@ export function pruneTaskCosts(store: TaskCostStore, cap = TASK_COST_CAP): void 
     if (Object.keys(usd).length <= cap) break;
     delete usd[key];
   }
+  const alerts = store.tokenBudgetAlerts ?? {};
+  for (const key of Object.keys(alerts)) {
+    if (Object.keys(alerts).length <= cap) break;
+    delete alerts[key];
+  }
+  if (store.tokenBudgetAlerts) store.tokenBudgetAlerts = alerts;
   store.taskCosts = costs;
   store.taskCostSessions = sessions;
   store.taskCache = cache;

@@ -94,12 +94,17 @@ export function alertRules(): RelayAlertRule[] {
       symptom: "O relay está recusando conexões novas por capacidade: quem tenta entrar recebe ocupado.",
     },
     {
+      // eval-13: `relay_uptime_seconds < 60 for 10m` could only fire when
+      // EVERY evaluation of ten minutes saw a young process — a relay that
+      // dies every few minutes is older than 60 s most of the time, and a
+      // failed scrape leaves a stale series that resets the pending timer.
+      // resets() counts every restart the scraper observed inside the hour.
       alert: "RelayCrashLoop",
       series: "relay_uptime_seconds",
-      expr: "relay_uptime_seconds < 60",
-      for: "10m",
+      expr: "resets(relay_uptime_seconds[1h]) >= 3",
+      for: "1m",
       severity: "critical",
-      symptom: "O processo está reiniciando em laço: o tempo de atividade volta a zero a cada raspagem.",
+      symptom: "O processo reiniciou três vezes ou mais na última hora: cada queda derruba todas as salas de todos os inquilinos.",
     },
     {
       alert: "RelayCertExpiryState",
@@ -158,7 +163,7 @@ export function alertRules(): RelayAlertRule[] {
       symptom: "Uma sala passou o orçamento de volume da janela e foi encerrada.",
     },
     {
-      // eval-13: two live sockets holding one room's owner identity — two
+      // eval-13b: two live sockets holding one room's owner identity — two
       // daemons sharing one identity. The 10 minutes absorb the brief overlap
       // a restart can produce; a lasting pair means answers come from the
       // wrong process in silence.
@@ -168,6 +173,41 @@ export function alertRules(): RelayAlertRule[] {
       for: "10m",
       severity: "warning",
       symptom: "Duas instâncias do daemon disputam a mesma sala (processo antigo vivo ou pasta de estado copiada): o celular recebe respostas da instância errada.",
+    },
+    {
+      // eval-13: the one outage no rule above could see — a relay that is
+      // down, or refuses every boot fail-closed (expired certificate, bad
+      // knob), never publishes a series, so every other rule stays silent.
+      // Written for the documented one-replica topology; a scraper watching
+      // several independent relays adds an instance matcher per relay.
+      alert: "RelayDown",
+      series: "relay_connections_total",
+      expr: "absent_over_time(relay_connections_total[5m])",
+      for: "1m",
+      severity: "critical",
+      symptom: "O relay não publica métricas há cinco minutos: caiu, recusa o boot ou a raspagem quebrou — ninguém pareia.",
+    },
+    {
+      // eval-13: the per-connection frame budget closes the socket with 4029
+      // and the daemon then waits at least 60 s before redialing — with a
+      // legitimate daemon over the ceiling the phone freezes mid-response.
+      alert: "RelayRateLimited",
+      series: "relay_rate_limited_total",
+      expr: "increase(relay_rate_limited_total[15m]) > 0",
+      for: "5m",
+      severity: "warning",
+      symptom: "Conexões derrubadas pelo teto de frames por conexão: abuso, ou um daemon legítimo acima do teto e um celular congelado por um minuto.",
+    },
+    {
+      // eval-13: a log line that could not be written (full disk, closed
+      // stdout) no longer kills the relay — it is counted instead, and this
+      // is the only place that count is ever read.
+      alert: "RelayLogWriteErrors",
+      series: "relay_log_write_errors_total",
+      expr: "increase(relay_log_write_errors_total[15m]) > 0",
+      for: "5m",
+      severity: "warning",
+      symptom: "O relay não consegue escrever o próprio log (disco cheio ou saída fechada): segue roteando, mas sem trilha.",
     },
   ];
 }
