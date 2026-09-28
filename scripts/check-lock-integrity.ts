@@ -13,8 +13,9 @@
  * rule 1).
  *
  * Exit codes: 1 only on a reject verdict (an origin outside the documented
- * public registries, or a registry origin without a declared integrity
- * hash). Warn and approve exit 0. The documented registries live in
+ * public registries, a registry origin that is not the entry's own tarball —
+ * eval-15 lockfile injection — or a registry origin without a declared
+ * integrity hash). Warn and approve exit 0. The documented registries live in
  * scripts/lock-registries.json and the deadlined exemptions in
  * scripts/lock-exemptions.json; see docs/security.md.
  *
@@ -47,9 +48,12 @@ export const EXEMPTIONS_FILE = "scripts/lock-exemptions.json";
  * repo's own.
  */
 function normalizeEntry(path: string, doc: unknown): LockEntry {
-  const pkg = (doc ?? {}) as { resolved?: unknown; integrity?: unknown };
+  const pkg = (doc ?? {}) as { resolved?: unknown; integrity?: unknown; name?: unknown; version?: unknown };
   const resolved = typeof pkg.resolved === "string" ? pkg.resolved : "";
   const integrity = typeof pkg.integrity === "string" ? pkg.integrity : "";
+  // eval-15: name/version feed rule 4b (a registry origin must be the entry's own tarball)
+  const name = typeof pkg.name === "string" ? pkg.name : undefined;
+  const version = typeof pkg.version === "string" ? pkg.version : "";
   const internal =
     path === "" ||
     // A workspace directory of this repository ("apps/daemon") — a path with
@@ -60,7 +64,7 @@ function normalizeEntry(path: string, doc: unknown): LockEntry {
     // A node_modules link whose origin is provably a relative path into this
     // very repository (e.g. "apps/daemon").
     isInternalOrigin(resolved);
-  return { path, resolved, integrity, internal };
+  return { path, resolved, integrity, internal, ...(name !== undefined ? { name } : {}), version };
 }
 
 /**

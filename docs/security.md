@@ -356,7 +356,21 @@ identity servers, no accounts.
     exempt an entry with a deadline, add it with the lockfile path as id,
     a one-sentence reason and an expiry date to
     `scripts/lock-exemptions.json` — past the expiry the entry counts in
-    full again.
+    full again. A registry origin must also be the entry's **own**
+    canonical tarball (`<registry><name>/-/<basename>-<version>.tgz`): pointing
+    a trusted name such as `node_modules/lodash` at another package's tarball
+    on the same registry — with that tarball's valid hash — is lockfile
+    injection and rejects even under an exemption. The eval-15 adversarial
+    review beat the first version of the rule by ALSO editing the entry's
+    `name` and `version` fields (express@4.21.2, hash and all, under
+    `node_modules/lodash` — the gate approved and `npm ci` really installed
+    it), so the expected name now always derives from the ENTRY PATH (where
+    npm installs the `resolved` tarball) and a lockfile `name` field that
+    diverges from that path rejects fail-closed, exemptions notwithstanding —
+    npm only writes `name` for aliases and repo-internal entries, and this
+    lockfile carries no aliases, so a future alias is a deliberate, reviewed
+    change rather than something an edit smuggles in. An origin with a `..`
+    segment anywhere is never provably internal (eval-15).
 
 18. **Update-feed digest confrontation (P2-308).** The `release-feeds` job
     downloads the release artifacts, measures sha512 (base64) and byte size

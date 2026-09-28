@@ -45,6 +45,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
 
 export const PORTABLE_TESTS: readonly string[] = [
+  "aux-curate.test.ts",
   "boothealth.test.ts",
   "browsecap.test.ts",
   "bubble-merge.test.ts",
@@ -81,6 +82,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "handoff.test.ts",
   "pairempty.test.ts",
   "permission-cards.test.ts",
+  "prompt-sanitize.test.ts",
   "proxyplan.test.ts",
   "proxyauth.test.ts",
   "proxystore.test.ts",
@@ -95,6 +97,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "settingsmirror.test.ts",
   "shelllang.test.ts",
   "sidecar-log.test.ts",
+  "supplychain.test.ts",
   "testhome.test.ts",
   "thinking.test.ts",
   "traystatus.test.ts",

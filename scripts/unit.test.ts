@@ -37311,10 +37311,12 @@ check("P2-241: no new periodic timer was introduced by the handler", !dlBlock.in
   // Determinism: identical report for the same input in two calls, and a
   // stable ordering by entry path regardless of the input order.
   {
+    // eval-15 rule 4b: each entry's origin is its OWN canonical tarball
+    const own = (name: string) => `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`;
     const messy = [
-      mkEntry("node_modules/zeta", REG, ""),
-      mkEntry("node_modules/alpha", REG, SHA512),
-      mkEntry("node_modules/mike", REG, SHA384),
+      mkEntry("node_modules/zeta", own("zeta"), ""),
+      mkEntry("node_modules/alpha", own("alpha"), SHA512),
+      mkEntry("node_modules/mike", own("mike"), SHA384),
     ];
     const run1 = lockIntegrityVerdict(messy, REGISTRIES, [], NOW);
     const run2 = lockIntegrityVerdict([...messy].reverse(), REGISTRIES, [], NOW);
