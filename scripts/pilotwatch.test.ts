@@ -15,11 +15,15 @@ import { createContext, runInContext } from "node:vm";
 import {
   CATCH_UP_MS,
   CONFIRM_TICKS,
+  CRASH_LOOP_WINDOW_MS,
+  DIGEST_PUSH_TAG,
   DISK_HOLD_ALERT_MS,
   EMPTY_ALERT,
   HEARTBEAT_STALE_MS,
   PILOT_PUSH_TAG,
   REMINDER_DOWN_MS,
+  STALL_SILENCE_MS,
+  abnormalLaunchdExit,
   createPilotWatch,
   deployLagFrom,
   diskHoldFromEvents,
@@ -32,6 +36,7 @@ import {
   planAlert,
   resolveHeadSha,
   restartsInWindow,
+  sanitizeDetail,
   supervisorProbeFrom,
   UNCHECKED_LAUNCHD,
   type AlertState,
@@ -102,11 +107,28 @@ check("launchctl: '(never exited)' is not an exit code", never.lastExitCode === 
 const unloaded = parseLaunchctlPrint(113, 'Bad request.\nCould not find service "com.ocr.pilot" in domain for user gui: 501\n');
 check("launchctl: exit 113 = not loaded (checked)", unloaded.checked && unloaded.loaded === false);
 check("launchctl: other failures are unknown, never an accusation", parseLaunchctlPrint(5, "boom").checked === false);
+// the 24/09 OOM crash-loop died by signal: launchctl prints no `last exit code`
+// line for that shape (repro R2) — the signal line and the exit reason line are
+// the only witnesses. `last exit reason` also survives on RUNNING jobs whose
+// last exit was a benign idle nap (com.apple.homed on this host), so only a
+// non-idle reason counts as abnormal.
+const SIGNAL_DEATH = parseLaunchctlPrint(0, "\tstate = running\n\truns = 66\n\tpid = 65884\n\tlast terminating signal = Abort trap: 6\n");
+check("launchctl: signal death parsed (no exit code line)", SIGNAL_DEATH.lastExitSignal === "Abort trap: 6" && SIGNAL_DEATH.lastExitCode === null);
+const REASON_DEATH = parseLaunchctlPrint(0, "\tstate = running\n\truns = 67\n\tpid = 65885\n\tlast exit reason = Exited due to signal: Abort trap: 6\n");
+check("launchctl: exit reason parsed", REASON_DEATH.lastExitReason === "Exited due to signal: Abort trap: 6");
+const IDLE_NAP = parseLaunchctlPrint(0, "\tstate = running\n\truns = 29\n\tpid = 29911\n\tlast exit reason = JETSAM_REASON_MEMORY_IDLE_EXIT\n");
+check("launchctl: idle exit reason parsed", IDLE_NAP.lastExitReason === "JETSAM_REASON_MEMORY_IDLE_EXIT");
+check("abnormal exit: exit code decides when present", abnormalLaunchdExit(loaded) === true && abnormalLaunchdExit({ ...loaded, lastExitCode: 0 }) === false);
+check("abnormal exit: a signal death is abnormal without an exit code", abnormalLaunchdExit(SIGNAL_DEATH) === true);
+check("abnormal exit: a non-idle exit reason is abnormal", abnormalLaunchdExit(REASON_DEATH) === true);
+check("abnormal exit: an idle exit reason is NOT abnormal (homed naps on this host)", abnormalLaunchdExit(IDLE_NAP) === false);
+check("abnormal exit: nothing known = null (heartbeat fallback)", abnormalLaunchdExit(never) === null);
+check("sanitize: control characters and bidi overrides are stripped", sanitizeDetail("disk low: 2.1gb\u0007 free\u202Ereversed\u202C\u200b") === "disk low: 2.1gb freereversed");
 
 // ── restarts / disk hold / deploy lag / HEAD ────────────────────────────────
 check("restarts: < 2 samples = unknown", restartsInWindow([{ at: T0, runs: 3 }], T0) === null);
 check(
-  "restarts: delta inside the 15-min window",
+  "restarts: all samples inside the 60-min window count toward the delta",
   restartsInWindow(
     [
       { at: T0 - 20 * MIN, runs: 1 },
@@ -114,9 +136,21 @@ check(
       { at: T0, runs: 14 },
     ],
     T0,
-  ) === 4,
+  ) === 13,
+);
+check(
+  "restarts: samples older than the window are dropped (the slow 24/09 loop restarted every ~14 min)",
+  restartsInWindow(
+    [
+      { at: T0 - 90 * MIN, runs: 1 },
+      { at: T0 - 30 * MIN, runs: 9 },
+      { at: T0, runs: 12 },
+    ],
+    T0,
+  ) === 3,
 );
 check("restarts: a reload (runs reset) is not negative", restartsInWindow([{ at: T0 - MIN, runs: 9 }, { at: T0, runs: 1 }], T0) === 0);
+check("restarts: window constant is 60 min (was 15 — the 24/09 loop ran at 14-min pace)", CRASH_LOOP_WINDOW_MS === 60 * MIN);
 
 const ev = (iso: string, phase: string, ok: boolean, detail = "") =>
   JSON.stringify({ ts: iso, type: "deploy", phase, ok, detail });
@@ -195,7 +229,7 @@ function signals(over: Partial<PilotSignals> = {}): PilotSignals {
     heartbeatAt: T0 - MIN,
     pid: 4242,
     pidAlive: true,
-    launchd: { checked: true, loaded: true, state: "running", pid: 4242, runs: 1, lastExitCode: null },
+    launchd: { checked: true, loaded: true, state: "running", pid: 4242, runs: 1, lastExitCode: null, lastExitSignal: null, lastExitReason: null },
     restarts: 0,
     diskHold: null,
     deploy: { prodSha: PROD, undeployed: 0, oldestUndeployedAt: null },
@@ -214,24 +248,72 @@ const unl = livenessVerdict(
 );
 check("verdict: booted out of launchd + dead pid = down/unloaded", unl.state === "down" && codes(unl) === "unloaded");
 check("verdict: unloaded detail says KeepAlive will not restart it", unl.reasons[0]!.detail.includes("KeepAlive") && unl.reasons[0]!.detail.includes("3d"));
+// R4a: PIDs recycle — pilot.pid 35139 was stale and macOS handed it to another
+// process, so kill(pid,0) says "alive" for a process that is not the pilot.
+// With launchd reporting "not loaded" the pid file is never the witness.
+const recycled = livenessVerdict(
+  signals({ pidAlive: true, heartbeatAt: T0 - 3 * 24 * HOUR, launchd: { ...UNCHECKED_LAUNCHD, checked: true, loaded: false } }),
+  T0,
+);
+check("verdict: recycled pid (kill says alive) + stale heartbeat = still unloaded", recycled.state === "down" && codes(recycled) === "unloaded");
+// the 27/09 12:05 shape: heartbeat rewritten while the pilot was out of
+// launchd and the pid dead — a fresh heartbeat with a dead pid is not a
+// manual run, it is an untrustworthy heartbeat
+const ghost = livenessVerdict(
+  signals({ pidAlive: false, heartbeatAt: T0 - MIN, launchd: { ...UNCHECKED_LAUNCHD, checked: true, loaded: false } }),
+  T0,
+);
+check("verdict: fresh heartbeat + dead pid + not loaded = unloaded (the heartbeat is not a witness)", ghost.state === "down" && codes(ghost) === "unloaded");
 check(
-  "verdict: running outside launchd (manual run, fresh heartbeat) is ok",
+  "verdict: running outside launchd (manual run, fresh heartbeat, alive pid) is ok",
   livenessVerdict(signals({ launchd: { ...UNCHECKED_LAUNCHD, checked: true, loaded: false } }), T0).state === "ok",
 );
-const stalled = livenessVerdict(signals({ heartbeatAt: T0 - HEARTBEAT_STALE_MS - MIN }), T0);
-check("verdict: alive pid + stale heartbeat = stalled", stalled.state === "down" && codes(stalled) === "stalled");
-check("verdict: heartbeat just under the threshold is still ok", livenessVerdict(signals({ heartbeatAt: T0 - HEARTBEAT_STALE_MS + MIN }), T0).state === "ok");
+// R1: a healthy pilot blocks its own loop for up to the 30-min judge budget
+// (judge.ts execFileSync) — 11-18 min of silence with a live pid under a
+// running launchd job is a gate at work, not a stall
+check(
+  "verdict: 11 min of silence with a live pid under a running launchd job is within the judge budget",
+  livenessVerdict(signals({ heartbeatAt: T0 - HEARTBEAT_STALE_MS - MIN }), T0).state === "ok",
+);
+check(
+  `verdict: silence past the budget (${STALL_SILENCE_MS / MIN} min) is a stall`,
+  livenessVerdict(signals({ heartbeatAt: T0 - STALL_SILENCE_MS - MIN }), T0).state === "down" &&
+    codes(livenessVerdict(signals({ heartbeatAt: T0 - STALL_SILENCE_MS - MIN }), T0)) === "stalled",
+);
+const stalled = livenessVerdict(signals({ heartbeatAt: T0 - STALL_SILENCE_MS - MIN, launchd: { checked: false, loaded: null, state: null, pid: null, runs: null, lastExitCode: null, lastExitSignal: null, lastExitReason: null } }), T0);
+check("verdict: with launchd unknown, the old 10-min threshold still stalls", stalled.state === "down" && codes(stalled) === "stalled");
+check("verdict: heartbeat just under the stale threshold is still ok", livenessVerdict(signals({ heartbeatAt: T0 - HEARTBEAT_STALE_MS + MIN }), T0).state === "ok");
 const dead = livenessVerdict(signals({ pidAlive: false, heartbeatAt: T0 - 20 * MIN }), T0);
 check("verdict: dead pid + stale heartbeat (launchd loaded) = dead", dead.state === "down" && codes(dead) === "dead");
 check("verdict: never beat = no-heartbeat", codes(livenessVerdict(signals({ pidAlive: null, pid: null, heartbeatAt: null }), T0)) === "no-heartbeat");
 const loop = livenessVerdict(
-  signals({ restarts: 14, launchd: { checked: true, loaded: true, state: "running", pid: 1, runs: 20, lastExitCode: 1 } }),
+  signals({ restarts: 14, launchd: { checked: true, loaded: true, state: "running", pid: 1, runs: 20, lastExitCode: 1, lastExitSignal: null, lastExitReason: null } }),
   T0,
 );
-check("verdict: ≥3 restarts in 15 min with exit≠0 = crash-loop", loop.state === "down" && codes(loop) === "crash-loop");
+check(`verdict: ≥3 restarts in ${CRASH_LOOP_WINDOW_MS / MIN} min with exit≠0 = crash-loop`, loop.state === "down" && codes(loop) === "crash-loop");
+check("verdict: restarts with exit 0 (self-reload after deploy) are not a crash loop", livenessVerdict(signals({ restarts: 3, launchd: { checked: true, loaded: true, state: "running", pid: 1, runs: 5, lastExitCode: 0, lastExitSignal: null, lastExitReason: null } }), T0).state === "ok");
+// R2: the 24/09 OOM aborts died by signal — launchctl showed no `last exit
+// code` line, only the signal, and the old rule required the exit code
+const signalLoop = livenessVerdict(
+  signals({
+    restarts: 4,
+    heartbeatAt: T0 - MIN,
+    launchd: { checked: true, loaded: true, state: "running", pid: 65884, runs: 66, lastExitCode: null, lastExitSignal: "Abort trap: 6", lastExitReason: null },
+  }),
+  T0,
+);
+check("verdict: signal death (no exit code line) + restarts = crash-loop", signalLoop.state === "down" && codes(signalLoop) === "crash-loop");
+check("verdict: the crash-loop detail names the signal", signalLoop.reasons[0]!.detail.includes("Abort trap: 6"));
+// R2b: the slow loop of 24/09 (one restart every ~14 min for 3h) — 12 restarts
+// with an exit code 1: the 15-min window never saw 3, the 60-min one does
+const slowLoop = livenessVerdict(
+  signals({ restarts: 5, heartbeatAt: T0 - MIN, launchd: { checked: true, loaded: true, state: "running", pid: 65886, runs: 40, lastExitCode: 1, lastExitSignal: null, lastExitReason: null } }),
+  T0,
+);
+check("verdict: 5 restarts in the hour with exit 1 = crash-loop (the slow loop of 24/09)", slowLoop.state === "down" && codes(slowLoop) === "crash-loop");
 check(
-  "verdict: restarts with exit 0 (self-reload after deploy) are not a crash loop",
-  livenessVerdict(signals({ restarts: 3, launchd: { checked: true, loaded: true, state: "running", pid: 1, runs: 5, lastExitCode: 0 } }), T0).state === "ok",
+  "verdict: restarts with an unknown exit and a fresh heartbeat stay quiet (idle-nap reason shape)",
+  livenessVerdict(signals({ restarts: 3, launchd: { checked: true, loaded: true, state: "running", pid: 29911, runs: 29, lastExitCode: null, lastExitSignal: null, lastExitReason: "JETSAM_REASON_MEMORY_IDLE_EXIT" } }), T0).state === "ok",
 );
 const heldSince = T0 - DISK_HOLD_ALERT_MS - MIN;
 const dh = livenessVerdict(signals({ diskHold: { since: heldSince, last: T0 - 5 * MIN, refusals: 12, detail: "disk low: 2.1gb free (need 5.0gb)", source: "deploy-guard" } }), T0);
@@ -264,6 +346,13 @@ check(
 const sm = livenessVerdict(signals({ supervisor: { session: "ses_gone1234", probe: "missing" } }), T0);
 check("verdict: configured supervisor session missing = degraded", sm.state === "degraded" && codes(sm) === "supervisor-missing");
 check("verdict: unknown supervisor probe never accuses", livenessVerdict(signals({ supervisor: { session: "ses_x1234", probe: "unknown" } }), T0).state === "ok");
+// R7 visibility: with 0 push subscribers the operator hears nothing — the
+// verdict says so (degraded), and the plan below must never page for it alone
+const zeroSubs = livenessVerdict(signals(), T0, { subscribers: 0, alerts: true });
+check("verdict: 0 push subscribers = degraded/no-push-subscribers", zeroSubs.state === "degraded" && codes(zeroSubs) === "no-push-subscribers");
+check("verdict: no-push-subscribers only with alerts on", livenessVerdict(signals(), T0, { subscribers: 0, alerts: false }).state === "ok");
+check("verdict: 0 subscribers rides along a real reason in fixed order", codes(livenessVerdict(signals({ deploy: { prodSha: PROD, undeployed: 16, oldestUndeployedAt: T0 - 7 * HOUR } }), T0, { subscribers: 0 })) === "deploy-lag,no-push-subscribers");
+check("verdict: the no-push-subscribers detail tells the operator to pair a phone", zeroSubs.reasons[0]!.detail.includes("pareie"));
 const combo = livenessVerdict(
   signals({
     pidAlive: false,
@@ -327,6 +416,15 @@ const early = planAlert(cu.next, DOWN, T0 + MIN + CATCH_UP_MS - MIN, { subscribe
 check("planner: catch-up waits a few minutes after the last attempt", early.message === null);
 const late = planAlert(cu.next, DOWN, T0 + MIN + CATCH_UP_MS, { subscribers: 1 });
 check("planner: a phone that subscribes mid-outage gets the page", late.message?.kind === "alert" && late.next.episode?.lastSubscribers === 1);
+// R7: the 0-subscriber verdict is visibility only — it never opens an episode
+// nor pages, and it must not block a real recovery either
+const NPS = livenessVerdict(signals(), T0, { subscribers: 0, alerts: true });
+check("planner: no-push-subscribers alone never opens an episode", planAlert(EMPTY_ALERT, NPS, T0, { subscribers: 0 }).message === null && planAlert(EMPTY_ALERT, NPS, T0, { subscribers: 0 }).next.episode === null);
+const npsSt = planAlert(planAlert(EMPTY_ALERT, NPS, T0, { subscribers: 0 }).next, NPS, T0 + HOUR, { subscribers: 0 });
+check("planner: no-push-subscribers alone never pages, ever", npsSt.message === null);
+const healthyWithNps = livenessVerdict(signals(), T0, { subscribers: 0, alerts: true });
+const recNps = planAlert(st, healthyWithNps, t + 3 * MIN, { subscribers: 0 });
+check("planner: a real recovery still fires when only no-push-subscribers remains", recNps.message?.kind === "recovery" && recNps.message.title.includes("de volta"));
 
 // ── persisted state ──────────────────────────────────────────────────────────
 check("state: garbage loads as empty", normalizeWatchFile("x").alert.episode === null && normalizeWatchFile({ alert: { episode: { code: "nope" } } }).alert.episode === null);
@@ -528,7 +626,7 @@ function world() {
   };
 }
 
-function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: number }) {
+function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: number }, opts: { probe?: () => "ok" | "missing" | "unknown"; alerts?: boolean } = {}) {
   const pages: Page[] = [];
   const audits: Array<{ event: string; data: Record<string, unknown> }> = [];
   const logs: Array<{ level: string; msg: string }> = [];
@@ -540,6 +638,7 @@ function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: n
     now: () => clock.t,
     platform: "darwin",
     uid: 501,
+    alerts: opts.alerts,
     push: async (title, body, data) => {
       pages.push({ title, body, tag: data.tag });
       return { delivered: subs.n, subscribers: subs.n };
@@ -547,7 +646,7 @@ function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: n
     subscribers: () => subs.n,
     probeSupervisor: async () => {
       probes++;
-      return "missing";
+      return opts.probe ? opts.probe() : "missing";
     },
     diskState: () => "ok",
     log: (level, msg) => logs.push({ level, msg }),
@@ -580,7 +679,7 @@ function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: n
   check("snapshot: notify backlog + supervisor state", snap.notify.pending === 100 && snap.notify.supervisor === "missing");
   check("snapshot: stale disk hold (3 days old) is reported but not a reason", snap.disk.hold?.refusals === 2 && !snap.reasons.some((r) => r.code === "disk-hold"));
   check("snapshot: alert episode with next reminder time", snap.alert.episode?.sent === 1 && snap.alert.episode.nextAt === clock.t + REMINDER_DOWN_MS[0]!);
-  check("snapshot: push subscribers", snap.push.subscribers === 1);
+  check("snapshot: push subscribers + reachability", snap.push.subscribers === 1 && snap.push.reachable === true);
 
   // daemon restart: a NEW watcher over the same persisted file must not re-page
   clock.t += 30 * MIN;
@@ -669,6 +768,7 @@ function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: n
   const a = watcher(w, clock, { n: 2 });
   const r1 = await a.watch.enqueue(item("deploy", "disk low: 2.1gb free"));
   check("fallback: first item pushes at once and reports the phones", r1.pushed && r1.phones === 2 && a.pages.length === 1);
+  check("fallback: the digest push carries its own tag (a digest never replaces a 🛑 page)", a.pages[0]!.tag === DIGEST_PUSH_TAG && a.pages[0]!.tag !== PILOT_PUSH_TAG);
   clock.t += MIN;
   const r2 = await a.watch.enqueue(item("P2-347", "merge failed"));
   check("fallback: second item inside the 10-min window is held", !r2.pushed && a.pages.length === 1);
@@ -678,6 +778,218 @@ function watcher(w: ReturnType<typeof world>, clock: { t: number }, subs: { n: n
   await a.watch.tick();
   check("fallback: the tick flushes the held item once the window passes", a.pages.length === 2 && a.pages[1]!.body.includes("P2-347"));
   check("fallback: pushes audited", a.audits.filter((x) => x.event === "pilot-notify-fallback").length === 2);
+}
+
+// ── R1: a healthy pilot inside a long judge gate must not page ──────────────
+{
+  // judgeGate runs the signed judge with a 30-min execFileSync budget; the
+  // 08–11/09 history had 25 gates hold the loop past 10 min (one for 17.9).
+  // The old 10-min threshold paged "Pilot parado" mid-gate and retracted it.
+  const w = world();
+  w.files.delete(join(P.stateDir, "pilot", "notify-pending.jsonl"));
+  w.files.delete(join(P.stateDir, "pilot", "events.jsonl"));
+  w.files.set(join(P.stateDir, "pilot.json"), JSON.stringify({ slots: 8 }));
+  w.files.set(join(P.stateDir, "pilot", "verified-merges.jsonl"), vm(PROD, "2026-09-23T14:37:24-03:00") + "\n");
+  w.files.set(join(P.stateDir, "prod", ".git", "refs", "heads", "main"), `${PROD}\n`);
+  const gateOutput = "\tstate = running\n\truns = 54\n\tpid = 65883\n\tlast exit code = (never exited)\n";
+  w.setLaunchctl({ code: 0, output: gateOutput });
+  w.alive.add(65883);
+  const clock = { t: T0 };
+  const a = watcher(w, clock, { n: 1 });
+  w.files.set(join(P.stateDir, "pilot", "heartbeat"), String(clock.t));
+  // the gate holds the loop: no heartbeat for 18 min
+  for (let i = 1; i <= 18; i++) {
+    clock.t += MIN;
+    await a.watch.tick();
+  }
+  check("watch R1: an 18-min gate with a live pid under launchd never pages", a.pages.length === 0, `pages=${JSON.stringify(a.pages)}`);
+  check("watch R1: the verdict stays ok through the gate", (await a.watch.current()).state === "ok");
+  // the gate ends, the loop beats again
+  clock.t += MIN;
+  w.files.set(join(P.stateDir, "pilot", "heartbeat"), String(clock.t));
+  await a.watch.tick();
+  check("watch R1: after the gate the pilot is healthy, no page ever went out", a.pages.length === 0);
+  // a REAL stall: heartbeat silent past the budget pages (after confirmation)
+  for (let i = 0; i <= STALL_SILENCE_MS / MIN; i++) {
+    clock.t += MIN;
+    await a.watch.tick();
+  }
+  clock.t += MIN;
+  await a.watch.tick();
+  check("watch R1: a real stall (silence past the judge budget) pages once", a.pages.length === 1 && a.pages[0]!.title === "🛑 Pilot parado" && /loop travou/.test(a.pages[0]!.body));
+}
+
+// ── R2: the 24/09 OOM crash-loop died by signal — no `last exit code` line ──
+{
+  const w = world();
+  w.files.delete(join(P.stateDir, "pilot", "events.jsonl"));
+  w.files.set(join(P.stateDir, "pilot.json"), JSON.stringify({ slots: 8 }));
+  w.files.set(join(P.stateDir, "pilot", "verified-merges.jsonl"), vm(PROD, "2026-09-23T14:37:24-03:00") + "\n");
+  w.files.set(join(P.stateDir, "prod", ".git", "refs", "heads", "main"), `${PROD}\n`);
+  const clock = { t: T0 };
+  const a = watcher(w, clock, { n: 1 });
+  let runs = 60;
+  const signalOutput = (r: number) => `\tstate = running\n\truns = ${r}\n\tpid = 65884\n\tlast terminating signal = Abort trap: 6\n`;
+  for (let i = 0; i < 6; i++) {
+    w.setLaunchctl({ code: 0, output: signalOutput(runs) });
+    w.alive.add(65884);
+    w.files.set(join(P.stateDir, "pilot", "heartbeat"), String(clock.t)); // each boot beats before dying again
+    clock.t += MIN;
+    runs += 1;
+    await a.watch.tick();
+  }
+  check("watch R2: a signal-death crash-loop (4 restarts, no exit-code line) pages", a.pages.some((p) => /einiciando em loop/.test(p.body) && /Abort trap: 6/.test(p.body)), JSON.stringify(a.pages));
+  check("watch R2: it is a 🛑 page (down)", a.pages[0]?.title === "🛑 Pilot parado");
+}
+
+// ── R2b: the slow loop of 24/09 (one restart every ~14 min for 3h) ──────────
+{
+  const w = world();
+  w.files.delete(join(P.stateDir, "pilot", "events.jsonl"));
+  w.files.set(join(P.stateDir, "pilot.json"), JSON.stringify({ slots: 8 }));
+  w.files.set(join(P.stateDir, "pilot", "verified-merges.jsonl"), vm(PROD, "2026-09-23T14:37:24-03:00") + "\n");
+  w.files.set(join(P.stateDir, "prod", ".git", "refs", "heads", "main"), `${PROD}\n`);
+  const clock = { t: T0 };
+  const a = watcher(w, clock, { n: 1 });
+  let runs = 40;
+  for (let i = 0; i < 55; i++) {
+    const r = 40 + Math.floor((i * MIN) / (14 * MIN));
+    if (r !== runs) {
+      runs = r;
+      w.alive.delete(65886);
+      w.alive.add(65886);
+    }
+    w.setLaunchctl({ code: 0, output: `\tstate = running\n\truns = ${r}\n\tpid = 65886\n\tlast exit code = 1\n` });
+    w.files.set(join(P.stateDir, "pilot", "heartbeat"), String(clock.t));
+    clock.t += MIN;
+    await a.watch.tick();
+  }
+  check("watch R2b: the slow crash-loop (5 restarts in the hour) pages — the 15-min window never saw it", a.pages.some((p) => /einiciando em loop/.test(p.body)), JSON.stringify(a.pages.map((p) => p.title)));
+}
+
+// ── R3: the supervisor probe flap must not fabricate a recovery ─────────────
+{
+  const w = world();
+  w.files.delete(join(P.stateDir, "pilot", "notify-pending.jsonl"));
+  w.files.delete(join(P.stateDir, "pilot", "events.jsonl"));
+  w.files.set(join(P.stateDir, "pilot", "verified-merges.jsonl"), vm(PROD, "2026-09-23T14:37:24-03:00") + "\n");
+  w.files.set(join(P.stateDir, "prod", ".git", "refs", "heads", "main"), `${PROD}\n`);
+  w.setLaunchctl({ code: 0, output: "\tstate = running\n\truns = 54\n\tpid = 65883\n\tlast exit code = (never exited)\n" });
+  w.alive.add(65883);
+  const clock = { t: T0 };
+  const seq = ["missing", "unknown", "ok", "ok"] as const;
+  let pi = 0;
+  const a = watcher(w, clock, { n: 1 }, { probe: () => seq[Math.min(pi++, seq.length - 1)]! });
+  const beat = async () => {
+    w.files.set(join(P.stateDir, "pilot", "heartbeat"), String(clock.t));
+    await a.watch.tick();
+  };
+  await beat(); // probe 1 = missing
+  clock.t += MIN;
+  await beat(); // probe cached → confirmed → ⚠️
+  check("watch R3: the missing supervisor pages once (⚠️)", a.pages.length === 1 && a.pages[0]!.title === "⚠️ Pilot precisa de atenção", JSON.stringify(a.pages));
+  clock.t += 9 * MIN;
+  await beat(); // probe 2 = unknown → the last definitive verdict must hold
+  check("watch R3: an unknown probe does not close the episode (no fake recovery)", a.pages.length === 1 && (await a.watch.current()).state === "degraded");
+  clock.t += 10 * MIN;
+  await beat(); // probe 3 = ok #1 → still closing, no recovery yet
+  check("watch R3: one healthy probe after missing is not enough", a.pages.length === 1 && (await a.watch.current()).state === "degraded");
+  clock.t += 10 * MIN;
+  await beat(); // probe 4 = ok #2 → recovery
+  check("watch R3: two consecutive healthy probes close it with one ✅", a.pages.length === 2 && a.pages[1]!.title === "✅ Pilot de volta ao normal", JSON.stringify(a.pages.map((p) => p.title)));
+  clock.t += MIN;
+  await beat();
+  check("watch R3: healthy afterwards stays silent", a.pages.length === 2 && (await a.watch.current()).state === "ok");
+}
+
+// ── R4: the pid file is not the witness (PIDs recycle) ──────────────────────
+{
+  // R4a: exit 113 (not loaded) + pilot.pid recycled to a foreign process +
+  // stale heartbeat → unloaded, never a stall pointing at a stranger's pid
+  const w = world();
+  w.alive.add(35139); // a foreign process owns the recycled pid now
+  w.files.set(join(P.stateDir, "pilot.json"), JSON.stringify({ slots: 8 })); // no supervisor noise
+  const clock = { t: T0 };
+  const a = watcher(w, clock, { n: 1 });
+  await a.watch.tick();
+  clock.t += MIN;
+  await a.watch.tick();
+  const snap = await a.watch.current();
+  check("watch R4a: recycled pid + not loaded + stale heartbeat = down/unloaded", snap.state === "down" && snap.reasons[0]?.code === "unloaded");
+  check("watch R4a: the page never claims a foreign pid is the pilot's loop", !a.pages.some((p) => /pid 35139/.test(p.body)), JSON.stringify(a.pages));
+  // R4b: same, but the heartbeat is fresh — reads as a deliberate manual run
+  const w2 = world();
+  w2.alive.add(35139);
+  w2.files.set(join(P.stateDir, "pilot.json"), JSON.stringify({ slots: 8 }));
+  w2.files.set(join(P.stateDir, "pilot", "verified-merges.jsonl"), vm(PROD, "2026-09-23T14:37:24-03:00") + "\n");
+  w2.files.set(join(P.stateDir, "prod", ".git", "refs", "heads", "main"), `${PROD}\n`);
+  const clock2 = { t: T0 };
+  w2.files.set(join(P.stateDir, "pilot", "heartbeat"), String(clock2.t));
+  const b = watcher(w2, clock2, { n: 1 });
+  await b.watch.tick();
+  check("watch R4b: fresh heartbeat while launchd says not loaded = manual run, no page", (await b.watch.current()).state === "ok" && b.pages.length === 0);
+  // R4c: launchd loaded → the launchd pid is the pilot's, not the pid file's
+  const w3 = world();
+  w3.setLaunchctl({ code: 0, output: "\tstate = running\n\truns = 54\n\tpid = 65883\n\tlast exit code = (never exited)\n" });
+  w3.alive.add(65883);
+  w3.files.set(join(P.stateDir, "pilot", "heartbeat"), String(T0));
+  const clock3 = { t: T0 };
+  const c = watcher(w3, clock3, { n: 1 });
+  await c.watch.tick();
+  const snap3 = await c.watch.current();
+  check("watch R4c: a loaded job reports the launchd pid, not the stale pid file", snap3.process.pid === 65883 && snap3.process.alive === true, JSON.stringify(snap3.process));
+}
+
+// ── R7: with 0 phones the digest must not throw the message away ────────────
+{
+  const w = world();
+  w.files.set(join(P.stateDir, "pilot.lock"), ""); // keep liveness quiet for this beat
+  const clock = { t: T0 };
+  const subs = { n: 0 };
+  const a = watcher(w, clock, subs);
+  const r = await a.watch.enqueue(item("deploy", "disk low: 2.1gb free"));
+  check("fallback R7: 0 phones → no ownership claim on delivery, item queued", r.pushed === false && r.phones === 0);
+  check("fallback R7: with 0 phones the digest does not push (the message waits)", !a.pages.some((p) => p.tag === DIGEST_PUSH_TAG));
+  check("fallback R7: the digest keeps the item (dropping it would lose the message)", (w.files.get(join(P.stateDir, "pilotwatch.json")) ?? "").includes('"entries":[{"key":"deploy|'));
+  clock.t += DIGEST_MIN_INTERVAL_MS + MIN;
+  subs.n = 1;
+  await a.watch.tick();
+  check("fallback R7: a phone subscribing later still gets the digest", a.pages.some((p) => p.tag === DIGEST_PUSH_TAG && /disk low/.test(p.body)), JSON.stringify(a.pages));
+}
+{
+  // R7 visibility on a healthy pilot: 0 phones = degraded with the reason,
+  // never a page of its own
+  const w = world();
+  w.files.delete(join(P.stateDir, "pilot", "notify-pending.jsonl"));
+  w.files.delete(join(P.stateDir, "pilot", "events.jsonl"));
+  w.files.set(join(P.stateDir, "pilot.json"), JSON.stringify({ slots: 8 }));
+  w.files.set(join(P.stateDir, "pilot", "verified-merges.jsonl"), vm(PROD, "2026-09-23T14:37:24-03:00") + "\n");
+  w.files.set(join(P.stateDir, "prod", ".git", "refs", "heads", "main"), `${PROD}\n`);
+  w.setLaunchctl({ code: 0, output: "\tstate = running\n\truns = 54\n\tpid = 65883\n\tlast exit code = (never exited)\n" });
+  w.alive.add(65883);
+  w.files.set(join(P.stateDir, "pilot", "heartbeat"), String(T0));
+  const clock = { t: T0 };
+  const a = watcher(w, clock, { n: 0 });
+  await a.watch.tick();
+  const snap = await a.watch.current();
+  check("fallback R7: a healthy pilot with 0 phones is degraded with the reason", snap.state === "degraded" && snap.reasons[0]?.code === "no-push-subscribers" && snap.push.reachable === false, JSON.stringify(snap.reasons));
+  check("fallback R7: no episode opened for it", snap.alert.episode === null && a.pages.length === 0);
+}
+
+// ── R8: OCR_PILOTWATCH=off disables every push, the digest flush included ───
+{
+  const w = world();
+  w.files.set(join(P.stateDir, "pilot.lock"), ""); // keep liveness quiet for this beat
+  const clock = { t: T0 };
+  const a = watcher(w, clock, { n: 1 }, { alerts: false });
+  const r = await a.watch.enqueue(item("deploy", "disk low: 2.1gb free"));
+  check("watch R8: with alerts off nothing is pushed (the doc contract)", r.pushed === false && a.pages.length === 0);
+  clock.t += DIGEST_MIN_INTERVAL_MS + MIN;
+  await a.watch.tick();
+  check("watch R8: the tick does not flush the digest either", a.pages.length === 0);
+  check("watch R8: the item stays queued for when alerts come back", (w.files.get(join(P.stateDir, "pilotwatch.json")) ?? "").includes('"entries":[{"key":"deploy|'));
+  const snap = await a.watch.current();
+  check("watch R8: with alerts off there is no no-push-subscribers noise", !snap.reasons.some((x) => x.code === "no-push-subscribers") && snap.alerts === false);
 }
 
 // ── the phone side: the real service worker push handler (vm sandbox) ──────

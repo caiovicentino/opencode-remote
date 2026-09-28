@@ -37,11 +37,24 @@ export const PILOTWATCH_INTERVAL_MS = 60_000;
 export const PILOTWATCH_INITIAL_DELAY_MS = 30_000;
 /** The pilot touches its heartbeat every loop turn and every 60s during long
  * awaits, and its own watchdog exits after 3 min of silence (KeepAlive then
- * restarts it in ~30s) — 10 min of silence means nothing is beating. */
+ * restarts it in ~30s) — but the pilot also blocks its OWN loop on purpose:
+ * the judge gate runs as one synchronous execFileSync with a 30-min budget
+ * (apps/pilot/src/judge.ts) and deploy/builder steps spawnSync for up to
+ * ~15 min each. A heartbeat silence inside that budget with a live process
+ * under a running launchd job is a working pilot, not a stall (10/09:
+ * pilot.log held 25 gates open past 10 min, one for 17.9 min; the old 10-min
+ * threshold paged "Pilot parado" mid-gate and retracted it minutes later). */
 export const HEARTBEAT_STALE_MS = 10 * 60_000;
+/** Silence past this (with a live pid + launchd running) is a real stall: the
+ * judge budget plus slack for the post-gate housekeeping. Pid dead/no
+ * heartbeat stay on HEARTBEAT_STALE_MS — those never block the loop. */
+export const STALL_SILENCE_MS = 40 * 60_000;
 /** launchd restarts within the window that make a crash loop. */
 export const CRASH_LOOP_RESTARTS = 3;
-export const CRASH_LOOP_WINDOW_MS = 15 * 60_000;
+/** The 24/09 OOM loop restarted every ~14 min for 3h — a 15-min window saw
+ * only 1-2 restarts and stayed silent; 60 min catches both that pace and the
+ * 4-restarts-in-8-min burst. */
+export const CRASH_LOOP_WINDOW_MS = 60 * 60_000;
 /** Deploys held by the disk guard for this long page the operator… */
 export const DISK_HOLD_ALERT_MS = 60 * 60_000;
 /** …while the newest refusal is at most this old (older = hold is over). */
@@ -65,6 +78,10 @@ export const CATCH_UP_MS = 5 * 60_000;
 export const SNAPSHOT_MAX_AGE_MS = 15_000;
 /** Web Push tag the service worker uses for pilot pages (own slot + renotify). */
 export const PILOT_PUSH_TAG = "ocr-pilot";
+/** Own tag for the phone digest (routine relay copies): a "📮 Pilot: …" digest
+ * must never replace a 🛑/⚠️ page in the notification center (same bug class
+ * the sw.js fix closed for routine agent pushes). */
+export const DIGEST_PUSH_TAG = "ocr-pilot-digest";
 
 export type LivenessState = "ok" | "degraded" | "down" | "paused" | "absent";
 export type ReasonCode =
@@ -75,7 +92,8 @@ export type ReasonCode =
   | "no-heartbeat"
   | "disk-hold"
   | "deploy-lag"
-  | "supervisor-missing";
+  | "supervisor-missing"
+  | "no-push-subscribers";
 export type Severity = 1 | 2;
 export type SupervisorProbe = "ok" | "missing" | "unknown";
 
@@ -88,6 +106,7 @@ const REASON_ORDER: ReasonCode[] = [
   "disk-hold",
   "deploy-lag",
   "supervisor-missing",
+  "no-push-subscribers",
 ];
 
 /** Short pt-BR label per reason (reminders, recovery, audit). */
@@ -100,6 +119,7 @@ export const REASON_LABEL: Record<ReasonCode, string> = {
   "disk-hold": "deploy segurado pelo disco",
   "deploy-lag": "deploy atrasado",
   "supervisor-missing": "supervisor inacessível",
+  "no-push-subscribers": "nenhum telefone no push",
 };
 
 export interface LaunchdFacts {
@@ -110,6 +130,13 @@ export interface LaunchdFacts {
   pid: number | null;
   runs: number | null;
   lastExitCode: number | null;
+  /** "Abort trap: 6" — the job died from a signal; launchctl prints no
+   * `last exit code` line in that shape (the 24/09 OOM aborts did exactly
+   * this, and the old parser read only the exit code and stayed silent). */
+  lastExitSignal: string | null;
+  /** launchd's own exit reason ("JETSAM_REASON_MEMORY_IDLE_EXIT"…). Present
+   * even while the job is running again — only a non-idle reason is a crash. */
+  lastExitReason: string | null;
 }
 
 export interface DiskHold {
@@ -156,9 +183,31 @@ export const UNCHECKED_LAUNCHD: LaunchdFacts = {
   pid: null,
   runs: null,
   lastExitCode: null,
+  lastExitSignal: null,
+  lastExitReason: null,
 };
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
+
+/** Was the last launchd exit abnormal? An exit code says it itself; a signal
+ * or a non-idle exit reason is a crash; an idle-exit reason is a clean nap;
+ * no exit lines at all = null (unknown — the caller falls back to the
+ * heartbeat). */
+export function abnormalLaunchdExit(l: LaunchdFacts): boolean | null {
+  if (l.lastExitCode !== null) return l.lastExitCode !== 0;
+  if (l.lastExitSignal !== null) return true;
+  if (l.lastExitReason !== null) return !/idle/i.test(l.lastExitReason);
+  return null;
+}
+
+/** Strip control characters and bidi overrides from untrusted detail text
+ * before it travels inside a bounded push body. */
+export function sanitizeDetail(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029\ufeff]/g, "")
+    .trim();
+}
 
 /** "4 min", "2h 05min", "3d 4h" — never negative, minimum "1 min". */
 export function fmtDuration(ms: number): string {
@@ -196,6 +245,8 @@ export function parseLaunchctlPrint(code: number | null, output: string): Launch
     pid: num(top("pid")),
     runs: num(top("runs")),
     lastExitCode: num(top("last exit code")),
+    lastExitSignal: top("last terminating signal"),
+    lastExitReason: top("last exit reason"),
   };
 }
 
@@ -281,12 +332,22 @@ export function deployLagFrom(
 }
 
 /**
+ * Extra context for the verdict that does not come from the pilot's files:
+ * push reachability (0 subscribers = alerts reach nobody — degraded
+ * visibility, never a page of its own) and whether alerts are on at all.
+ */
+export interface VerdictCtx {
+  subscribers?: number;
+  alerts?: boolean;
+}
+
+/**
  * The liveness verdict for one set of signals. Down reasons need the process
  * to be gone or silent; degraded reasons only apply to a pilot that is
  * otherwise beating OR add context to a down one. Paused (pilot.lock, the
  * pilot's own freeze switch) and absent (no pilot on this host) never alert.
  */
-export function livenessVerdict(s: PilotSignals, now: number): LivenessVerdict {
+export function livenessVerdict(s: PilotSignals, now: number, ctx: VerdictCtx = {}): LivenessVerdict {
   const hbAge = s.heartbeatAt === null ? null : Math.max(0, now - s.heartbeatAt);
   if (!s.installed) return { state: "absent", reasons: [], heartbeatAgeMs: hbAge };
   if (s.paused) return { state: "paused", reasons: [], heartbeatAgeMs: hbAge };
@@ -295,33 +356,60 @@ export function livenessVerdict(s: PilotSignals, now: number): LivenessVerdict {
   const alive = s.pidAlive === true;
   const stale = hbAge === null || hbAge > HEARTBEAT_STALE_MS;
   const hbText = hbAge === null ? "nenhum heartbeat registrado" : `último heartbeat há ${fmtDuration(hbAge)}`;
-  if (s.launchd.checked && s.launchd.loaded === false && !alive) {
+  const notLoaded = s.launchd.checked && s.launchd.loaded === false;
+  const launchdRunning = s.launchd.checked && s.launchd.loaded === true && s.launchd.state === "running";
+  const hbFresh = hbAge !== null && hbAge <= HEARTBEAT_STALE_MS;
+  // A deliberate manual run: launchd says "not loaded" (or was never probed)
+  // but the pid is alive and the heartbeat is fresh — the owner started the
+  // pilot by hand, nothing pages. A fresh heartbeat with a DEAD pid is not a
+  // manual run (27/09 12:05: someone else rewrote the heartbeat while the
+  // pilot was out of launchd) — the heartbeat is not a witness on its own.
+  const manualRun = hbFresh && alive && !launchdRunning;
+  if (notLoaded && !manualRun) {
+    // The pid file is NEVER the witness here: PIDs recycle on macOS (27/09:
+    // processes born at 13:31 got 30653–32121 while pilot.pid still read
+    // 35139) and another process even rewrote the heartbeat while the pilot
+    // was out of launchd.
     add(
       "unloaded",
       2,
       `com.ocr.pilot não está carregado no launchd — o KeepAlive não vai religar o pilot sozinho (${hbText}).`,
     );
   } else if (stale) {
-    if (alive) add("stalled", 2, `processo vivo (pid ${s.pid}) mas sem heartbeat — ${hbText}; o loop travou.`);
-    else if (hbAge === null) add("no-heartbeat", 2, "o pilot está instalado mas nunca registrou heartbeat nesta máquina.");
-    else add("dead", 2, `o processo do pilot${s.pid ? ` (pid ${s.pid})` : ""} não está rodando — ${hbText}.`);
+    // Inside the judge/deploy budget a live pid under a running launchd job is
+    // a pilot at work (the gate blocks its own loop on purpose); past the
+    // budget — or without launchd running — silence is a stall.
+    const withinBudget = launchdRunning && hbAge !== null && hbAge <= STALL_SILENCE_MS;
+    if (alive && !withinBudget) {
+      add("stalled", 2, `processo vivo (pid ${s.pid}) mas sem heartbeat — ${hbText}; o loop travou.`);
+    } else if (!alive && hbAge === null) {
+      add("no-heartbeat", 2, "o pilot está instalado mas nunca registrou heartbeat nesta máquina.");
+    } else if (!alive) {
+      add("dead", 2, `o processo do pilot${s.pid ? ` (pid ${s.pid})` : ""} não está rodando — ${hbText}.`);
+    }
   }
+  const abnormal = abnormalLaunchdExit(s.launchd);
   if (
     s.restarts !== null &&
     s.restarts >= CRASH_LOOP_RESTARTS &&
-    (s.launchd.lastExitCode !== null ? s.launchd.lastExitCode !== 0 : stale)
+    (abnormal === true || (abnormal === null && stale))
   ) {
+    const why =
+      abnormal === true
+        ? s.launchd.lastExitCode !== null
+          ? ` (último exit code ${s.launchd.lastExitCode})`
+          : ` (último sinal ${sanitizeDetail(s.launchd.lastExitSignal ?? s.launchd.lastExitReason ?? "").slice(0, 60)})`
+        : "";
     add(
       "crash-loop",
       2,
-      `reiniciando em loop — ${s.restarts} reinícios em ${fmtDuration(CRASH_LOOP_WINDOW_MS)}` +
-        `${s.launchd.lastExitCode !== null ? ` (último exit code ${s.launchd.lastExitCode})` : ""}.`,
+      `reiniciando em loop — ${s.restarts} reinícios em ${fmtDuration(CRASH_LOOP_WINDOW_MS)}${why}.`,
     );
   }
   const hold = s.diskHold;
   const holdFreshMs = hold?.source === "pilot-hold" ? DISK_HOLD_EXPLICIT_FRESH_MS : DISK_HOLD_FRESH_MS;
   if (hold && now - hold.last <= holdFreshMs && now - hold.since >= DISK_HOLD_ALERT_MS) {
-    const why = hold.detail ? `: ${hold.detail.slice(0, 120)}` : "";
+    const why = hold.detail ? `: ${sanitizeDetail(hold.detail).slice(0, 120)}` : "";
     add(
       "disk-hold",
       1,
@@ -344,6 +432,13 @@ export function livenessVerdict(s: PilotSignals, now: number): LivenessVerdict {
       "supervisor-missing",
       1,
       "a sessão do supervisor configurada em pilot.json não existe mais no opencode — os avisos do pilot seguem só pelo telefone.",
+    );
+  }
+  if ((ctx.alerts ?? true) && ctx.subscribers === 0) {
+    add(
+      "no-push-subscribers",
+      1,
+      "nenhum telefone inscrito no push — os alertas não chegam a ninguém; pareie um telefone no app.",
     );
   }
   reasons.sort((a, b) => b.severity - a.severity || REASON_ORDER.indexOf(a.code) - REASON_ORDER.indexOf(b.code));
@@ -424,7 +519,10 @@ export function planAlert(
   now: number,
   ctx: { subscribers: number },
 ): { next: AlertState; message: AlertMessage | null } {
-  const primary = v.reasons[0];
+  // no-push-subscribers is visibility, not an outage: it never opens,
+  // escalates or sustains an episode (and therefore never pages) — it only
+  // shows up in the snapshot so the UI can say alerts reach nobody.
+  const primary = v.reasons.find((r) => r.code !== "no-push-subscribers");
   if (v.state === "paused" || v.state === "absent") return { next: EMPTY_ALERT, message: null };
   if (v.state === "ok" || !primary) {
     const ep = prev.episode;
@@ -685,7 +783,8 @@ export interface LivenessSnapshot {
   disk: { hold: DiskHold | null; daemon: string | null };
   deploy: { prodSha: string | null; undeployed: number | null; oldestUndeployedAt: number | null };
   notify: { pending: number; oldestPendingAt: number | null; lastDeliveredAt: number | null; supervisor: SupervisorProbe | "unset" };
-  push: { subscribers: number };
+  /** reachable = at least one phone would receive a push right now. */
+  push: { subscribers: number; reachable: boolean };
   alerts: boolean;
   alert: {
     episode: {
@@ -727,10 +826,51 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
   let mem: WatchFile = normalizeWatchFile(null);
   let saveWarned = false;
   const runsSamples: Array<{ at: number; runs: number }> = [];
-  let supervisor: { session: string | null; probe: SupervisorProbe; at: number } = { session: null, probe: "unknown", at: 0 };
+  let supervisor: {
+    session: string | null;
+    probe: SupervisorProbe;
+    at: number;
+    /** Last definitive probe verdict (ok/missing); "unknown" answers keep it. */
+    definitive: SupervisorProbe | null;
+    /** Consecutive healthy observations (probe or a delivered relay). */
+    healthyStreak: number;
+  } = { session: null, probe: "unknown", at: 0, definitive: null, healthyStreak: 0 };
   let lastState: LivenessState | null = null;
   let cached: LivenessSnapshot | null = null;
   let lock: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Hysteresis for the supervisor probe: an "unknown" answer (opencode
+   * timeout/restart — 64 "health flipped" episodes in ~25 days on this host)
+   * keeps the last definitive verdict instead of fabricating a recovery, and
+   * leaving "missing" takes two consecutive healthy observations. A delivered
+   * relay (strong evidence the session exists) settles it at once.
+   */
+  const applyProbe = (probe: SupervisorProbe, strong: boolean): SupervisorProbe => {
+    if (probe === "ok") {
+      if (strong) {
+        supervisor.definitive = "ok";
+        supervisor.healthyStreak = 1;
+        return "ok";
+      }
+      supervisor.healthyStreak++;
+      if (supervisor.definitive === "missing") {
+        if (supervisor.healthyStreak >= 2) {
+          supervisor.definitive = "ok";
+          return "ok";
+        }
+        return "missing";
+      }
+      supervisor.definitive = "ok";
+      return "ok";
+    }
+    supervisor.healthyStreak = 0;
+    if (probe === "missing") {
+      supervisor.definitive = "missing";
+      return "missing";
+    }
+    return supervisor.definitive ?? "unknown";
+  };
 
   const serial = <T>(fn: () => Promise<T>): Promise<T> => {
     const run = lock.then(fn, fn);
@@ -770,12 +910,24 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
     const hbFile = join(pilotDir, "heartbeat");
     const heartbeatAt = positiveNumber(io.readText(hbFile)) ?? io.mtimeMs(hbFile);
     const pidRaw = positiveNumber(io.readText(join(pilotDir, "pilot.pid")));
-    const pid = pidRaw !== null && Number.isInteger(pidRaw) ? pidRaw : null;
-    const pidAlive = pid === null ? null : io.pidAlive(pid);
+    let pid = pidRaw !== null && Number.isInteger(pidRaw) ? pidRaw : null;
+    let pidAlive: boolean | null = pid === null ? null : io.pidAlive(pid);
     let launchd = UNCHECKED_LAUNCHD;
     if (installed && platform === "darwin" && uid !== null && io.exists(plist)) {
       const r = await io.launchctl(["print", `gui/${uid}/${PILOT_LAUNCHD_LABEL}`]);
       launchd = r ? parseLaunchctlPrint(r.code, r.output) : UNCHECKED_LAUNCHD;
+    }
+    if (launchd.loaded === true) {
+      // The pid file is stale the moment launchd restarts the job and macOS
+      // recycles PIDs — only the pid launchd itself reports is the pilot's.
+      // A job that is loaded but has no pid yet (spawn gap) is never an
+      // accusation: liveness stays unknown until the next tick.
+      if (launchd.pid !== null) {
+        pid = launchd.pid;
+        pidAlive = io.pidAlive(launchd.pid);
+      } else {
+        pidAlive = null;
+      }
     }
     if (launchd.runs !== null) {
       runsSamples.push({ at, runs: launchd.runs });
@@ -787,10 +939,12 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
       const cfg = JSON.parse(io.readText(join(paths.stateDir, "pilot.json")) ?? "{}") as { supervisorSession?: unknown };
       session = typeof cfg.supervisorSession === "string" && cfg.supervisorSession.trim() ? cfg.supervisorSession.trim() : null;
     } catch {}
-    if (session !== supervisor.session) supervisor = { session, probe: "unknown", at: 0 };
+    if (session !== supervisor.session) {
+      supervisor = { session, probe: "unknown", at: 0, definitive: null, healthyStreak: 0 };
+    }
     if (installed && session && deps.probeSupervisor && at - supervisor.at >= SUPERVISOR_PROBE_MS) {
       const probe = await deps.probeSupervisor(session).catch(() => "unknown" as const);
-      supervisor = { session, probe, at };
+      supervisor = { session, probe: applyProbe(probe, false), at, definitive: supervisor.definitive, healthyStreak: supervisor.healthyStreak };
     }
     const pending = lines(io.readText(join(pilotDir, "notify-pending.jsonl")));
     let oldestPendingAt: number | null = null;
@@ -818,7 +972,7 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
       },
       supervisor: { session, probe: session ? supervisor.probe : "unset" },
     };
-    return { signals, verdict: livenessVerdict(signals, at), at };
+    return { signals, verdict: livenessVerdict(signals, at, { subscribers: deps.subscribers(), alerts }), at };
   };
 
   const snapshotOf = (signals: PilotSignals, verdict: LivenessVerdict, at: number, state: WatchFile): LivenessSnapshot => {
@@ -834,7 +988,7 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
       disk: { hold: signals.diskHold, daemon: deps.diskState?.() ?? null },
       deploy: signals.deploy,
       notify: { ...signals.notify, supervisor: signals.supervisor.probe },
-      push: { subscribers: deps.subscribers() },
+      push: { subscribers: deps.subscribers(), reachable: deps.subscribers() > 0 },
       alerts,
       alert: {
         episode: ep
@@ -852,9 +1006,9 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
     };
   };
 
-  const sendPush = async (title: string, body: string): Promise<PushOutcome> => {
+  const sendPush = async (title: string, body: string, tag: string): Promise<PushOutcome> => {
     try {
-      return await deps.push(title, body, { url: "#/", tag: PILOT_PUSH_TAG });
+      return await deps.push(title, body, { url: "#/", tag });
     } catch (err) {
       log("warn", "pilotwatch push failed", { error: String(err).slice(0, 160) });
       return { delivered: 0, subscribers: deps.subscribers() };
@@ -865,11 +1019,25 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
   const flushDigest = async (state: WatchFile, at: number): Promise<{ state: WatchFile; pushed: boolean }> => {
     const plan = digestPlan(state.digest, at);
     if (!plan) return { state, pushed: false };
-    const res = await sendPush(plan.title, plan.body);
+    if (deps.subscribers() === 0) {
+      // 0 phones: nothing can be delivered — the keys stay queued (TTL-bounded)
+      // so a phone that subscribes later still gets them, and no attempt is
+      // burned: the next flush after a phone subscribes goes out at once.
+      log("warn", "pilot notify fallback reached no phone (0 push subscriptions)", { keys: plan.keys.length });
+      audit("pilot-notify-fallback", { keys: plan.keys.length, delivered: 0, subscribers: 0 });
+      return { state, pushed: false };
+    }
+    const res = await sendPush(plan.title, plan.body, DIGEST_PUSH_TAG);
     audit("pilot-notify-fallback", { keys: plan.keys.length, delivered: res.delivered, subscribers: res.subscribers });
-    if (res.subscribers === 0) log("warn", "pilot notify fallback reached no phone (0 push subscriptions)", { keys: plan.keys.length });
-    else log("info", "pilot notify fallback pushed", { keys: plan.keys.length, delivered: res.delivered });
-    return { state: { ...state, digest: digestMarkSent(state.digest, plan.keys, at) }, pushed: res.delivered > 0 };
+    if (res.delivered === 0) {
+      // The push service refused every endpoint: same rule — the keys stay
+      // queued and the rate window still applies so a dead service is not
+      // hammered; ownership is only spent when the message actually lands.
+      log("warn", "pilot notify fallback reached no phone (0 delivered)", { keys: plan.keys.length, subscribers: res.subscribers });
+      return { state: { ...state, digest: { ...state.digest, lastPushAt: at } }, pushed: false };
+    }
+    log("info", "pilot notify fallback pushed", { keys: plan.keys.length, delivered: res.delivered });
+    return { state: { ...state, digest: digestMarkSent(state.digest, plan.keys, at) }, pushed: true };
   };
 
   const tick = async (): Promise<void> => {
@@ -894,7 +1062,7 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
         state = { ...state, alert: planned.next };
         const msg = planned.message;
         if (msg) {
-          const res = await sendPush(msg.title, msg.body);
+          const res = await sendPush(msg.title, msg.body, PILOT_PUSH_TAG);
           if (state.alert.episode) {
             state = {
               ...state,
@@ -926,7 +1094,9 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
           log("info", "pilot liveness episode closed without page", { state: verdict.state });
         }
       }
-      const flushed = await flushDigest(state, at);
+      // OCR_PILOTWATCH=off disables every push, the digest flush included
+      // (the doc contract); items stay queued for when it is turned back on.
+      const flushed = alerts ? await flushDigest(state, at) : { state, pushed: false };
       state = flushed.state;
       if (JSON.stringify(state) !== before) save(state);
       cached = snapshotOf(signals, verdict, at, state);
@@ -946,14 +1116,19 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
         const at = now();
         let state = load();
         state = { ...state, digest: digestAdd(state.digest, item, at) };
+        if (!alerts) {
+          save(state);
+          return { pushed: false, phones: deps.subscribers() };
+        }
         const flushed = await flushDigest(state, at);
         save(flushed.state);
         return { pushed: flushed.pushed, phones: deps.subscribers() };
       });
     },
     noteRelay(reason, delivered) {
-      if (delivered) supervisor = { ...supervisor, probe: "ok", at: now() };
-      else if (reason === "session-not-found") supervisor = { ...supervisor, probe: "missing", at: now() };
+      // applyProbe mutates before the spread below, so resolve the probe first
+      const probe = delivered ? applyProbe("ok", true) : reason === "session-not-found" ? applyProbe("missing", true) : supervisor.probe;
+      if (delivered || reason === "session-not-found") supervisor = { ...supervisor, probe, at: now() };
     },
     start() {
       const intervalMs = deps.intervalMs ?? PILOTWATCH_INTERVAL_MS;
@@ -976,11 +1151,12 @@ export function createPilotWatch(deps: PilotWatchDeps): PilotWatch {
 }
 
 /**
- * Env knobs, default-safe: OCR_PILOTWATCH=off disables pages (the read API
- * stays), =on forces the pilot as installed; OCR_PILOTWATCH_INTERVAL_MS /
- * OCR_PILOTWATCH_INITIAL_DELAY_MS tune the tick (tests). An invalid value
- * falls back to the default with a problem line — never a boot failure: a
- * daemon that refuses to boot would silence every alert it exists to send.
+ * Env knobs, default-safe: OCR_PILOTWATCH=off disables every push (pages and
+ * the phone-digest flush; the read API stays), =on forces the pilot as
+ * installed; OCR_PILOTWATCH_INTERVAL_MS / OCR_PILOTWATCH_INITIAL_DELAY_MS tune
+ * the tick (tests). An invalid value falls back to the default with a problem
+ * line — never a boot failure: a daemon that refuses to boot would silence
+ * every alert it exists to send.
  */
 export function parsePilotWatchEnv(env: NodeJS.ProcessEnv): {
   alerts: boolean;

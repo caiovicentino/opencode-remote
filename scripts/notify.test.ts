@@ -205,6 +205,20 @@ function pendingLines(dir: string): string[] {
   const healDeps = depsFor(dir, heal.transport);
   await notifySupervisor("HEAL", true, "back", healDeps.deps);
   check("recovery drains the refusals", pendingLines(dir).length === 0 && pushes.length === 1);
+  // the dominant failure is ONE repeated (task, kind): with the dedupe its
+  // freshCount stays 1 forever, so the folded count must reach the threshold
+  {
+    const dir2 = mkDir(true);
+    const { transport } = transportOf("socket");
+    const { deps, pushes: samePushes } = depsFor(dir2, transport);
+    for (let i = 0; i < NOTIFY_DIGEST_THRESHOLD; i++) {
+      await notifySupervisor("deploy", false, `disk low: 2.1gb free (attempt ${i})`, deps);
+    }
+    check(`push digest fires for the ${NOTIFY_DIGEST_THRESHOLD}th repeat of the same (task, kind)`, samePushes.length === 1, `pushes=${samePushes.length}`);
+    check("the repeated-failure digest names the task and the fold count", samePushes.length === 1 && samePushes[0].body.includes("deploy") && samePushes[0].body.includes("×3"));
+    const fourth = await notifySupervisor("deploy", false, "disk low: 2.1gb free (again)", deps);
+    check("a 4th repeat stays quiet (one digest copy per episode)", fourth === false && samePushes.length === 1);
+  }
 }
 
 // ── 6. cap: the pending file never exceeds NOTIFY_PENDING_MAX lines ────────
@@ -459,9 +473,9 @@ function mkDtempNoSession(): string {
   const open = text.indexOf("```text");
   const close = text.lastIndexOf("```");
   check("fence: the detail sits in one fenced block marked as untrusted data", text.includes("dado não confiável") && (text.match(/```/g) ?? []).length === 2 && open >= 0 && close > open);
-  check("fence: an injected instruction cannot escape the block", text.indexOf("IGNORE PREVIOUS") > open && text.indexOf("IGNORE PREVIOUS") < close);
-  check("fence: bounded to NOTIFY_DETAIL_MAX", close - open <= NOTIFY_DETAIL_MAX + 20);
-  check("fence: our own instruction stays outside, after the block", text.lastIndexOf("Audite o resultado") > close);
+  check("fence: an injected instruction cannot escape the block", open >= 0 && text.indexOf("IGNORE PREVIOUS") > open && text.indexOf("IGNORE PREVIOUS") < close);
+  check("fence: bounded to NOTIFY_DETAIL_MAX", open >= 0 && close - open <= NOTIFY_DETAIL_MAX + 20);
+  check("fence: our own instruction stays outside, after the block", open >= 0 && text.lastIndexOf("Audite o resultado") > close);
   check("fence: control characters are stripped", !quoteUntrusted("a\u0007b\u001bc").includes("\u0007") && !quoteUntrusted("a\u001bc").includes("\u001b"));
 }
 

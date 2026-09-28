@@ -72,9 +72,22 @@ const home = mkdtempSync(join(tmpdir(), "ocr-pilotwatch-"));
 cleanups.push(() => rmSync(home, { recursive: true, force: true }));
 const state = join(home, ".opencode-remote");
 mkdirSync(join(state, "pilot"), { recursive: true });
+// the launchd agent dir + plist make the watcher probe launchctl; a fake
+// launchctl FIRST on PATH keeps the probe hermetic (read-only `print` only,
+// always "not loaded" — the production outage shape, independent of what the
+// real launchd says on whichever host runs this)
+mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+writeFileSync(join(home, "Library", "LaunchAgents", "com.ocr.pilot.plist"), "<plist/>");
+mkdirSync(join(home, "bin"), { recursive: true });
+writeFileSync(
+  join(home, "bin", "launchctl"),
+  '#!/bin/sh\n# hermetic read-only fake: the pilot label is never loaded here\nif [ "$1" = "print" ]; then\n  echo \'Could not find service "com.ocr.pilot" in domain for user gui\'\n  exit 113\nfi\necho "unsupported verb: $1" >&2\nexit 1\n',
+  { mode: 0o755 },
+);
+const daemonPath = `${join(home, "bin")}:${process.env.PATH ?? ""}`;
 
 // a pid that is certainly dead: a child we spawned and reaped ourselves
-const deadPid = spawnSync(process.execPath, ["-e", ""]).pid ?? 999_999;
+const deadPid = spawnSync(process.execPath, ["-e", ""], { cwd: home }).pid ?? 999_999;
 writeFileSync(join(state, "pilot.json"), JSON.stringify({ supervisorSession: "ses_deleted0001", slots: 1 }));
 writeFileSync(join(state, "pilot", "heartbeat"), String(Date.now() - 2 * 3_600_000));
 writeFileSync(join(state, "pilot", "pilot.pid"), String(deadPid));
@@ -180,6 +193,7 @@ const daemon = spawn(process.execPath, ["--import", "tsx/esm", "apps/daemon/src/
   env: {
     ...process.env,
     HOME: home,
+    PATH: daemonPath,
     OCR_METRICS_PORT: String(port),
     OPENCODE_URL: `http://127.0.0.1:${opencodePort}`,
     RELAY_URL: "ws://127.0.0.1:1",
@@ -237,7 +251,10 @@ const down = await until(async () => {
 });
 const reasons = (down?.reasons ?? []) as Array<{ code: string; severity: string; detail: string }>;
 check("api: dead pilot → state down", down?.state === "down", JSON.stringify(down).slice(0, 400));
-check("api: primary reason is the dead process (stale heartbeat, dead pid)", reasons[0]?.code === "dead" && reasons[0]?.severity === "down");
+// com.ocr.pilot is not loaded in launchd on this host (exit 113), so the
+// primary reason is the boot-out, not the dead pid (PIDs recycle — the pid
+// file is not the witness)
+check("api: primary reason is the launchd boot-out (the production outage)", reasons[0]?.code === "unloaded" && reasons[0]?.severity === "down", JSON.stringify(reasons));
 check("api: deleted supervisor session detected by a read-only probe", reasons.some((r) => r.code === "supervisor-missing"));
 check(
   "api: v1 contract fields present",
@@ -251,7 +268,7 @@ if (pushOk) {
   if (hit) {
     const page = decryptPush(hit.body);
     check("push: the phone decrypts it (RFC 8291) — title 🛑 Pilot parado", page.title === "🛑 Pilot parado", JSON.stringify(page));
-    check("push: body carries the real reason", /não está rodando/.test(page.body ?? "") && /supervisor inacessível/.test(page.body ?? ""));
+    check("push: body carries the real reason", /não está carregado no launchd/.test(page.body ?? "") && /supervisor inacessível/.test(page.body ?? ""));
     check("push: dedicated tag so routine notifications cannot replace it", page.data?.tag === "ocr-pilot");
     check("push: VAPID-signed, urgent, with a TTL", /^vapid t=/.test(String(hit.headers.authorization)) && hit.headers.urgency === "high" && Number(hit.headers.ttl) > 0);
   }
@@ -281,7 +298,8 @@ if (pushOk) {
   const digestHit = await until(() => (pushHits.length > before ? pushHits[before]! : null));
   const digest = digestHit ? decryptPush(digestHit.body) : null;
   check("relay: the phone gets the undeliverable failure", digest?.title === "📮 Pilot: deploy falhou" && /disk low/.test(digest.body ?? ""), JSON.stringify(digest));
-  check("relay: the digest explains why the supervisor is out", /sessão do supervisor não existe mais/.test(digest?.body ?? ""));
+  check("relay: the digest explains why the supervisor is out", /sessão do supervisor não existe mais/.test(digest.body ?? ""));
+  check("relay: the digest carries its own tag (never replaces a 🛑 page)", digest?.data?.tag === "ocr-pilot-digest", JSON.stringify(digest));
   const again = await api("POST", "/api/pilot-notify", { text: "x\n\ndisk low: 0.1gb free (need 5.0gb)", task: "deploy", ok: false, detail: "disk low: 0.1gb free (need 5.0gb)" });
   await sleep(600);
   check("relay: a repeat of the same (task, kind) is folded, not re-pushed", again.json?.fallback === "push" && again.json.pushed === false && pushHits.length === before + 1);

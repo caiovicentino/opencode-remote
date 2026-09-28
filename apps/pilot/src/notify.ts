@@ -466,18 +466,22 @@ export async function notifySupervisor(
   if (outcome.unknown) return false;
   // park + digest copy under the queue lock: a concurrent flush's rewrite must
   // never erase the fresh entry, and the copy must reflect the parked set
-  const { freshCount, copy } = await withQueueLock(async () => {
+  const { freshCount, landedCount, copy } = await withQueueLock(async () => {
     const entry: PendingEntry = { ts: nowMs, task, ok, text, kind, detail: oneLine };
+    const key = `${entry.task}|${kindOf(entry)}`;
     const count = parkPending(dir, entry, nowMs);
-    const warnings = readPending(dir)
-      .filter((e) => nowMs - e.ts < NOTIFY_PENDING_TTL_MS)
+    const fresh = readPending(dir).filter((e) => nowMs - e.ts < NOTIFY_PENDING_TTL_MS);
+    const warnings = fresh
       .slice(-NOTIFY_DIGEST_THRESHOLD)
       .map((e) => `${e.task}: ${e.ok ? "ok" : "fail"}${(e.count ?? 1) > 1 ? ` ×${e.count}` : ""}`)
       .join(" | ");
-    return { freshCount: count, copy: warnings };
+    return { freshCount: count, landedCount: fresh.find((e) => `${e.task}|${kindOf(e)}` === key)?.count ?? 1, copy: warnings };
   });
-  // repeated refusal → one digest copy marked "needs operator" per episode
-  if (freshCount === NOTIFY_DIGEST_THRESHOLD) {
+  // repeated refusal → one digest copy marked "needs operator" per episode —
+  // the threshold is either the 3rd DISTINCT pending key or the 3rd repeat of
+  // the same (task, kind): with the dedupe the dominant repeated failure keeps
+  // freshCount at 1 forever, and its folded count is the signal that matters
+  if (freshCount === NOTIFY_DIGEST_THRESHOLD || landedCount === NOTIFY_DIGEST_THRESHOLD) {
     try {
       await (deps.push ?? digest)(
         "📮 Pilot notify: needs operator",
