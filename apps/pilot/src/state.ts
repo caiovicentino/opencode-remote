@@ -406,6 +406,8 @@ function normalizeApiDownStreaks(v: unknown): Record<string, { n: number; starte
     out[task] = { n: Math.floor(m.n), startedAt: Math.floor(m.startedAt) };
   }
   return out;
+}
+
 /** eval-18: tolerant parse of the budget alert levels — positive integers
  * only, garbage dropped, never crash. */
 function normalizeBudgetAlerts(v: unknown): Record<string, number> | undefined {

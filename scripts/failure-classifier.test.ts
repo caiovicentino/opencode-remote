@@ -432,7 +432,9 @@ const red = (name: string, runId: string | null, jobId: string | null = null): R
   const failclassSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "failureclass.ts"), "utf8");
   check("wiring: the round diff and nameOnly read origin/<base>", pipelineSrc.includes("exec(`git diff origin/${base}...pilot/${t.id}`, { cwd: ws })") && pipelineSrc.includes("exec(`git diff --name-only origin/${base}...pilot/${t.id}`, { cwd: ws })"));
   check("wiring: no exec diffs against the local main ref anymore", !pipelineSrc.includes("exec(`git diff main...pilot/") && !pipelineSrc.includes("exec(`git diff --name-only main...pilot/"));
-  const gateRed = pipelineSrc.indexOf("recordGateFail(cfg.stateRoot, state, t.id, gate.step, gate.tail);");
+  // composition: main's recordGateFail now carries (carry, headline) instead
+  // of the raw (step, tail) — the carry/healdine refactor landed separately.
+  const gateRed = pipelineSrc.indexOf("recordGateFail(cfg.stateRoot, state, t.id, gate.step, carry, headline);");
   const cleared = pipelineSrc.indexOf("clearGateFailCarry(cfg.stateRoot, t.id);");
   const reviewers = pipelineSrc.indexOf('msg: "reviewers start"');
   check("wiring: a green gate clears the carried failure before the reviewers run", gateRed > 0 && cleared > gateRed && cleared < reviewers);
@@ -467,7 +469,10 @@ const red = (name: string, runId: string | null, jobId: string | null = null): R
   check("wiring: stale-head neither counts nor clears the per-task streak", indexSrc.includes('} else if (infra === "stale-head") {') && indexSrc.includes("pipeline provider outage — task-local trail"));
   check("wiring: the builder outage probe runs with print-logs and the pure frame is exported", failclassSrc.includes('export const CLI_ERROR_FRAME = "\\u001b[91m\\u001b[1mError: \\u001b[0m";') && failclassSrc.includes("const LOOPBACK_CONNECT"));
   check("wiring: the bridge fetches get the short per-call timeout and an attempt cap", pipelineSrc.includes("io.exec(cmd, CI_BRIDGE_TIMEOUT_MIN)") && pipelineSrc.includes("if (attempts >= CI_JOB_LOG_ATTEMPTS || parts.length >= 3) break;"));
-  check("wiring: the builder prompt follows the pipeline's diff base (F13)", pipelineSrc.includes("builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap, base)") && pipelineSrc.includes("\\`git diff origin/${base}...pilot/${t.id}\\`"));
+  // F13 composition: the diff hint now rides main's taskDiffRange helper (the
+  // origin/<base>...pilot/<id> range is built there), so the pin checks the
+  // helper call with the pipeline's own base argument instead of the literal.
+  check("wiring: the builder prompt follows the pipeline's diff base (F13)", pipelineSrc.includes("builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap, base)") && pipelineSrc.includes("git diff ${taskDiffRange(t.id, base)}"));
 }
 
 if (failures) {
