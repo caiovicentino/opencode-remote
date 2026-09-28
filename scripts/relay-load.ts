@@ -23,6 +23,7 @@
  * and saturates one core first. Latency is measured end to end inside one
  * worker (both ends of a pair live in the same thread, one clock).
  */
+import { freePortPairSync } from "./testports";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, platform, release, tmpdir, totalmem } from "node:os";
@@ -46,7 +47,9 @@ const JSON_OUT = jsonAt >= 0 ? args[jsonAt + 1] : undefined;
 
 const ROOT = join(import.meta.dirname, "..");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const port = 43_000 + Math.floor(Math.random() * 9_000);
+// kernel-chosen free pair (testports): a random ephemeral port collided with
+// live listeners on CI (the EADDRINUSE idiom testports.test.ts exists to ban)
+const port = freePortPairSync();
 const mport = port + 1;
 const home = mkdtempSync(join(tmpdir(), "ocr-relay-load-"));
 
