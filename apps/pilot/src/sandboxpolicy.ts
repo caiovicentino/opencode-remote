@@ -20,11 +20,15 @@
  * rest: every other directory outside the clone (the private state under
  * ~/.opencode-remote, the live judge, sibling slot clones, ~/.ssh, …) and the
  * commands that reach production or the owner's OS state. It is opencode's
- * tool-level gate, so it stops what the agents did in those logs (direct
- * reads, `cat` of private files, shell pattern kills); a program the agent
- * writes and runs is outside its reach — that needs OS-level isolation
- * (sandbox-exec / a dedicated user), an owner decision documented in the
- * eval-15 report.
+ * tool-level gate — it NARROWS the surface, it is not a containment boundary:
+ * a program the agent writes and runs is outside it, a symlink planted in an
+ * allowed directory still reads and writes outside the clone (the OS follows
+ * the link; `ln` is denied, cp/mv/cat> are not), and no deny-list closes those
+ * classes. Real isolation needs OS-level enforcement (sandbox-exec with
+ * `deny file-write*` on the state subpath plus symlink resolution, or a
+ * dedicated user) — an owner decision, recipe in the eval-15 report. The
+ * pattern-matching rules are pinned by the unit battery (prompt-sanitize)
+ * and verified against the real binary in the harness below.
  *
  * Pure: builds plain objects (no fs, no env reads) so the unit battery pins
  * the exact policy. opencode evaluates rules in order and the LAST matching
@@ -40,9 +44,12 @@ export type PermissionAction = "allow" | "ask" | "deny";
  * test server from the production daemon (pkill/killall — kill a PID you
  * spawned instead), macOS privacy, keychain and automation surfaces
  * (tccutil, security, osascript), privilege escalation, persistence and
- * lateral movement, and every git/gh/npm write the pipeline itself owns (the
- * builder prompt already says "do NOT push"; read-only `gh run view`,
- * `gh pr view`, `gh api` GETs stay available for CI logs).
+ * lateral movement, symlink creation into state paths, and every git/gh/npm
+ * write the pipeline itself owns (the builder prompt already says "do NOT
+ * push"; read-only `gh run view`, `gh pr view`, `gh api` GETs stay available
+ * for CI logs). The later infix/wrapper patterns close the rewrites the
+ * verifier ran (absolute paths, env/PATH wrappers, nested shells, flag-split
+ * `git -C . push`); see the entry comments.
  */
 export const DENIED_COMMANDS: readonly string[] = [
   "launchctl*",
@@ -88,6 +95,30 @@ export const DENIED_COMMANDS: readonly string[] = [
   "npm token*",
   "npm login*",
   "npm adduser*",
+  // eval-15 fix round: a prefix pattern only matches the canonical spelling —
+  // the independent verifier ran `/usr/bin/pkill`, `bash -c 'pkill …'`,
+  // `sh -c`, `env`, `PATH=… pkill`, `/bin/launchctl` and `git -C . push` and
+  // every one RAN on the real binary (the matched rule was the `*` default).
+  // Infix and wrapper patterns close those rewrites: any argument position,
+  // any absolute path, any env/PATH-poisoned invocation of a denied command,
+  // and the nested-shell wrappers themselves. Over-matching (a commit message
+  // mentioning "push") fails closed — the pilot never needs these commands.
+  "*pkill*",
+  "*killall*",
+  "*launchctl*",
+  "bash -c*",
+  "sh -c*",
+  "env *",
+  "git * push*",
+  // eval-15 fix round: the symlink primitive. opencode matches the PATH STRING
+  // while the OS follows the link, so a link planted in an allowed directory
+  // read AND wrote outside the clone (`~/.opencode-remote/daemon.json` was
+  // leaked and mission.json/pilot/state.json were rewritten — verifier PoCs
+  // out-vsym/out-vwrite). Denying `ln` removes the one-step primitive; cp/mv/
+  // cat> and symlink-creating code remain open, so this still narrows rather
+  // than contains (see the module note above).
+  "ln *",
+  "ln -s*",
 ];
 
 /**

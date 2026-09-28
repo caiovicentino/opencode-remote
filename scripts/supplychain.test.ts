@@ -3,6 +3,11 @@
  *   - rule 4b: a registry origin must be the entry's OWN canonical tarball —
  *     a lockfile edit that points a trusted name at another package's
  *     tarball (with that tarball's valid sha512) used to approve;
+ *   - (fix round) the `name` field is no longer trusted to pick the tarball:
+ *     the verifier set name+version consistently around a foreign tarball
+ *     (express@4.21.2 under node_modules/lodash) and both the gate and
+ *     `npm ci` accepted it — the name now always derives from the entry path
+ *     and a divergent `name` field rejects fail-closed (npm aliases included);
  *   - isInternalOrigin: a parent segment anywhere is not provably internal;
  *   - the real package-lock.json still approves (zero false positives).
  * Run: npx tsx scripts/supplychain.test.ts
@@ -55,7 +60,7 @@ const entry = (path: string, resolved: string, extra: Partial<LockEntry> = {}): 
   const encoded = entry("node_modules/@esbuild/darwin-arm64", "https://registry.npmjs.org/@esbuild%2fdarwin-arm64/-/darwin-arm64-0.25.12.tgz", { version: "0.25.12" });
   check("4b: a %2f-encoded scope slash is the same tarball", tarballMatchesPackage(encoded, REGISTRIES));
   const alias = entry("node_modules/string-width-cjs", "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz", { name: "string-width", version: "4.2.3" });
-  check("4b: an npm alias (lockfile name field) approves on the aliased package", lockIntegrityVerdict([alias], REGISTRIES, [], NOW).outcome === "approve");
+  check("4b: an npm alias (lockfile name field) is fail-closed now — the gate refuses it", lockIntegrityVerdict([alias], REGISTRIES, [], NOW).outcome === "reject");
   const noVersion = entry("node_modules/left-pad", "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz");
   check("4b: without a declared version only the name is compared", lockIntegrityVerdict([noVersion], REGISTRIES, [], NOW).outcome === "approve");
   check("4b: a malformed percent-escape fails closed", !tarballMatchesPackage(entry("node_modules/x", "https://registry.npmjs.org/x/-/x-%E0.tgz", { version: "1.0.0" }), REGISTRIES));
@@ -69,6 +74,38 @@ const entry = (path: string, resolved: string, extra: Partial<LockEntry> = {}): 
   check("internal: dots inside a segment name are fine", isInternalOrigin("apps/..hidden/x") && isInternalOrigin("apps/web.v2"));
   const escaped = normalizeLockEntries({ packages: { "node_modules/@ocr/web": { resolved: "apps/../../tmp/x", link: true } } });
   check("internal: an escaping link crosses the registry checks and rejects", !escaped[0]!.internal && lockIntegrityVerdict(escaped, REGISTRIES, [], NOW).outcome === "reject");
+}
+
+// --- eval-15 fix round: the name field is not trusted (verifier PoC 3) ---------------------
+{
+  // The verifier's repro, minimally: an entry whose name+version+origin are
+  // internally consistent but foreign to the entry PATH. With rule 4b reading
+  // the `name` field this approved — and `npm ci` really installed express
+  // under node_modules/lodash (verifier evidence). Now the name comes from
+  // the path and a divergent `name` field rejects (fail-closed).
+  const injected = entry("node_modules/lodash", "https://registry.npmjs.org/express/-/express-4.21.2.tgz", { name: "express", version: "4.21.2" });
+  const v = lockIntegrityVerdict([injected], REGISTRIES, [], NOW);
+  check(
+    "4c: name+version consistent around a foreign tarball rejects (verifier PoC)",
+    v.outcome === "reject" && v.lines.length === 1 && v.lines[0]!.includes('lockfile name "express" does not match the entry path (lodash)'),
+    JSON.stringify(v),
+  );
+  check(
+    "4c: a still-valid exemption cannot save a divergent name",
+    lockIntegrityVerdict([injected], REGISTRIES, [{ id: "node_modules/lodash", reason: "x", expiresAt: "2099-01-01T00:00:00.000Z" }], NOW).outcome === "reject",
+  );
+  check(
+    "4b: the tarball check derives the name from the path — the name field cannot steer it",
+    !tarballMatchesPackage(injected, REGISTRIES) && tarballMatchesPackage(entry("node_modules/lodash", "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz", { name: "lodash", version: "4.17.21" }), REGISTRIES),
+  );
+  check(
+    "4c: lockEntryPackageName is path-only (the name field is ignored even when present)",
+    lockEntryPackageName(entry("node_modules/lodash", "x", { name: "express" })) === "lodash",
+  );
+  check(
+    "4c: a name field AGREEING with the path keeps the plain path behavior",
+    lockIntegrityVerdict([entry("node_modules/lodash", "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz", { name: "lodash", version: "4.17.21" })], REGISTRIES, [], NOW).outcome === "approve",
+  );
 }
 
 // --- the real lockfile --------------------------------------------------------------------

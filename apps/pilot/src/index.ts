@@ -15,6 +15,8 @@ import { defaultVerifiedMergesFile, deploySkipReason, readVerifiedMerges } from 
 import { DEPLOY_REFUSAL_BACKOFF_MS, DEPLOY_ROLLBACK_HOLD_MS, deployBackoffRemaining, noteDeployRefusal, noteDeployRollback, rollbackHoldRemaining, type DeployBackoff, type RollbackHold } from "./deploybackoff";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, readyOrphanBlocks, type AddTaskResult, type Task } from "./backlog";
+import { auxDirectiveLines } from "./auxcurate";
+import { scrubPrompt } from "./sanitize";
 import { redteamFinding } from "./findingline";
 import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
@@ -1173,27 +1175,39 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   writeSandboxConfig(cfg.workspace);
   if (r.output.includes(STRATEGIST_MARKER)) {
     const lines = parseAuxTaskLines(r.output);
-    if (!lines.length) {
-      log("warn", "strategist: no valid task lines — nothing committed", { tail: r.output.slice(-200) });
-      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: "no valid task lines" });
+    // eval-15 fix round: directive-shaped aux lines are held for human
+    // curation (apps/pilot/src/auxcurate.ts) — they never land autonomously.
+    const held = auxDirectiveLines(lines);
+    const land = held.length ? lines.filter((l) => !held.includes(l)) : lines;
+    if (held.length) {
+      log("warn", "aux directive line held for human curation (never auto-landed)", { lines: held.slice(0, 3) });
+      void notifySupervisor(
+        "aux directive line needs human curation",
+        false,
+        held.map((l) => scrubPrompt(l).slice(0, 300)).join(" | "),
+      ).catch(() => {});
+    }
+    if (!land.length) {
+      log("warn", held.length ? "strategist: only directive lines — all held for human curation" : "strategist: no valid task lines — nothing committed", { tail: r.output.slice(-200) });
+      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: held.length ? "directive lines held for human curation" : "no valid task lines" });
       return;
     }
     const message = `pilot(strategist): queue refill ${nowLocalISO().slice(11, 16)}`;
     // foreign mission: a target repo without a pilot-format BACKLOG.md gets the
     // skeleton seeded in the apply step and landed inside this same refill PR
     // (P3-358: the landing targets the repo's actual default branch)
-    const result = await appendCommitAndPush(cfg.workspace, lines, message, auxPushIo(cfg.workspace), 3, { seedSkeleton: foreignMission, baseBranch: cfg.baseBranch });
+    const result = await appendCommitAndPush(cfg.workspace, land, message, auxPushIo(cfg.workspace), 3, { seedSkeleton: foreignMission, baseBranch: cfg.baseBranch });
     if (result === "pushed") {
-      log("info", "strategist refilled queue", { lines: lines.length });
-      emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${lines.length} lines)` });
+      log("info", "strategist refilled queue", { lines: land.length });
+      emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${land.length} lines)` });
     } else if (result === "failed") {
       // P1-037: persist the refill outside the worktree — the next
       // syncWorkspace reset --hard would otherwise destroy it silently.
-      const saved = savePendingRefill(defaultPendingRefillFile(stateRoot), lines, message);
-      log("warn", saved ? "refill saved as pending — relanding next idle cycle" : "pending refill save failed", { lines: lines.length });
-      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: saved ? `pending refill saved (${lines.length} lines)` : "pending refill save failed" });
+      const saved = savePendingRefill(defaultPendingRefillFile(stateRoot), land, message);
+      log("warn", saved ? "refill saved as pending — relanding next idle cycle" : "pending refill save failed", { lines: land.length });
+      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: saved ? `pending refill saved (${land.length} lines)` : "pending refill save failed" });
     } else {
-      log("warn", "aux push refused", { lines: lines.length });
+      log("warn", "aux push refused", { lines: land.length });
       emit("phase", { task: "strategist", phase: "refill", ok: false, detail: result });
     }
   } else {

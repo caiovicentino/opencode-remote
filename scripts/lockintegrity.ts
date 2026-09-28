@@ -34,12 +34,18 @@
  *    before any other consideration — a git dependency, an arbitrary tarball
  *    or a missing origin — this is the case the gate exists to prevent.
  * 4b. (eval-15) A registry origin that is not the entry's OWN canonical
- *    tarball — `<registry><name>/-/<basename>-<version>.tgz`, name from the
- *    lockfile `name` field (npm aliases) or the entry path — becomes REJECT,
+ *    tarball — `<registry><name>/-/<basename>-<version>.tgz`, name derived
+ *    from the entry PATH (`node_modules/<name>`) — becomes REJECT,
  *    exemptions notwithstanding. A lockfile edit that points
  *    `node_modules/lodash` at another package's tarball on the same registry
  *    (with that tarball's valid hash) is lockfile injection: npm ci would
  *    install foreign code under a trusted name and every earlier rule passed.
+ *    (eval-15 fix round) The `name` field itself is not trusted to pick the
+ *    tarball — an edit that ALSO sets name+version consistently around a
+ *    foreign tarball (express@4.21.2 under node_modules/lodash) used to
+ *    approve — so a `name` diverging from the entry path rejects as well,
+ *    fail-closed (npm writes `name` only for aliases, which this gate
+ *    therefore refuses; the repo carries none).
  * 5. An origin inside an accepted registry without a declared integrity hash
  *    becomes REJECT.
  * 6. A hash present whose algorithm differs from the documented one becomes
@@ -158,10 +164,14 @@ export function isInternalOrigin(origin: string): boolean {
   return true;
 }
 
-/** eval-15: the package name a lockfile entry installs — the `name` field
- * when npm wrote one (aliases), else the path after the last node_modules/. */
-export function lockEntryPackageName(entry: Pick<LockEntry, "path" | "name">): string {
-  if (typeof entry.name === "string" && entry.name !== "") return entry.name;
+/** eval-15 fix round: the package name a lockfile entry installs is derived
+ * ONLY from the entry path (`node_modules/<name>` — the directory npm installs
+ * the `resolved` tarball into). The lockfile `name` field is never trusted to
+ * pick the tarball: the verifier's injection set `name`+`version` consistently
+ * (express@4.21.2 under node_modules/lodash) and both the gate and `npm ci`
+ * accepted it. npm writes `name` only for aliases and repo-internal entries;
+ * see the rule below for what a divergent field means. */
+export function lockEntryPackageName(entry: Pick<LockEntry, "path">): string {
   const at = entry.path.lastIndexOf("node_modules/");
   return at < 0 ? "" : entry.path.slice(at + "node_modules/".length);
 }
@@ -169,11 +179,12 @@ export function lockEntryPackageName(entry: Pick<LockEntry, "path" | "name">): s
 /**
  * eval-15 rule 4b: does a registry origin point at the entry's OWN tarball?
  * Canonical npm shape: `<registry><name>/-/<basename>-<version>.tgz` (the
- * scope slash may be written `%2f`). The version is compared only when the
- * entry declares one. True for origins outside `registries` (rule 4 owns
- * those).
+ * scope slash may be written `%2f`). The name is derived from the entry
+ * PATH only (eval-15 fix round — the `name` field is not trusted; see
+ * lockEntryPackageName). The version is compared only when the entry
+ * declares one. True for origins outside `registries` (rule 4 owns those).
  */
-export function tarballMatchesPackage(entry: Pick<LockEntry, "path" | "resolved" | "name" | "version">, registries: readonly string[]): boolean {
+export function tarballMatchesPackage(entry: Pick<LockEntry, "path" | "resolved" | "version">, registries: readonly string[]): boolean {
   const registry = registries.find((r) => typeof r === "string" && r !== "" && entry.resolved.startsWith(r.endsWith("/") ? r : `${r}/`));
   if (registry === undefined) return true;
   const name = lockEntryPackageName(entry);
@@ -213,9 +224,24 @@ function entryLine(
   }
   // Rule 4b (eval-15): a registry origin must be the entry's own tarball —
   // another package's tarball under a trusted name is lockfile injection,
-  // and no exemption can save it either.
+  // and no exemption can save it either. The expected name comes from the
+  // ENTRY PATH (where npm installs the resolved tarball); a lockfile `name`
+  // field that diverges from it is itself the injection (the editor can set
+  // name+version consistently around a foreign tarball — verifier PoC:
+  // express@4.21.2 resolved under node_modules/lodash), so it rejects here
+  // too. npm writes `name` only for npm aliases and repo-internal entries
+  // (both absent from this lockfile's third-party section): an alias is
+  // rejected fail-closed — if one is ever needed it is a deliberate,
+  // documented change, not something a lockfile edit smuggles in.
+  const pathName = lockEntryPackageName(entry);
+  if (typeof entry.name === "string" && entry.name !== "" && entry.name !== pathName) {
+    return {
+      line: `lock-integrity: REJECT ${entry.path} ${shown} — lockfile name "${entry.name}" does not match the entry path (${pathName || "(no node_modules segment)"}) (lockfile injection)`,
+      outcome: "reject",
+    };
+  }
   if (!tarballMatchesPackage(entry, registries)) {
-    const wanted = `${lockEntryPackageName(entry) || "(unnamed)"}${entry.version ? `@${entry.version}` : ""}`;
+    const wanted = `${pathName || "(unnamed)"}${entry.version ? `@${entry.version}` : ""}`;
     return {
       line: `lock-integrity: REJECT ${entry.path} ${shown} — origin is not the tarball of ${wanted} (lockfile injection)`,
       outcome: "reject",

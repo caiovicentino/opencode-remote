@@ -103,6 +103,18 @@ const SECRET_PATTERNS: SecretPattern[] = [
     re: /(\b[A-Za-z_]*(?:token|secret|secretkey|password|passwd|apikey|api_key|privatekey|private_key|ecdhpriv)["']?\s*[:=]\s*)(["'])[^"'\s]{12,}\2/gi,
     keep: 2,
   },
+  {
+    // eval-15 fix round: the UNQUOTED assignment the verifier documented —
+    // `export DAEMON_SECRET=…`, `secretKey=x`. Same conservative key list; the
+    // value must be a ≥12-char run of secret-ish characters (letters, digits,
+    // `_ + / = -`) that ENDS the word — ordinary code (`process.env.OCR_TOKEN`,
+    // `readDaemonToken(stateFile)`, dotted numbers) never matches, and the
+    // redaction token itself (⟦…:…⟧) can never re-match, so the scrub stays
+    // idempotent.
+    kind: "assignment",
+    re: /(\b[A-Za-z_]*(?:token|secret|secretkey|password|passwd|apikey|api_key|privatekey|private_key|ecdhpriv)\s*[:=]\s*)(?![\s"'&])[A-Za-z0-9_+/=-]{12,}(?=$|[\s,;)"'])/gi,
+    keep: 1,
+  },
 ];
 
 function hex(cp: number): string {

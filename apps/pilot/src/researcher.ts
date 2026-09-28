@@ -3,6 +3,8 @@ import { log, nowLocalISO } from "./log";
 import { notifySupervisor } from "./notify";
 import { emit } from "./events";
 import { writeAuxSandboxConfig, writeSandboxConfig } from "./pipeline";
+import { scrubPrompt } from "./sanitize";
+import { auxDirectiveLines } from "./auxcurate";
 import { appendCommitAndPush, auxPushIo, parseAuxTaskLines } from "./backlog";
 import type { PilotConfig } from "./state";
 
@@ -101,11 +103,23 @@ export async function runResearcher(cfg: PilotConfig, state: { researchLast?: st
     return;
   }
   const lines = parseAuxTaskLines(r.output);
-  if (!lines.length) {
+  // eval-15 fix round: directive-shaped aux lines are held for human curation
+  // (apps/pilot/src/auxcurate.ts) — they never land autonomously.
+  const held = auxDirectiveLines(lines);
+  const land = held.length ? lines.filter((l) => !held.includes(l)) : lines;
+  if (held.length) {
+    log("warn", "aux directive line held for human curation (never auto-landed)", { lines: held });
+    void notifySupervisor(
+      "aux directive line needs human curation",
+      false,
+      held.map((l) => scrubPrompt(l).slice(0, 300)).join(" | "),
+    ).catch(() => {});
+  }
+  if (!land.length) {
     log("warn", "researcher: no valid task lines — nothing committed");
     return;
   }
-  const result = await appendCommitAndPush(cfg.workspace, lines, `pilot(researcher): frontier scan ${today}`, auxPushIo(cfg.workspace), 3, {
+  const result = await appendCommitAndPush(cfg.workspace, land, `pilot(researcher): frontier scan ${today}`, auxPushIo(cfg.workspace), 3, {
     seedSkeleton: foreign,
     baseBranch: cfg.baseBranch,
   });
