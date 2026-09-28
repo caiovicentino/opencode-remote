@@ -113,13 +113,18 @@ self.addEventListener("push", (event) => {
   // deep-link: the daemon sends { url } (or data.url) with an in-app hash route
   const raw = (payload.data && payload.data.url) || payload.url || "#/";
   const abs = new URL(raw, self.registration.scope).href;
+  // eval-01: a push may carry its own tag (pilot liveness pages use "ocr-pilot")
+  // — one shared tag let any routine notification silently replace an outage
+  // page, and a replacement never buzzes the phone without renotify
+  const tag = (payload.data && typeof payload.data.tag === "string" && payload.data.tag) || "opencode-remote";
   event.waitUntil(
     self.registration.showNotification(payload.title, {
       body: payload.body,
       icon: "/icon.svg",
       badge: "/icon.svg",
       data: { url: abs },
-      tag: "opencode-remote",
+      tag,
+      renotify: tag !== "opencode-remote",
       actions: payload.actions ?? [],
     }),
   );

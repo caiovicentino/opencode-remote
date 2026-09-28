@@ -16,6 +16,17 @@ on:
         required: false
         default: ""
 
+# eval-16: one release run per ref at a time. A tag push, a manual dispatch of
+# the same tag and a re-run used to race on one draft (and `gh release create
+# --draft` skips gh's existing-release check, so a second run minted a second
+# draft for the same tag). A run IN PROGRESS is never cancelled (a half-uploaded
+# draft is worse than a late one); note GitHub's concurrency semantics still
+# collapse two QUEUED runs — a newer pending run cancels an older pending one —
+# so a tag push immediately followed by a dispatch may keep only the newest run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -25,6 +36,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       # P2-130: tag and the two package.json versions must agree BEFORE anything
       # is published — a drifting version produces a latest-mac.yml whose
@@ -38,16 +54,55 @@ jobs:
           VERSION=${GITHUB_REF_NAME}
           git archive --format=tar.gz --prefix="opencode-remote-${VERSION}/" -o "opencode-remote-${VERSION}.tar.gz" "$GITHUB_REF_NAME"
 
+      # eval-16: GitHub refuses a release body above 125,000 characters, and
+      # the server-side `--generate-notes` of a FIRST release lists every PR
+      # merged since the beginning — 203,972 characters for v0.2.0, measured
+      # on 2026-09-27 through the same Release Notes API. The create call (or,
+      # at the latest, the P2-216 guide edit that PATCHes the body back) died
+      # with HTTP 422 before any installer was attached. Generate the notes
+      # through the API and cap them (scripts/release-body.ts keeps the newest
+      # entries plus the Full Changelog link) before the draft exists.
+      - name: Generate the release notes (capped below GitHub's body limit)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" --jq '.body' > generated-notes.md
+          npx --yes tsx@4.23.12 scripts/release-body.ts "$GITHUB_REF_NAME" generated-notes.md release-notes.md
+
       # P2-179: the release is born a DRAFT — nothing is visible to the
       # installed base while the packaging jobs below are still running.
       # Attaching assets to a draft works the same, so the desktop-dmg and
       # desktop-win uploads are unchanged; the draft only goes public in the
       # release-publish job after every verification passed.
+      # eval-16: idempotent per tag. A draft left by an earlier run of the
+      # same tag (re-run, or the rollout_percent dispatch after the tag push)
+      # is reused — the jobs below re-upload with --clobber — instead of
+      # minting a second draft; an already PUBLISHED release is refused (its
+      # rollout moves through apps/desktop/scripts/rollout.mjs, never by
+      # rebuilding the installers users already downloaded). Any other gh
+      # failure fails closed instead of guessing.
       - name: Create GitHub release (draft)
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --draft --generate-notes --title "$GITHUB_REF_NAME"
+          if STATE="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>release-view.err)"; then
+            if [ "$STATE" = "true" ]; then
+              echo "release: draft $GITHUB_REF_NAME already exists — reusing it, refreshing the source tarball"
+              gh release upload "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --clobber
+            else
+              echo "::error::release $GITHUB_REF_NAME is already published — refusing to rebuild a live release (move its rollout with apps/desktop/scripts/rollout.mjs, or cut a new tag)"
+              exit 1
+            fi
+          elif grep -q "release not found" release-view.err; then
+            gh release create "$GITHUB_REF_NAME" opencode-remote-*.tar.gz --draft --notes-file release-notes.md --title "$GITHUB_REF_NAME"
+          else
+            echo "::error::could not tell whether release $GITHUB_REF_NAME exists: $(cat release-view.err)"
+            exit 1
+          fi
 
   # P2-098: third-party installability — a release ships a real macOS installer
   # (DMG), not just the source tarball. P2-136: a signing preflight decides the
@@ -65,6 +120,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -101,14 +161,37 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # eval-16: without a Developer ID, CSC_IDENTITY_AUTO_DISCOVERY=false
+        # alone makes electron-builder SKIP signing ("skipped macOS application
+        # code signing"): the bundle keeps Electron's linker signature, which
+        # no longer matches the rewritten Info.plist/resources — `codesign
+        # --verify --deep --strict` fails ("code has no resources but signature
+        # indicates they must be present"), so the Gatekeeper step below
+        # failed every no-secrets release, and a downloaded copy opens as
+        # "damaged". `-c.mac.identity=-` signs it ad-hoc for real (hardened
+        # runtime + build/entitlements.mac.plist → "valid on disk", measured
+        # locally on electron-builder 26.15.3). `-c.mac.notarize=false` makes
+        # the preflight's notarize=no authoritative: electron-builder 26
+        # notarizes whenever the APPLE_* variables exist (an ad-hoc build
+        # would be sent to Apple) and throws on a partial set (a Developer ID
+        # build without complete notarization secrets would die mid-package).
+        # `--publish never`: this workflow owns
+        # every upload — electron-builder's implicit tag-build publishing
+        # (deprecated, removed in v27) must never race the gh uploads below.
         run: |
           NOTARIZE=""
+          SIGN=""
           if [ "${{ steps.signing.outputs.notarize }}" = "true" ]; then
             NOTARIZE="-c.mac.notarize=true"
+          elif [ "${{ steps.signing.outputs.mode }}" = "developer-id" ]; then
+            echo "Signing profile: developer-id (notarize=no) — shipping a Developer ID signed DMG without notarization"
+            NOTARIZE="-c.mac.notarize=false"
           else
             echo "Signing profile: ${{ steps.signing.outputs.mode }} (notarize=no) — shipping ad-hoc signed DMG (skip notarization)"
+            SIGN="-c.mac.identity=-"
+            NOTARIZE="-c.mac.notarize=false"
           fi
-          npm run dist --workspace @ocr/desktop -- $NOTARIZE
+          npm run dist --workspace @ocr/desktop -- --publish never $SIGN $NOTARIZE
 
       # P2-130: a broken bundle (e.g. web-dist/index.html missing → DMG that
       # opens blank) must block the upload instead of shipping to users.
@@ -266,13 +349,21 @@ jobs:
       # writes — update-mac-arm64.json, update-mac-x64.json and the legacy
       # update-mac.json alias — so release-verify's per-arch feed slots are
       # satisfiable.
+      # eval-16 (fix-round): the dist/*.zip glob rides along — the Squirrel.Mac
+      # payload zips (OpenCode-Remote-<version>-arm64.zip / -x64.zip) are the
+      # files the update-mac*.json feeds point at, and release-verify
+      # (release-assets.ts), release-feeds (feed-consistency.ts),
+      # release-publish (release-checksums.ts) and the update client itself all
+      # require both zips. Without them no tag ever reaches the "complete,
+      # verified draft" this workflow promises. --clobber keeps a re-run
+      # idempotent.
       - name: Attach DMG + update metadata to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           gh release upload "$GITHUB_REF_NAME" \
-            apps/desktop/dist/*.dmg apps/desktop/dist/latest-mac.yml apps/desktop/dist/update-mac*.json \
+            apps/desktop/dist/*.dmg apps/desktop/dist/*.zip apps/desktop/dist/latest-mac.yml apps/desktop/dist/update-mac*.json \
             --clobber
 
   # P2-126: stage 5 is half Windows — the release also ships the NSIS setup
@@ -293,6 +384,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -324,10 +420,12 @@ jobs:
           if [ "${{ steps.win-signing.outputs.mode }}" = "unsigned" ]; then
             echo "Signing profile: unsigned — shipping unsigned installer (SmartScreen warning, README)"
           fi
+          # eval-16: --publish never — this workflow owns every upload (same
+          # reason as the mac job).
           if [ -n "$WIN_CSC_SUBJECT_NAME" ]; then
-            npm run dist --workspace @ocr/desktop -- -c.win.signtoolOptions.certificateSubjectName="$WIN_CSC_SUBJECT_NAME"
+            npm run dist --workspace @ocr/desktop -- --publish never -c.win.signtoolOptions.certificateSubjectName="$WIN_CSC_SUBJECT_NAME"
           else
-            npm run dist --workspace @ocr/desktop
+            npm run dist --workspace @ocr/desktop -- --publish never
           fi
 
       # P2-164: same gate P2-130 put on the mac side — a broken bundle (missing
@@ -474,9 +572,23 @@ jobs:
     timeout-minutes: 10
     needs: [desktop-dmg, desktop-win]
     permissions:
-      contents: read
+      # eval-16 (fix-round): the release is ALWAYS a draft by the time this job
+      # runs (P2-179), and GitHub only lists draft releases to callers with
+      # push access — for the GITHUB_TOKEN that means contents: write
+      # (REST releases doc: "Only users with push access will receive listings
+      # for draft releases"). With contents: read, `gh release view`/`gh
+      # release download` answer "release not found" and the job fails before
+      # checking anything, so release-publish (which needs this job) never
+      # runs. The token is still never exposed to git credentials (checkout
+      # below sets persist-credentials: false).
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - name: Verify the published release carries every platform asset
         env:
@@ -504,6 +616,11 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - name: Compute image references
         id: refs
@@ -582,9 +699,20 @@ jobs:
     timeout-minutes: 20
     needs: [desktop-dmg, desktop-win]
     permissions:
-      contents: read
+      # eval-16 (fix-round): same draft-visibility reason as release-verify —
+      # the release is a draft (P2-179) and GitHub only shows drafts to push
+      # access, so `gh release download`/`gh release view` need the token to
+      # carry contents: write or both steps answer "release not found" and the
+      # release-publish job is skipped forever. The job only READS release
+      # content; the write scope is the minimum that can see the draft.
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       - name: Verify the update feeds point at this release's artifacts
         env:
@@ -654,11 +782,11 @@ jobs:
   # installers now ends the run as a draft, never as a broken public download.
   # Already-published releases are an idempotent no-op (publish=false, zero
   # problems), so a re-run walks straight past this job. The Homebrew formula
-  # pin moved here from the release job (P2-098) so main never points at a
-  # release that is not public yet: the sha256 is computed from the tarball
-  # downloaded back from the (now public) release, not from the local build
-  # file. Fail-open as before: a refused push only warns, it never fails the
-  # release. P2-126 lesson: shell: bash on every run step.
+  # pin lives here too (P2-098): its sha256 is computed from the tarball
+  # downloaded back from the release, and since eval-16 the pinned formula is
+  # attached as a release asset instead of pushed to main. eval-16: going
+  # public is opt-in (RELEASE_AUTO_PUBLISH) — by default the run ends with a
+  # complete, verified draft. P2-126 lesson: shell: bash on every run step.
   release-publish:
     runs-on: ubuntu-latest
     # P2-322: job-level timeout, coherent with the work (docs/security.md).
@@ -668,6 +796,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        # eval-16: no job here uses git credentials (every gh call gets
+        # GH_TOKEN through env), so the write-scoped token is not left in
+        # .git/config for npm ci / npx lifecycle scripts to read.
+        with:
+          persist-credentials: false
 
       # P2-186: make every download verifiable. The job downloads the release's
       # own assets back, hashes each file with node (sha256), builds the
@@ -857,37 +990,67 @@ jobs:
           npx --yes tsx@4.23.12 scripts/release-notes.ts "$GITHUB_REF_NAME" guide-assets.txt guide-body.md
           gh release edit "$GITHUB_REF_NAME" --notes-file guide-body.md
 
-      - name: Publish the draft release only when every required asset is attached
+      # P2-098 → eval-16: the Homebrew formula is pinned from the tarball the
+      # DRAFT carries and attached as a release asset (opencode-remote.rb).
+      # The old step committed the pin and pushed it straight to main from
+      # the detached tag checkout AFTER publication: branch protection
+      # (PR required, enforce_admins) rejects that push, P1-076 forbids any
+      # pipeline site from pushing main, and the push is a non-fast-forward
+      # as soon as main moves past the tag — so main was never pinned while
+      # the README promised it was. The attached file is landed in main
+      # through a normal PR (README "Homebrew"). Fail closed like the winget
+      # and cask steps: a pin that did not rewrite url/version/sha256 never
+      # ships. shell: bash (P2-126 lesson) and its own timeout (P2-245).
+      - name: Attach the pinned Homebrew formula to the release
         env:
           GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 5
         shell: bash
         run: |
-          gh release view "$GITHUB_REF_NAME" --json isDraft,tagName,assets > release-view.json
-          npx --yes tsx@4.23.12 scripts/release-publish.ts release-view.json
-          gh release edit "$GITHUB_REF_NAME" --draft=false
-
-      - name: Pin the Homebrew formula checksum to the published asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME}"
           rm -rf formula-pin && mkdir -p formula-pin
           gh release download "$GITHUB_REF_NAME" --pattern "opencode-remote-${VERSION}.tar.gz" --dir formula-pin
           SHA=$(shasum -a 256 "formula-pin/opencode-remote-${VERSION}.tar.gz" | awk '{print $1}')
           URL_RE='https://github\.com/caiovicentino/opencode-remote/releases/download/v[0-9.]+/opencode-remote-v[0-9.]+\.tar\.gz'
           NEW_URL="https://github.com/caiovicentino/opencode-remote/releases/download/${VERSION}/opencode-remote-${VERSION}.tar.gz"
-          sed -i -E \
+          sed -E \
             -e "s|$URL_RE|$NEW_URL|" \
             -e "s|version \"[0-9]+.[0-9]+.[0-9]+\"|version \"${VERSION#v}\"|" \
             -e 's|sha256 "[a-f0-9]{64}"|sha256 "'"${SHA}"'"|' \
-            Formula/opencode-remote.rb
-          git config user.name "ocr-release-bot"
-          git config user.email "noreply@users.noreply.github.com"
-          git add Formula/opencode-remote.rb
-          if git diff --cached --quiet; then
-            echo "Formula already pinned to ${VERSION} — nothing to commit"
+            Formula/opencode-remote.rb > formula-pin/opencode-remote.rb
+          grep -qF "url \"${NEW_URL}\"" formula-pin/opencode-remote.rb || { echo "formula: url was not rewritten to ${NEW_URL}"; exit 1; }
+          grep -qF "version \"${VERSION#v}\"" formula-pin/opencode-remote.rb || { echo "formula: version was not rewritten to ${VERSION#v}"; exit 1; }
+          grep -qF "sha256 \"${SHA}\"" formula-pin/opencode-remote.rb || { echo "formula: sha256 was not rewritten"; exit 1; }
+          gh release upload "$GITHUB_REF_NAME" formula-pin/opencode-remote.rb --clobber
+          echo "formula: OK ${GITHUB_REF_NAME} — opencode-remote.rb (sha256 ${SHA}) attached; land it in Formula/ through a PR"
+
+      # P2-179 → eval-16: the completeness verdict runs on every release (a
+      # draft missing an installer fails here), but flipping it public is
+      # OPT-IN: only when the repository variable RELEASE_AUTO_PUBLISH is
+      # exactly "true". A public release becomes `releases/latest` — the
+      # update feed every installed app polls — so until the pipeline has
+      # shipped end to end that switch stays a human decision: the run ends
+      # with a complete, verified DRAFT and the job summary carries the one
+      # command that publishes it.
+      - name: Publish the draft release only when every required asset is attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTO_PUBLISH: ${{ vars.RELEASE_AUTO_PUBLISH }}
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json isDraft,tagName,assets > release-view.json
+          npx --yes tsx@4.23.12 scripts/release-publish.ts release-view.json
+          if [ "${AUTO_PUBLISH:-}" = "true" ]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false
           else
-            git commit -m "pilot(release): pin Formula checksum for ${VERSION}"
-            git push origin HEAD:main || echo "::warning::could not push the Formula pin — patch it manually from this run's log"
+            {
+              echo "### ${GITHUB_REF_NAME} is a complete, verified DRAFT"
+              echo ""
+              echo "Nothing was published (repository variable RELEASE_AUTO_PUBLISH is not \"true\")."
+              echo "Download the installers from the draft, try them, then publish:"
+              echo ""
+              echo "    gh release edit ${GITHUB_REF_NAME} --draft=false"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "release-publish: draft kept — publish with: gh release edit ${GITHUB_REF_NAME} --draft=false"
           fi

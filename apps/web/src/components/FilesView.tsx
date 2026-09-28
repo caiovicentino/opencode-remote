@@ -56,9 +56,14 @@ export default function FilesView({
 
   function load() {
     void (async () => {
-      const res = await request("GET", "/__ocr/files");
-      if (res.status === 200) setFiles((res.body as { files?: RemoteFile[] }).files ?? []);
-      else setError(`list failed (${res.status})`);
+      // eval-10: localized, and an offline throw no longer escapes unhandled
+      try {
+        const res = await request("GET", "/__ocr/files");
+        if (res.status === 200) setFiles((res.body as { files?: RemoteFile[] }).files ?? []);
+        else setError(t("filesListFailed"));
+      } catch {
+        setError(t("filesListFailed"));
+      }
     })();
   }
 
@@ -95,7 +100,7 @@ export default function FilesView({
         const mime = file.type || mimeFor(f.name);
         const kind = kindOf(mime, f.name);
         if (kind === "none") {
-          setError(`no preview for ${mime || "this file type"} — use Save`);
+          setError(t("filesNoPreview"));
           return;
         }
         if (kind === "text") {
@@ -127,14 +132,14 @@ export default function FilesView({
     <div className="screen">
       <header>
         <button onClick={onBack} aria-label={t("back")}><IconArrowLeft /></button>
-        <h1 className="pane-title">Files on {""}this machine</h1>
+        <h1 className="pane-title">{t("filesTitle")}</h1>
         <button onClick={load} aria-label={t("refresh")}>
           <IconRefresh />
         </button>
       </header>
       <div className="list">
         {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-        {files.length === 0 && !error && <p className="muted">No files yet.</p>}
+        {files.length === 0 && !error && <p className="muted">{t("filesEmpty")}</p>}
         {files.map((f) => {
           const kind = kindOf(mimeFor(f.name), f.name);
           const tappable = kind !== "none";

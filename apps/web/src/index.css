@@ -1251,6 +1251,12 @@ button.desk-new:disabled {
 .screen input[aria-invalid="true"] {
   border-color: var(--danger);
 }
+/* P3-378 (eval-09): the focus ring agrees with the verdict (P3-431's rule for
+   the pairing box) — a refused address kept the global accent "focused/valid"
+   ring around its red border, right above the red sentence. */
+.browser-bar input[aria-invalid="true"]:focus-visible {
+  outline-color: var(--danger);
+}
 .browser-frame {
   flex: 1;
   min-height: 0;
@@ -2103,7 +2109,56 @@ button.desk-new:disabled {
    class now resolves to the shared button.primary accent fill (P3-449/P3-450:
    one primary dialect per journey — the wizard's "Começar", the reconnect
    card and this submit all wear the same identity), instead of a one-off
-   paint. The phone's scan-first screen never renders this combo. */
+   paint. The phone's scan-first screen never renders this combo.
+   P3-415 (eval-09): the submit keeps that shared fill only where the paste
+   form is the ceremony's SOLE path. PairingView picks one lead per render
+   (lib/pairlead: the agent-down card's reconnect > the host entry > the
+   paste form) and only the lead wears the accent — on main two renders broke
+   PRODUCT.md's "accent = the screen's highest action": the add-machine
+   ceremony (host entry on screen, P3-334's primary story, painted as a plain
+   row under a green submit) and the agent-down ceremony (two green CTAs, the
+   full-width submit out-shouting the reconnect its own copy names first).
+   Off-lead, the submit is the solid secondary below: the card's own surface,
+   a firm --border-strong edge and the full-contrast semibold label — an
+   enabled control that simply is not the loudest (never the recessed --bg
+   chip that read as a disabled ghost), still a step above the quiet scan
+   entry (transparent, resting border, regular weight: P3-366's paste-first
+   rank). */
+.pair-submit.secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  font-weight: 600;
+}
+.pair-submit.secondary:hover {
+  background: var(--gray-hover);
+}
+/* P3-415: the lead host entry's accent mark — a leading phone tile in the
+   accent fill (the glyph the paired rail's "pair a phone" slot wears) plus
+   an accent chevron, and the section card takes a faint accent edge so the
+   whole direction reads as the recommended one. Scoped to the ceremony's
+   lead section: Settings' entry keeps its quiet row. The compound selector
+   outranks the base .pair-section card rule, which is declared further down. */
+.pair-section.pair-section-lead {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.pair-remote-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  background: var(--bg2);
+  color: var(--text);
+}
+.pair-section-lead .pair-remote-icon {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.pair-section-lead .pair-remote-chevron {
+  color: var(--accent);
+}
 
 /* explicit remote-pairing entry (desktop shell, P1-070): a quiet row inside
    its section card — from the unpaired screen or Settings. P3-335: it is the
@@ -2774,15 +2829,18 @@ button.desk-new:disabled {
   display: none;
 }
 
-/* first-run splash (P1-050): wordmark, value line, 3-step onboarding */
-.splash-logo {
-  border-radius: 10px;
+/* first-run splash (P1-050): value line, 3-step onboarding. P3-373
+   (eval-09): the dialog's brand block is the shared glyph + serif wordmark
+   (.welcome-mark / .brand-wordmark) kept together as one unit — the card's
+   14px flex gap would pry them apart — and the wordmark keeps the display
+   size the card's generic h2 rule would otherwise shrink. */
+.pair-overlay-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
-.splash-wordmark {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+.pair-overlay-card .pair-overlay-brand .brand-wordmark {
+  font-size: var(--font-size-xl);
 }
 .splash-value {
   color: var(--text);
@@ -6101,6 +6159,7 @@ mark.content-hit-mark {
   .pair-gate-hint-action:focus-visible,
   .ask-actions button:focus-visible,
   .ask-input:focus-visible,
+  .browser-bar input[aria-invalid="true"]:focus-visible,
   .cam-question:focus,
   .screen-peek-ask input:focus {
     outline: 2px solid Highlight;
@@ -6120,4 +6179,46 @@ mark.content-hit-mark {
   .typing span {
     border: 1px solid CanvasText;
   }
+}
+
+/* eval-10: agent question options — the global `input { width: 100% }` rule
+   turned every radio/checkbox into a full-width line floating above its label
+   (13px-tall tap target, 390 and 1440 evidence). One 44px row per option,
+   control first, label wraps beside it. */
+.q-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.q-opt input[type="radio"],
+.q-opt input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.q-opt-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* eval-10: the rewind chip keeps its quiet 23px look but gets a 44px-tall
+   invisible hit area (the B2 pattern of the composer/header icon buttons) */
+.msg-rewind {
+  position: relative;
+}
+.msg-rewind::before {
+  content: "";
+  position: absolute;
+  inset: -11px -4px;
+}
+
+/* eval-10 (eval-20 finding): the recents row reserves the pin toggle's lane —
+   the absolute 44px pin painted over the ellipsized title at 390px */
+.drawer-recent-item .drawer-recent {
+  padding-right: calc(44px + var(--space-2));
 }

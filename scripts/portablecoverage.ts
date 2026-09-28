@@ -90,9 +90,15 @@ export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "unit.test.ts", cause: "network-port" },
   { file: "daemon-hardening.test.ts", cause: "long-lived-child" },
   { file: "judge-bridge.test.ts", cause: "chmod" },
-{ file: "hello-replay.test.ts", cause: "long-lived-child" },
+  { file: "hello-replay.test.ts", cause: "long-lived-child" },
   { file: "sdk-e2e.test.ts", cause: "long-lived-child" },
-{ file: "deploy-preflight.test.ts", cause: "network-port" },
+  { file: "deploy-preflight.test.ts", cause: "network-port" },
+  { file: "pilot-diskfull.test.ts", cause: "long-lived-child" },
+  { file: "retention.test.ts", cause: "network-port" },
+  { file: "pilotwatch-daemon.test.ts", cause: "long-lived-child" },
+  { file: "relay-hosting.test.ts", cause: "long-lived-child" },
+  // eval-16: runs a fake `gh` executable (shebang + mode 0755) plus bash/sed.
+  { file: "release-distribution.test.ts", cause: "chmod" },
 ];
 
 /**

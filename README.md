@@ -50,7 +50,11 @@ private. That is the product: **local power, remote control, zero trust**.
   normal actionable card for manual review. Asks that are already answered
   collapse into "resolved" lines, duplicates of the same request render once,
   and tapping a stale card says "Permission already resolved" instead of a
-  raw 404
+  raw 404. An ask the daemon never answers (asked before AutoMode was switched
+  on, or while the daemon restarted) surfaces the same way after 10 s
+  ("AutoMode hasn't answered"), and every reconnect re-reads the pending
+  approvals and questions — an ask made while the phone slept is never
+  invisible
 - **Approval preview** — permission cards show the first lines of the
   command/patch being requested (from the permission event payload) before
   you Approve/Deny, so you always know what you're green-lighting
@@ -496,11 +500,15 @@ private. That is the product: **local power, remote control, zero trust**.
   empty — and swaps to the shared SVG reload icon only once a page is loaded (the old bar
   showed a reload that did nothing on the empty pane). While empty the bar shows only a
   generic `https://…` placeholder (P3-448) — never a concrete URL that reads as already
-  typed. A typed URL that
-  parses but isn't http(s) — `file://`, `data:`, … — is rejected with named feedback (P3-378):
-  the address bar flags red and a specific sentence explains the sandbox's http(s)-only rule
-  and the way out (serve the folder over HTTP and open its localhost URL) instead of leaving
-  the typed URL silently ignored. A download started
+  typed. The bar answers every typed address (P3-378): a schemeless host is completed the
+  way a browser omnibox does — `localhost:5173` or `127.0.0.1:8080` load over http (dev
+  servers), `example.com/docs` over https; a `file://` URL or a pasted local path is
+  rejected with named feedback — the address bar flags red (its focus ring too) and a
+  specific sentence explains the sandbox's http(s)-only rule and the way out (serve the
+  folder over HTTP and open its localhost URL); any other scheme (`javascript:`, `data:`,
+  `about:`, …) gets its own "only http(s) addresses" sentence. The sentence is announced to
+  screen readers, the page already loaded stays put, and editing the address dissolves the
+  verdict — a typed URL is never silently ignored. A download started
   in the pane follows the shell's one download policy — no native dialog, sanitized name,
   saved to the system Downloads folder or refused with a log line (P2-241). The Playwright
   screenshot mode (`/api/browse`) remains the fallback in the PWA
@@ -604,9 +612,14 @@ opencode serve --port 4096    # if not already running
 node cli.mjs setup --relay=wss://your-host.ts.net:8788
 ```
 
-The wizard checks node/opencode/whisper/ffmpeg, installs launchd services
-with KeepAlive and prints the pairing QR. Point the camera at it from the
-PWA and you are in.
+The wizard checks node/opencode/whisper/ffmpeg, builds the phone web app on
+the first run (`apps/web/dist` — what the `com.ocr.pwa` origin serves),
+installs launchd services with KeepAlive and prints the pairing QR with the
+relay you passed. Point the camera at it from the PWA and you are in. The
+relay address is dialed by the **phone**, so `setup` refuses an empty or
+loopback one (`127.0.0.1`, `localhost`) instead of printing a QR that can never
+pair. Install from this repository only: the name `opencode-remote` on the npm
+registry belongs to an unrelated project.
 
 The phone's PWA origin is the `com.ocr.pwa` launchd service — it serves the
 built `apps/web/dist` statically on `127.0.0.1:5173` (P2-075), never a dev
@@ -747,6 +760,15 @@ Node never trusts the macOS keychain.
 
 ### Desktop app installer (DMG)
 
+**Release status.** Pushing a `v*` tag runs `.github/workflows/release.yml`,
+which ends with a complete, verified **draft** release (installers for both
+Mac architectures and Windows, update feeds, checksums, winget manifests,
+Homebrew cask and pinned formula). The draft only goes public when the owner
+publishes it (`gh release edit vX.Y.Z --draft=false`) or when the repository
+variable `RELEASE_AUTO_PUBLISH` is `true`. Until the first release is
+published the Releases page is empty — build from source (Quick Start above)
+in the meantime.
+
 Every GitHub release ships a real macOS installer in **two** architectures
 (P2-191): `OpenCode-Remote-<version>-arm64.dmg` for Apple Silicon and
 `OpenCode-Remote-<version>-x64.dmg` for Intel (electron-builder `dmg` target,
@@ -761,8 +783,12 @@ before packaging and picks one of two modes:
   credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
   `APPLE_TEAM_ID`). The bundle is signed with hardened runtime and the
   `build/entitlements.mac.plist` entitlements, then notarized.
-- **Ad-hoc (default)** — without those secrets the DMG ships ad-hoc signed and
-  you right-click → **Open** once to pass Gatekeeper. The preflight only turns
+- **Ad-hoc (default)** — without those secrets the DMG ships ad-hoc signed
+  (electron-builder `identity: "-"`, hardened runtime + entitlements) and
+  Gatekeeper blocks the first launch once. On **macOS 15 (Sequoia) or newer**:
+  try to open the app, then go to **System Settings → Privacy & Security** and
+  click **Open Anyway** (Apple removed the right-click override in macOS 15).
+  On macOS 14 or older: right-click the app → **Open**. The preflight only turns
   notarization on when the certificate is actually usable: a certificate
   configured while `CSC_IDENTITY_AUTO_DISCOVERY=false` (electron-builder would
   silently ignore it) or notarization credentials without a certificate are
@@ -778,34 +804,55 @@ expired mid-release, or whose profile silently dropped to ad-hoc fails the job
 before `gh release upload` — never as a published "app is damaged" surprise. An
 **ad-hoc** release is held to the ad-hoc bar: the signature itself must verify
 and the tools must produce readable verdicts, but spctl rejecting the build and
-an absent staple are exactly the documented right-click → **Open** flow, so the
+an absent staple are exactly the documented first-open flow (above), so the
 no-secrets release path stays green. Since P2-295 the same three verdicts also
 run against every DMG **container** you actually download (`spctl -t open` and
 `stapler validate` on each image, one per architecture): the release ships only
 when the containers' own Gatekeeper verdicts match the documented packaging
 shape — the signature and, on a notarized release, the stapled ticket live on
 the app inside the DMG, and an unsigned container being rejected still just
-means right-click → **Open** once.
+means the one-time first-open step above.
 
 Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
-(AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
-time).
+(AGPL-3.0-only). Homebrew only installs formulae **from a tap** — a
+downloaded `.rb` file is refused ("Homebrew requires formulae to be in a
+tap") unless `HOMEBREW_DEVELOPER` is set — so tap this repository:
+
+```bash
+brew tap caiovicentino/opencode-remote https://github.com/caiovicentino/opencode-remote
+brew install caiovicentino/opencode-remote/opencode-remote
+opencode-remote setup --relay=wss://<your-mac>.ts.net:8788
+```
+
+The formula builds the phone web app at install time. Each release attaches
+the formula already pinned to that release's tarball (`opencode-remote.rb`,
+sha256 computed from the published asset); the pipeline never pushes to
+`main`, so that file lands in `Formula/` through a normal PR — until the first
+one does, the formula in `main` still carries the placeholder checksum and is
+not installable. After `brew upgrade opencode-remote`, run `opencode-remote
+setup` again (the launchd services point at the versioned install).
 
 On Windows, the `caiovicentino.opencode-remote` winget package follows the
 same path (P2-245): every release attaches the three required manifests
 (version, installer and en-US locale), generated and verified by the release
 pipeline itself from the sha256 published in `checksums.txt` — download the
-three `.yaml` files from the releases page and run
-`winget install --manifest caiovicentino.opencode-remote.yaml` in their
-folder; this is an alternative install path to the loose setup exe, just like
-the Homebrew formula on the Mac.
+three `.yaml` files from the releases page into one folder, allow local
+manifests once from an **administrator** terminal
+(`winget settings --enable LocalManifestFiles` — winget refuses `--manifest`
+installs otherwise) and run `winget install --manifest <that folder>`; this is
+an alternative install path to the loose setup exe, just like the Homebrew
+formula on the Mac.
 
 The same courtesy runs the other way for Mac users (P2-255): every release
 attaches `opencode-remote-cask.rb`, a Homebrew cask manifest covering both DMG
 architectures (Apple Silicon and Intel), generated and verified by the release
-pipeline from the sha256 published in `checksums.txt` — download it from the
-releases page and run `brew install --cask ./opencode-remote-cask.rb` to
-install the app with one line instead of dragging a DMG by hand.
+pipeline from the sha256 published in `checksums.txt`. Homebrew refuses cask
+files outside a tap too ("Homebrew requires casks to be in a tap"), so the
+attached file is meant to be committed to a tap (e.g. as
+`Casks/opencode-remote.rb` in this repository, then
+`brew install --cask caiovicentino/opencode-remote/opencode-remote` after the
+`brew tap` above); a one-off `HOMEBREW_DEVELOPER=1 brew install --cask
+./opencode-remote-cask.rb` also works. Until then, install from the DMG.
 
 Since P2-146 the macOS packaging also produces the zip artifacts Squirrel.Mac
 needs (one per architecture, additive to the DMGs) and the release workflow
@@ -820,7 +867,10 @@ applies the release in the background (with the consent dialog below) — but
 only when the running app is **Developer ID signed** (P2-136): Squirrel.Mac
 refuses an update whose code signature does not match the installed app, so
 ad-hoc signed builds (the default without signing secrets) keep the manual
-flow via the release page.
+flow via the release page — the app reads its own signature (`codesign`)
+before arming Squirrel.Mac and, when it is ad-hoc or unsigned, shows "Update
+available — open release page" instead of a background download that could
+never be applied.
 
 **Install it once from the DMG (P2-211).** The updater can only replace a
 bundle living in **Applications** — an app opened straight from the mounted
@@ -2072,15 +2122,23 @@ two-column composition, vertically centered, so a 1440px window no longer
 renders the phone column with ~70% of it empty and the map's last row
 (Configurações) no longer clips at the fold. The brand header stays a direct
 child of the scroll container, outside the composition, so its sticky block
-(P3-423) keeps the full-height containing block. The submit inside
-the client ceremony wears the shared accent primary identity (P3-433): the
-demotion P3-415 gave it (a quiet recessed chip) was tuned for a gate whose
-first contact has since moved to the degraded card (P3-365) — every desktop
-render of this form is now the standalone manual ceremony, where the paste
-form IS the main action and the grey-flat chip read as a disabled ghost beside
-the error. It renders with the same accent fill as the wizard's "Começar" and
-the reconnect card (one primary dialect per journey, P3-449/P3-450), keeping
-its primary rank over the quiet scan option (P3-366). When the local agent is
+(P3-423) keeps the full-height containing block. Each render of the
+ceremony has exactly ONE accent-filled action, owned by the path it leads
+with (P3-415, `lib/pairlead`; docs/PRODUCT.md: accent = the screen's highest
+action): with the local agent down, the verdict card's "Reconnect now"; when
+the host entry renders (the add-machine ceremony), the entry itself — a
+leading phone tile in the accent fill, the glyph the paired rail's "pair a
+phone" slot wears, on a card with an accent edge; only when the paste form is
+the ceremony's sole path does its submit wear the shared accent fill (P3-433,
+the same identity as the wizard's "Começar" and the reconnect card —
+P3-449/P3-450). Everywhere else the submit is the solid secondary: the card's
+surface, a firm border and the full-contrast semibold label — an enabled
+control that is simply not the loudest (never the recessed grey chip the
+first P3-415 attempt shipped, which read as a disabled ghost beside the
+error) — still one step above the quiet scan option (P3-366). The scan option acquires the
+camera once per opening (eval-09): the screen behind it re-renders on every pairing-state
+push, and that no longer restarts the camera — the preview does not flicker and a dead
+feed stays on its unavailable panel with the paste action. When the local agent is
 down (P3-427), the scan entry and the host entry disappear from this surface
 entirely — the QR they promise is minted by the daemon that is out — and a
 calm verdict card ("The local agent is not running.") carries the reconnect
@@ -2116,7 +2174,10 @@ primary element on that screen. The paste field reads as the same care
 and autocorrect off, sized for the one `opencode-remote://` URI it receives
 instead of a raw four-row browser textarea. The brand header sits centered on the same
 axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
-as one product, accent glyph included (P3-373).
+as one product, accent glyph included (P3-373). The "pair a phone" QR dialog
+wears the same header (P3-373, eval-09): the accent glyph over the serif
+wordmark replaces the P1-050 splash's app icon over a sans title, so the
+desktop's primary pairing moment no longer switches brand language.
 
 **Live auto-connect state (P3-332)**: in local mode the pairing screen no
 longer sits idle while the copy promises the shell "connects by itself" — a
@@ -2204,9 +2265,10 @@ in the electron-builder mac targets; the branded
 installer window, semantic version in the About panel and in the DMG file
 name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
 bundle **and** the DMG artifact. Local builds are ad-hoc signed with hardened
-runtime and the shared entitlements (`build/entitlements.mac.plist`) — on
-first launch, right-click → **Open** once to pass Gatekeeper; afterwards the
-app behaves like any installed app. P2-169: the first time you record a voice
+runtime and the shared entitlements (`build/entitlements.mac.plist`) — a
+downloaded copy is blocked once by Gatekeeper (macOS 15+: **System Settings →
+Privacy & Security → Open Anyway**; macOS 14 and older: right-click → **Open**);
+afterwards the app behaves like any installed app. P2-169: the first time you record a voice
 message or scan the pairing QR, macOS asks for **microphone** and **camera**
 permission — grant both, or the signed build silently blocks those features
 (denied by mistake? System Settings → Privacy & Security → Microphone /
@@ -2764,12 +2826,26 @@ text) fails the release step **before anything is written**. The validity
 rule lives in one shared module (`apps/desktop/scripts/rolloutpercent.mjs`)
 so a writer and the installed client (`updaterollout.ts`) can never drift
 apart — a parity test in the unit battery reads the client's real source and
-fails the moment the field names or the 0–100 limits diverge. Release a
-fraction of the fleet from the CLI with:
+fails the moment the field names or the 0–100 limits diverge. Pushing the
+tag already runs the workflow, so the simplest way to release a fraction of
+the fleet is to set the percentage on the resulting **draft** before
+publishing it:
 
 ```bash
-gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20
+gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20   # on the draft — also regenerates checksums.txt
+gh release edit vX.Y.Z --draft=false                             # then publish
 ```
+
+Running `rollout.mjs` directly on a draft is NOT the recommended path: it
+rewrites the four feeds but leaves the already-attached `checksums.txt`
+stale for those four files (`shasum -a 256 -c checksums.txt` flags them
+FAILED). The dispatch above re-runs release-publish, which re-hashes every
+asset. `rollout.mjs` is the tool for releases already PUBLISHED (below).
+
+`gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20` also works:
+the run queues behind the tag-push run (one release run per ref), reuses the
+existing draft and re-uploads everything with the percentage set; it refuses
+a tag whose release is already published.
 
 **Suspending or advancing a published release (P3-460)**: a release already
 on GitHub can move its rollout without republishing anything. From the repo

@@ -1,0 +1,75 @@
+verify	UNKNOWN STEP	﻿2026-09-23T14:51:59.7985590Z Current runner version: '2.337.0'
+verify	UNKNOWN STEP	2026-09-23T14:51:59.8011242Z ##[group]Runner Image Provisioner
+verify	UNKNOWN STEP	2026-09-23T14:51:59.8012222Z Hosted Compute Agent
+verify	UNKNOWN STEP	2026-09-23T14:52:38.4890672Z ##[group]Run npm run test:unit
+verify	UNKNOWN STEP	2026-09-23T14:52:38.4891179Z [36;1mnpm run test:unit[0m
+verify	UNKNOWN STEP	2026-09-23T14:52:38.4980098Z shell: /usr/bin/bash -e {0}
+verify	UNKNOWN STEP	2026-09-23T14:53:13.7993778Z OK   P2-308: real release.yml — zero feed-hash parity problems
+verify	UNKNOWN STEP	2026-09-23T14:53:13.7994740Z OK   P2-308: real release.yml — exactly one feedhash step, after the consistency step, shell: bash, own timeout
+verify	UNKNOWN STEP	2026-09-23T14:53:13.7995907Z OK   P2-308: real release.yml — the feedhash step downloads the release artifacts and measures sha512 base64 + size with node:crypto
+verify	UNKNOWN STEP	2026-09-23T14:53:13.7996740Z OK   P2-308: real release.yml — release-publish still needs release-feeds (P2-179 draft contract)
+verify	UNKNOWN STEP	2026-09-23T14:53:13.7997705Z OK   P2-308: purity — feedhash.ts uses no node:fs, no node:child_process, no node:net/http, no require and no fetch
+verify	UNKNOWN STEP	2026-09-23T14:53:13.9402468Z OK   P2-308: cli exits 0 printing OK when the declared digest matches the published bytes
+verify	UNKNOWN STEP	2026-09-23T14:53:14.0951523Z feedhash: FAIL latest.yml
+verify	UNKNOWN STEP	2026-09-23T14:53:14.0952948Z   - latest.yml: sha512 of "OpenCode Remote Setup 0.3.0.exe" does not match the published bytes — declared and measured digests diverge
+verify	UNKNOWN STEP	2026-09-23T14:53:14.0953605Z feedhash: 1 problem(s) found
+verify	UNKNOWN STEP	2026-09-23T14:53:14.0954729Z feedhash: a feed whose digest cannot be confirmed refuses the update on every installed machine — the release stays a draft
+verify	UNKNOWN STEP	2026-09-23T14:53:14.0970049Z OK   P2-308: cli exits 1 printing the divergent-digest problem (fail-closed)
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0196547Z ##[group]Run set -euo pipefail
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0196881Z [36;1mset -euo pipefail[0m
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0197169Z [36;1mnpx tsx scripts/reconnect.test.ts || {[0m
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0197646Z [36;1m  echo "reconnect.test.ts failed once — retrying (lost-frame race, gate-flaky)"[0m
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0198307Z [36;1m  npx tsx scripts/reconnect.test.ts[0m
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0198800Z [36;1m}[0m
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0259442Z shell: /usr/bin/bash -e {0}
+verify	UNKNOWN STEP	2026-09-23T14:54:30.0259699Z ##[endgroup]
+verify	UNKNOWN STEP	2026-09-23T14:54:31.1157034Z {"ts":"2026-09-23T14:54:31.111Z","level":"info","msg":"relay listening","data":{"port":36165,"tls":false,"tlsSource":"none","maxFrame":1000000,"maxPerRoom":10,"maxPerIp":20,"trustProxyHops":0,"ratePerMin":600,"rateBurst":1000,"pingIntervalS":30,"bufferCapBytes":4194304,"maxSocketsGlobal":1000,"joinDeadlineMs":60000,"roomBudgetWindowMs":3600000,"roomBudgetCapBytes":1073741824,"logLevel":"info","webRoot":false}}
+verify	UNKNOWN STEP	2026-09-23T14:54:31.7975349Z {"ts":"2026-09-23T14:54:31.797Z","level":"info","msg":"connection open","data":{"id":"smue84w390","total":1}}
+verify	UNKNOWN STEP	2026-09-23T14:54:32.8493627Z {"ts":"2026-09-23T14:54:32.849Z","level":"info","msg":"connection open","data":{"id":"smue84wwh1","total":2}}
+verify	UNKNOWN STEP	2026-09-23T14:54:32.8536116Z {"ts":"2026-09-23T14:54:32.853Z","level":"info","msg":"connection open","data":{"id":"smue84wwl2","total":3}}
+verify	UNKNOWN STEP	2026-09-23T14:54:32.8545782Z {"ts":"2026-09-23T14:54:32.854Z","level":"info","msg":"connection closed","data":{"id":"smue84wwh1","total":2}}
+verify	UNKNOWN STEP	2026-09-23T14:54:32.8656526Z handshake: OK
+verify	UNKNOWN STEP	2026-09-23T14:54:32.8701301Z op before restart: OK
+verify	UNKNOWN STEP	2026-09-23T14:54:34.8732951Z replayed hello refused (no confirm): OK
+verify	UNKNOWN STEP	2026-09-23T14:54:37.0785727Z replayed op frame dropped (no response): OK
+verify	UNKNOWN STEP	2026-09-23T14:54:37.0789883Z live session intact after replays: OK
+verify	UNKNOWN STEP	2026-09-23T14:54:37.0790682Z old daemon exited (forced=false)
+verify	UNKNOWN STEP	2026-09-23T14:54:37.9929297Z {"ts":"2026-09-23T14:54:37.992Z","level":"info","msg":"connection open","data":{"id":"smue850vc3","total":3}}
+verify	UNKNOWN STEP	2026-09-23T14:54:37.9998223Z op after daemon restart (auto re-handshake): OK
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0250317Z /home/runner/work/opencode-remote/opencode-remote/scripts/reconnect.test.ts:406
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0251764Z if (res.status !== 502) throw new Error(`expected 502 (opencode down), got ${res.status}`);
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0259066Z                               ^
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0259452Z 
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0259858Z Error: expected 502 (opencode down), got 410
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0260951Z     at <anonymous> (/home/runner/work/opencode-remote/opencode-remote/scripts/reconnect.test.ts:406:31)
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0261768Z 
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0262007Z Node.js v22.23.2
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0355258Z {"ts":"2026-09-23T14:54:38.035Z","level":"info","msg":"connection closed","data":{"id":"smue84wwl2","total":2}}
+verify	UNKNOWN STEP	2026-09-23T14:54:38.0549727Z reconnect.test.ts failed once — retrying (lost-frame race, gate-flaky)
+verify	UNKNOWN STEP	2026-09-23T14:54:39.1293117Z {"ts":"2026-09-23T14:54:39.127Z","level":"info","msg":"relay listening","data":{"port":37693,"tls":false,"tlsSource":"none","maxFrame":1000000,"maxPerRoom":10,"maxPerIp":20,"trustProxyHops":0,"ratePerMin":600,"rateBurst":1000,"pingIntervalS":30,"bufferCapBytes":4194304,"maxSocketsGlobal":1000,"joinDeadlineMs":60000,"roomBudgetWindowMs":3600000,"roomBudgetCapBytes":1073741824,"logLevel":"info","webRoot":false}}
+verify	UNKNOWN STEP	2026-09-23T14:54:39.7759713Z {"ts":"2026-09-23T14:54:39.775Z","level":"info","msg":"connection open","data":{"id":"smue8528v0","total":1}}
+verify	UNKNOWN STEP	2026-09-23T14:54:40.8220720Z {"ts":"2026-09-23T14:54:40.821Z","level":"info","msg":"connection open","data":{"id":"smue8531x1","total":2}}
+verify	UNKNOWN STEP	2026-09-23T14:54:40.8273166Z {"ts":"2026-09-23T14:54:40.827Z","level":"info","msg":"connection open","data":{"id":"smue853232","total":3}}
+verify	UNKNOWN STEP	2026-09-23T14:54:40.8276670Z {"ts":"2026-09-23T14:54:40.827Z","level":"info","msg":"connection closed","data":{"id":"smue8531x1","total":2}}
+verify	UNKNOWN STEP	2026-09-23T14:54:40.8390774Z handshake: OK
+verify	UNKNOWN STEP	2026-09-23T14:54:40.8435807Z op before restart: OK
+verify	UNKNOWN STEP	2026-09-23T14:54:42.8454751Z replayed hello refused (no confirm): OK
+verify	UNKNOWN STEP	2026-09-23T14:54:44.8479325Z replayed op frame dropped (no response): OK
+verify	UNKNOWN STEP	2026-09-23T14:54:44.8502721Z live session intact after replays: OK
+verify	UNKNOWN STEP	2026-09-23T14:54:44.8566974Z old daemon exited (forced=false)
+verify	UNKNOWN STEP	2026-09-23T14:54:45.9760098Z {"ts":"2026-09-23T14:54:45.975Z","level":"info","msg":"connection open","data":{"id":"smue857133","total":3}}
+verify	UNKNOWN STEP	2026-09-23T14:54:45.9825146Z op after daemon restart (auto re-handshake): OK
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9981894Z /home/runner/work/opencode-remote/opencode-remote/scripts/reconnect.test.ts:177
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9982789Z       reject(new Error("request timeout"));
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9983335Z              ^
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9983564Z 
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9983690Z Error: request timeout
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9984518Z     at Timeout._onTimeout (/home/runner/work/opencode-remote/opencode-remote/scripts/reconnect.test.ts:177:14)
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9985325Z     at listOnTimeout (node:internal/timers:585:17)
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9985776Z     at process.processTimers (node:internal/timers:521:7)
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9986026Z 
+verify	UNKNOWN STEP	2026-09-23T14:54:53.9986115Z Node.js v22.23.2
+verify	UNKNOWN STEP	2026-09-23T14:54:54.0057385Z {"ts":"2026-09-23T14:54:54.005Z","level":"info","msg":"connection closed","data":{"id":"smue853232","total":2}}
+verify	UNKNOWN STEP	2026-09-23T14:54:59.0208822Z ##[error]Process completed with exit code 1.
+verify	UNKNOWN STEP	2026-09-23T14:54:59.0359416Z Post job cleanup.
+verify	UNKNOWN STEP	2026-09-23T14:54:59.5894755Z [command]/usr/bin/git version
