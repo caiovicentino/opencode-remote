@@ -10,6 +10,7 @@
  *    reviewers, gatekeeper) from phase transitions in the events feed.
  */
 import { TZ } from "./log";
+import { SHA_RE } from "./deployguard";
 import type { PilotEvent } from "./events";
 
 // P1-075 lesson-injection instrumentation — rebuilt by eval 05 in its own
@@ -172,9 +173,13 @@ export function rollbackHealthAlert(events: PilotEvent[]): PilotEvent | null {
 
 /** A healthy pilot touches its heartbeat on every loop pass (5–20s) plus a
  * 60s timer while agents run, and its own watchdog exits after 3 min of
- * silence (state.ts startWatchdog) for KeepAlive to respawn it — so silence
- * past 5 min means nobody is feeding it. */
-export const PILOT_ALIVE_MAX_MS = 5 * 60_000;
+ * silence (state.ts startWatchdog) for KeepAlive to respawn it. But judgeGate
+ * runs the eval battery through execFileSync (judge.ts), which BLOCKS the loop
+ * for up to 30 min — real gates ran 6.0–6.3 min and pilot.log shows 17
+ * watchdog exits with 3.0–5.7 min of silence — so 5 min of silence is a
+ * healthy gate, not a stalled loop. 10 min (eval-01's stale boundary) is the
+ * smallest threshold that never flashes on a real gate. */
+export const PILOT_ALIVE_MAX_MS = 10 * 60_000;
 /** Silence past 30 min is an outage, not a restart hiccup. */
 export const PILOT_DOWN_AFTER_MS = 30 * 60_000;
 /** A dead pid only means "down" once KeepAlive had its chance to respawn
@@ -352,6 +357,77 @@ export function costSummary(
 export const DEPLOY_LAG_WARN_MS = 2 * 3_600_000;
 /** …and older than this is an outage of the delivery path. */
 export const DEPLOY_LAG_CRITICAL_MS = 24 * 3_600_000;
+
+/** How far the lag walk scans origin/main's first-parent history looking for
+ * prod: ~8 weeks of this repo's pace. Beyond it the lag is unknown (null),
+ * never a wrong number. */
+export const DEPLOY_LAG_WALK_MAX = 500;
+
+/** One first-parent commit of origin/main, newest first. */
+export interface LagCommit {
+  sha: string;
+  /** committer epoch seconds */
+  ct: number;
+}
+
+/**
+ * Deploy lag measured the way the pilot actually deploys (P2-058): production
+ * only ever runs gate-verified merge SHAs, and every verified merge is
+ * followed by bookkeeping commits on main (`mark done`, scribe lessons,
+ * strategist refills) that never become a deploy target alone. Counting ALL
+ * commits `prod..origin/main` made a HEALTHY idle fleet read 1–2 behind
+ * forever — `warn` after 2 h, `critical` after 24 h, on 2026-09-26 with the
+ * pilot alive — so `behind` counts only verified, non-quarantined merges
+ * after prod (the same rule `latestDeployableSha`/`pickDeployableSha` use),
+ * `pendingSince` dates the OLDEST such merge, and the raw commit total stays
+ * informational (`behindTotal`).
+ *
+ * Unknown stays unknown: when prod is not on origin/main's first-parent
+ * history within the walk cap (or git answers nothing), every field is null
+ * and no lag flag is raised — a wrong alarm is worse than a dash.
+ */
+export function deployLagFacts(input: {
+  prodSha: string | null;
+  mainSha: string | null;
+  /** newest-first first-parent history of origin/main (capped by the caller) */
+  history: LagCommit[];
+  /** verified-merges.jsonl rows — the gatekeeper's deployable SHAs */
+  verified: { sha?: string }[];
+  /** quarantine.jsonl rows — a quarantined merge is never the deploy target */
+  quarantined: { sha?: string }[];
+}): { behind: number | null; behindTotal: number | null; pendingSinceMs: number | null } {
+  const { prodSha, mainSha } = input;
+  if (!prodSha || !mainSha) return { behind: null, behindTotal: null, pendingSinceMs: null };
+  if (prodSha === mainSha) return { behind: 0, behindTotal: 0, pendingSinceMs: null };
+  const verified = new Set(
+    input.verified.filter((v) => typeof v?.sha === "string" && SHA_RE.test(v.sha)).map((v) => v.sha!),
+  );
+  const quarantined = new Set(
+    input.quarantined.filter((q) => typeof q?.sha === "string" && SHA_RE.test(q.sha)).map((q) => q.sha!),
+  );
+  let behindTotal: number | null = null;
+  let pendingSinceMs: number | null = null;
+  let pending = 0;
+  let oldestPending = Number.POSITIVE_INFINITY;
+  for (const h of input.history ?? []) {
+    if (typeof h?.sha !== "string" || !Number.isFinite(h?.ct)) continue;
+    if (h.sha === prodSha) {
+      return {
+        behind: pending,
+        behindTotal,
+        pendingSinceMs: pending > 0 && Number.isFinite(oldestPending) ? oldestPending : null,
+      };
+    }
+    behindTotal = (behindTotal ?? 0) + 1;
+    if (verified.has(h.sha) && !quarantined.has(h.sha)) {
+      pending++;
+      oldestPending = Math.min(oldestPending, h.ct * 1000);
+    }
+  }
+  // prod never showed up on origin/main's first-parent history (cap hit, or
+  // the checkout diverged): the lag is unknown, not zero and not guessed.
+  return { behind: null, behindTotal: null, pendingSinceMs: null };
+}
 
 /** The facts attentionFlags weighs (the digest's own shape, loosely typed). */
 export interface AttentionInput {

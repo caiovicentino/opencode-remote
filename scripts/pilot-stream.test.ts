@@ -58,6 +58,17 @@ check("frame: newlines can never smuggle a field through the id", !sseFrame("x",
   check("follower: last delivered line trimmed away → resumes by ts, nothing lost", JSON.stringify(f.poll()) === JSON.stringify([line(9), line(10), line(11)]));
   const g = new EventsFollower(() => `${line(1)}\n`);
   check("follower: the first poll without prime primes (no replay of history)", g.poll().length === 0);
+  // two events in the SAME millisecond: the content resume must deliver the
+  // appended one — the ts fallback (`ts > since`) would drop it (equal ts is
+  // not >), which is exactly the deploy `start` + guard refusal that land 1 ms
+  // apart
+  const sameTs = (i: number) => JSON.stringify({ ts: "2026-09-27T12:01:00.000Z", type: "deploy", phase: i === 1 ? "start" : "disk-guard", ok: false, detail: "x" });
+  const h = new EventsFollower(() => text);
+  text = `${sameTs(1)}\n`;
+  h.prime();
+  text = `${sameTs(1)}\n${sameTs(2)}\n`;
+  check("follower: an event appended in the SAME millisecond is still delivered (content resume, not the ts fallback)", JSON.stringify(h.poll()) === JSON.stringify([sameTs(2)]), JSON.stringify(h.poll()));
+  check("follower: no change after the same-ms pair → nothing", h.poll().length === 0);
 }
 
 // ── 3. hub with fake responses ─────────────────────────────────────────────

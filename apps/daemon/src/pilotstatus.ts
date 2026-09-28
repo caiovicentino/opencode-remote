@@ -8,33 +8,38 @@
 // alerts. The daemon is the observer that stays up when the pilot is gone, so
 // it answers all of it from the pilot's own records:
 //
-//   pilot    heartbeat + pid probe      → alive | stale | down | absent
-//   deploy   prod HEAD vs origin/main   → commits behind, oldest pending, hold
+//   pilot    heartbeat + pid probe + pid identity  → alive | stale | down | absent
+//   deploy   prod HEAD vs the verified merges on origin/main → merges behind,
+//            oldest pending, hold (the raw commit count stays informational)
 //   disk     statfs of the prod volume  → free bytes vs the deploy guard floor
 //   queue    BACKLOG.md of origin/main  → ready / blocked (checkout fallback)
 //   cost     verified merges × ledgers  → tokens / USD / unpriced, 24h and 7d
 //   alerts   notify-pending.jsonl       → undelivered supervisor notifications
 //
 // Every verdict is a pure function in apps/pilot/src/metrics.ts; this module
-// only reads (git commands are read-only: rev-parse, rev-list, log, show —
-// never status/fetch, which could write the index or refs). All I/O is
-// injectable so the unit battery runs against a temp HOME.
+// only reads (git commands are read-only: rev-parse, log, show — never
+// status/fetch, which could write the index or refs; the pid identity probe is
+// a read-only `ps -o lstart=`). All I/O is injectable so the unit battery runs
+// against a temp HOME.
 import { execFile } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DISK_MIN_FREE_BYTES } from "../../pilot/src/disk";
+import { parseQuarantine, parseVerifiedMerges } from "../../pilot/src/deployguard";
 import type { PilotEvent } from "../../pilot/src/events";
 import {
+  DEPLOY_LAG_WALK_MAX,
   attentionFlags,
   costSummary,
   deployHold,
+  deployLagFacts,
   pilotLiveness,
   type AttentionFlag,
   type CostSummary,
   type DeployHold,
-  type MergeRecord,
+  type LagCommit,
   type PilotLiveness,
 } from "../../pilot/src/metrics";
 import { queueView } from "./backlogview.js";
@@ -54,9 +59,15 @@ export interface PilotStatus {
   deploy: {
     prodSha: string | null;
     mainSha: string | null;
-    /** commits on origin/main not in production (null = unknown) */
+    /** verified merges on origin/main still pending in production (null =
+     * unknown; the deploy target rule is the pilot's own — bookkeeping
+     * commits after a merge never deploy alone, so a healthy idle fleet reads
+     * 0, not 1–2) */
     behind: number | null;
-    /** committer date of the oldest undeployed commit */
+    /** informational: ALL first-parent commits on origin/main after prod,
+     * capped at DEPLOY_LAG_WALK_MAX (null = unknown) */
+    behindTotal: number | null;
+    /** committer date of the oldest pending verified merge */
     pendingSince: string | null;
     /** mtime of FETCH_HEAD — how fresh origin/main itself is */
     fetchedAt: string | null;
@@ -81,6 +92,17 @@ export interface PilotStatusDeps {
   git?: GitRunner;
   /** pid probe: true alive, false gone, null unknown */
   pidAlive?: (pid: number) => boolean | null;
+  /**
+   * pid identity probe: when the recorded pid holds a LIVE process, when did
+   * THAT process start (epoch ms; null = unknown)? `kill(pid, 0)` cannot say
+   * the process is the pilot — on this host the pid space wraps every ~23 min,
+   * so a dead pilot's pid is reassigned within hours, and a long-lived squatter
+   * plus a third-party heartbeat write would resurrect it. The default probe
+   * reads `ps -o lstart=` (read-only) and the caller compares it with the
+   * pid file's mtime: ensureSingleton writes pilot.pid at boot, so the REAL
+   * pilot must have started before that instant.
+   */
+  pidIdentity?: (pid: number) => Promise<number | null>;
   statfs?: (path: string) => { freeBytes: number; totalBytes: number } | null;
   /** seam for a daemon-side watchdog verdict; absent → heartbeat file + pid */
   liveness?: (facts: {
@@ -111,6 +133,69 @@ export function probePid(pid: number): boolean | null {
     if (code === "EPERM") return true;
     return null;
   }
+}
+
+/**
+ * lstart answers in whole seconds, so a freshly booted pilot can appear up to
+ * 1s "after" the pid file it wrote a moment earlier — never flag a mismatch
+ * inside this window. A real reuse (the pilot lived for hours before dying)
+ * exceeds it by hours.
+ */
+export const PID_IDENTITY_SKEW_MS = 3_000;
+
+const LSTART_MONTHS: Record<string, number> = {
+  Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+};
+
+/**
+ * The default identity probe: when did this pid's process start?
+ * `ps -o lstart=` (read-only; etimes is not a macOS keyword) under LC_ALL=C so
+ * the month name parses on every host locale. Returns null when the process is
+ * gone or ps is missing — unknown never flips a verdict by itself. The answer
+ * is only ever COMPARED with the pid file's mtime (same system clock), so no
+ * absolute-time guard is needed here.
+ */
+export function defaultPidStart(pid: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      { timeout: 2_000, windowsHide: true, env: { ...process.env, LC_ALL: "C" } },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const p = String(stdout).trim().split(/\s+/);
+        if (p.length !== 5 || !(p[1]! in LSTART_MONTHS) || !/^\d\d:\d\d:\d\d$/.test(p[3] ?? "")) return resolve(null);
+        const [h, m, s] = (p[3] ?? "").split(":").map(Number);
+        const d = new Date(Number(p[4]), LSTART_MONTHS[p[1]!]!, Number(p[2]), h, m, s);
+        resolve(Number.isFinite(d.getTime()) ? d.getTime() : null);
+      },
+    );
+  });
+}
+
+interface PidIdentityCacheEntry {
+  mtimeMs: number;
+  startMs: number | null;
+}
+/** pid → the identity answer for the pid file with that mtime (one ps per
+ * daemon lifetime per pid file generation; the pid file only changes at boot). */
+const pidIdentityCache = new Map<number, PidIdentityCacheEntry>();
+
+async function pidStartFor(
+  pid: number,
+  mtimeMs: number,
+  probe: (pid: number) => Promise<number | null>,
+): Promise<number | null> {
+  const hit = pidIdentityCache.get(pid);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.startMs;
+  let startMs: number | null = null;
+  try {
+    startMs = await probe(pid);
+  } catch {
+    startMs = null;
+  }
+  pidIdentityCache.set(pid, { mtimeMs, startMs });
+  return startMs;
 }
 
 function defaultStatfs(path: string): { freeBytes: number; totalBytes: number } | null {
@@ -202,8 +287,9 @@ function epochFile(path: string): number | null {
 interface GitFacts {
   prodSha: string | null;
   mainSha: string | null;
-  behind: number | null;
-  pendingSinceMs: number | null;
+  /** origin/main's first-parent history, newest first, stopped at prod (or
+   * capped at DEPLOY_LAG_WALK_MAX) — the lag counts verified merges on it */
+  history: LagCommit[];
   backlog: string | null;
 }
 
@@ -215,36 +301,39 @@ const pidDeath = new Map<number, number>();
 export function resetPilotStatusCache(): void {
   gitCache.clear();
   pidDeath.clear();
+  pidIdentityCache.clear();
 }
 
 async function readGitFacts(repo: string, git: GitRunner): Promise<GitFacts> {
   const prod = (await git(["rev-parse", "HEAD"], repo))?.trim() || null;
   const main = (await git(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], repo))?.trim() || null;
-  let behind: number | null = null;
-  let pendingSinceMs: number | null = null;
-  if (prod && main) {
-    if (prod === main) behind = 0;
-    else {
-      const count = Number((await git(["rev-list", "--count", `${prod}..${main}`], repo))?.trim());
-      behind = Number.isInteger(count) && count >= 0 ? count : null;
-      if (behind) {
-        // oldest undeployed commit = last line of the (newest-first) range
-        const times = ((await git(["log", "--format=%ct", `${prod}..${main}`], repo)) ?? "").trim().split("\n");
-        const oldest = Number(times[times.length - 1]);
-        pendingSinceMs = Number.isFinite(oldest) && oldest > 0 ? oldest * 1000 : null;
-      }
+  // the lag walk needs main's first-parent history down to prod — one read-only
+  // `git log` answers it (rev-list --count over ALL commits counted bookkeeping
+  // too, which kept a healthy idle fleet permanently 1–2 "behind")
+  let history: LagCommit[] = [];
+  if (prod && main && prod !== main) {
+    const out = (await git(["log", "--first-parent", `--max-count=${DEPLOY_LAG_WALK_MAX}`, "--format=%H %ct", main], repo)) ?? "";
+    for (const line of out.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      const sp = t.indexOf(" ");
+      const sha = t.slice(0, sp);
+      const ct = Number(t.slice(sp + 1));
+      if (!/^[0-9a-f]{7,40}$/.test(sha) || !Number.isFinite(ct)) continue;
+      history.push({ sha, ct });
+      if (sha === prod) break;
     }
   }
   // the pilot works origin/main's queue; the checkout's copy lags by the deploy lag
   const backlog = main ? await git(["show", `${main}:BACKLOG.md`], repo) : null;
-  return { prodSha: prod, mainSha: main, behind, pendingSinceMs, backlog };
+  return { prodSha: prod, mainSha: main, history, backlog };
 }
 
 function gitFacts(repo: string, git: GitRunner, nowMs: number): Promise<GitFacts> {
   const hit = gitCache.get(repo);
   if (hit && nowMs - hit.at < GIT_CACHE_MS) return hit.value;
   const value = readGitFacts(repo, git).catch(
-    (): GitFacts => ({ prodSha: null, mainSha: null, behind: null, pendingSinceMs: null, backlog: null }),
+    (): GitFacts => ({ prodSha: null, mainSha: null, history: [], backlog: null }),
   );
   gitCache.set(repo, { at: nowMs, value });
   return value;
@@ -284,8 +373,28 @@ export async function readPilotStatus(deps: PilotStatusDeps = {}): Promise<Pilot
   const repo = deps.repo === undefined ? defaultProdRepo() : deps.repo;
 
   const heartbeatAtMs = epochFile(join(dir, "heartbeat"));
-  const pid = epochFile(join(dir, "pilot.pid"));
-  const pidAlive = pid === null ? null : (deps.pidAlive ?? probePid)(pid);
+  const pidFile = join(dir, "pilot.pid");
+  const pid = epochFile(pidFile);
+  let pidAlive = pid === null ? null : (deps.pidAlive ?? probePid)(pid);
+  if (pid !== null && pidAlive === true) {
+    // A live kill(pid, 0) is not identity: on this host the pid space wraps
+    // every ~23 min, so a dead pilot's pid is reassigned within hours — and a
+    // long-lived squatter plus a third-party heartbeat write read as "alive"
+    // (replay case B). ensureSingleton writes pilot.pid at boot, so the REAL
+    // pilot's process must have started before that file's mtime; anything
+    // born after it is a reuse → not the pilot → dead. Unknown (ps gone,
+    // unparseable) never flips a verdict by itself.
+    let pidFileMtimeMs: number | null = null;
+    try {
+      pidFileMtimeMs = statSync(pidFile).mtimeMs;
+    } catch {
+      pidFileMtimeMs = null;
+    }
+    if (pidFileMtimeMs !== null) {
+      const startMs = await pidStartFor(pid, pidFileMtimeMs, deps.pidIdentity ?? defaultPidStart);
+      if (startMs !== null && startMs > pidFileMtimeMs + PID_IDENTITY_SKEW_MS) pidAlive = false;
+    }
+  }
   let pidDeadForMs: number | null = null;
   if (pid !== null && pidAlive === false) {
     const first = pidDeath.get(pid) ?? nowMs;
@@ -294,20 +403,34 @@ export async function readPilotStatus(deps: PilotStatusDeps = {}): Promise<Pilot
   } else if (pid !== null) pidDeath.delete(pid);
   const installed = heartbeatAtMs !== null || existsSync(join(root, "pilot.json")) || existsSync(join(dir, "state.json"));
 
+  // The pilot's last sign of life for a pid-dead verdict: logs/pilot.log is
+  // written only by the pilot itself, so its mtime anchors the outage even
+  // when third parties (in-chat agents, test runs) keep appending to
+  // events.jsonl or touching the heartbeat. The newest events.jsonl ts is the
+  // fallback when pilot.log is gone.
+  let lastActivityAtMs: number | null = null;
+  try {
+    lastActivityAtMs = statSync(join(home, ".opencode-remote", "logs", "pilot.log")).mtimeMs;
+  } catch {
+    lastActivityAtMs = null;
+  }
   const events = jsonLines<PilotEvent>(readText(join(dir, "events.jsonl")));
   const lastEventAt = events.length ? (events[events.length - 1]!.ts ?? null) : null;
-  const lastActivityAtMs = lastEventAt ? Date.parse(lastEventAt) : null;
+  if (lastActivityAtMs === null && lastEventAt) {
+    const t = Date.parse(lastEventAt);
+    if (Number.isFinite(t) && t > 0) lastActivityAtMs = t;
+  }
   const liveness = (deps.liveness ?? pilotLiveness)({
     heartbeatAtMs,
     pidAlive,
     nowMs,
     pidDeadForMs,
-    lastActivityAtMs: Number.isFinite(lastActivityAtMs) ? lastActivityAtMs : null,
+    lastActivityAtMs: lastActivityAtMs !== null && Number.isFinite(lastActivityAtMs) ? lastActivityAtMs : null,
   });
 
   const facts: GitFacts = repo
     ? await gitFacts(repo, deps.git ?? defaultGit, nowMs)
-    : { prodSha: null, mainSha: null, behind: null, pendingSinceMs: null, backlog: null };
+    : { prodSha: null, mainSha: null, history: [], backlog: null };
   let fetchedAt: string | null = null;
   if (repo) {
     try {
@@ -326,7 +449,18 @@ export async function readPilotStatus(deps: PilotStatusDeps = {}): Promise<Pilot
   } catch {
     state = {};
   }
-  const merges = jsonLines<MergeRecord>(readText(join(dir, "verified-merges.jsonl")));
+  const merges = parseVerifiedMerges(readText(join(dir, "verified-merges.jsonl")) ?? "");
+  const quarantined = parseQuarantine(readText(join(dir, "quarantine.jsonl")) ?? "");
+  // the deploy lag is measured against the pilot's real deploy target: only
+  // gate-verified merges after prod count (the pure rule lives in metrics.ts,
+  // the same one latestDeployableSha walks with)
+  const lag = deployLagFacts({
+    prodSha: facts.prodSha,
+    mainSha: facts.mainSha,
+    history: facts.history,
+    verified: merges,
+    quarantined,
+  });
 
   const pending = readText(join(dir, "notify-pending.jsonl"));
   const undelivered = pending ? pending.split("\n").filter((l) => l.trim()).length : 0;
@@ -340,8 +474,9 @@ export async function readPilotStatus(deps: PilotStatusDeps = {}): Promise<Pilot
     deploy: {
       prodSha: facts.prodSha,
       mainSha: facts.mainSha,
-      behind: facts.behind,
-      pendingSince: facts.pendingSinceMs === null ? null : new Date(facts.pendingSinceMs).toISOString(),
+      behind: lag.behind,
+      behindTotal: lag.behindTotal,
+      pendingSince: lag.pendingSinceMs === null ? null : new Date(lag.pendingSinceMs).toISOString(),
       fetchedAt,
       hold,
     },
@@ -354,7 +489,7 @@ export async function readPilotStatus(deps: PilotStatusDeps = {}): Promise<Pilot
   status.attention = attentionFlags({
     installed,
     pilot: status.pilot,
-    deploy: { behind: facts.behind, pendingSinceMs: facts.pendingSinceMs, hold },
+    deploy: { behind: lag.behind, pendingSinceMs: lag.pendingSinceMs, hold },
     disk: status.disk,
     alerts: status.alerts,
     nowMs,
