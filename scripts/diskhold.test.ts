@@ -381,7 +381,9 @@ function scripted(frees: number[], extra: Partial<DiskHoldIo> = {}) {
   check("heartbeat: the file stays the external signal when writable", existsSync(ok) && Number(readFileSync(ok, "utf8")) > 0);
   const stateSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "state.ts"), "utf8");
   const wd = stateSrc.slice(stateSrc.indexOf("export function startWatchdog"));
-  check("heartbeat: startWatchdog judges heartbeatAgeMs(), not the file", wd.includes("heartbeatAgeMs()") && !wd.includes("readFileSync(HEARTBEAT"));
+  // eval-01 composition: the watchdog body rides the `heartbeatAge` seam whose
+  // default IS heartbeatAgeMs (the in-memory beat) — the file is never read.
+  check("heartbeat: startWatchdog judges heartbeatAgeMs(), not the file", wd.includes("?? heartbeatAgeMs;") && wd.includes("heartbeatAge(at)") && !wd.includes("readFileSync(HEARTBEAT"));
   rmSync(dir, { recursive: true, force: true });
 }
 

@@ -622,7 +622,7 @@ export interface WatchdogDeps {
 export function startWatchdog(maxSilenceMin = 3, deps: WatchdogDeps = {}) {
   const now = deps.now ?? Date.now;
   const touch = deps.touch ?? touchHeartbeat;
-  const heartbeatAge = deps.heartbeatAgeMs ?? ((at: number) => heartbeatAgeMs(at));
+  const heartbeatAge = deps.heartbeatAgeMs ?? heartbeatAgeMs;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
   const out = deps.out ?? ((line: string) => console.log(line));
