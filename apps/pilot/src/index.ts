@@ -47,6 +47,7 @@ import {
   frozen,
   loadConfig,
   loadState,
+  normalizeTokenBudget,
   recordTaskFailure,
   recordTaskHold,
   saveState,
@@ -55,7 +56,8 @@ import {
   type PilotConfig,
   type PilotState,
 } from "./state";
-import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
+import { applySessionCosts, foldSlotCache, querySessionTokenRows, repriceTaskUSD } from "./costs";
+import { checkTaskTokenBudget, raiseTokenBudgetAlert } from "./tokenbudget";
 import { recordLessonImpact } from "./metrics";
 import { distSweepDue, doctorDist, runDoctor, runDoctorGuards } from "./doctor";
 import { bootDiskGate, diskAlert, diskHoldTickMs, fleetVolumes, initialDiskHold, noteDiskFailure, persistSafely, pollDiskHold, waitWhileDiskCritical, type DiskHold, type DiskHoldIo } from "./diskhold";
@@ -255,6 +257,19 @@ async function main() {
     workspaces: slotNumbers.map((s) => slotCfg.get(s)!.workspace),
     mission: activeMission ? missionDetail(activeMission) : "default",
   });
+  // eval-18: done tasks are never reconciled again, so a pricing change
+  // (model alias, pilot.json pricing.selfHosted) re-prices the taskUSD window
+  // once here — before any slot runs, so no in-flight save can race it.
+  try {
+    const bootState = loadState();
+    const rp = await repriceTaskUSD(bootState, (ids) => querySessionTokenRows(ids), cfg.pricing);
+    if (rp.changed) {
+      saveState(bootState);
+      log("info", "task usd repriced", rp);
+    }
+  } catch (err) {
+    log("warn", "task usd reprice failed", { err: String(err).slice(0, 200) });
+  }
 
   /**
    * P1-099: eager-fill — start a pipeline on every schedulable free slot right
@@ -715,15 +730,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     taskTimeoutMin: budgets.timeoutMin,
     maxAttemptsPerTask: budgets.attempts,
   };
+  // P2-028: the pipeline records every opencode session id it spawns; the
+  // token totals are reconciled from opencode.db right after the run.
+  const taskSessions = new Set<string>();
   try {
-    // P2-028: the pipeline records every opencode session id it spawns; the
-    // token totals are reconciled from opencode.db right after the run.
-    const taskSessions = new Set<string>();
     const result = await runPipeline(taskCfg, task, state, taskSessions);
     try {
       // P1-077: rows query — folds the per-task cache breakdown (input /
       // cacheRead / cacheWrite) into state.taskCache alongside the total.
-      const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids));
+      const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids), cfg.pricing);
       if (cacheFold) {
         log("info", "task cache", cacheFold);
         // P1-078: per-slot view of the same reconciliation — replaced by the
@@ -744,6 +759,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     };
     recordLessonImpact(state, impact);
     log("info", "lesson impact", { task: task.id, ...impact });
+    // eval-18: per-task token budget — an alert at each budget multiple, never
+    // a kill switch (quality over cost); levels persist in state
+    raiseTokenBudgetAlert(
+      task.id,
+      checkTaskTokenBudget(state, task.id, impact.tokens, normalizeTokenBudget(cfg.tokenBudgetPerTask), {
+        outcome: result.ok ? "merged" : result.detail,
+        ok: result.ok,
+      }),
+    );
     state.tasks++;
     let blockedAttempts: number | null = null;
     const taskKey = attemptsKey(activeMissionKey, task.id);
@@ -843,6 +867,9 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     // burns no attempt and can never block the task; the global fever breaker
     // still sees each crash as its own distinct entry (P2-063).
     const wake = recordPipelineCrash(state);
+    // eval-18: a crashed pipeline still spent real tokens — reconcile what it
+    // recorded (best-effort) instead of dropping them from taskCosts
+    await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids), cfg.pricing).catch(() => null);
     const detail = String(err).slice(0, 300);
     // eval-02: nothing in this path may throw — an ENOSPC from saveState here
     // skipped the cool-down below and the finally's eager-fill re-picked the

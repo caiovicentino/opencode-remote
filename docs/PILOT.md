@@ -1016,6 +1016,64 @@ A linha da task no BACKLOG.md pode carregar a tag opcional `(size: S|M|L)` (defa
   convertidos silenciosamente para $0: os tokens aparecem como `sem preço`
   no tooltip (`unpricedTokens`). Sinal best-effort como o resto do P2-028:
   nada de gate consome `taskUSD`.
+- **Eficiência de tokens e custo próprio (eval-18, 2026-09-27)**:
+  - *Alias de modelo*: o tier A rodava como `glm52/glm-5.2` até 11/09 e como
+    `b200x4/glm-5.3-flash` desde então — mesmo endpoint servido, só o id
+    mudou — e a tabela só conhecia `glm-5.2`: 68 das 200 tasks da janela
+    (1,37B tokens) ficaram "sem preço". `MODEL_ALIASES` em `pricing.ts`
+    resolve `glm-5.3-flash` para a linha `glm-5.2` (nunca inventa preço).
+  - *Custo de ops self-hosted* (opcional, `pilot.json`):
+    `"pricing": {"selfHosted": {"models": ["glm-5.3-flash","glm-5.2"], "usdPerHour": <custo all-in do nó/h>, "mtokPerHour": <MTok PONDERADOS processados/h>}}`
+    — amortização por hora de GPU: US$/MTok de cada coluna = `usdPerHour ÷
+    mtokPerHour × peso` (pesos padrão = razões do preço de lista GLM: input 1,
+    output 3,14, cache-read 0,19, cache-write 1; sobrescreva com `weights`).
+    Alternativa direta: `"usdPerMTok": {"input","output","cacheRead","cacheWrite"}`
+    (as quatro colunas ou nada). `mtokPerHour` = Σ(coluna × peso) de TODO
+    tráfego do nó numa janela ÷ horas de relógio da janela (amortiza a
+    ociosidade que o operador paga). Bloco inválido = ausente. Mudou o preço?
+    O boot re-precifica a janela uma vez (`task usd repriced`, fingerprint em
+    `state.taskUSDPricing`): tudo-ou-nada por task — `taskUSD`, `taskCosts` e
+    `taskCache` saem do mesmo fold (subagentes inclusos) só quando todas as
+    sessões-raiz ainda existem no `opencode.db` e o total não diminui.
+  - *Contrato de campo* (`state.taskUSD[id]`, lido pelo dashboard):
+    `total`/`tierA`/`tierB`/`unpricedTokens`/`tokens` = visão BYOK de lista,
+    semântica P2-113 intacta; **novos e opcionais** `opsUSD` (US$ que o
+    operador paga pelos tokens servidos no nó self-hosted) e `opsTokens`
+    (tokens cobertos por `opsUSD`) — AUSENTES quando `pricing.selfHosted` não
+    está configurado (nunca um $0 falso), `0` quando configurado mas a task
+    não usou modelo self-hosted. A base do cálculo está em `cfg.pricing`
+    (o `/api/pilot-events` já devolve o `pilot.json`).
+  - *Atribuição completa*: reviewers, escalation (fallback tier A), scribe e
+    recap rodavam sem `--print-logs`, então o id da sessão nunca era capturado
+    (0 de 228 sessões de reviewer atribuídas em 22–24/09, ~11% dos tokens da
+    frota fora do `taskCosts`). O runner ganhou `sessionCapture`: passa
+    `--print-logs` e remove as linhas de log do `output`, então os parsers
+    leem exatamente o texto de antes. O id vem da linha `message=created …
+    parentID=undefined` (sessão raiz) ou do próprio `-s` numa retomada — nunca
+    mais do primeiro `ses_…` do stdout: a premissa é de ORDEM, não de fluxo.
+    O opencode 1.18.32 imprime log (e saída de ferramenta) no stderr (o módulo
+    de UI usa `process.stderr.write`); a linha `created` da raiz sai ANTES de
+    qualquer ferramenta e o primeiro match vence (224 builder logs: 144 com
+    exatamente 1 linha raiz, 80 retomadas com 0, nenhum com 2) — um reviewer
+    citando a fixture `ses_abc123456` não vira mais "sessão"
+    da task (4 ids de fixture em `taskCostSessions`), e o mesmo caminho podia
+    entregar um id falso ao `-s` do builder. Subagentes (`task` tool do opencode)
+    vivem em sessões filhas — o `tokensSql` agora percorre `parent_id`
+    recursivamente e soma os descendentes na task; `tokens_reasoning` entra no
+    total e é precificado como output.
+  - *Orçamento por task* (`pilot.json` `tokenBudgetPerTask`, padrão 40M ≈ p95
+    da janela; `0` desliga): ao cruzar 1×, 2×, 3×… o pilot emite `alert`
+    (fase `token-budget`) + notify do supervisor com tokens, orçamento e o
+    último desfecho. É visibilidade, nunca kill switch (qualidade > custo);
+    o nível alertado persiste em `state.tokenBudgetAlerts` (sem tempestade de
+    alertas em restart/meia-noite).
+  - *AGENTS.md é imposto por turno*: o opencode injeta o `AGENTS.md` no prompt
+    de sistema de todo turno de todo agente (0,26 token/byte, regressão sobre
+    399 sessões, R² 0,998). A 35.125 B são ~9,1K tokens por turno; com o
+    tamanho de cada época, reler o arquivo custou 114,8M tokens em 14.778
+    turnos de 22–24/09 (7,6% da frota). O histórico de beats do desktop-flow
+    (~19 KB) foi movido verbatim para `docs/desktop-flow.md`; o
+    `scripts/token-efficiency.test.ts` reprova o `AGENTS.md` acima de 18 KiB.
 - Logs JSONL: `~/.opencode-remote/logs/pilot.log`
 - Feed bruto: `GET 127.0.0.1:8792/api/pilot-events` (Bearer apiToken) — eventos + contadores + heartbeat
 - Digest a cada pipeline: push no seu telefone (via `POST /api/push` autenticado no daemon)
@@ -1206,6 +1264,16 @@ de recap falha, a sessão segue como antes (fail-open); o carryover é consumido
 primeira round que o usar e removido no merge. O mesmo cálculo alimenta o gauge de
 contexto do chat (apps/web via `GET /__ocr/context` do daemon, amarelo ~70%,
 vermelho ~85%) e o recap fixado sob o composer — ver README.
+**Correção eval-18**: a sonda original lia `GET /session/:id`, cujo `model` no
+opencode 1.18.x é `{id, providerID, variant}` — ela procurava `modelID` e
+devolvia null em TODA round (zero linhas `contextPressure` em 1.447 builder
+rounds, 31/08–24/09: o checkpoint nunca rodou); e o `tokens` daquele objeto é
+a conta cumulativa da sessão (27M no P3-465 contra 205K de contexto real), que
+leria 100% em toda round retomada. A sonda agora lê a cauda
+`GET /session/:id/message?limit=4` e mede a última mensagem do assistente
+(`tokens.total`, o mesmo número que o opencode mostra como uso de contexto) com
+o `providerID`/`modelID` dela. O gauge do daemon (`/__ocr/context`) tem os
+mesmos dois defeitos e segue pendente (fora do pilot).
 
 ## Circuit breaker de febre — modo auditoria (P2-032)
 
