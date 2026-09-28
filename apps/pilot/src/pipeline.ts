@@ -3,7 +3,7 @@ import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, cachedExec, exec, runAgent, runAgentForRole, runStepWithRetry, rerunKey, type AgentIds, type RerunResults } from "./runner";
 import { nowLocalISO } from "./log";
-import { markDone, type Task } from "./backlog";
+import { isBookkeepingSubject, markDone, type Task } from "./backlog";
 import { landMetaCommit, metaIo } from "./metapush";
 import { emit } from "./events";
 import { clearGuardRejections, raiseGuardAlert } from "./guardalert";
@@ -1761,13 +1761,16 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       exec("git reset -q --hard HEAD", { cwd: ws, allowFail: true });
       exec("git clean -qfd", { cwd: ws, allowFail: true });
       // P1-076: the mark-done lands via the pilot/meta PR — no direct main push
+      // eval-06 fixround: markDone's result is read — a "missing"/"refused"
+      // bookkeeping used to surface as the success detail "marked done".
+      const marked = { value: null as ReturnType<typeof markDone> | null };
       const push = await landMetaCommit(ws, metaIo(ws), {
         files: ["BACKLOG.md"],
         message: `pilot(${t.id}): mark done (empty-diff self-heal)`,
         guardFile: "BACKLOG.md",
         base,
         apply: () => {
-          markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
+          marked.value = markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
           exec("git add BACKLOG.md", { cwd: ws, allowFail: true });
           // idempotent: if markDone was a no-op (task already marked), skip the
           // commit instead of failing on an empty commit
@@ -1776,11 +1779,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
             : { action: "apply" };
         },
       });
+      const markedLanded = marked.value === "applied" || marked.value === "noop";
       return {
         ok: push === "pushed",
         detail:
           push === "pushed"
-            ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+            ? markedLanded
+              ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+              : `task ${t.id} already merged on main but the mark-done did not apply (${marked.value ?? "missing"}) — move the line by hand`
             : `task ${t.id} already merged on main but the mark-done landing ${push === "refused" ? "was refused by the push guard" : "failed"}`,
         ...roundMeta(),
       };
@@ -3074,16 +3080,24 @@ async function mergeTask(
   }
   // P1-076: the mark-done bookkeeping commit lands via the pilot/meta PR —
   // direct pushes to main no longer exist anywhere in the pipeline
-  await landMetaCommit(ws, metaIo(ws), {
+  // eval-06 fixround: markDone's result drives the apply — "noop" (already
+  // marked) is the R6 desired-state success; "missing"/"refused" abort the
+  // landing instead of committing nothing, and a landing that did not
+  // complete is logged (the merged task stays open in the queue).
+  const marked = { value: null as ReturnType<typeof markDone> | null };
+  const markLanding = await landMetaCommit(ws, metaIo(ws), {
     files: ["BACKLOG.md"],
     message: `pilot(${t.id}): mark done`,
     guardFile: "BACKLOG.md",
     base,
     apply: () => {
-      markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
-      return { action: "apply" };
+      marked.value = markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
+      if (marked.value === "applied") return { action: "apply" };
+      return { action: marked.value === "noop" ? "noop" : "abort" };
     },
   });
+  if (markLanding !== "pushed" || (marked.value !== "applied" && marked.value !== "noop"))
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "mark-done landing did not complete — the merged task stays open in the queue", data: { task: t.id, result: marked.value, landing: markLanding } }));
   // P2-045: honest daily merge counter for the dashboard — state.json resets
   // at midnight (loadState), matching `git log --since=00:00` exactly
   state.merges = (state.merges ?? 0) + 1;
@@ -3124,11 +3138,15 @@ function headSha(ws: string): string {
 export function taskMergedIn(ws: string, id: string, base = "main"): boolean {
   if (!TASK_ID_RE.test(id)) return false;
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --oneline`, {
+  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --format=%s`, {
     cwd: ws,
     allowFail: true,
   });
-  return r.ok && r.output.trim().length > 0;
+  // eval-06: the pilot's own `mark done` / `block after N failed attempts`
+  // commits share the prefix but carry no work — a blocked task moved back to
+  // ## Ready must not read as merged (the empty-diff self-heal would mark it
+  // done and a P0/P1 would skip its planner)
+  return r.ok && r.output.split("\n").some((s) => s.trim() !== "" && !isBookkeepingSubject(s));
 }
 
 /**
