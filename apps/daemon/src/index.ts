@@ -1927,6 +1927,7 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
   // eval-19: the fleet status digest for the phone's Mission Control — the
   // same read-only payload as the loopback GET /api/pilot-status.
   if (req.path === "/__ocr/pilot-status" && req.method === "GET") {
+    metrics.inc("ocr_pilot_mission_reads_total");
     return { id: req.id, status: 200, body: await readPilotStatus() };
   }
   if (req.path === "/__ocr/pilot-forensic" && req.method === "GET") {
@@ -5139,10 +5140,21 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       // P2-109 (eval-19): ?since=<ISO>&limit=<n> makes the fallback poll
       // cheap — only events strictly newer than `since`, newest `limit`
       // (default 200, max 1000). Without `since` the tail stays the last 200.
+      // `since` compares by instant when both sides parse as dates (plain ISO
+      // with offsets, not only Z), falling back to the raw string order.
       const since = url.searchParams.get("since");
       const limitRaw = Number(url.searchParams.get("limit") ?? 200);
       const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
-      const events = (since ? allEvents.filter((e) => typeof e.ts === "string" && e.ts > since) : allEvents).slice(-limit);
+      const sinceMs = since ? Date.parse(since) : Number.NaN;
+      const events = (
+        since && Number.isFinite(sinceMs)
+          ? allEvents.filter((e) => {
+              if (typeof e.ts !== "string") return false;
+              const t = Date.parse(e.ts);
+              return Number.isFinite(t) ? t > sinceMs : e.ts > since;
+            })
+          : allEvents
+      ).slice(-limit);
       // P2-045: per-step gate failure breakdown over the full event file —
       // wider than the 200-event tail so the picture stays honest
       const failSteps = countFailSteps(allEvents);

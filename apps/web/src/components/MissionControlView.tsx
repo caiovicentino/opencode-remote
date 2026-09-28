@@ -129,14 +129,57 @@ export function formatMissionModels(models: Record<string, string> | undefined |
  * reads the sealed /__ocr/pilot-status). Only the fields this pane renders.
  */
 export interface FleetStatusView {
+  /** digest contract version (isFleetStatusView accepts exactly v:1) */
+  v?: number;
   installed: boolean;
   pilot: { state: "alive" | "stale" | "down" | "absent"; heartbeatAgeMs: number | null; since: string | null; silentForMs?: number | null };
-  deploy: { behind: number | null; pendingSince: string | null; hold: { reason: string; count: number } | null };
+  deploy: { behind: number | null; behindTotal?: number | null; pendingSince: string | null; hold: { reason: string; count: number } | null };
   disk: { freeBytes: number | null; minFreeBytes: number };
   queue: { ready: number; blocked: number };
   cost: { week: { merges: number; tokens: number; usd: number | null; unpricedTokens: number } };
   alerts: { undelivered: number };
   attention: { kind: string; level: "critical" | "warn" }[];
+}
+
+/**
+ * eval-19 fix-round: only a digest with EVERY section this pane reads is
+ * accepted — the same contract as the dashboard's acceptStatus. The old load
+ * accepted any JSON carrying `installed` + `attention[]` and the render then
+ * read pilot/deploy/disk/queue/cost.week/alerts unguarded, so a digest from an
+ * older or newer daemon (say, one whose cost.week has no `usd`) crashed the
+ * WHOLE pane (`Cannot read properties of undefined (reading 'toFixed')`) and
+ * the 6s poll kept failing — a wrong digest must degrade to the previous view,
+ * never take the pane down.
+ */
+export function isFleetStatusView(d: unknown): d is FleetStatusView {
+  if (!d || typeof d !== "object") return false;
+  const s = d as Record<string, unknown>;
+  if (s.v !== 1) return false;
+  if (typeof s.installed !== "boolean" || !Array.isArray(s.attention)) return false;
+  const okState = (x: unknown) => x === "alive" || x === "stale" || x === "down" || x === "absent";
+  const obj = (x: unknown) => !!x && typeof x === "object" && !Array.isArray(x);
+  const p = s.pilot;
+  if (!obj(p) || !okState((p as Record<string, unknown>).state)) return false;
+  const dep = s.deploy;
+  if (!obj(dep)) return false;
+  const dd = dep as Record<string, unknown>;
+  if (dd.behind !== null && dd.behind !== undefined && typeof dd.behind !== "number") return false;
+  if (dd.pendingSince !== null && dd.pendingSince !== undefined && typeof dd.pendingSince !== "string") return false;
+  if (dd.hold !== null && dd.hold !== undefined && (!obj(dd.hold) || typeof (dd.hold as Record<string, unknown>).reason !== "string")) return false;
+  const disk = s.disk;
+  if (!obj(disk) || typeof (disk as Record<string, unknown>).minFreeBytes !== "number") return false;
+  const df = (disk as Record<string, unknown>).freeBytes;
+  if (df !== null && df !== undefined && typeof df !== "number") return false;
+  const q = s.queue;
+  if (!obj(q) || typeof (q as Record<string, unknown>).ready !== "number" || typeof (q as Record<string, unknown>).blocked !== "number") return false;
+  const cost = s.cost;
+  const week = cost && obj(cost) ? (cost as Record<string, unknown>).week : undefined;
+  if (!obj(week)) return false;
+  const usd = (week as Record<string, unknown>).usd;
+  if (usd !== null && usd !== undefined && typeof usd !== "number") return false;
+  const alerts = s.alerts;
+  if (!obj(alerts) || typeof (alerts as Record<string, unknown>).undelivered !== "number") return false;
+  return true;
 }
 
 /** One line of the fleet strip: an attention item or the all-clear. */
@@ -209,10 +252,12 @@ export function fleetLines(s: FleetStatusView, t: TFn): FleetLine[] {
   return out;
 }
 
-/** The strip's quiet facts line: queue, disk, week cost (never a fake $0). */
+/** The strip's quiet facts line: queue, disk, week cost (never a fake $0).
+ * `usd` is read only when it really is a number — an undefined one (a digest
+ * shape drift) must degrade to the token count, not throw. */
 export function fleetFacts(s: FleetStatusView, t: TFn): string {
   const w = s.cost.week;
-  const cost = w.usd !== null ? `US$ ${w.usd.toFixed(2)}` : w.tokens > 0 ? t("fleetCostUnpriced", { tokens: fmtTokens(w.tokens) }) : "0";
+  const cost = typeof w.usd === "number" ? `US$ ${w.usd.toFixed(2)}` : w.tokens > 0 ? t("fleetCostUnpriced", { tokens: fmtTokens(w.tokens) }) : "0";
   return t("fleetFacts", { ready: s.queue.ready, blocked: s.queue.blocked, free: fmtGB(s.disk.freeBytes), cost });
 }
 
@@ -384,7 +429,10 @@ export default function MissionControlView({
     if (!daemonApi) return;
     try {
       const { json } = await decode(await daemonApi({ path: "/api/pilot-status" }));
-      if (json && typeof json.installed === "boolean" && Array.isArray(json.attention)) setFleet(json as unknown as FleetStatusView);
+      // only a digest with every section the strip reads is accepted — an
+      // older/newer daemon's other shape keeps the previous view instead of
+      // crashing the whole pane (fleetFacts used to throw on cost.week.usd)
+      if (isFleetStatusView(json)) setFleet(json);
     } catch {
       // best-effort: an older daemon has no digest route and a dead one is
       // already reported by the cards' guided down state — keep the last view
