@@ -153,7 +153,7 @@
   <span>FILA</span><b id="h-fila">0</b>
   <span>HB</span><b id="h-hb">—</b>
   <span>NOTIFY</span><b id="h-notify" title="último aviso entregue">—</b>
-  <span>PROD</span><b id="h-lag" title="commits no main ainda fora da produção">—</b>
+  <span>PROD</span><b id="h-lag" title="merges verificados pendentes no main (o piloto só faz deploy deles; o total de commits fica no tooltip)">—</b>
   <span>DISCO</span><b id="h-disk" title="espaço livre no volume da produção">—</b>
   <span>CUSTO 7D</span><b id="h-cost" title="custo dos merges dos últimos 7 dias">—</b>
   <div class="bars hidden" id="h-bars" title="burn-down 7 dias"></div>
@@ -496,6 +496,27 @@ function streamIn(stationId, color) {
 }
 function spark(s) { for (let i = 0; i < 3; i++) fx.particles.push({ x: s.x, y: s.y, vx: (Math.random() - .5) * 60, vy: (Math.random() - .5) * 60, t: 0, life: 0.5, color: s.color, free: true }); }
 function heartbeatPulse() { if (!RM) fx.pulses.push({ t: 0 }); }
+// eval-19 fix: the digest's pilot verdict outranks the raw heartbeat — a third
+// party kept touching heartbeat files for a pilot dead since 24/09, so the
+// core must not breathe or label itself with the raw age while PILOTO PARADO
+// is lit; it shows the pilot's own last sign of life instead
+function corePilotDownFn() {
+  const p = world.status && world.status.installed ? world.status.pilot : null;
+  return !!p && (p.state === "down" || p.state === "stale");
+}
+function coreHbLabel() {
+  if (corePilotDownFn()) {
+    const p = world.status.pilot;
+    return p.silentForMs != null && Number.isFinite(p.silentForMs) ? fmtSpan(p.silentForMs) : "—";
+  }
+  return world.hbMs == null ? "—" : fmtAge(world.hbMs);
+}
+// should THIS poll push a heartbeat ring? the pilot's verdict gates it (the
+// ring is the pilot's pulse — production itself only beats through a deploy);
+// the previous hb age lives on world.lastHb so the gate stays observable
+function pulseWanted() {
+  return world.hbMs != null && (world.lastHb == null || world.hbMs < world.lastHb) && !corePilotDownFn();
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. painter (canvas)
@@ -667,7 +688,12 @@ function draw() {
   }
   // ── the core (PROD) ──
   const c = world.core;
-  const hbFresh = world.hbMs != null && world.hbMs < 90_000;
+  // eval-19 fix: the heartbeat rings are the PILOT's pulse — when the digest
+  // says the pilot is down or stale, the raw hb age (kept fresh by a third
+  // party after the pid died, 2026-09-27) must not pulse the core beside the
+  // PILOTO PARADO chip
+  const corePilotDown = corePilotDownFn();
+  const hbFresh = !corePilotDown && world.hbMs != null && world.hbMs < 90_000;
   const coreColor = world.offline ? COL.dim : !hbFresh ? COL.gray : c.state === "fail" || c.state === "unhealthy" ? COL.red : c.state === "deploying" ? COL.gold : c.state === "ok" ? COL.green : COL.white;
   const breath = RM || !hbFresh || world.offline ? 1 : 1 + Math.sin(now * (c.state === "deploying" ? 6 : c.state === "unhealthy" ? 4 : 2.2)) * 0.05;
   let ox = 0, oy = 0; if (now < c.tremorUntil) { ox = (Math.random() - .5) * 5; oy = (Math.random() - .5) * 5; }
@@ -684,7 +710,7 @@ function draw() {
   // PWA origin down: a broken dashed halo
   if (world.pwaDown) { ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.arc(X, Y, cr + 22, 0, TAU); ctx.strokeStyle = hexA(COL.gold, 0.8); ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]); }
   label("PROD", X + ox, Y + oy - 5, hexA(coreColor, 0.95), 11, 800);
-  label(world.offline ? "OFF" : world.hbMs == null ? "—" : fmtAge(world.hbMs), X + ox, Y + oy + 9, hexA(hbFresh && !world.offline ? COL.muted : COL.red, 0.9), 10, 600);
+  label(world.offline ? "OFF" : coreHbLabel(), X + ox, Y + oy + 9, hexA(hbFresh && !world.offline ? COL.muted : COL.red, 0.9), 10, 600);
   if (c.tag && now < c.tag.until) label(c.tag.text, X, Y + cr + 30, hexA(c.tag.color, 0.95), 10, 700);
   if (world.audit) label("AUDIT", X, Y - cr - 30, hexA(COL.red, RM ? 1 : 0.7 + Math.sin(now * 3) * 0.3), 11, 800);
   // ── ships ──
@@ -856,7 +882,7 @@ function flagText(f) {
     case "deploy-hold":
       return `deploy retido por ${h.reason}${h.count > 1 ? ` (${h.count}×)` : ""} — ${h.detail}${h.until ? ` · backoff até ${fmtWhen(h.until)}` : ""}`;
     case "deploy-lag":
-      return `produção ${d.behind} commit(s) atrás do main (${sha7(d.prodSha)} → ${sha7(d.mainSha)}) · pendente desde ${fmtWhen(d.pendingSince)}`;
+      return `produção ${d.behind} merge(s) verificado(s) atrás do main (${sha7(d.prodSha)} → ${sha7(d.mainSha)}${d.behindTotal != null ? ` · ${d.behindTotal} commit(s) no total` : ""}) · pendente desde ${fmtWhen(d.pendingSince)}`;
     case "disk-low":
       return `disco com ${fmtGB(st.disk.freeBytes)} livres — o deploy exige ${fmtGB(st.disk.minFreeBytes)}`;
     case "alerts-undelivered":
@@ -887,7 +913,9 @@ function renderStatus() {
   const d = st.deploy, lagF = flagOf("deploy-lag"), diskF = flagOf("disk-low");
   lag.textContent = d.behind == null ? "—" : d.behind === 0 ? "EM DIA" : `−${d.behind}`;
   lag.className = d.behind === 0 ? "ok" : lagF ? (lagF.level === "critical" ? "bad" : "warn") : "";
-  lag.title = d.behind == null ? "sem checkout git da produção" : `prod ${sha7(d.prodSha)} · main ${sha7(d.mainSha)}${d.pendingSince ? ` · pendente desde ${fmtWhen(d.pendingSince)}` : ""}${d.fetchedAt ? ` · main buscado ${fmtWhen(d.fetchedAt)}` : ""}`;
+  lag.title = d.behind == null
+    ? "sem checkout git da produção"
+    : `prod ${sha7(d.prodSha)} · main ${sha7(d.mainSha)} · ${d.behind} merge(s) verificado(s) pendente(s)${d.behindTotal != null && d.behindTotal > 0 ? ` (${d.behindTotal} commit(s) no total)` : ""}${d.pendingSince ? ` · pendente desde ${fmtWhen(d.pendingSince)}` : ""}${d.fetchedAt ? ` · main buscado ${fmtWhen(d.fetchedAt)}` : ""}`;
   disk.textContent = fmtGB(st.disk.freeBytes);
   disk.className = st.disk.freeBytes == null ? "" : diskF ? (diskF.level === "critical" ? "bad" : "warn") : "ok";
   disk.title = `${fmtGB(st.disk.freeBytes)} livres de ${fmtGB(st.disk.totalBytes)} · deploy exige ${fmtGB(st.disk.minFreeBytes)}`;
@@ -909,7 +937,7 @@ function openStatus() {
   const money = (x) => (x.usd != null ? `US$ ${x.usd.toFixed(2)}` : "sem preço");
   const facts = [
     ["PILOTO", `${{ alive:"VIVO", stale:"SEM SINAL", down:"PARADO", absent:"AUSENTE" }[p.state] || p.state}${p.state !== "alive" && silentOf(p) != null ? " · " + fmtSpan(silentOf(p)) : ""}`],
-    ["PROD", d.behind == null ? "—" : d.behind === 0 ? `${sha7(d.prodSha)} · em dia` : `${sha7(d.prodSha)} → ${sha7(d.mainSha)} · −${d.behind}`],
+    ["PROD", d.behind == null ? "—" : d.behind === 0 ? `${sha7(d.prodSha)} · em dia` : `${sha7(d.prodSha)} → ${sha7(d.mainSha)} · −${d.behind}${d.behindTotal != null ? ` · ${d.behindTotal} commits` : ""}`],
     ["DEPLOY", d.hold ? `retido · ${d.hold.reason}` : "livre"],
     ["DISCO", `${fmtGB(st.disk.freeBytes)} / mín ${fmtGB(st.disk.minFreeBytes)}`],
     ["FILA", `${q.ready} prontas · ${q.blocked} bloqueadas${q.source === "origin/main" ? "" : ` (${q.source})`}`],
@@ -1020,7 +1048,7 @@ let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token") || ""
 if (token === "__APITOKEN__") token = "";
 if (PARAMS.get("token")) { token = PARAMS.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null, "", location.pathname); }
 const hdr = () => ({ authorization: `Bearer ${token}` });
-let lastKey = null, firstPoll = true, delay = 2000, pollTimer = 0, lastHb = null, tick = 0;
+let lastKey = null, firstPoll = true, delay = 2000, pollTimer = 0, tick = 0;
 const evKey = (e) => `${e.ts}|${e.type}|${e.task || ""}|${e.phase || ""}|${e.detail || ""}`;
 function ingest(events) {
   let start = 0;
@@ -1046,8 +1074,8 @@ async function poll() {
     const data = await res.json();
     const st = data.state || {}, cfg = data.cfg || {};
     world.hbMs = Number.isFinite(data.heartbeatMs) ? data.heartbeatMs : null;
-    if (world.hbMs != null && (lastHb == null || world.hbMs < lastHb)) heartbeatPulse();
-    lastHb = world.hbMs;
+    if (pulseWanted()) heartbeatPulse();
+    world.lastHb = world.hbMs;
     world.notifyMs = Number.isFinite(data.notifyLastMs) ? data.notifyLastMs : null;
     world.tasks = st.tasks ?? 0; world.deploys = st.deploys ?? 0; world.failures = st.failures ?? 0; world.merges = st.merges ?? 0;
     world.maxTasks = cfg.maxTasksPerDay || 6; world.maxDeploys = cfg.maxDeploysPerDay || 6;

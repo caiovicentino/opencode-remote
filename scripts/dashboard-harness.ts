@@ -36,6 +36,9 @@ export interface Dashboard {
   el(id: string): HarnessEl;
   /** the page's `world` object */
   world: Record<string, unknown>;
+  /** the page's live heartbeat-pulse ring queue (fx.pulses) — the core's
+   * visual heartbeat; empty means the pilot's verdict is suppressing it */
+  pulses: { t: number }[];
   /** page functions exposed for the test */
   fn: Record<string, (...args: unknown[]) => unknown>;
   /** every setTimeout the page scheduled: [delayMs] (never run automatically) */
@@ -157,10 +160,10 @@ export async function loadDashboard(opts: { fetch: FetchStub; EventSource?: unkn
   g.clearTimeout = noop;
   g.fetch = opts.fetch;
   g.EventSource = opts.EventSource;
-  const expose = ["renderHud", "loadStatus", "openStatus", "startStream", "ingest", "poll"];
-  const src = `${DASHBOARD_SCRIPT}\n;globalThis.__dash = { world, fn: { ${expose.map((f) => `${f}: typeof ${f} === "function" ? ${f} : undefined`).join(", ")} } };`;
+  const expose = ["renderHud", "loadStatus", "openStatus", "startStream", "ingest", "poll", "corePilotDownFn", "coreHbLabel", "pulseWanted"];
+  const src = `${DASHBOARD_SCRIPT}\n;globalThis.__dash = { world, pulses: (typeof fx !== "undefined" && fx.pulses) ? fx.pulses : [], fn: { ${expose.map((f) => `${f}: typeof ${f} === "function" ? ${f} : undefined`).join(", ")} } };`;
   new Function(src)();
-  const dash = g.__dash as { world: Record<string, unknown>; fn: Record<string, (...args: unknown[]) => unknown> };
+  const dash = g.__dash as { world: Record<string, unknown>; pulses?: { t: number }[]; fn: Record<string, (...args: unknown[]) => unknown> };
   const flush = async () => {
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   };
@@ -168,6 +171,7 @@ export async function loadDashboard(opts: { fetch: FetchStub; EventSource?: unkn
   return {
     el,
     world: dash.world,
+    pulses: dash.pulses ?? [],
     fn: dash.fn,
     timeouts,
     frames(n: number) {
