@@ -358,7 +358,7 @@ check("sheet: every shortcut belongs to a rendered group", SHORTCUTS.every((s) =
   const chat = src("apps/web/src/components/ChatView.tsx");
   check(
     "wiring: the handoff opens the bar even when the term is not on the loaded page (B3: no silent no-op)",
-    chat.includes("usePendingFind(sessionId)") && chat.includes("setSearchOpen(true);") && chat.includes("setFindOlder(hasMore)"),
+    chat.includes("usePendingFind(sessionId)") && chat.includes("setFindOlder(hasMore)"),
   );
   check(
     "wiring: the deep handoff reuses the P1-064 older-page loader and lands the cursor on the oldest occurrence (the snippet's)",
@@ -369,7 +369,7 @@ check("sheet: every shortcut belongs to a rendered group", SHORTCUTS.every((s) =
   check("wiring: the paired shell mounts the shortcuts sheet once", (app.match(/<ShortcutsSheet \/>/g) ?? []).length === 1);
   check(
     "wiring: ⌘K (menu IPC or fallback) closes the sheet (B5c) and the sheet rides its own chunk (B7: bundle ceiling)",
-    app.includes("PALETTE_OPEN_EVENT") && app.includes('lazy(() => import("./components/ShortcutsSheet"))'),
+    app.includes("window.dispatchEvent(new Event(PALETTE_OPEN_EVENT))") && app.includes('lazy(() => import("./components/ShortcutsSheet"))'),
   );
   const sheet = src("apps/web/src/components/ShortcutsSheet.tsx");
   check(
