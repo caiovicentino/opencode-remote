@@ -119,6 +119,11 @@ export const DENIED_COMMANDS: readonly string[] = [
   // than contains (see the module note above).
   "ln *",
   "ln -s*",
+  // re-verify round 2: the infix patterns above anchor on the command WORD at
+  // the START of the path-string — `/bin/ln` (absolute path) matched none of
+  // them and still read AND rewrote the state files. The infix closes it;
+  // over-matching (`*ln*` catches any argument containing "ln") fails closed.
+  "*ln*",
 ];
 
 /**
