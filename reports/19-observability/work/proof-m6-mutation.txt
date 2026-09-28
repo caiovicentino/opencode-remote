@@ -1,0 +1,2 @@
+FAIL follower: an event appended in the SAME millisecond is still delivered (content resume, not the ts fallback)
+pilot-stream: all checks passed

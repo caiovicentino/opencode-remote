@@ -9,6 +9,31 @@
 
 import { permissionPreview } from "./permission";
 
+/**
+ * eval-10: the daemon's AutoMode contract, one documented place. The daemon
+ * (apps/daemon/src/index.ts autoApprove) broadcasts AUTO_APPROVED_EVENT when
+ * it answered an ask and AUTO_FAILED_EVENT after its final failed attempt,
+ * both with `{ sessionID, permissionID, action }` (+ `error` on failure). Any
+ * new daemon path that gives up on an ask (a boot/stream-reattach sweep, a
+ * toggle-on sweep, the eval-12 post-handshake replay) must emit
+ * AUTO_FAILED_EVENT with the same shape — the PWA renders it as a manual
+ * card. The comparisons below and in ChatView keep the string literals on
+ * purpose (the daemon-side parity check reads them); scripts/pwa-mobile-ux
+ * .test.ts pins these constants against the daemon source.
+ */
+export const AUTO_APPROVED_EVENT = "ocr.permission.auto";
+export const AUTO_FAILED_EVENT = "ocr.permission.autoFailed";
+
+/**
+ * eval-10: how long an ask may stay pending under AutoMode before the PWA
+ * stops trusting the daemon to answer it. The daemon's own budget is two
+ * attempts ~500 ms apart; asks it never saw (asked while it was restarting,
+ * before AutoMode was switched on, or a missed AUTO_FAILED_EVENT while the
+ * phone slept) never get an event at all — without this grace they stayed
+ * suppressed forever: an invisibly stuck agent.
+ */
+export const AUTO_APPROVE_GRACE_MS = 10_000;
+
 export interface PermissionAsk {
   permissionID: string;
   label: string;
@@ -16,6 +41,8 @@ export interface PermissionAsk {
   preview?: string;
   /** P1-093: set on actionable entries whose auto-approval finally failed */
   autoFailed?: boolean;
+  /** eval-10: AutoMode left this ask pending past AUTO_APPROVE_GRACE_MS */
+  autoStale?: boolean;
 }
 
 export type ResolvedOrigin = "auto" | "other";
@@ -42,9 +69,19 @@ interface PermissionEventProps {
   sessionID?: string;
   id?: string;
   permissionID?: string;
+  /** opencode 1.x `permission.replied` names the ask `requestID` */
+  requestID?: string;
   type?: string;
+  /** opencode 1.x `permission.asked` (PermissionRequest) names the tool here */
+  permission?: string;
   action?: string;
   messageID?: string;
+  tool?: { messageID?: string };
+}
+
+/** eval-10: the "action" fallback (ours and the daemon's) is not a name */
+function named(label: unknown): string | undefined {
+  return typeof label === "string" && label && label !== "action" ? label : undefined;
 }
 
 /**
@@ -65,15 +102,22 @@ export function collectPermissionAsks(
     const type = evt.type.toLowerCase();
     if (!type.includes("permission")) continue;
     const p = (evt.properties ?? {}) as PermissionEventProps;
-    const id = p.permissionID ?? p.id;
+    const id = p.permissionID ?? p.id ?? p.requestID;
     if (!p.sessionID || !id || p.sessionID !== sessionId) continue;
+    const prev = byId.get(id);
+    const reply = type.endsWith(".replied");
     byId.set(id, {
       permissionID: id,
-      label: p.type ?? p.action ?? "action",
-      messageID: p.messageID,
-      preview: permissionPreview(p),
-      auto: type === "ocr.permission.auto",
-      autoFailed: type === "ocr.permission.autofailed",
+      // eval-10: opencode 1.18 ships the tool as `permission` (no `type`),
+      // its reply event carries no tool at all and the daemon's AutoMode
+      // events say "action" — keep the best name any event taught
+      label: named(p.type) ?? named(p.permission) ?? named(p.action) ?? prev?.label ?? "action",
+      messageID: p.messageID ?? p.tool?.messageID ?? prev?.messageID,
+      preview: permissionPreview(p) ?? prev?.preview,
+      // a reply event (opencode's own `permission.replied`, which trails the
+      // daemon's AutoMode event) only confirms — it keeps who answered
+      auto: reply ? (prev?.auto ?? false) : type === "ocr.permission.auto",
+      autoFailed: reply ? false : type === "ocr.permission.autofailed",
     });
   }
   return [...byId.values()];
@@ -88,12 +132,15 @@ export function collectPermissionAsks(
  * else that was seen becomes a collapsed resolved line ("auto-approved" when
  * the daemon answered it, plain "resolved" otherwise). Asks that are still
  * pending but already answered locally render nothing — never a ghost card.
+ * eval-10: `stale` lists asks AutoMode left pending past the grace
+ * (staleAutoAsks) — they surface as manual cards flagged `autoStale`.
  */
 export function reconcilePermissionCards(
   asks: CollectedAsk[],
   serverPending: PermissionAsk[],
   responded: Set<string>,
   autoMode: boolean,
+  stale: ReadonlySet<string> = new Set(),
 ): PermissionCards {
   const pendingIds = new Set(serverPending.map((x) => x.permissionID));
   const seen = new Map<string, CollectedAsk>();
@@ -106,15 +153,44 @@ export function reconcilePermissionCards(
   const resolved: ResolvedPermission[] = [];
   for (const [id, ask] of seen) {
     if (pendingIds.has(id)) {
-      if (!responded.has(id) && (!autoMode || ask.autoFailed)) {
+      const autoStale = autoMode && !ask.autoFailed && stale.has(id);
+      if (!responded.has(id) && (!autoMode || ask.autoFailed || autoStale)) {
         const { permissionID, label, messageID, preview, autoFailed } = ask;
-        actionable.push({ permissionID, label, messageID, preview, autoFailed });
+        actionable.push({ permissionID, label, messageID, preview, autoFailed, ...(autoStale ? { autoStale } : {}) });
       }
       continue;
     }
     resolved.push({ permissionID: id, label: ask.label, origin: ask.auto ? "auto" : "other" });
   }
   return { actionable, resolved };
+}
+
+/**
+ * eval-10: asks still pending past `graceMs` since this client first saw
+ * them. `firstSeen` is the client's own clock (permission ids → ms), so no
+ * phone/computer clock skew enters the verdict. Pure: ChatView owns the map
+ * and the timer that re-evaluates when the next grace expires.
+ *
+ * eval-10 verify round (fail-closed): `lastOkFetchAt` is the instant of the
+ * last SUCCESSFUL pending-list read, never wall-clock now. A read that
+ * failed (phone offline, relay down) leaves the clock untouched, so an ask
+ * the daemon may have answered meanwhile is never promoted to a manual card
+ * on stale data — the reconnect resync re-reads and only then can the
+ * verdict advance. A read older than the ask's first sighting can also never
+ * promote it (the verdict is only as fresh as its newest successful read).
+ */
+export function staleAutoAsks(
+  firstSeen: ReadonlyMap<string, number>,
+  pendingIds: Iterable<string>,
+  lastOkFetchAt: number,
+  graceMs: number = AUTO_APPROVE_GRACE_MS,
+): Set<string> {
+  const out = new Set<string>();
+  for (const id of pendingIds) {
+    const seen = firstSeen.get(id);
+    if (seen !== undefined && lastOkFetchAt - seen >= graceMs) out.add(id);
+  }
+  return out;
 }
 
 /** opencode answers 404 when the permission was resolved elsewhere (or by AutoMode). */

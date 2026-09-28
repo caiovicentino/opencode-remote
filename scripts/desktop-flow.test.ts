@@ -40,13 +40,81 @@ import { classifyShift, SHIFT_REGIONS } from "../apps/web/src/lib/shiftgate";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 let failures = 0;
+// Beat timing + failure attribution (forensic 2026-09-24, recs 3 and 8).
+// Every check belongs to a beat: the task-id prefix of its name ("P3-407: …"),
+// a "word:" prefix ("local boot: …"), else the last phase() banner. The wall
+// time since the previous check is charged to the beat of the check that
+// closes it, so the table printed at exit sums to the run's elapsed time and
+// answers "which beat ate the 420s budget". Failed checks are re-printed on
+// STDOUT with their beat and detail: the gate concatenates stdout BEFORE
+// stderr, so the console.error details used to land far away from their FAIL
+// line — and the byte-cut gate tail showed neither.
+const BUDGET_WARN_RATIO = 0.8;
+let currentBeat = "setup";
+let currentPhase = "";
+let lastCheckAt = Date.now();
+let lastCheckName = "";
+const beatMs = new Map<string, { ms: number; checks: number }>();
+const failedChecks: { name: string; beat: string; phase: string; atMs: number; detail: string }[] = [];
+function beatOf(name: string): string {
+  return /^((?:P\d|RT)-\d+[a-z]?)\b/.exec(name)?.[1] ?? /^([a-z][a-z -]{2,24}):/.exec(name)?.[1] ?? currentBeat;
+}
 function check(name: string, ok: boolean, detail = "") {
   console.log(`${ok ? "OK  " : "FAIL"} ${name}`);
+  const now = Date.now();
+  const beat = beatOf(name);
+  const slot = beatMs.get(beat) ?? { ms: 0, checks: 0 };
+  slot.ms += now - lastCheckAt;
+  slot.checks++;
+  beatMs.set(beat, slot);
+  lastCheckAt = now;
+  lastCheckName = name;
   if (!ok) {
     failures++;
+    // the banner label only when it belongs to this check's beat (beats
+    // without a phase() banner would otherwise inherit a stale label)
+    failedChecks.push({ name, beat, phase: beat === currentBeat ? currentPhase : "", atMs: now, detail });
     if (detail) console.error("  ", detail);
   }
 }
+let flowReported = false;
+function flowReport(stopped = false): void {
+  if (flowReported) return;
+  flowReported = true;
+  const elapsed = Date.now() - startedAt;
+  const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+  const pct = Math.round((elapsed / DEADLINE_MS) * 100);
+  const beats = [...beatMs.entries()].sort((a, b) => b[1].ms - a[1].ms);
+  console.log(`\ndesktop flow beat timing: ${secs(elapsed)} of the ${DEADLINE_MS / 1000}s budget (${pct}%), ${beats.length} beats; slowest 10:`);
+  for (const [beat, s] of beats.slice(0, 10)) console.log(`  ${secs(s.ms).padStart(7)}  ${beat} (${s.checks} check(s))`);
+  if (elapsed > DEADLINE_MS * BUDGET_WARN_RATIO) {
+    const top = beats.slice(0, 3).map(([b, s]) => `${b} ${secs(s.ms)}`).join(", ");
+    console.log(`WARN desktop-flow budget: ${secs(elapsed)} of ${DEADLINE_MS / 1000}s (${pct}%, warn above ${BUDGET_WARN_RATIO * 100}%) — slowest beats: ${top}`);
+  }
+  if (elapsed >= DEADLINE_MS) {
+    console.log(`desktop flow exceeded the budget during beat ${currentBeat} (last check: ${lastCheckName || "none"})`);
+  }
+  if (stopped) {
+    console.log(`FAIL desktop flow stopped before its end — last check: ${lastCheckName || "none"} (beat ${lastCheckName ? beatOf(lastCheckName) : currentBeat}${currentPhase ? `, last banner "${currentPhase}"` : ""})`);
+  }
+  if (failedChecks.length) {
+    console.log(`FAILED CHECKS (${failedChecks.length}) — the check, the beat it ran in, when, and its detail:`);
+    for (const f of failedChecks.slice(0, 12)) {
+      console.log(`FAIL ${f.name}`);
+      console.log(`     beat ${f.beat}${f.phase ? ` · phase "${f.phase}"` : ""} · at ${secs(f.atMs - startedAt)}`);
+      const lines = f.detail.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3);
+      for (const l of lines) console.log(`     ${l.length > 200 ? `${l.slice(0, 199)}…` : l}`);
+    }
+    if (failedChecks.length > 12) console.log(`(+${failedChecks.length - 12} more failed check(s))`);
+    console.log("");
+  }
+}
+// abnormal exits (budget deadline, failed open, uncaught error) still report
+process.on("exit", () => {
+  try {
+    flowReport(true);
+  } catch {}
+});
 
 // --- ensure build artifacts exist (the gate's npm run build produces both) ---
 const webIndex = join(repoRoot, "apps", "web", "dist", "index.html");
@@ -192,7 +260,12 @@ delete cliEnv.OCR_USER_DATA_DIR;
 // P2-355 added the layout-shift beat (PerformanceObserver with buffered:true
 // installed right after the open, a quiet-poll settle, ONE buffer read
 // classified by the pure shiftgate module, zero named-region shifts required,
-// three evidence shots) inside the same budget.
+// three evidence shots) inside the same budget. eval-20 added the
+// conversation-search beat (sidebar/palette content hits, the deep hit with
+// its "Load earlier" older-page loader, the honest degraded state, the
+// single-flight fetch-volume probes over the fake backend, the sheet's
+// typing guard / Esc-over-dialog / focus trap / palette+find close) inside
+// the same budget.
 const startedAt = Date.now();
 const DEADLINE_MS = 420_000;
 const shotPath = join(tmpdir(), "ocr-desktop-flow", `flow-${process.pid}.png`);
@@ -319,6 +392,8 @@ function reasonOrHintLeaksPaths(v: { reason?: string; hint?: string }): boolean 
  * grew two hermetic boots, so regressions must be attributable per phase. */
 function phase(label: string): void {
   console.log(`--- ${label} (${((Date.now() - startedAt) / 1000).toFixed(1)}s elapsed)`);
+  currentPhase = label;
+  currentBeat = /^((?:P\d|RT)-\d+[a-z]?)\b/.exec(label)?.[1] ?? label;
 }
 
 // --- P1-072: interactive webview against a local fake server -------------------
@@ -3620,12 +3695,28 @@ try {
         const REPLAY = "ses-reentry-check";
         const DRAFT = "ses-draft-a";
         const ROW_COUNT = 6;
+        // eval-20 (verifier B3): a conversation whose hit lives DEEP — 150
+        // rows, the term only in an old row, so the first page (50) misses it
+        // and the handoff must point at "Load earlier" instead of swallowing
+        // the term. The daemon pages it through capMessagePage, so the fake
+        // serves the integral array.
+        const DEEP_COUNT = 150;
+        const DEEP_TERM_AT = 10;
         const fakeScript = [
           "const http = require('node:http');",
           `const ROWS = Array.from({ length: ${ROW_COUNT} }, (_, i) => ({`,
           "  info: { id: 'msg-' + (i + 1), role: i % 2 ? 'assistant' : 'user' },",
           "  parts: [{ type: 'text', text: (i % 2 ? 'reply-' : 'ping-') + (i + 1) }],",
           "}));",
+          `const DEEP_ROWS = Array.from({ length: ${DEEP_COUNT} }, (_, i) => ({`,
+          "  info: { id: 'dm-' + (i + 1), role: i % 2 ? 'assistant' : 'user' },",
+          `  parts: [{ type: 'text', text: i === ${DEEP_TERM_AT} ? 'o marcador-raro fica aqui, bem na página antiga' : 'linha ' + (i + 1) }],`,
+          "}));",
+          "let failSes = '';",
+          "let slowMs = 0;",
+          "let msgCount = 0;",
+          "let msgMaxConc = 0;",
+          "let msgConc = 0;",
           "const hits = [];",
           "const sse = new Set();",
           "let armPerm = false;",
@@ -3634,6 +3725,16 @@ try {
           "  const json = (b) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(b)); };",
           "  hits.push({ method: req.method, path: u.pathname });",
           "  if (u.pathname === '/__hits') return json(hits);",
+          // eval-20: single-flight probes — a counter + peak concurrency for
+          // the message-GET traffic the daemon's search scan generates, with
+          // an optional response delay so overlapping scans are observable.
+          "  if (u.pathname === '/__msgmeta') return json({ count: msgCount, maxConc: msgMaxConc });",
+          "  if (u.pathname === '/__msgreset') { msgCount = 0; msgMaxConc = 0; return json({ ok: true }); }",
+          "  if (u.pathname === '/__slow-ses') { slowMs = Math.max(0, Number(u.searchParams.get('ms') || 0)); return json({ slowMs }); }",
+          // eval-20 (verifier B1): the failure hatch — the daemon's search
+          // origin reads one conversation, gets a 500, and the route degrades
+          // to the empty PARTIAL answer (truncated) — never a fake "no match".
+          "  if (u.pathname === '/__fail-ses') { failSes = u.searchParams.get('id') || ''; return json({ armed: failSes }); }",
           "  if (u.pathname === '/global/health') return json({ healthy: true, version: 'fake' });",
           "  if (u.pathname === '/event') {",
           "    res.writeHead(200, { 'content-type': 'text/event-stream' });",
@@ -3656,6 +3757,7 @@ try {
           "  const yesterdayNoon = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 1, 12, 0, 0, 0).getTime();",
           "  const recency = [",
           "    { id: 'ses-recency-today', title: 'Sync de hoje', time: { updated: nowMs - 5 * 60 * 1000 } },",
+          "    { id: 'ses-deep-hit', title: 'Conversa profunda', time: { updated: nowMs - 90 * 1000 } },",
           "    { id: 'ses-recency-yesterday', title: 'Rascunho de ontem', time: { updated: yesterdayNoon } },",
           "    { id: 'ses-recency-earlier', title: 'Setup antigo', time: { updated: nowMs - 10 * 24 * 3600 * 1000 } },",
           "  ];",
@@ -3664,10 +3766,20 @@ try {
           // current POST is pushed at the top, so the first fire is 1).
           "  if (u.pathname === '/session' && req.method === 'POST') return json({ id: 'ses-quick-' + hits.filter((h) => h.method === 'POST' && h.path === '/session').length });",
           "  if (u.pathname === '/session') return json([...recency, { id: 'ses-reentry-check', title: 'Reentry check' }, { id: 'ses-draft-a', title: 'Draft A' }, { id: 'ses-artifact-auto', title: 'Artifact auto' }, { id: 'ses-autofail', title: 'Auto fail' }]);",
-          "  if (/^\\/session\\/(ses-reentry-check|ses-draft-a|ses-artifact-auto|ses-autofail|ses-thinking|ses-quick-\\d+)$/.test(u.pathname)) return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
+          "  if (/^\\/session\\/(ses-reentry-check|ses-draft-a|ses-artifact-auto|ses-autofail|ses-thinking|ses-deep-hit|ses-quick-\\d+)$/.test(u.pathname)) return json({ id: u.pathname.split('/')[2], title: 'P1-089' });",
           "  if (u.pathname === '/session/ses-autofail/permissions/perm-fail') { res.writeHead(500); res.end('auto-approve always rejected'); return; }",
+          "  if (failSes && u.pathname === '/session/' + failSes + '/message') { res.writeHead(500); return res.end('origin hatch'); }",
           "  if (/^\\/session\\/ses-thinking\\/message$/.test(u.pathname)) { const t = ROWS.slice(); t[5] = { info: t[5].info, parts: [{ type: 'reasoning', text: 'Raciocinio persistido no historico.' }, ...(t[5].parts ?? [])] }; return json(t); }",
-          "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) return req.method === 'POST' ? json({ id: 'msg-fake' }) : json(ROWS);",
+          "  if (u.pathname === '/session/ses-deep-hit/message') return json(DEEP_ROWS);",
+          "  if (/^\\/session\\/[^/]+\\/message$/.test(u.pathname)) {",
+          "    msgCount++;",
+          "    msgConc++;",
+          "    if (msgConc > msgMaxConc) msgMaxConc = msgConc;",
+          "    const done = () => { msgConc--; };",
+          "    if (slowMs > 0) { setTimeout(() => { done(); if (req.method === 'POST') return json({ id: 'msg-fake' }); return json(ROWS); }, slowMs); }",
+          "    else { setImmediate(done); if (req.method === 'POST') return json({ id: 'msg-fake' }); return json(ROWS); }",
+          "    return;",
+          "  }",
           "  if (u.pathname === '/__arm-perm') { armPerm = req.method === 'POST'; return json({ armed: armPerm }); }",
           "  if (u.pathname === '/permission') return json(armPerm ? [{ id: 'perm-fail', sessionID: 'ses-autofail', permission: 'bash' }] : []);",
           "  if (u.pathname === '/question') return json([]);",
@@ -4452,6 +4564,404 @@ try {
             run("P2-323: return to the artifact session", ["ipc", `location.hash = '#/session/${AUTO_SES}'`], 15_000, localEnv2);
             await waitProbe("P2-323: artifact session chat rendered again", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
             run("P2-323: restore desktop width", ["shot", join(shotsDir, "P2-323-restore-1440.png"), "1440", "900"], 15_000, localEnv2);
+          }
+
+          // --- eval-20: conversation search + shortcuts sheet (behavior) -----
+          // The verifier rejected string pins as proof, so these probes drive
+          // the REAL wiring over the same fake backend the P1-089 boot serves:
+          //  - a sidebar hit lands the in-chat find bar on the OLDEST loaded
+          //    occurrence (the snippet the user clicked shows the first
+          //    occurrence in the scan window); a DEEP hit (term only in an
+          //    older page) keeps the term with the calm "Load earlier"
+          //    pointer, reusing the P1-064 loader until it is found;
+          //  - a scan that fails mid-way (hatch: one origin conversation
+          //    answers 500) degrades honestly — never "Nada encontrado";
+          //  - the palette shows content hits and the same honest state;
+          //  - the typing discipline: fast typing fires at most two scans
+          //    (500ms pause + 3-char floor) and, with a slow origin, the
+          //    message GETs never overlap (single-flight);
+          //  - the sheet: '?' stays typing in the composer, Esc closes ONLY
+          //    the sheet over the rename dialog, Tab is trapped, ⌘K/⌘F close
+          //    it instead of focusing surfaces buried below the scrim.
+          phase("eval-20: conversation search + shortcuts sheet");
+          const e20Wide = run("eval-20: resize to desktop width", ["shot", join(shotsDir, "eval-20-resize.png"), "1440", "900"], 15_000, localEnv2);
+          if (e20Wide.ok) {
+            await waitProbe("eval-20: chat rendered at desktop width", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+            const e20Sessions = (
+              await fetch(`${fakeUrl}/session`)
+                .then((r) => r.json() as Promise<{ id: string }[]>)
+                .catch(() => [] as { id: string }[])
+            ).length;
+            const e20Meta = async (): Promise<{ count: number; maxConc: number }> =>
+              await fetch(`${fakeUrl}/__msgmeta`)
+                .then((r) => r.json() as Promise<{ count: number; maxConc: number }>)
+                .catch(() => ({ count: -1, maxConc: -1 }));
+            // one shot at an input: set the value through the prototype setter
+            // (React onChange) — the same trick the other beats use
+            const setVal = (sel: string, v: string) =>
+              `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'MISS'; const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; s.call(el, ${JSON.stringify(v)}); el.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()`;
+            const typeSlow = (sel: string, steps: { v: string; after: number }[]) =>
+              `(async () => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return 'MISS'; const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; const set = (v) => { s.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };${steps
+                .map((st) => `set(${JSON.stringify(st.v)}); await new Promise((r) => setTimeout(r, ${st.after}));`)
+                .join("")} return 'done'; })()`;
+
+            // A: a first-page hit lands the bar on the oldest occurrence
+            run("eval-20: type a first-page term in the sidebar", ["ipc", setVal(".sess-search-row input", "ping")], 15_000, localEnv2);
+            const e20Hits = await waitProbe(
+              "eval-20: content hits render in the sidebar",
+              "[...document.querySelectorAll('.content-hits .content-hit')].map((b) => b.dataset.session).join(',')",
+              (v) => /ses-/.test(v),
+              localEnv2,
+            );
+            if (e20Hits) {
+              run("eval-20: sidebar hits evidence shot", ["shot", join(shotsDir, "eval-20-hits.png")], 15_000, localEnv2);
+              const opened = run(
+                "eval-20: open the first-page hit",
+                ["ipc", "(() => { const b = document.querySelector('.content-hits .content-hit[data-session=\"ses-recency-today\"]'); if (!b) return 'MISS'; b.click(); return 'ok'; })()"],
+                15_000,
+                localEnv2,
+              );
+              if (opened.ok) {
+                await waitProbe("eval-20: hit chat rendered", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+                const bar = await waitProbe(
+                  "eval-20: the hit opens the chat with the find bar",
+                  "(() => { const bar = document.querySelector('.chat-search'); if (!bar) return { open: false }; return { open: true, value: bar.querySelector('input')?.value ?? '', count: bar.querySelector('.chat-search-count')?.textContent ?? '', marked: !!document.querySelector('.msg mark.search-mark-current') }; })()",
+                  (v) => {
+                    try {
+                      return (JSON.parse(v) as { open?: boolean }).open === true;
+                    } catch {
+                      return false;
+                    }
+                  },
+                  localEnv2,
+                );
+                if (bar) {
+                  const st = JSON.parse(bar) as { open?: boolean; value?: string; count?: string; marked?: boolean };
+                  check("eval-20: the hit opens the chat with the find bar", st.open === true, bar);
+                  check("eval-20: the bar holds the searched term", st.value === "ping", bar);
+                  check("eval-20: the cursor is on the OLDEST loaded occurrence (the snippet's)", st.count === "1/3", bar);
+                  check("eval-20: the current occurrence is marked in the transcript", st.marked === true, bar);
+                }
+              }
+            }
+
+            // B/C: the palette shows content hits; fast typing fires at most
+            // two scans (the verifier measured 7 overlapping scans per word)
+            run("eval-20: open the palette via the Go menu", ["menu-click", "go-palette"], 15_000, localEnv2);
+            const palUp = await waitProbe("eval-20: palette rendered", "!!document.querySelector('.palette-input')", (v) => /true/.test(v), localEnv2);
+            if (palUp) {
+              run("eval-20: palette hits evidence shot", ["shot", join(shotsDir, "eval-20-palette-hits.png")], 15_000, localEnv2);
+              run("eval-20: type in the palette", ["ipc", setVal(".palette-input", "ping")], 15_000, localEnv2);
+              await waitProbe(
+                "eval-20: content hits render in the palette",
+                "[...document.querySelectorAll('.palette-item')].filter((b) => b.querySelector('.palette-snippet')).length",
+                (v) => /[1-9]/.test(v),
+                localEnv2,
+              );
+              await fetch(`${fakeUrl}/__msgreset`).catch(() => {});
+              run(
+                "eval-20: fast typing in the palette",
+                ["ipc", typeSlow(".palette-input", [
+                  { v: "r", after: 300 },
+                  { v: "re", after: 300 },
+                  { v: "rep", after: 300 },
+                  { v: "repl", after: 300 },
+                  { v: "repln", after: 300 },
+                  { v: "reply", after: 1_600 },
+                ])],
+                30_000,
+                localEnv2,
+              );
+              const metaFast = await e20Meta();
+              const fastBound = 2 * (e20Sessions + 2);
+              check(
+                "eval-20: fast typing fires at most two full scans (500ms pause + 3-char floor + single-flight)",
+                metaFast.count >= 0 && metaFast.count <= fastBound,
+                `message GETs ${metaFast.count} vs bound ${fastBound} over ${e20Sessions} sessions`,
+              );
+              // D: with a slow origin the scans never overlap (maxConc 1) and
+              // held terms are dropped, never queued (at most two scans)
+              await fetch(`${fakeUrl}/__slow-ses?ms=350`).catch(() => {});
+              await fetch(`${fakeUrl}/__msgreset`).catch(() => {});
+              run(
+                "eval-20: slow typing with a delayed origin",
+                ["ipc", typeSlow(".palette-input", [
+                  { v: "abc", after: 700 },
+                  { v: "abcd", after: 700 },
+                  { v: "abcde", after: 2_600 },
+                ])],
+                30_000,
+                localEnv2,
+              );
+              const metaSlow = await e20Meta();
+              await fetch(`${fakeUrl}/__slow-ses`).catch(() => {});
+              check(
+                "eval-20: single-flight — message GETs never overlap while typing (max concurrency 1)",
+                metaSlow.maxConc >= 0 && metaSlow.maxConc <= 1,
+                `maxConc ${metaSlow.maxConc}`,
+              );
+              check(
+                "eval-20: held terms are dropped, not queued — at most two scans served",
+                metaSlow.count >= 0 && metaSlow.count <= 2 * (e20Sessions + 2),
+                `message GETs ${metaSlow.count} over ${e20Sessions} sessions`,
+              );
+              run("eval-20: close the palette", ["ipc", "document.querySelector('.palette-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"], 15_000, localEnv2);
+              await waitProbe("eval-20: palette closed", "!!document.querySelector('.palette-input')", (v) => /false/.test(v), localEnv2);
+            }
+
+            // F: the deep hit keeps the term and points at "Load earlier"
+            run("eval-20: type the deep term in the sidebar", ["ipc", setVal(".sess-search-row input", "marcador-raro")], 15_000, localEnv2);
+            const deepHit = await waitProbe(
+              "eval-20: the deep hit renders in the sidebar",
+              "document.querySelector('.content-hits .content-hit[data-session=\"ses-deep-hit\"]') ? 'ok' : 'wait'",
+              (v) => /ok/.test(v),
+              localEnv2,
+            );
+            if (deepHit) {
+              const deepOpen = run(
+                "eval-20: open the deep hit",
+                ["ipc", "(() => { const b = document.querySelector('.content-hits .content-hit[data-session=\"ses-deep-hit\"]'); if (!b) return 'MISS'; b.click(); return 'ok'; })()"],
+                15_000,
+                localEnv2,
+              );
+              if (deepOpen.ok) {
+                await waitProbe("eval-20: deep chat rendered", "!!document.querySelector('.messages')", (v) => /true/.test(v), localEnv2);
+                const deepBar = await waitProbe(
+                  "eval-20: the deep hit opens the bar with the term (never a silent no-op)",
+                  "(() => { const bar = document.querySelector('.chat-search'); if (!bar) return { open: false }; return { open: true, value: bar.querySelector('input')?.value ?? '', older: !!bar.querySelector('.chat-search-older'), count: bar.querySelector('.chat-search-count')?.textContent ?? '' }; })()",
+                  (v) => {
+                    try {
+                      return (JSON.parse(v) as { open?: boolean; older?: boolean }).older === true;
+                    } catch {
+                      return false;
+                    }
+                  },
+                  localEnv2,
+                );
+                if (deepBar) {
+                  const d = JSON.parse(deepBar) as { open?: boolean; value?: string; older?: boolean; count?: string };
+                  check("eval-20: the deep bar holds the term", d.open === true && d.value === "marcador-raro", deepBar);
+                  const offPage = run("eval-20: the term is off-page (first page)", ["ipc", "document.querySelector('.messages')?.textContent.includes('marcador-raro') ?? false"], 15_000, localEnv2);
+                  if (offPage.ok) check("eval-20: the occurrence is NOT in the first page", /false/.test(offPage.stdout), offPage.stdout);
+                  run("eval-20: deep bar evidence shot", ["shot", join(shotsDir, "eval-20-deep-bar.png")], 15_000, localEnv2);
+                  run("eval-20: load older pages", ["click", ".chat-search-older-btn"], 15_000, localEnv2);
+                  const loaded = await waitProbe(
+                    "eval-20: older pages loaded, the occurrence is found",
+                    "(() => { const bar = document.querySelector('.chat-search'); return { count: bar?.querySelector('.chat-search-count')?.textContent ?? '', older: !!bar?.querySelector('.chat-search-older'), marked: !!document.querySelector('.msg mark.search-mark-current') }; })()",
+                    (v) => {
+                      try {
+                        const p = JSON.parse(v) as { older?: boolean; marked?: boolean };
+                        return p.marked === true && p.older === false;
+                      } catch {
+                        return false;
+                      }
+                    },
+                    localEnv2,
+                  );
+                  if (loaded) {
+                    const l = JSON.parse(loaded) as { count?: string; older?: boolean; marked?: boolean };
+                    check("eval-20: the bar finds the occurrence after loading older pages", l.count === "1/1", loaded);
+                    const bubblesNow = run("eval-20: bubbles after the older-page load", ["ipc", "document.querySelectorAll('.msg').length"], 15_000, localEnv2);
+                    if (bubblesNow.ok) check("eval-20: the P1-064 loader fetched the older pages", Number(bubblesNow.stdout) >= 149, bubblesNow.stdout);
+                  }
+                  run("eval-20: close the deep find bar", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"], 15_000, localEnv2);
+                }
+              }
+            }
+
+            // G: a scan that fails mid-way is honest — never "Nada encontrado"
+            await fetch(`${fakeUrl}/__fail-ses?id=ses-recency-today`).catch(() => {});
+            run("eval-20: type with the origin failing", ["ipc", setVal(".sess-search-row input", "ping-3")], 15_000, localEnv2);
+            const degraded = await waitProbe(
+              "eval-20: the degraded state renders (partial scan, zero hits)",
+              "(() => { const sec = document.querySelector('.content-hits'); return { degraded: !!sec?.querySelector('[data-degraded]'), none: !!sec?.querySelector('[data-none]') }; })()",
+              (v) => {
+                try {
+                  return (JSON.parse(v) as { degraded?: boolean }).degraded === true;
+                } catch {
+                  return false;
+                }
+              },
+              localEnv2,
+            );
+            if (degraded) {
+              const g = JSON.parse(degraded) as { degraded?: boolean; none?: boolean };
+              check("eval-20: the sidebar never says 'Nada encontrado' for a failed scan", g.none === false, degraded);
+              run("eval-20: degraded state evidence shot", ["shot", join(shotsDir, "eval-20-degraded.png")], 15_000, localEnv2);
+              // the palette shows the same honesty: no "No matches", the
+              // degraded note with its retry
+              run("eval-20: open the palette for the degraded probe", ["menu-click", "go-palette"], 15_000, localEnv2);
+              const palUp2 = await waitProbe("eval-20: palette rendered again", "!!document.querySelector('.palette-input')", (v) => /true/.test(v), localEnv2);
+              if (palUp2) {
+                run("eval-20: type the failing term in the palette", ["ipc", setVal(".palette-input", "ping-3")], 15_000, localEnv2);
+                const palDeg = await waitProbe(
+                  "eval-20: the palette degrades honestly",
+                  "(() => ({ empty: !!document.querySelector('.palette-list [data-empty]'), degraded: !!document.querySelector('.palette-list [data-degraded]') }))()",
+                  (v) => {
+                    try {
+                      return (JSON.parse(v) as { degraded?: boolean }).degraded === true;
+                    } catch {
+                      return false;
+                    }
+                  },
+                  localEnv2,
+                );
+                if (palDeg) {
+                  const p = JSON.parse(palDeg) as { empty?: boolean; degraded?: boolean };
+                  check("eval-20: the palette never shows 'No matches' for a failed scan", p.empty === false, palDeg);
+                }
+                run("eval-20: close the degraded palette", ["ipc", "document.querySelector('.palette-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"], 15_000, localEnv2);
+              }
+            }
+            await fetch(`${fakeUrl}/__fail-ses`).catch(() => {});
+            run("eval-20: clear the sidebar query", ["ipc", setVal(".sess-search-row input", "")], 15_000, localEnv2);
+
+            // H: the shortcuts sheet — typing guard, a11y, trap, Esc discipline
+            // (every dispatch probe waits for the React flush before reading
+            // the DOM, and every check runs even when the open failed, so no
+            // overlay is ever left behind for the following beats)
+            run("eval-20: focus the composer", ["click", ".composer textarea"], 15_000, localEnv2);
+            const guardBlocked = run(
+              "eval-20: ? inside the composer stays typing",
+              ["ipc", "(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true })); await new Promise((r) => setTimeout(r, 120)); return { sheet: !!document.querySelector('[data-shortcuts-sheet]') }; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (guardBlocked.ok) {
+              const gb = JSON.parse(guardBlocked.stdout || "{}") as { sheet?: boolean };
+              check("eval-20: '?' in the composer never opens the sheet", gb.sheet === false, guardBlocked.stdout);
+            }
+            const guardOpen = run(
+              "eval-20: ? outside a field opens the sheet",
+              ["ipc", "(async () => { document.activeElement?.blur?.(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true })); await new Promise((r) => setTimeout(r, 120)); return { sheet: !!document.querySelector('[data-shortcuts-sheet]') }; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (guardOpen.ok) {
+              const go = JSON.parse(guardOpen.stdout || "{}") as { sheet?: boolean };
+              check("eval-20: '?' outside a field opens the sheet", go.sheet === true, guardOpen.stdout);
+              if (go.sheet === true) {
+                run("eval-20: sheet evidence shot", ["shot", join(shotsDir, "eval-20-sheet.png")], 15_000, localEnv2);
+                const a11y = run(
+                  "eval-20: sheet exposes the combos to screen readers",
+                  ["ipc", "(() => { const rows = [...document.querySelectorAll('.shortcuts-row')]; const withText = rows.filter((r) => (r.querySelector('dd .sr-only')?.textContent ?? '').length > 0); return { rows: rows.length, withText: withText.length }; })()"],
+                  15_000,
+                  localEnv2,
+                );
+                if (a11y.ok) {
+                  const a = JSON.parse(a11y.stdout || "{}") as { rows?: number; withText?: number };
+                  check("eval-20: every sheet row reads its combination (B5a)", a.rows === a.withText && (a.rows ?? 0) >= 13, a11y.stdout);
+                }
+                const trap = run(
+                  "eval-20: Tab is trapped in the sheet",
+                  ["ipc", "(async () => { const btn = document.querySelector('.shortcuts-close'); btn?.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 60)); return { active: document.activeElement?.className ?? 'LOST' }; })()"],
+                  15_000,
+                  localEnv2,
+                );
+                if (trap.ok) {
+                  const tr = JSON.parse(trap.stdout || "{}") as { active?: string };
+                  check("eval-20: the focus stays inside the sheet card (B5b)", /shortcuts-close/.test(tr.active ?? ""), trap.stdout);
+                }
+              }
+            }
+            run("eval-20: close the sheet (Esc)", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"], 15_000, localEnv2);
+            await waitProbe("eval-20: sheet closed", "!!document.querySelector('[data-shortcuts-sheet]')", (v) => /false/.test(v), localEnv2);
+
+            // B4: one Esc over the rename dialog closes ONLY the sheet
+            const openRename = run(
+              "eval-20: open the rename dialog",
+              ["ipc", "(() => { const row = document.querySelector('.sess-row'); const b = document.querySelector('.sess-row .row-rename'); if (!row || !b) return 'MISS'; row.focus(); b.focus(); b.click(); return 'ok'; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (openRename.ok) {
+              const renameUp = await waitProbe("eval-20: rename dialog rendered", "!!document.querySelector('.ask-dialog')", (v) => /true/.test(v), localEnv2);
+              if (renameUp) {
+                const so = run(
+                  "eval-20: open the sheet over the rename dialog (⌘/)",
+                  ["ipc", "(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', metaKey: true, bubbles: true })); await new Promise((r) => setTimeout(r, 120)); return { sheet: !!document.querySelector('[data-shortcuts-sheet]') }; })()"],
+                  15_000,
+                  localEnv2,
+                );
+                if (so.ok) {
+                  const s = JSON.parse(so.stdout || "{}") as { sheet?: boolean };
+                  check("eval-20: ⌘/ opens the sheet over the dialog", s.sheet === true, so.stdout);
+                  if (s.sheet === true) {
+                    const oneEsc = run(
+                      "eval-20: one Esc over the dialog",
+                      ["ipc", "(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await new Promise((r) => setTimeout(r, 120)); return { sheet: !!document.querySelector('[data-shortcuts-sheet]'), dialog: !!document.querySelector('.ask-dialog'), value: document.querySelector('.ask-dialog input')?.value ?? '' }; })()"],
+                      15_000,
+                      localEnv2,
+                    );
+                    if (oneEsc.ok) {
+                      const o = JSON.parse(oneEsc.stdout || "{}") as { sheet?: boolean; dialog?: boolean; value?: string };
+                      check("eval-20: Esc closes only the sheet over the dialog (B4)", o.sheet === false && o.dialog === true, oneEsc.stdout);
+                      check("eval-20: the typed name survives the sheet's Esc", (o.value ?? "").length > 0, oneEsc.stdout);
+                    }
+                    const twoEsc = run(
+                      "eval-20: second Esc closes the dialog",
+                      ["ipc", "(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await new Promise((r) => setTimeout(r, 120)); return { sheet: !!document.querySelector('[data-shortcuts-sheet]'), dialog: !!document.querySelector('.ask-dialog') }; })()"],
+                      15_000,
+                      localEnv2,
+                    );
+                    if (twoEsc.ok) {
+                      const t = JSON.parse(twoEsc.stdout || "{}") as { dialog?: boolean };
+                      check("eval-20: the second Esc closes the rename dialog", t.dialog === false, twoEsc.stdout);
+                    }
+                  } else {
+                    // never leave the dialog behind for the following beats
+                    run("eval-20: close the dialog (cleanup)", ["ipc", "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"], 15_000, localEnv2);
+                  }
+                }
+              }
+            }
+
+            // B5c: the palette (⌘K, Go-menu IPC) and the find bar (⌘F) close
+            // the sheet instead of focusing surfaces buried below the scrim
+            run("eval-20: reopen the sheet", ["ipc", "(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', metaKey: true, bubbles: true })); return 'ok'; })()"], 15_000, localEnv2);
+            run("eval-20: ⌘K with the sheet open", ["menu-click", "go-palette"], 15_000, localEnv2);
+            const palOverSheet = await waitProbe(
+              "eval-20: the palette replaces the sheet",
+              "(() => ({ sheet: !!document.querySelector('[data-shortcuts-sheet]'), palette: !!document.querySelector('.palette-input'), active: document.activeElement === document.querySelector('.palette-input') }))()",
+              (v) => {
+                try {
+                  const p = JSON.parse(v) as { sheet?: boolean; palette?: boolean; active?: boolean };
+                  return p.sheet === false && p.palette === true && p.active === true;
+                } catch {
+                  return false;
+                }
+              },
+              localEnv2,
+            );
+            if (palOverSheet) {
+              check("eval-20: the palette focus is on top (never buried)", /"active":\s*true/.test(palOverSheet) || JSON.parse(palOverSheet).active === true, palOverSheet);
+              run("eval-20: close the palette (Esc)", ["ipc", "document.querySelector('.palette-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))"], 15_000, localEnv2);
+              await waitProbe("eval-20: palette closed again", "!!document.querySelector('.palette-input')", (v) => /false/.test(v), localEnv2);
+            }
+            run("eval-20: reopen the sheet once more", ["ipc", "(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '/', metaKey: true, bubbles: true })); return 'ok'; })()"], 15_000, localEnv2);
+            const findOverSheet = run(
+              "eval-20: ⌘F with the sheet open",
+              ["ipc", "(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 120)); return { sheet: !!document.querySelector('[data-shortcuts-sheet]'), find: !!document.querySelector('.chat-search') }; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (findOverSheet.ok) {
+              const f = JSON.parse(findOverSheet.stdout || "{}") as { sheet?: boolean; find?: boolean };
+              check("eval-20: ⌘F closes the sheet and opens the find bar (B5c)", f.sheet === false && f.find === true, findOverSheet.stdout);
+            }
+            // belt and suspenders: nothing this beat opened may outlive it —
+            // two calm Escs close whatever is still on top (sheet, dialog,
+            // palette, find bar), then the state is printed for the record
+            const cleanup = run(
+              "eval-20: beat cleanup (no overlay outlives it)",
+              ["ipc", "(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await new Promise((r) => setTimeout(r, 150)); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await new Promise((r) => setTimeout(r, 150)); return { sheet: !!document.querySelector('[data-shortcuts-sheet]'), dialog: !!document.querySelector('.ask-dialog'), palette: !!document.querySelector('.palette-input'), find: !!document.querySelector('.chat-search') }; })()"],
+              15_000,
+              localEnv2,
+            );
+            if (cleanup.ok) {
+              const c = JSON.parse(cleanup.stdout || "{}") as { sheet?: boolean; dialog?: boolean; palette?: boolean; find?: boolean };
+              check("eval-20: no overlay outlives the beat", c.sheet === false && c.dialog === false && c.palette === false, cleanup.stdout);
+            }
           }
 
           // --- P3-085: collapsible thinking block + streaming polish -----------
@@ -6177,6 +6687,7 @@ try {
   check("no daemon sidecar spawned (hermetic)", false, "app desktop.log not found");
 }
 
+flowReport();
 const duration = Date.now() - startedAt;
 console.log(`\ndesktop flow duration: ${(duration / 1000).toFixed(1)}s (budget ${DEADLINE_MS / 1000}s)`);
 console.log(failures === 0 ? "desktop flow: all green" : `FAILURES: ${failures}`);

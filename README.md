@@ -50,7 +50,11 @@ private. That is the product: **local power, remote control, zero trust**.
   normal actionable card for manual review. Asks that are already answered
   collapse into "resolved" lines, duplicates of the same request render once,
   and tapping a stale card says "Permission already resolved" instead of a
-  raw 404
+  raw 404. An ask the daemon never answers (asked before AutoMode was switched
+  on, or while the daemon restarted) surfaces the same way after 10 s
+  ("AutoMode hasn't answered"), and every reconnect re-reads the pending
+  approvals and questions — an ask made while the phone slept is never
+  invisible
 - **Approval preview** — permission cards show the first lines of the
   command/patch being requested (from the permission event payload) before
   you Approve/Deny, so you always know what you're green-lighting
@@ -72,8 +76,23 @@ private. That is the product: **local power, remote control, zero trust**.
   conversation with a short snippet around the occurrence. Hard caps — the 200
   most recent conversations, the 200 newest messages each, a 1.5 s budget —
   mark the answer `truncated` when hit, and an origin failure degrades to an
-  empty truncated answer instead of an error. Wiring this into the session
-  selector is the next slice; no screen consumes the route yet
+  empty truncated answer instead of an error. The conversation list and the
+  `Cmd+K` palette consume it (next bullet)
+- **Search inside conversations (eval-20)** — typing 2+ characters in the
+  conversation search (desktop sidebar or phone list) adds an **In messages**
+  section below the title matches: the conversations whose messages mention
+  the term, each with a one-line snippet and the occurrence highlighted; the
+  `Cmd+K` palette lists the same hits after its title matches. Opening a hit
+  opens the conversation with the find bar already on the term (when the
+  loaded messages contain it). Calm states only: a quiet "searching" line,
+  one "Nothing found for “…”" line, a partial-scan note when the host capped
+  the scan, a retryable error line, and a one-line notice when the computer
+  runs a daemon older than the route
+- **Keyboard shortcuts sheet (eval-20)** — `Cmd+/` (`Ctrl+/` on Windows and
+  Linux) or `?` outside a text field opens the keyboard map; the palette rows
+  show each action's keys and the palette has a **Keyboard shortcuts** action.
+  One table (`apps/web/src/lib/shortcuts.ts`) feeds both and is pinned by test
+  against the **Ir** menu accelerators
 - **Copy message (P2-282)** — every chat bubble gets a copy action, so the
   phone (no right-click, no native context menu) can lift an answer — code
   included — out of the conversation. The action sits under each bubble: a
@@ -593,9 +612,14 @@ opencode serve --port 4096    # if not already running
 node cli.mjs setup --relay=wss://your-host.ts.net:8788
 ```
 
-The wizard checks node/opencode/whisper/ffmpeg, installs launchd services
-with KeepAlive and prints the pairing QR. Point the camera at it from the
-PWA and you are in.
+The wizard checks node/opencode/whisper/ffmpeg, builds the phone web app on
+the first run (`apps/web/dist` — what the `com.ocr.pwa` origin serves),
+installs launchd services with KeepAlive and prints the pairing QR with the
+relay you passed. Point the camera at it from the PWA and you are in. The
+relay address is dialed by the **phone**, so `setup` refuses an empty or
+loopback one (`127.0.0.1`, `localhost`) instead of printing a QR that can never
+pair. Install from this repository only: the name `opencode-remote` on the npm
+registry belongs to an unrelated project.
 
 The phone's PWA origin is the `com.ocr.pwa` launchd service — it serves the
 built `apps/web/dist` statically on `127.0.0.1:5173` (P2-075), never a dev
@@ -736,6 +760,15 @@ Node never trusts the macOS keychain.
 
 ### Desktop app installer (DMG)
 
+**Release status.** Pushing a `v*` tag runs `.github/workflows/release.yml`,
+which ends with a complete, verified **draft** release (installers for both
+Mac architectures and Windows, update feeds, checksums, winget manifests,
+Homebrew cask and pinned formula). The draft only goes public when the owner
+publishes it (`gh release edit vX.Y.Z --draft=false`) or when the repository
+variable `RELEASE_AUTO_PUBLISH` is `true`. Until the first release is
+published the Releases page is empty — build from source (Quick Start above)
+in the meantime.
+
 Every GitHub release ships a real macOS installer in **two** architectures
 (P2-191): `OpenCode-Remote-<version>-arm64.dmg` for Apple Silicon and
 `OpenCode-Remote-<version>-x64.dmg` for Intel (electron-builder `dmg` target,
@@ -750,8 +783,12 @@ before packaging and picks one of two modes:
   credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
   `APPLE_TEAM_ID`). The bundle is signed with hardened runtime and the
   `build/entitlements.mac.plist` entitlements, then notarized.
-- **Ad-hoc (default)** — without those secrets the DMG ships ad-hoc signed and
-  you right-click → **Open** once to pass Gatekeeper. The preflight only turns
+- **Ad-hoc (default)** — without those secrets the DMG ships ad-hoc signed
+  (electron-builder `identity: "-"`, hardened runtime + entitlements) and
+  Gatekeeper blocks the first launch once. On **macOS 15 (Sequoia) or newer**:
+  try to open the app, then go to **System Settings → Privacy & Security** and
+  click **Open Anyway** (Apple removed the right-click override in macOS 15).
+  On macOS 14 or older: right-click the app → **Open**. The preflight only turns
   notarization on when the certificate is actually usable: a certificate
   configured while `CSC_IDENTITY_AUTO_DISCOVERY=false` (electron-builder would
   silently ignore it) or notarization credentials without a certificate are
@@ -767,34 +804,55 @@ expired mid-release, or whose profile silently dropped to ad-hoc fails the job
 before `gh release upload` — never as a published "app is damaged" surprise. An
 **ad-hoc** release is held to the ad-hoc bar: the signature itself must verify
 and the tools must produce readable verdicts, but spctl rejecting the build and
-an absent staple are exactly the documented right-click → **Open** flow, so the
+an absent staple are exactly the documented first-open flow (above), so the
 no-secrets release path stays green. Since P2-295 the same three verdicts also
 run against every DMG **container** you actually download (`spctl -t open` and
 `stapler validate` on each image, one per architecture): the release ships only
 when the containers' own Gatekeeper verdicts match the documented packaging
 shape — the signature and, on a notarized release, the stapled ticket live on
 the app inside the DMG, and an unsigned container being rejected still just
-means right-click → **Open** once.
+means the one-time first-open step above.
 
 Homebrew users get the same code via the `Formula/opencode-remote.rb` formula
-(AGPL-3.0-only, checksum pinned automatically by the release pipeline at tag
-time).
+(AGPL-3.0-only). Homebrew only installs formulae **from a tap** — a
+downloaded `.rb` file is refused ("Homebrew requires formulae to be in a
+tap") unless `HOMEBREW_DEVELOPER` is set — so tap this repository:
+
+```bash
+brew tap caiovicentino/opencode-remote https://github.com/caiovicentino/opencode-remote
+brew install caiovicentino/opencode-remote/opencode-remote
+opencode-remote setup --relay=wss://<your-mac>.ts.net:8788
+```
+
+The formula builds the phone web app at install time. Each release attaches
+the formula already pinned to that release's tarball (`opencode-remote.rb`,
+sha256 computed from the published asset); the pipeline never pushes to
+`main`, so that file lands in `Formula/` through a normal PR — until the first
+one does, the formula in `main` still carries the placeholder checksum and is
+not installable. After `brew upgrade opencode-remote`, run `opencode-remote
+setup` again (the launchd services point at the versioned install).
 
 On Windows, the `caiovicentino.opencode-remote` winget package follows the
 same path (P2-245): every release attaches the three required manifests
 (version, installer and en-US locale), generated and verified by the release
 pipeline itself from the sha256 published in `checksums.txt` — download the
-three `.yaml` files from the releases page and run
-`winget install --manifest caiovicentino.opencode-remote.yaml` in their
-folder; this is an alternative install path to the loose setup exe, just like
-the Homebrew formula on the Mac.
+three `.yaml` files from the releases page into one folder, allow local
+manifests once from an **administrator** terminal
+(`winget settings --enable LocalManifestFiles` — winget refuses `--manifest`
+installs otherwise) and run `winget install --manifest <that folder>`; this is
+an alternative install path to the loose setup exe, just like the Homebrew
+formula on the Mac.
 
 The same courtesy runs the other way for Mac users (P2-255): every release
 attaches `opencode-remote-cask.rb`, a Homebrew cask manifest covering both DMG
 architectures (Apple Silicon and Intel), generated and verified by the release
-pipeline from the sha256 published in `checksums.txt` — download it from the
-releases page and run `brew install --cask ./opencode-remote-cask.rb` to
-install the app with one line instead of dragging a DMG by hand.
+pipeline from the sha256 published in `checksums.txt`. Homebrew refuses cask
+files outside a tap too ("Homebrew requires casks to be in a tap"), so the
+attached file is meant to be committed to a tap (e.g. as
+`Casks/opencode-remote.rb` in this repository, then
+`brew install --cask caiovicentino/opencode-remote/opencode-remote` after the
+`brew tap` above); a one-off `HOMEBREW_DEVELOPER=1 brew install --cask
+./opencode-remote-cask.rb` also works. Until then, install from the DMG.
 
 Since P2-146 the macOS packaging also produces the zip artifacts Squirrel.Mac
 needs (one per architecture, additive to the DMGs) and the release workflow
@@ -809,7 +867,10 @@ applies the release in the background (with the consent dialog below) — but
 only when the running app is **Developer ID signed** (P2-136): Squirrel.Mac
 refuses an update whose code signature does not match the installed app, so
 ad-hoc signed builds (the default without signing secrets) keep the manual
-flow via the release page.
+flow via the release page — the app reads its own signature (`codesign`)
+before arming Squirrel.Mac and, when it is ad-hoc or unsigned, shows "Update
+available — open release page" instead of a background download that could
+never be applied.
 
 **Install it once from the DMG (P2-211).** The updater can only replace a
 bundle living in **Applications** — an app opened straight from the mounted
@@ -1744,7 +1805,8 @@ the list is always one tap away. Keyboard shortcuts
 (also in the **Ir** menu): `Cmd+T` new conversation (**Nova conversa**),
 `Cmd+K` command palette (**Paleta de comandos** — searches conversations and
 actions), `Cmd+1..6` switch to chat / Artifacts / Browser / Files / Settings /
-Mission Control. The native menu is Portuguese since P2-176 (matching the UI
+Mission Control, `Cmd+/` (or `?` outside a text field) the keyboard shortcuts
+sheet. The native menu is Portuguese since P2-176 (matching the UI
 copy), including a **Ajuda** menu with **Verificar atualizações**, **Abrir
 pasta de logs** and **Copiar diagnóstico** — the tray's support actions,
 reachable from the menu bar too (the update items appear only when an update
@@ -2217,9 +2279,10 @@ in the electron-builder mac targets; the branded
 installer window, semantic version in the About panel and in the DMG file
 name) — and `npm run dist:smoke --workspace @ocr/desktop` verifies the
 bundle **and** the DMG artifact. Local builds are ad-hoc signed with hardened
-runtime and the shared entitlements (`build/entitlements.mac.plist`) — on
-first launch, right-click → **Open** once to pass Gatekeeper; afterwards the
-app behaves like any installed app. P2-169: the first time you record a voice
+runtime and the shared entitlements (`build/entitlements.mac.plist`) — a
+downloaded copy is blocked once by Gatekeeper (macOS 15+: **System Settings →
+Privacy & Security → Open Anyway**; macOS 14 and older: right-click → **Open**);
+afterwards the app behaves like any installed app. P2-169: the first time you record a voice
 message or scan the pairing QR, macOS asks for **microphone** and **camera**
 permission — grant both, or the signed build silently blocks those features
 (denied by mistake? System Settings → Privacy & Security → Microphone /
@@ -2777,12 +2840,26 @@ text) fails the release step **before anything is written**. The validity
 rule lives in one shared module (`apps/desktop/scripts/rolloutpercent.mjs`)
 so a writer and the installed client (`updaterollout.ts`) can never drift
 apart — a parity test in the unit battery reads the client's real source and
-fails the moment the field names or the 0–100 limits diverge. Release a
-fraction of the fleet from the CLI with:
+fails the moment the field names or the 0–100 limits diverge. Pushing the
+tag already runs the workflow, so the simplest way to release a fraction of
+the fleet is to set the percentage on the resulting **draft** before
+publishing it:
 
 ```bash
-gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20
+gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20   # on the draft — also regenerates checksums.txt
+gh release edit vX.Y.Z --draft=false                             # then publish
 ```
+
+Running `rollout.mjs` directly on a draft is NOT the recommended path: it
+rewrites the four feeds but leaves the already-attached `checksums.txt`
+stale for those four files (`shasum -a 256 -c checksums.txt` flags them
+FAILED). The dispatch above re-runs release-publish, which re-hashes every
+asset. `rollout.mjs` is the tool for releases already PUBLISHED (below).
+
+`gh workflow run release.yml --ref vX.Y.Z -f rollout_percent=20` also works:
+the run queues behind the tag-push run (one release run per ref), reuses the
+existing draft and re-uploads everything with the percentage set; it refuses
+a tag whose release is already published.
 
 **Suspending or advancing a published release (P3-460)**: a release already
 on GitHub can move its rollout without republishing anything. From the repo

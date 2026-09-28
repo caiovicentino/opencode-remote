@@ -1,5 +1,31 @@
 # Torre de Controle — Mission Control do Major como teatro do trabalho
 
+## Status 2026-09-27 (eval-19)
+
+- **PR2 / P2-110 — entregue re-escopado.** `GET /api/pilot-stream` existe
+  (`apps/daemon/src/pilotstream.ts`): `snapshot`, `pilot` (tail-follow do
+  `events.jsonl` que sobrevive ao `trim()` in-place) e `status` (o digest de
+  `/api/pilot-status` a cada 15 s, que faz o papel do `hb`). O canal `agent`
+  **não** foi feito porque a premissa abaixo é falsa hoje: o pilot roda
+  `opencode run` sem `--attach`, então cada agente vive no próprio servidor
+  in-process e o `/event` da :4096 que o `forwardEvents()` assina nunca vê os
+  tokens/tool calls deles (medido em opencode 1.18.32: dois servidores com o
+  mesmo data dir compartilham sessões, não o barramento). Para o cockpit ao
+  vivo existir, ou o runner passa `--attach` (todos os agentes dentro do
+  `opencode serve` de produção — decisão do dono), ou o pilot republica o
+  stdout `--format json` dos agentes.
+- **PR1 / P2-109 — parcial.** Entregue: `?since=&limit=` em
+  `/api/pilot-events`. Ainda válidos (em `pipeline.ts`/`runner.ts`): `slot` em
+  toda fase, `agent-session`, `review-verdict`, `agent-start/end` tier B.
+  **Obsoletos:** `gate-start`/`gate-step` — a bateria roda dentro do juiz
+  externo assinado (`judgeGate`), cujo veredito só carrega
+  `{ok, step, tail, flaky}`; lâmpadas por etapa exigiriam mudar o juiz
+  (regra de julgamento, constituição).
+- **O que o operador precisava e não via** — piloto parado, lag
+  prod×main, deploy retido, disco, custo, avisos não entregues — virou o
+  digest `/api/pilot-status` renderizado no dashboard orbital (chips +
+  HUD + drill-down) e no Mission Control (desktop e celular).
+
 ## Context
 
 O dashboard atual (`apps/pilot/dashboard/index.html`, 870 linhas) é um painel de *relatório*: grafo de nós que acendem por fase, contadores do dia, ticker de 6 linhas e uma gaveta de log. Ele descreve o trabalho **depois** que ele acontece, com polling de 2 s sobre um tail de 200 eventos. O operador quer o oposto: ver o trabalho **enquanto** acontece, no detalhe: o builder pensando, os reviewers acusando, o gate julgando etapa por etapa, o deploy pousando batida a batida.

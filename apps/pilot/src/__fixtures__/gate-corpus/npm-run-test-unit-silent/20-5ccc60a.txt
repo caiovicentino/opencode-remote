@@ -1811,18 +1811,18 @@ e2e-orphans tests: all green
 warning: You appear to have cloned an empty repository.
 warning: You appear to have cloned an empty repository.
 warning: You appear to have cloned an empty repository.
-[desktop] window-state unreadable (/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-rR4xz3/window-state.json), using defaults: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+[desktop] window-state unreadable (/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-rR4xz3/window-state.json), using defaults: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
     at JSON.parse (<anonymous>)
     at loadWindowBounds (~/.opencode-remote/pilot/repo-1/apps/desktop/src/window-state.ts:84:38)
     at <anonymous> (~/.opencode-remote/pilot/repo-1/scripts/unit.test.ts:4474:8)
-[desktop] window-state write failed (/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-rR4xz3/gone/window-state.json): Error: ENOENT: no such file or directory, open '/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-rR4xz3/gone/window-state.json'
+[desktop] window-state write failed (/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-rR4xz3/gone/window-state.json): Error: ENOENT: no such file or directory, open '/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-rR4xz3/gone/window-state.json'
     at writeFileSync (node:fs:2430:20)
     at saveWindowBounds (~/.opencode-remote/pilot/repo-1/apps/desktop/src/window-state.ts:96:5)
     at <anonymous> (~/.opencode-remote/pilot/repo-1/scripts/unit.test.ts:4479:5) {
   errno: -2,
   code: 'ENOENT',
   syscall: 'open',
-  path: '/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-rR4xz3/gone/window-state.json'
+  path: '/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-rR4xz3/gone/window-state.json'
 }
 warning: You appear to have cloned an empty repository.
 [desktop] desktop-log write failed: Error: disk full

@@ -1916,10 +1916,11 @@ async function onReady(): Promise<void> {
     const method = req.method === "POST" ? "POST" : req.method === "DELETE" ? "DELETE" : "GET";
     const u = new URL(req.path, "http://127.0.0.1");
     // mission v2: the read-only mission card (GET pilot-mission) and the
-    // "end mission" action (DELETE /api/mission) join the allowlist
+    // "end mission" action (DELETE /api/mission) join the allowlist; eval-19:
+    // the read-only fleet status digest (GET pilot-status) too
     const okPath =
       method === "GET"
-        ? /^\/api\/pilot-(forensic(\/timeline)?|shot|mission)$/.test(u.pathname)
+        ? /^\/api\/pilot-(forensic(\/timeline)?|status|shot|mission)$/.test(u.pathname)
         : method === "DELETE"
           ? /^\/api\/mission$/.test(u.pathname)
           : /^\/api\/pilot-takeover$/.test(u.pathname);

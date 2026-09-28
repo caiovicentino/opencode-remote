@@ -10,6 +10,7 @@
  *    reviewers, gatekeeper) from phase transitions in the events feed.
  */
 import { TZ } from "./log";
+import { SHA_RE } from "./deployguard";
 import type { PilotEvent } from "./events";
 
 // P1-075 lesson-injection instrumentation — rebuilt by eval 05 in its own
@@ -161,4 +162,317 @@ export function rollbackHealthAlert(events: PilotEvent[]): PilotEvent | null {
     if (e.phase === "done") return null;
   }
   return null;
+}
+
+// ── eval-19: operator status digest ────────────────────────────────────────
+// The pilot was down 12/09→22/09 and again from 24/09 while every surface
+// kept rendering it as merely "stale" (a gold HB age) and the forensic cards
+// kept saying "running". These pure verdicts are what the daemon's
+// /api/pilot-status digest, the dashboard chips and Mission Control (desktop
+// and phone) all agree on — thresholds live here once.
+
+/** A healthy pilot touches its heartbeat on every loop pass (5–20s) plus a
+ * 60s timer while agents run, and its own watchdog exits after 3 min of
+ * silence (state.ts startWatchdog) for KeepAlive to respawn it. But judgeGate
+ * runs the eval battery through execFileSync (judge.ts), which BLOCKS the loop
+ * for up to 30 min — real gates ran 6.0–6.3 min and pilot.log shows 17
+ * watchdog exits with 3.0–5.7 min of silence — so 5 min of silence is a
+ * healthy gate, not a stalled loop. 10 min (eval-01's stale boundary) is the
+ * smallest threshold that never flashes on a real gate. */
+export const PILOT_ALIVE_MAX_MS = 10 * 60_000;
+/** Silence past 30 min is an outage, not a restart hiccup. */
+export const PILOT_DOWN_AFTER_MS = 30 * 60_000;
+/** A dead pid only means "down" once KeepAlive had its chance to respawn
+ * (ThrottleInterval 30s + boot); before that it is a restart in progress. */
+export const PILOT_PID_GRACE_MS = 90_000;
+
+export type PilotLivenessState = "alive" | "stale" | "down" | "absent";
+
+export interface PilotLiveness {
+  state: PilotLivenessState;
+  /** ms since the last heartbeat; null when there is none. */
+  heartbeatAgeMs: number | null;
+  /** ISO of the pilot's last sign of life: the heartbeat, or — when the
+   * recorded process is gone — its last recorded activity. */
+  since: string | null;
+  /** how long the pilot has been silent (what the UI calls "parado há") */
+  silentForMs: number | null;
+  /** static cause token — never free text */
+  reason: "fresh" | "silent" | "pid-dead" | "no-heartbeat";
+}
+
+/**
+ * Liveness verdict from the heartbeat file (epoch ms written by
+ * touchHeartbeat) and an optional pid probe (null = unknown / not probed).
+ * No heartbeat at all is "absent" — a machine that never ran the pilot, which
+ * the UI hides instead of accusing. A future heartbeat (clock skew) reads as
+ * age 0. Order: silence past PILOT_DOWN_AFTER_MS → down; a recorded pid that
+ * has been dead past the respawn grace → down; silence past
+ * PILOT_ALIVE_MAX_MS → stale; else alive.
+ *
+ * A fresh heartbeat does NOT outvote a dead pid: on 2026-09-27 test runs
+ * with the real HOME kept rewriting pilot/heartbeat for a pilot dead since
+ * 24/09. `pidDeadForMs` (how long the observer has seen that pid dead) makes
+ * the grace survive such writes; without it the heartbeat age stands in.
+ * `lastActivityAtMs` (newest events.jsonl ts) dates a pid-dead outage.
+ */
+export function pilotLiveness(input: {
+  heartbeatAtMs: number | null;
+  pidAlive: boolean | null;
+  nowMs: number;
+  pidDeadForMs?: number | null;
+  lastActivityAtMs?: number | null;
+}): PilotLiveness {
+  const hb = input.heartbeatAtMs;
+  if (hb === null || !Number.isFinite(hb) || hb <= 0) {
+    return { state: "absent", heartbeatAgeMs: null, since: null, silentForMs: null, reason: "no-heartbeat" };
+  }
+  const age = Math.max(0, input.nowMs - hb);
+  const since = new Date(hb).toISOString();
+  if (age > PILOT_DOWN_AFTER_MS) return { state: "down", heartbeatAgeMs: age, since, silentForMs: age, reason: "silent" };
+  const deadFor = Math.max(age, input.pidDeadForMs ?? 0);
+  if (input.pidAlive === false && deadFor > PILOT_PID_GRACE_MS) {
+    const act = input.lastActivityAtMs;
+    const known = typeof act === "number" && Number.isFinite(act) && act > 0 && act <= input.nowMs;
+    return {
+      state: "down",
+      heartbeatAgeMs: age,
+      since: known ? new Date(act).toISOString() : since,
+      silentForMs: known ? input.nowMs - act : deadFor,
+      reason: "pid-dead",
+    };
+  }
+  if (age > PILOT_ALIVE_MAX_MS) return { state: "stale", heartbeatAgeMs: age, since, silentForMs: age, reason: "silent" };
+  return { state: "alive", heartbeatAgeMs: age, since, silentForMs: 0, reason: "fresh" };
+}
+
+/** A pending deploy the pilot refuses to run (guard chain in deploy.ts). */
+export interface DeployHold {
+  /** the refusing guard: sha-guard | disk-guard | dirty-guard | direction-guard */
+  reason: string;
+  /** the newest refusal's own detail (already bounded by emit) */
+  detail: string;
+  /** ISO of the newest refusal or backoff event */
+  at: string;
+  /** ISO when the pending-deploy backoff expires; null without a backoff */
+  until: string | null;
+  /** refusals of this kind since the last deploy that got past the guards */
+  count: number;
+}
+
+const DEPLOY_GUARDS = new Set(["sha-guard", "disk-guard", "dirty-guard", "direction-guard"]);
+
+/** Deploy phases that only exist once the guard chain let a deploy through. */
+function deployProceeded(phase: string): boolean {
+  return phase === "baseline" || phase === "install" || phase === "done" || phase === "rollback" || phase.startsWith("soak") || phase.startsWith("live-invariants");
+}
+
+/**
+ * The deploy hold in force, or null. Walks the feed newest → oldest: the first
+ * guard refusal or pending-deploy `backoff` found before any deploy that got
+ * past the guards is the hold; a proceeding deploy (install/baseline/soak/
+ * live-invariants/done/rollback) clears it. `start`, reload and shot events
+ * are neutral — every attempt starts with `start` before its guard answers.
+ * Before this the dashboard flashed the refusal as a 6s core tag, so a page
+ * opened during the 23/09→24/09 disk hold (85 refusals) showed nothing.
+ */
+export function deployHold(events: PilotEvent[]): DeployHold | null {
+  let hold: DeployHold | null = null;
+  let backoffUntil: string | null = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "deploy" || !e.phase) continue;
+    if (deployProceeded(e.phase)) break;
+    if (e.phase === "backoff" && !hold && backoffUntil === null) {
+      const min = /paused (\d+)\s*min/.exec(e.detail ?? "");
+      const at = Date.parse(e.ts);
+      if (min && Number.isFinite(at)) backoffUntil = new Date(at + Number(min[1]) * 60_000).toISOString();
+      continue;
+    }
+    if (!DEPLOY_GUARDS.has(e.phase) || e.ok !== false) continue;
+    if (!hold) hold = { reason: e.phase, detail: e.detail ?? "", at: e.ts, until: backoffUntil, count: 1 };
+    else if (hold.reason === e.phase) hold.count++;
+  }
+  return hold;
+}
+
+/** One verified merge (pilot/verified-merges.jsonl row). */
+export interface MergeRecord {
+  task?: string;
+  at?: string;
+}
+
+/** Cost of the tasks merged inside a window — read from the P2-028/P2-113
+ * per-task ledgers (state.taskCosts / state.taskUSD). */
+export interface CostSummary {
+  windowMs: number;
+  merges: number;
+  tokens: number;
+  /** priced USD (BYOK list price, P2-113); null when nothing was priced */
+  usd: number | null;
+  /** tokens from models absent from the price table — never priced as $0 */
+  unpricedTokens: number;
+}
+
+/**
+ * Tokens and dollars of the tasks merged in the last `windowMs`, one count per
+ * task (a task merged twice counts once). The ledgers are per task across all
+ * its attempts, so this is "what the merges of the window cost", not a
+ * wall-clock burn. Merge timestamps come from verified-merges.jsonl because
+ * state.cycles keeps only the last 10 outcomes. Unpriced tokens stay visible
+ * instead of collapsing into a fake $0 (the whole fleet runs on a model that
+ * pricing.ts does not list yet — every recent taskUSD.total is 0).
+ */
+export function costSummary(
+  merges: MergeRecord[],
+  state: { taskCosts?: Record<string, number>; taskUSD?: Record<string, { total?: number; unpricedTokens?: number; tokens?: number }> },
+  nowMs: number,
+  windowMs: number,
+): CostSummary {
+  const tasks = new Set<string>();
+  for (const m of merges ?? []) {
+    if (!m || typeof m.task !== "string" || typeof m.at !== "string") continue;
+    const at = Date.parse(m.at);
+    if (!Number.isFinite(at) || at > nowMs || nowMs - at > windowMs) continue;
+    tasks.add(m.task);
+  }
+  let tokens = 0;
+  let usd = 0;
+  let priced = false;
+  let unpricedTokens = 0;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+  for (const task of tasks) {
+    const u = state.taskUSD?.[task];
+    tokens += num(u?.tokens) || num(state.taskCosts?.[task]);
+    if (num(u?.total) > 0) {
+      usd += num(u?.total);
+      priced = true;
+    }
+    unpricedTokens += num(u?.unpricedTokens);
+  }
+  return { windowMs, merges: tasks.size, tokens, usd: priced ? usd : null, unpricedTokens };
+}
+
+/** Pending deploy older than this is abnormal (a green merge deploys in minutes). */
+export const DEPLOY_LAG_WARN_MS = 2 * 3_600_000;
+/** …and older than this is an outage of the delivery path. */
+export const DEPLOY_LAG_CRITICAL_MS = 24 * 3_600_000;
+
+/** How far the lag walk scans origin/main's first-parent history looking for
+ * prod: ~8 weeks of this repo's pace. Beyond it the lag is unknown (null),
+ * never a wrong number. */
+export const DEPLOY_LAG_WALK_MAX = 500;
+
+/** One first-parent commit of origin/main, newest first. */
+export interface LagCommit {
+  sha: string;
+  /** committer epoch seconds */
+  ct: number;
+}
+
+/**
+ * Deploy lag measured the way the pilot actually deploys (P2-058): production
+ * only ever runs gate-verified merge SHAs, and every verified merge is
+ * followed by bookkeeping commits on main (`mark done`, scribe lessons,
+ * strategist refills) that never become a deploy target alone. Counting ALL
+ * commits `prod..origin/main` made a HEALTHY idle fleet read 1–2 behind
+ * forever — `warn` after 2 h, `critical` after 24 h, on 2026-09-26 with the
+ * pilot alive — so `behind` counts only verified, non-quarantined merges
+ * after prod (the same rule `latestDeployableSha`/`pickDeployableSha` use),
+ * `pendingSince` dates the OLDEST such merge, and the raw commit total stays
+ * informational (`behindTotal`).
+ *
+ * Unknown stays unknown: when prod is not on origin/main's first-parent
+ * history within the walk cap (or git answers nothing), every field is null
+ * and no lag flag is raised — a wrong alarm is worse than a dash.
+ */
+export function deployLagFacts(input: {
+  prodSha: string | null;
+  mainSha: string | null;
+  /** newest-first first-parent history of origin/main (capped by the caller) */
+  history: LagCommit[];
+  /** verified-merges.jsonl rows — the gatekeeper's deployable SHAs */
+  verified: { sha?: string }[];
+  /** quarantine.jsonl rows — a quarantined merge is never the deploy target */
+  quarantined: { sha?: string }[];
+}): { behind: number | null; behindTotal: number | null; pendingSinceMs: number | null } {
+  const { prodSha, mainSha } = input;
+  if (!prodSha || !mainSha) return { behind: null, behindTotal: null, pendingSinceMs: null };
+  if (prodSha === mainSha) return { behind: 0, behindTotal: 0, pendingSinceMs: null };
+  const verified = new Set(
+    input.verified.filter((v) => typeof v?.sha === "string" && SHA_RE.test(v.sha)).map((v) => v.sha!),
+  );
+  const quarantined = new Set(
+    input.quarantined.filter((q) => typeof q?.sha === "string" && SHA_RE.test(q.sha)).map((q) => q.sha!),
+  );
+  let behindTotal: number | null = null;
+  let pending = 0;
+  let oldestPending = Number.POSITIVE_INFINITY;
+  for (const h of input.history ?? []) {
+    if (typeof h?.sha !== "string" || !Number.isFinite(h?.ct)) continue;
+    if (h.sha === prodSha) {
+      return {
+        behind: pending,
+        behindTotal,
+        pendingSinceMs: pending > 0 && Number.isFinite(oldestPending) ? oldestPending : null,
+      };
+    }
+    behindTotal = (behindTotal ?? 0) + 1;
+    if (verified.has(h.sha) && !quarantined.has(h.sha)) {
+      pending++;
+      oldestPending = Math.min(oldestPending, h.ct * 1000);
+    }
+  }
+  // prod never showed up on origin/main's first-parent history (cap hit, or
+  // the checkout diverged): the lag is unknown, not zero and not guessed.
+  return { behind: null, behindTotal: null, pendingSinceMs: null };
+}
+
+/** The facts attentionFlags weighs (the digest's own shape, loosely typed). */
+export interface AttentionInput {
+  installed: boolean;
+  pilot: { state: PilotLivenessState };
+  deploy: { behind: number | null; pendingSinceMs: number | null; hold: DeployHold | null };
+  disk: { freeBytes: number | null; minFreeBytes: number };
+  alerts: { undelivered: number };
+  nowMs: number;
+}
+
+export type AttentionKind = "pilot-down" | "pilot-stale" | "deploy-hold" | "deploy-lag" | "disk-low" | "alerts-undelivered";
+
+export interface AttentionFlag {
+  kind: AttentionKind;
+  level: "critical" | "warn";
+}
+
+/**
+ * What needs the operator, most severe first (critical before warn, then a
+ * fixed kind order) — one list every surface renders the same way. A machine
+ * without the pilot yields nothing: product users never see fleet alarms.
+ */
+export function attentionFlags(s: AttentionInput): AttentionFlag[] {
+  if (!s.installed) return [];
+  const out: AttentionFlag[] = [];
+  if (s.pilot.state === "down") out.push({ kind: "pilot-down", level: "critical" });
+  else if (s.pilot.state === "stale") out.push({ kind: "pilot-stale", level: "warn" });
+  if (s.deploy.hold) {
+    // disk/dirty refusals need the operator — unless the disk refusal's cause
+    // is already gone (free space back above the floor): then the hold only
+    // waits for the next attempt and stays a warning.
+    const diskBack = s.disk.freeBytes !== null && s.disk.freeBytes >= s.disk.minFreeBytes;
+    const needsOperator = s.deploy.hold.reason === "dirty-guard" || (s.deploy.hold.reason === "disk-guard" && !diskBack);
+    out.push({ kind: "deploy-hold", level: needsOperator ? "critical" : "warn" });
+  }
+  if (s.deploy.behind !== null && s.deploy.behind > 0 && s.deploy.pendingSinceMs !== null) {
+    const lag = s.nowMs - s.deploy.pendingSinceMs;
+    if (lag > DEPLOY_LAG_CRITICAL_MS) out.push({ kind: "deploy-lag", level: "critical" });
+    else if (lag > DEPLOY_LAG_WARN_MS) out.push({ kind: "deploy-lag", level: "warn" });
+  }
+  if (s.disk.freeBytes !== null && Number.isFinite(s.disk.freeBytes)) {
+    if (s.disk.freeBytes < s.disk.minFreeBytes) out.push({ kind: "disk-low", level: "critical" });
+    else if (s.disk.freeBytes < 2 * s.disk.minFreeBytes) out.push({ kind: "disk-low", level: "warn" });
+  }
+  if (s.alerts.undelivered > 0) out.push({ kind: "alerts-undelivered", level: "warn" });
+  const order: AttentionKind[] = ["pilot-down", "pilot-stale", "deploy-hold", "disk-low", "deploy-lag", "alerts-undelivered"];
+  return out.sort((a, b) => (a.level === b.level ? order.indexOf(a.kind) - order.indexOf(b.kind) : a.level === "critical" ? -1 : 1));
 }

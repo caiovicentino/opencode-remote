@@ -11,6 +11,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { freePortPairSync } from "./testports";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { get } from "node:http";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import WebSocket from "ws";
@@ -55,12 +56,12 @@ function startRelay(env: Record<string, string>) {
   const port = freePortPairSync(); // relay on port, metrics on port + 1
   const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),
-    env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(port + 1), OCR_E2E_MARKER: "1" },
+    env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(metrics), OCR_E2E_MARKER: "1" },
     stdio: ["ignore", "ignore", "inherit"],
   });
   proc.on("error", (e) => console.error("relay spawn error:", e));
   process.on("exit", () => proc.kill("SIGTERM"));
-  return { port, proc };
+  return { port, metrics, proc };
 }
 
 async function waitReady(port: number) {
@@ -128,7 +129,7 @@ const fetchMetrics = (port: number, qs = "") =>
 
 // --- 3. strict liveness relay: silent peer reaped, live peer survives ---------
 // 1s interval → sweep every 1s, silence budget = interval+grace = 2s
-const strict = startRelay({ RELAY_PING_INTERVAL_S: "1", RELAY_MAX_PER_IP: "2" });
+const strict = await startRelay({ RELAY_PING_INTERVAL_S: "1", RELAY_MAX_PER_IP: "2" });
 await waitReady(strict.port);
 const url = `ws://127.0.0.1:${strict.port}`;
 
@@ -149,7 +150,7 @@ check("liveness: termination carries no close frame (1006)", code === 1006);
 await sleep(2_500); // another 2 sweep cycles: the heartbeating peer must hold
 check("liveness: heartbeating peer survives the sweeps", live.readyState === WebSocket.OPEN);
 
-const json = JSON.parse(await fetchMetrics(strict.port + 1)) as {
+const json = JSON.parse(await fetchMetrics(strict.metrics)) as {
   stale_terminated?: number;
   rooms_active?: number;
 };
@@ -160,7 +161,7 @@ check("liveness: reaped peer's room released (2 rooms -> 1)", json.rooms_active 
 const third = await tryOpen(url);
 check("liveness: reaped socket frees the per-IP slot", third !== null);
 
-const prom = await fetchMetrics(strict.port + 1, "?format=prom");
+const prom = await fetchMetrics(strict.metrics, "?format=prom");
 check("metrics: relay_stale_terminated exposed in prom format", /relay_stale_terminated \d+/.test(prom));
 
 // --- P2-294: certificate-expiry series on the real /metrics endpoint ---------
@@ -173,12 +174,18 @@ const P2_294_EXISTING_LINES = [
   "relay_connections_total",
   "relay_connections_active",
   "relay_frames_routed",
+  // eval-13: the unrouted subset of routed frames joined the documented set,
+  // split by sender class (owner = the daemon's mid-response tail)
+  "relay_frames_unrouted_total",
+  "relay_frames_unrouted_owner_total",
   "relay_bytes_routed",
   "relay_rejects",
   "relay_rate_limited_total",
   // P2-351: the fatal-crash counter joined the documented set, right after
   // the rate limiter it sits beside
   "relay_crashes_total",
+  // eval-13: unwritable log lines are counted instead of killing the relay
+  "relay_log_write_errors_total",
   "relay_rooms_rejected",
   "relay_rooms_rejected_invalid_room_id",
   "relay_rooms_rejected_socket_room_cap",
@@ -249,7 +256,7 @@ strict.proc.kill("SIGTERM");
 // --- 4. RELAY_PING_INTERVAL_S=0: fail-closed boot refusal (P2-171) --------------
 // Zero used to disable the sweep; since P2-171 a zero knob refuses the boot
 // instead of silently serving a public relay without liveness reaping.
-const off = startRelay({ RELAY_PING_INTERVAL_S: "0" });
+const off = await startRelay({ RELAY_PING_INTERVAL_S: "0" });
 const offExit = new Promise<number | null>((r) => off.proc.on("exit", (c) => r(c)));
 check("liveness: zero RELAY_PING_INTERVAL_S refuses the boot with exit 1 (fail-closed)", (await offExit) === 1);
 check("liveness: refused boot never opens the listener", (await tryOpen(`ws://127.0.0.1:${off.port}`)) === null);
@@ -258,7 +265,7 @@ off.proc.kill("SIGTERM");
 // --- 5. P2-230: join-deadline reaper — idle socket closed, joined socket holds --
 // 1s sweep + 1s deadline: a socket that never sends a frame is closed even
 // though its ws pong answers every ping automatically.
-const joinRelay = startRelay({ RELAY_PING_INTERVAL_S: "1", RELAY_JOIN_DEADLINE_MS: "1000" });
+const joinRelay = await startRelay({ RELAY_PING_INTERVAL_S: "1", RELAY_JOIN_DEADLINE_MS: "1000" });
 await waitReady(joinRelay.port);
 const joinUrl = `ws://127.0.0.1:${joinRelay.port}`;
 
@@ -277,21 +284,21 @@ check("join-deadline: socket that never sends a frame is closed with the policy 
 await sleep(2_500); // several sweep cycles past the deadline
 check("join-deadline: socket that joined a room stays open past the deadline", joined.readyState === WebSocket.OPEN);
 
-const joinMetrics = JSON.parse(await fetchMetrics(joinRelay.port + 1)) as {
+const joinMetrics = JSON.parse(await fetchMetrics(joinRelay.metrics)) as {
   idle_unjoined_closed?: number;
   connections_active?: number;
 };
 check("join-deadline: idle_unjoined_closed counter incremented", (joinMetrics.idle_unjoined_closed ?? 0) >= 1);
 check("join-deadline: only the joined peer remains connected", joinMetrics.connections_active === 1);
 
-const promJoin = await fetchMetrics(joinRelay.port + 1, "?format=prom");
+const promJoin = await fetchMetrics(joinRelay.metrics, "?format=prom");
 check("join-deadline: relay_idle_unjoined_closed exposed in prom format", /relay_idle_unjoined_closed \d+/.test(promJoin));
 
 joined.close();
 joinRelay.proc.kill("SIGTERM");
 
 // zero deadline is refused at boot like every other invalid knob (fail-closed)
-const zeroJoin = startRelay({ RELAY_JOIN_DEADLINE_MS: "0" });
+const zeroJoin = await startRelay({ RELAY_JOIN_DEADLINE_MS: "0" });
 const zeroJoinExit = new Promise<number | null>((r) => zeroJoin.proc.on("exit", (c) => r(c)));
 check("join-deadline: zero RELAY_JOIN_DEADLINE_MS refuses the boot with exit 1 (fail-closed)", (await zeroJoinExit) === 1);
 zeroJoin.proc.kill("SIGTERM");
@@ -349,7 +356,7 @@ if (cert_oc.status === 0) {
   );
   check("cert-metrics: openssl generated the throwaway certificate", gen.status === 0);
   if (gen.status === 0) {
-    const tlsRelay = startRelay({ RELAY_TLS_CERT: cert, RELAY_TLS_KEY: key });
+    const tlsRelay = await startRelay({ RELAY_TLS_CERT: cert, RELAY_TLS_KEY: key });
     for (let attempt = 0; ; attempt++) {
       try {
         await new Promise<void>((resolve, reject) => {
@@ -366,7 +373,7 @@ if (cert_oc.status === 0) {
         await sleep(300);
       }
     }
-    const tlsProm = await fetchMetrics(tlsRelay.port + 1, "?format=prom");
+    const tlsProm = await fetchMetrics(tlsRelay.metrics, "?format=prom");
     check(
       "cert-metrics: TLS relay publishes the documented state gauge with the 'use' value",
       /(^|\n)relay_cert_expiry_state 0(\n|$)/.test(tlsProm) && /(^|\n)# TYPE relay_cert_expiry_state gauge/.test(tlsProm),

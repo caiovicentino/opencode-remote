@@ -232,13 +232,20 @@ identity servers, no accounts.
   gains a route a client needs, a new entry is required, and until then the
   request fails closed with 400 (never a silent passthrough).
 - A rogue device cannot sustain a flood through the relay: message frames are
-  token-bucketed per connection (600 msgs/min, burst 1000, tunable via env)
-  and the over-budget socket is dropped with close code 4029. Every frame
-  counts — joins and self-declared room owners included — because envelope
-  metadata is attacker-controllable. The budget resets on reconnect, so a
-  determined flooder can trade reconnects for fresh bursts; total abuse is
-  bounded by the relay's 1000-socket cap. The relay stays blind — limits use
-  only envelope metadata, never payload content.
+  token-bucketed per connection (45,000 msgs/min sustained, burst 1,500,
+  tunable via env) and the over-budget socket is dropped with close code
+  4029. Every frame counts — joins and self-declared room owners included —
+  because envelope metadata is attacker-controllable. The small burst is the
+  point: it is the queue one flooding socket may build before the cut, so a
+  co-tenant's round trips stay in the tens-to-hundreds of milliseconds under
+  a blast (measured: victim p50 36–254 ms across repeated runs with two
+  addresses blasting, versus 325–1,738 ms when an earlier draft sized the
+  burst at 20,000; both endpoints scale with machine load). The budget resets
+  on reconnect, so a determined flooder can trade reconnects for fresh
+  bursts; per-connection abuse is bounded by that bucket and per-address
+  abuse by the live-connection cap (`RELAY_MAX_PER_IP`) — a per-address
+  aggregate frame budget is an open follow-up. The relay stays blind —
+  limits use only envelope metadata, never payload content.
 - Malicious image attachments are downscaled and re-encoded by the browser
   canvas before reaching the daemon; session history is rendered as text
   with sandboxed iframes for HTML previews.
@@ -285,8 +292,17 @@ identity servers, no accounts.
 
 14. **Workflow permissions (P2-271).** Every job of both workflows declares
     its own least-privilege `permissions:` block — the six CI jobs can only
-    read repository contents, and only the release jobs that publish touch
-    `contents: write` (plus `packages: write` for the relay image) — and
+    read repository contents, and only the release jobs that touch the
+    release hold `contents: write` (plus `packages: write` for the relay
+    image) — including the two VERIFICATION jobs `release-verify` and
+    `release-feeds`: since P2-179 the release is always a DRAFT when they
+    run, and GitHub only lists draft releases to callers with push access,
+    which for the GITHUB_TOKEN means `contents: write` (with `contents:
+    read` both jobs fail on "release not found" and the release-publish job
+    that needs them is skipped, leaving the draft unverified). Both jobs
+    only read release content; the write scope is the minimum that can see
+    the draft, and neither job's checkout keeps git credentials
+    (`persist-credentials: false`).
     `npm run check:workflow-perms` (`scripts/check-workflow-perms.ts`,
     verdict in the pure `scripts/workflowperms.ts`) runs in the `verify` job
     after the install step, re-reading both files and failing the job on a
@@ -340,7 +356,21 @@ identity servers, no accounts.
     exempt an entry with a deadline, add it with the lockfile path as id,
     a one-sentence reason and an expiry date to
     `scripts/lock-exemptions.json` — past the expiry the entry counts in
-    full again.
+    full again. A registry origin must also be the entry's **own**
+    canonical tarball (`<registry><name>/-/<basename>-<version>.tgz`): pointing
+    a trusted name such as `node_modules/lodash` at another package's tarball
+    on the same registry — with that tarball's valid hash — is lockfile
+    injection and rejects even under an exemption. The eval-15 adversarial
+    review beat the first version of the rule by ALSO editing the entry's
+    `name` and `version` fields (express@4.21.2, hash and all, under
+    `node_modules/lodash` — the gate approved and `npm ci` really installed
+    it), so the expected name now always derives from the ENTRY PATH (where
+    npm installs the `resolved` tarball) and a lockfile `name` field that
+    diverges from that path rejects fail-closed, exemptions notwithstanding —
+    npm only writes `name` for aliases and repo-internal entries, and this
+    lockfile carries no aliases, so a future alias is a deliberate, reviewed
+    change rather than something an edit smuggles in. An origin with a `..`
+    segment anywhere is never provably internal (eval-15).
 
 18. **Update-feed digest confrontation (P2-308).** The `release-feeds` job
     downloads the release artifacts, measures sha512 (base64) and byte size

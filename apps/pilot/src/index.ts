@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, repoSlug, type MissionSpec } from "./mission";
+import { attemptsKey, missionDetail, missionDrifted, missionWorkspaceKey, readMission, repoSlug, standalonePins, type MissionSpec } from "./mission";
 import { CI_RED_CONCLUSIONS, CI_RED_KIND, ciRedStarvationPlan, redChecksFromDetail } from "./cired";
 import { emit } from "./events";
 import { agentStream, exec, runAgent, runAgentForRole } from "./runner";
@@ -13,8 +13,11 @@ import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, bud
 import { deploy, drainForReload, headDrifted, pilotInfraDiffCmd, pilotInfraDrifted, resolveDeployPlan, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
 import { defaultVerifiedMergesFile, deploySkipReason, readVerifiedMerges } from "./deployguard";
 import { DEPLOY_REFUSAL_BACKOFF_MS, DEPLOY_ROLLBACK_HOLD_MS, deployBackoffRemaining, noteDeployRefusal, noteDeployRollback, rollbackHoldRemaining, type DeployBackoff, type RollbackHold } from "./deploybackoff";
+import { noteProviderOutage, apiDownStreakExhausted, noteApiDownStreak, providerHoldRemaining, type ProviderHold } from "./failureclass";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, readyOrphanBlocks, type AddTaskResult, type Task } from "./backlog";
+import { auxDirectiveLines } from "./auxcurate";
+import { scrubPrompt } from "./sanitize";
 import { redteamFinding } from "./findingline";
 import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
@@ -47,6 +50,7 @@ import {
   frozen,
   loadConfig,
   loadState,
+  normalizeTokenBudget,
   recordTaskFailure,
   recordTaskHold,
   saveState,
@@ -55,7 +59,8 @@ import {
   type PilotConfig,
   type PilotState,
 } from "./state";
-import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
+import { applySessionCosts, foldSlotCache, querySessionTokenRows, repriceTaskUSD } from "./costs";
+import { checkTaskTokenBudget, raiseTokenBudgetAlert } from "./tokenbudget";
 import { recordLessonImpact } from "./metrics";
 import { distSweepDue, doctorDist, runDoctor, runDoctorGuards } from "./doctor";
 import { bootDiskGate, diskAlert, diskHoldTickMs, fleetVolumes, initialDiskHold, noteDiskFailure, persistSafely, pollDiskHold, waitWhileDiskCritical, type DiskHold, type DiskHoldIo } from "./diskhold";
@@ -74,6 +79,14 @@ let lastDistSweep: number | null = null;
 /** Consecutive same-kind deploy refusals (dirty prod, disk, prod ahead) — arms
  * the pending-deploy hold (deploybackoff.ts). In-memory: a restart looks again. */
 let deployBackoff: DeployBackoff | null = null;
+/** eval-03: model-provider outage hold (failureclass.ts) — no new pipeline
+ * picks until it expires. In-memory like deployBackoff: a restart looks again. */
+let providerHold: ProviderHold | null = null;
+/** eval fixround: pick time of the newest pipeline that completed WITHOUT an
+ * api-down — proof the provider answered after the current outage trail
+ * began. A run picked BEFORE that instant had model calls that predate the
+ * outage, so its success (a merge included) proves nothing. */
+let providerUpAt: number | null = null;
 /** eval r5: armed by a rolled-back deploy — the pending path waits for a new
  * verified merge (or DEPLOY_ROLLBACK_HOLD_MS) instead of walking down to the
  * next-newest sha with nothing learned. In-memory, like deployBackoff. */
@@ -144,8 +157,8 @@ async function main() {
   const missionBoot = readMission();
   const bootMissionHash = missionBoot.hash;
   activeMission = missionBoot.spec;
-  if (missionBoot.raw !== null && !activeMission) {
-    log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})");
+  if (missionBoot.verdict.kind === "invalid") {
+    log("warn", "mission.json present but invalid — default mission kept (expects {v:1, prompt and/or repoUrl, setAt})", { reason: missionBoot.verdict.reason });
   }
   if (activeMission) {
     logMissionLoaded(activeMission);
@@ -171,7 +184,11 @@ async function main() {
   activeMissionKey = missionKey;
   cfg.stateRoot = slotRoot;
   cfg.missionKey = missionKey ?? undefined;
-  cfg.missionModels = activeMission?.models;
+  // eval-06: a models-only mission.json pins the DEFAULT mission's roles —
+  // roles pilot.json tierB routes to tier B keep that route (standalonePins)
+  const pins = missionBoot.verdict.kind === "pins" ? standalonePins(missionBoot.verdict.models, cfg.models?.tierB) : null;
+  if (pins) log("info", "mission.json holds model pins only — default mission kept", { applied: pins.applied ?? {}, shadowedByTierB: pins.shadowed });
+  cfg.missionModels = activeMission?.models ?? pins?.applied;
   // P2-341: the doctor pass reads the queue backlog the scheduler trusts —
   // the boot-resolved repo + base branch (git show origin/<base>:BACKLOG.md),
   // never a slot worktree. Top-level runDoctorPass has no cfg in scope, so
@@ -255,6 +272,19 @@ async function main() {
     workspaces: slotNumbers.map((s) => slotCfg.get(s)!.workspace),
     mission: activeMission ? missionDetail(activeMission) : "default",
   });
+  // eval-18: done tasks are never reconciled again, so a pricing change
+  // (model alias, pilot.json pricing.selfHosted) re-prices the taskUSD window
+  // once here — before any slot runs, so no in-flight save can race it.
+  try {
+    const bootState = loadState();
+    const rp = await repriceTaskUSD(bootState, (ids) => querySessionTokenRows(ids), cfg.pricing);
+    if (rp.changed) {
+      saveState(bootState);
+      log("info", "task usd repriced", rp);
+    }
+  } catch (err) {
+    log("warn", "task usd reprice failed", { err: String(err).slice(0, 200) });
+  }
 
   /**
    * P1-099: eager-fill — start a pipeline on every schedulable free slot right
@@ -273,6 +303,7 @@ async function main() {
     if (frozen() || state.auditMode) return;
     if (drainNewPicks || nightlyDrain) return; // P1-104 self-reload / P3-356 nightly window — no new picks
     if (diskHold.level !== "ok") return; // eval-02 disk hold — no new picks while the disk is low
+    if (providerHoldRemaining(providerHold, Date.now()) > 0) return; // eval-03: provider outage backoff
     if (state.tasks + running.size >= cfg.maxTasksPerDay) return;
     try {
       const free = slotNumbers.filter((s) => !running.has(s));
@@ -700,10 +731,17 @@ async function runDoctorPass(st: PilotState): Promise<void> {
   }
 }
 
+/** eval fixround: the per-task api-down trail resets on any non-api-down
+ * outcome of the task — the cap counts CONSECUTIVE outage cycles. */
+function clearApiDownStreak(taskKey: string): void {
+  if (state.apiDownStreaks) delete state.apiDownStreaks[taskKey];
+}
+
 /** One pipeline run in a slot workspace, with all result bookkeeping.
  * P1-099: `onSettled` runs in the finally, right after the slot is released —
  * the eager-fill hook that immediately backfills every free slot. */
 async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig, onSettled?: () => void): Promise<void> {
+  const pickedAt = Date.now(); // eval fixround: proof-of-life anchor for the provider hold
   const tokensBefore = state.taskCosts?.[task.id] ?? 0; // eval 05: lifetime total BEFORE this run
   // P1-060: budgets scale with the task's size tag — clone the slot config
   // with the effective rounds/timeout/attempts so runPipeline and the
@@ -715,15 +753,15 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     taskTimeoutMin: budgets.timeoutMin,
     maxAttemptsPerTask: budgets.attempts,
   };
+  // P2-028: the pipeline records every opencode session id it spawns; the
+  // token totals are reconciled from opencode.db right after the run.
+  const taskSessions = new Set<string>();
   try {
-    // P2-028: the pipeline records every opencode session id it spawns; the
-    // token totals are reconciled from opencode.db right after the run.
-    const taskSessions = new Set<string>();
     const result = await runPipeline(taskCfg, task, state, taskSessions);
     try {
       // P1-077: rows query — folds the per-task cache breakdown (input /
       // cacheRead / cacheWrite) into state.taskCache alongside the total.
-      const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids));
+      const cacheFold = await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids), cfg.pricing);
       if (cacheFold) {
         log("info", "task cache", cacheFold);
         // P1-078: per-slot view of the same reconciliation — replaced by the
@@ -744,9 +782,31 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     };
     recordLessonImpact(state, impact);
     log("info", "lesson impact", { task: task.id, ...impact });
+    // eval-18: per-task token budget — an alert at each budget multiple, never
+    // a kill switch (quality over cost); levels persist in state
+    raiseTokenBudgetAlert(
+      task.id,
+      checkTaskTokenBudget(state, task.id, impact.tokens, normalizeTokenBudget(cfg.tokenBudgetPerTask), {
+        outcome: result.ok ? "merged" : result.detail,
+        ok: result.ok,
+      }),
+    );
     state.tasks++;
     let blockedAttempts: number | null = null;
     const taskKey = attemptsKey(activeMissionKey, task.id);
+    // eval fixround: proof of life + hold clearing. Any outcome that did NOT
+    // end on api-down had model calls that reached the provider. If the run
+    // was PICKED after the hold was armed (picks are held until it expires,
+    // so this means its builder call happened after the outage was observed),
+    // the hold is cleared by evidence — never by a mere merge whose model
+    // calls predate the outage. infra "stale-head" neither counts nor clears
+    // the per-task ci-red streak (a refused push must not forgive strikes).
+    const infra = resultInfraKind(result);
+    if (infra !== "api-down") {
+      providerUpAt = pickedAt;
+      if (providerHold && pickedAt > providerHold.armedAt) providerHold = null;
+      clearApiDownStreak(taskKey);
+    }
     if (result.ok) {
       recordCycle(state, true, task.id); // P2-032 fever window (P2-063: attributed to the task)
       delete state.taskAttempts[taskKey]; // gate passed — breaker reset
@@ -761,8 +821,60 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       // in the diagnostic infraFails, with a doctor pass every 3rd occurrence
       // (P1-094: classified only from the structured result.infra flag — the
       // detail text embeds findings and may legitimately mention infra words)
-      const infra = resultInfraKind(result);
-      if (infra) {
+      if (infra === "api-down") {
+        // eval-03: the model provider (or the opencode API) is down — a
+        // systemic condition, not this task's: it never feeds the per-task
+        // streak (three quick outage cycles would block a healthy task) and
+        // holds NEW picks with a doubling backoff instead of letting every
+        // free slot spin up a builder that dies on its first call. eval
+        // fixround: the free retries are capped per task — after
+        // API_DOWN_FREE_CYCLES consecutive api-down outcomes of the same
+        // task, once another pipeline was picked and completed after this
+        // trail began (proof the provider answers for someone else), the
+        // api-down feeds the NORMAL per-task streak: a task whose output
+        // reliably "ends" on an outage-shaped line is not an outage, it is
+        // the task — it blocks with an explicit reason like any other
+        // starvation instead of looping builder rounds at zero attempt cost.
+        const trail = noteApiDownStreak(state.apiDownStreaks?.[taskKey], pickedAt);
+        state.apiDownStreaks = state.apiDownStreaks ?? {};
+        state.apiDownStreaks[taskKey] = trail;
+        if (apiDownStreakExhausted(trail, providerUpAt)) {
+          const streak = recordTaskInfraStreak(state, taskKey, "api-down");
+          if (infraStreakExhausted(streak)) {
+            clearTaskInfraStreak(state, taskKey);
+            clearApiDownStreak(taskKey);
+            const reason = infraStarvationReason("api-down", streak, result.detail);
+            log("error", "pipeline infra-starvation", { task: task.id, kind: "api-down", streak, trail: trail.n, detail: result.detail.slice(0, 200) });
+            emit("phase", { task: task.id, phase: "infra-starvation", ok: false, detail: reason });
+            state.taskAttempts[taskKey] = Math.max(state.taskAttempts[taskKey] ?? 0, taskCfg.maxAttemptsPerTask);
+            const attempts = state.taskAttempts[taskKey]!;
+            await blockAndPush(taskCfg, state, task, attempts, reason, true);
+            blockedAttempts = attempts;
+          } else {
+            const wake = recordInfraFailure(state);
+            log("warn", "pipeline provider outage — task-local trail counts as infra", { task: task.id, trail: trail.n, streak, providerUpAt, detail: result.detail.slice(0, 200) });
+            if (wake) await runDoctorPass(state);
+          }
+        } else {
+          const prevHold = providerHold;
+          providerHold = noteProviderOutage(providerHold, Date.now());
+          const wake = recordInfraFailure(state);
+          const holdMin = Math.round(providerHoldRemaining(providerHold, Date.now()) / 60_000);
+          log("warn", "pipeline provider outage — new picks held", { task: task.id, holdMin, holds: providerHold.count, trail: trail.n, infraFails: state.infraFails, detail: result.detail.slice(0, 200) });
+          if (providerHold !== prevHold) emit("alert", { task: task.id, ok: false, detail: `model provider unreachable — new pipelines held ${holdMin}min (hold #${providerHold.count}); no attempt burned` });
+          if (wake) await runDoctorPass(state);
+        }
+      } else if (infra === "stale-head") {
+        // eval fixround: the PR sits on a head this cycle did not push (refused
+        // push) — its CI verdict is not this cycle's. It feeds NO streak and
+        // clears NO streak: a refused push must neither add nor forgive ci-red
+        // strikes (P3-459: a network verdict used to zero the genuine 1,2,1,1
+        // sequence into a fresh streak). Honest infra noise: diagnostic
+        // counter only, free retry next cycle.
+        const wake = recordInfraFailure(state);
+        log("warn", "pipeline stale PR head — streak untouched", { task: task.id, kind: infra, infraFails: state.infraFails });
+        if (wake) await runDoctorPass(state);
+      } else if (infra) {
         // mission v2 (hardening b): the SAME infra kind repeating on the same
         // task (read-only foreign remote → push/PR "network" forever) is not
         // noise anymore — at the threshold it is a hard failure: the task is
@@ -843,6 +955,9 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     // burns no attempt and can never block the task; the global fever breaker
     // still sees each crash as its own distinct entry (P2-063).
     const wake = recordPipelineCrash(state);
+    // eval-18: a crashed pipeline still spent real tokens — reconcile what it
+    // recorded (best-effort) instead of dropping them from taskCosts
+    await applySessionCosts(state, task.id, [...taskSessions], (ids) => querySessionTokenRows(ids), cfg.pricing).catch(() => null);
     const detail = String(err).slice(0, 300);
     // eval-02: nothing in this path may throw — an ENOSPC from saveState here
     // skipped the cool-down below and the finally's eager-fill re-picked the
@@ -1126,7 +1241,9 @@ Output: either "REDTEAM: CLEAN" if you found nothing actionable, or
           : { action: "abort" };
       },
     });
-    if (addResult.value !== "applied") {
+    if (addResult.value === "refused") {
+      log("warn", "redteam finding dropped — the Ready-debris ratchet refused the edit", { id: landedId, result: addResult.value });
+    } else if (addResult.value !== "applied") {
       log("warn", "redteam finding dropped — task line failed validation", { id: landedId, result: addResult.value });
     } else if (landed === "refused") {
       log("warn", "aux push refused — redteam diff not limited to BACKLOG.md", { id: landedId });
@@ -1173,27 +1290,39 @@ async function runStrategist(cfg: PilotConfig, ready: Task[] = []) {
   writeSandboxConfig(cfg.workspace);
   if (r.output.includes(STRATEGIST_MARKER)) {
     const lines = parseAuxTaskLines(r.output);
-    if (!lines.length) {
-      log("warn", "strategist: no valid task lines — nothing committed", { tail: r.output.slice(-200) });
-      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: "no valid task lines" });
+    // eval-15 fix round: directive-shaped aux lines are held for human
+    // curation (apps/pilot/src/auxcurate.ts) — they never land autonomously.
+    const held = auxDirectiveLines(lines);
+    const land = held.length ? lines.filter((l) => !held.includes(l)) : lines;
+    if (held.length) {
+      log("warn", "aux directive line held for human curation (never auto-landed)", { lines: held.slice(0, 3) });
+      void notifySupervisor(
+        "aux directive line needs human curation",
+        false,
+        held.map((l) => scrubPrompt(l).slice(0, 300)).join(" | "),
+      ).catch(() => {});
+    }
+    if (!land.length) {
+      log("warn", held.length ? "strategist: only directive lines — all held for human curation" : "strategist: no valid task lines — nothing committed", { tail: r.output.slice(-200) });
+      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: held.length ? "directive lines held for human curation" : "no valid task lines" });
       return;
     }
     const message = `pilot(strategist): queue refill ${nowLocalISO().slice(11, 16)}`;
     // foreign mission: a target repo without a pilot-format BACKLOG.md gets the
     // skeleton seeded in the apply step and landed inside this same refill PR
     // (P3-358: the landing targets the repo's actual default branch)
-    const result = await appendCommitAndPush(cfg.workspace, lines, message, auxPushIo(cfg.workspace), 3, { seedSkeleton: foreignMission, baseBranch: cfg.baseBranch });
+    const result = await appendCommitAndPush(cfg.workspace, land, message, auxPushIo(cfg.workspace), 3, { seedSkeleton: foreignMission, baseBranch: cfg.baseBranch });
     if (result === "pushed") {
-      log("info", "strategist refilled queue", { lines: lines.length });
-      emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${lines.length} lines)` });
+      log("info", "strategist refilled queue", { lines: land.length });
+      emit("phase", { task: "strategist", phase: "refill", ok: true, detail: `queue refill pushed (${land.length} lines)` });
     } else if (result === "failed") {
       // P1-037: persist the refill outside the worktree — the next
       // syncWorkspace reset --hard would otherwise destroy it silently.
-      const saved = savePendingRefill(defaultPendingRefillFile(stateRoot), lines, message);
-      log("warn", saved ? "refill saved as pending — relanding next idle cycle" : "pending refill save failed", { lines: lines.length });
-      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: saved ? `pending refill saved (${lines.length} lines)` : "pending refill save failed" });
+      const saved = savePendingRefill(defaultPendingRefillFile(stateRoot), land, message);
+      log("warn", saved ? "refill saved as pending — relanding next idle cycle" : "pending refill save failed", { lines: land.length });
+      emit("phase", { task: "strategist", phase: "refill", ok: false, detail: saved ? `pending refill saved (${land.length} lines)` : "pending refill save failed" });
     } else {
-      log("warn", "aux push refused", { lines: lines.length });
+      log("warn", "aux push refused", { lines: land.length });
       emit("phase", { task: "strategist", phase: "refill", ok: false, detail: result });
     }
   } else {

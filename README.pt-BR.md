@@ -49,7 +49,11 @@ remoto, zero confiança**.
   composer e o pedido vira um card acionável normal pra revisão manual.
   Pedidos já respondidos viram linha "resolvida", duplicatas do mesmo pedido
   aparecem uma vez só e tocar num card velho diz "Permissão já resolvida"
-  em vez de um 404 cru
+  em vez de um 404 cru. Um pedido que o daemon nunca responde (feito antes de
+  ligar o AutoMode ou durante um restart do daemon) aparece do mesmo jeito
+  depois de 10 s ("O AutoMode não respondeu"), e toda reconexão relê as
+  aprovações e perguntas pendentes — pedido feito com o celular dormindo
+  nunca fica invisível
 - **Preview de aprovação** — o card de permissão mostra as primeiras linhas
   do comando/patch pedido (direto do evento de permissão) antes de aprovar
   ou negar, pra você sempre saber o que está liberando
@@ -248,6 +252,22 @@ remoto, zero confiança**.
   lista volta pra ela
 - **Filtro de sessões** — chips acima da busca (Todas / Com badge / Sem badge)
   filtram o painel pelas conversas com ou sem badge de não-lidas
+- **Busca dentro das conversas (eval-20)** — com 2+ caracteres na busca de
+  conversas (sidebar do desktop ou lista do celular) aparece a seção **Nas
+  mensagens** abaixo dos títulos: as conversas cujas mensagens citam o termo,
+  cada uma com um trecho de uma linha e a ocorrência destacada, servidas pela
+  rota `GET /__ocr/search` do daemon (P3-400); a paleta `Cmd+K` lista os
+  mesmos resultados depois dos títulos. Abrir um resultado abre a conversa com
+  a barra de busca já no termo (quando as mensagens carregadas o contêm).
+  Estados calmos: linha discreta de "buscando", uma linha "Nada encontrado
+  para “…”", nota de busca parcial quando a máquina cortou a varredura, erro
+  com "Tentar de novo" e aviso de uma linha quando o daemon do computador é
+  anterior à rota
+- **Folha de atalhos de teclado (eval-20)** — `Cmd+/` (`Ctrl+/` no Windows e
+  no Linux) ou `?` fora de campo de texto abre o mapa de atalhos; as linhas da
+  paleta mostram as teclas de cada ação e a paleta ganhou a ação **Atalhos de
+  teclado**. Uma tabela só (`apps/web/src/lib/shortcuts.ts`) alimenta as duas
+  e é pinada por teste contra os aceleradores do menu **Ir**
 - **Troca rápida de sessão (P1-064)** — abrir uma conversa busca só as últimas
   50 mensagens (paginação no daemon com `?limit&before`, medida em bytes
   exatos — outputs gigantes de tool são aparados — pra caber no limite de
@@ -607,8 +627,14 @@ opencode serve --port 4096    # se ainda não estiver rodando
 node cli.mjs setup --relay=wss://seu-host.ts.net:8788
 ```
 
-O wizard confere node/opencode/whisper/ffmpeg, instala os serviços launchd
-com KeepAlive e imprime o QR de pareamento. Aponte a câmera do PWA e pronto.
+O wizard confere node/opencode/whisper/ffmpeg, compila o app web do celular
+na primeira execução (`apps/web/dist` — o que o origin `com.ocr.pwa` serve),
+instala os serviços launchd com KeepAlive e imprime o QR de pareamento com o
+relay que você passou. Aponte a câmera do PWA e pronto. Quem disca o endereço
+do relay é o **celular**, então o `setup` recusa um endereço vazio ou de
+loopback (`127.0.0.1`, `localhost`) em vez de imprimir um QR que nunca pareia.
+Instale só a partir deste repositório: o nome `opencode-remote` no registro do
+npm pertence a outro projeto, sem relação com este.
 
 O origin do PWA no celular é servido pelo serviço launchd `com.ocr.pwa`
 (`apps/web/dist` estático em `127.0.0.1:5173`, P2-075) — nunca um dev server.
@@ -742,6 +768,16 @@ recuperados do plist, nunca descartados sem querença).
 
 ### Instalador do app desktop (DMG)
 
+**Estado dos releases.** Um push de tag `v*` roda o
+`.github/workflows/release.yml`, que termina com um release **rascunho**
+(draft) completo e verificado (instaladores das duas arquiteturas de Mac e do
+Windows, feeds de update, checksums, manifestos winget, cask e fórmula do
+Homebrew já fixados). O rascunho só fica público quando o dono o publica
+(`gh release edit vX.Y.Z --draft=false`) ou quando a variável de repositório
+`RELEASE_AUTO_PUBLISH` vale `true`. Até o primeiro release ser publicado a
+página de Releases fica vazia — enquanto isso, instale pelo código-fonte
+(Quick Start acima).
+
 Todo release do GitHub traz o instalador macOS de verdade em **duas**
 arquiteturas (P2-191): `OpenCode-Remote-<version>-arm64.dmg` para Apple
 Silicon e `OpenCode-Remote-<version>-x64.dmg` para Intel (alvo `dmg` do
@@ -757,8 +793,13 @@ escolhe um de dois modos:
   Apple de notarização (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
   `APPLE_TEAM_ID`). O bundle é assinado com hardened runtime e as
   entitlements de `build/entitlements.mac.plist` e depois notarizado.
-- **Ad-hoc (padrão)** — sem esses secrets o DMG sai ad-hoc e basta
-  right-click → **Open** uma vez para passar pelo Gatekeeper. O preflight só
+- **Ad-hoc (padrão)** — sem esses secrets o DMG sai assinado ad-hoc
+  (`identity: "-"` do electron-builder, com hardened runtime e entitlements)
+  e o Gatekeeper bloqueia a primeira abertura uma vez. No **macOS 15
+  (Sequoia) ou mais novo**: tente abrir o app, depois vá em **Ajustes do
+  Sistema → Privacidade e Segurança** e clique em **Abrir Mesmo Assim** (a
+  Apple removeu o atalho do clique direito no macOS 15). No macOS 14 ou
+  anterior: clique com o botão direito no app → **Abrir**. O preflight só
   liga a notarização quando o certificado é realmente utilizável: certificado
   configurado com `CSC_IDENTITY_AUTO_DISCOVERY=false` (que o electron-builder
   ignoraria em silêncio) ou credenciais de notarização sem certificado são
@@ -775,32 +816,54 @@ antes do `gh release upload` — e não vira surpresa publicada de "app is
 damaged". Um release **ad-hoc** cobra a régua ad-hoc: a assinatura precisa
 verificar e as ferramentas precisam produzir vereditos legíveis, mas o spctl
 rejeitando o build e a ausência de ticket são exatamente o fluxo documentado de
-right-click → **Open**, então o caminho de release sem secrets continua verde.
+primeira abertura (acima), então o caminho de release sem secrets continua verde.
 Desde a P2-295 os mesmos três vereditos também rodam sobre cada **contêiner**
 DMG que você realmente baixa (`spctl -t open` e `stapler validate` em cada
 imagem, uma por arquitetura): o release só sai quando os vereditos próprios dos
 contêineres batem com o formato documentado de empacotamento — a assinatura e,
 num release notarizado, o ticket grampeado vivem no app dentro do DMG, e um
-contêiner sem assinatura sendo rejeitado continua significando apenas
-right-click → **Open** uma vez.
+contêiner sem assinatura sendo rejeitado continua significando apenas o passo
+único de primeira abertura descrito acima.
 
-Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only,
-checksum fixado automaticamente pelo pipeline de release a cada tag).
+Quem prefere Homebrew usa o `Formula/opencode-remote.rb` (AGPL-3.0-only). O
+Homebrew só instala fórmulas **de um tap** — um `.rb` baixado é recusado
+("Homebrew requires formulae to be in a tap") a menos que `HOMEBREW_DEVELOPER`
+esteja definido —, então faça o tap deste repositório:
+
+```bash
+brew tap caiovicentino/opencode-remote https://github.com/caiovicentino/opencode-remote
+brew install caiovicentino/opencode-remote/opencode-remote
+opencode-remote setup --relay=wss://<seu-mac>.ts.net:8788
+```
+
+A fórmula compila o app web do celular na instalação. Cada release anexa a
+fórmula já fixada no tarball daquele release (`opencode-remote.rb`, sha256
+calculado do asset publicado); o pipeline nunca dá push na `main`, então esse
+arquivo entra em `Formula/` por um PR normal — até o primeiro entrar, a
+fórmula na `main` ainda tem o checksum de placeholder e não instala. Depois de
+`brew upgrade opencode-remote`, rode `opencode-remote setup` de novo (os
+serviços launchd apontam para a instalação versionada).
 
 No Windows, o pacote winget `caiovicentino.opencode-remote` segue o mesmo
 caminho (P2-245): cada release anexa os três manifestos exigidos (versão,
 instalador e locale en-US), gerados e verificados pelo próprio pipeline a
 partir do sha256 publicado no `checksums.txt` — baixe os três `.yaml` da
-página de releases e rode `winget install --manifest caiovicentino.opencode-remote.yaml`
-na pasta deles; é um caminho de instalação alternativo ao instalador solto,
-igual à fórmula do Homebrew no Mac.
+página de releases para uma pasta, libere manifestos locais uma vez num
+terminal de **administrador** (`winget settings --enable LocalManifestFiles`
+— sem isso o winget recusa instalações por `--manifest`) e rode
+`winget install --manifest <essa pasta>`; é um caminho de instalação
+alternativo ao instalador solto, igual à fórmula do Homebrew no Mac.
 
 O Mac recebe a mesma cortesia no sentido oposto (P2-255): cada release anexa o
 `opencode-remote-cask.rb`, manifesto de cask do Homebrew cobrindo as duas
 arquiteturas de DMG (Apple Silicon e Intel), gerado e verificado pelo próprio
-pipeline a partir do sha256 publicado no `checksums.txt` — baixe-o da página
-de releases e rode `brew install --cask ./opencode-remote-cask.rb` para
-instalar o app com uma linha, sem arrastar DMG nenhum à mão.
+pipeline a partir do sha256 publicado no `checksums.txt`. O Homebrew também
+recusa arquivos de cask fora de um tap ("Homebrew requires casks to be in a
+tap"), então o arquivo anexado é para ser commitado num tap (por exemplo como
+`Casks/opencode-remote.rb` neste repositório, e depois
+`brew install --cask caiovicentino/opencode-remote/opencode-remote` após o
+`brew tap` acima); um `HOMEBREW_DEVELOPER=1 brew install --cask
+./opencode-remote-cask.rb` avulso também funciona. Até lá, instale pelo DMG.
 
 **Instale uma vez a partir do DMG (P2-211).** O atualizador só consegue trocar
 um bundle que vive na pasta **Aplicativos** — um app aberto direto do DMG
@@ -1475,7 +1538,8 @@ não na home de saudação (P3-373; uma segunda volta — ou o boot — é a hom
 então a lista fica sempre a um toque. Atalhos de
 teclado (também no menu **Ir**): `Cmd+T` nova conversa, `Cmd+K` paleta de
 comandos (busca conversas e ações), `Cmd+1..6` troca para chat / Artifacts /
-Browser / Arquivos / Configurações / Mission Control. O menu nativo fala
+Browser / Arquivos / Configurações / Mission Control, `Cmd+/` (ou `?` fora de
+campo de texto) a folha de atalhos. O menu nativo fala
 português desde a P2-176 (mesmo idioma da UI) e ganhou o menu **Ajuda** com
 **Verificar atualizações**, **Abrir pasta de logs** e **Copiar diagnóstico** —
 as ações de suporte do tray, agora também na barra de menus (os itens de
@@ -1664,7 +1728,10 @@ arm64). O
 download só completa em build **assinada com Developer ID** (P2-136): o
 Squirrel.Mac recusa update cuja assinatura não confere com a do app
 instalado, então build ad-hoc (padrão sem os segredos de assinatura) segue
-manual, pela página de releases. Publicar um release é copiar arquivos:
+manual, pela página de releases — o app lê a própria assinatura (`codesign`)
+antes de armar o Squirrel.Mac e, quando ela é ad-hoc ou ausente, mostra
+"Update available — open release page" em vez de um download em segundo
+plano que nunca poderia ser aplicado. Publicar um release é copiar arquivos:
 solte `<versão>/` com
 o artefato em `~/.opencode-remote/updates/` e reescreva `feed.json` (ver
 `docs/troubleshooting.md`). P2-161: a porta gravada no campo `url` (absoluto,
