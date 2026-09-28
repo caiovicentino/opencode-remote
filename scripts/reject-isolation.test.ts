@@ -4,6 +4,15 @@
  * seconds used to close the only daemon↔relay websocket, dropping every
  * paired client with it ("relay connection lost" loop).
  *
+ * eval-13b: since 2e7f45d (#1179, second-device pairing consent) an OPEN
+ * pairing window admits a new identity even when the allowlist already holds
+ * one — by design, the window is the owner's consent. This test's daemon
+ * boots virgin, so its boot window was still open when the zombie knocked and
+ * the zombie got paired instead of rejected: the suite has been red on main
+ * since 2026-09-22 (it is not in CI). The zombie now knocks only after the
+ * window has provably closed — the scenario P3-344 describes: an established
+ * daemon, window closed, an identity outside the allowlist retrying.
+ *
  * Run: npx tsx scripts/reject-isolation.test.ts
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -38,6 +47,9 @@ setTimeout(() => {
 }, 90_000).unref();
 
 const home = mkdtempSync(join(tmpdir(), "ocr-rejectiso-"));
+// eval-13b: the documented OCR_PAIR_WINDOW_MS knob, short enough to wait out
+// and long enough for client A's bootstrap pairing right after boot
+const PAIR_WINDOW_MS = 8000;
 const stateFile = join(home, ".opencode-remote", "daemon.json");
 
 // P3-344: the daemon's output is captured (both pipes — warn logs go to stdout
@@ -57,6 +69,7 @@ function startDaemon(): ChildProcess {
         RELAY_URL,
         OCR_LOG_LEVEL: "warn",
         OPENCODE_URL: "http://127.0.0.1:1",
+        OCR_PAIR_WINDOW_MS: String(PAIR_WINDOW_MS),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -170,6 +183,9 @@ async function handshakeA(ws: WebSocket) {
 const wsA = await openSocket();
 wsA.on("error", () => {});
 await handshakeA(wsA);
+// the window was open when A's hello was admitted, so it opened before this
+// instant and closes at most PAIR_WINDOW_MS later
+const pairedAt = Date.now();
 console.log("client A handshake: OK");
 
 // one op with A before the zombie shows up — also proves the relay path works
@@ -226,6 +242,11 @@ let res = await withRetry("op before zombie", () =>
 );
 if (res.status !== 200) throw new Error(`pre-zombie op failed: ${res.status}`);
 console.log("client A op: OK");
+
+// eval-13b: wait the boot pairing window out — inside it the daemon would
+// (correctly, since #1179) pair the zombie instead of rejecting it
+const windowLeftMs = pairedAt + PAIR_WINDOW_MS + 500 - Date.now();
+if (windowLeftMs > 0) await new Promise((r) => setTimeout(r, windowLeftMs));
 
 daemonOutputMark = daemonOutput.length; // everything after this is the judge
 
