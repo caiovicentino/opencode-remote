@@ -5186,6 +5186,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     // disk, queue (origin/main), cost, undelivered alerts + attention flags
     if (seg[1] === "pilot-status" && req.method === "GET") {
       send(200, await readPilotStatus());
+      return true;
+    }
     // GET /api/pilot-liveness — eval-01 liveness verdict for Mission Control
     // (contract: docs/PILOT.md "Alertas de vida do pilot")
     if (seg[1] === "pilot-liveness" && req.method === "GET") {
