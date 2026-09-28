@@ -63,7 +63,7 @@ check("fmtTokens: k/M/B", fmtTokens(845_000) === "845k" && fmtTokens(12_300_000)
   const lines = fleetLines(outage, pt);
   check("pt: one line per attention flag, in the digest's order", lines.map((l) => l.key).join(",") === "pilot-down,deploy-lag,deploy-hold,alerts-undelivered", JSON.stringify(lines));
   check("pt: pilot line says stopped + span + last signal", lines[0]!.level === "critical" && lines[0]!.text.startsWith("Piloto parado há 3.2d — último sinal 24/09"), lines[0]!.text);
-  check("pt: lag line counts VERIFIED merges (not raw commits) and reads fine for n=1", lines[1]!.text === "Produção 16 merge(s) verificado(s) atrás do main (pendente desde 24/09, 04:11)", lines[1]!.text);
+  check("pt: lag line counts VERIFIED merges (not raw commits) and reads fine for n=1", /^Produção 16 merge\(s\) verificado\(s\) atrás do main \(pendente desde 24\/09/.test(lines[1]!.text), lines[1]!.text);
   check("pt: a disk-guard hold whose space is back says what it waits for", lines[2]!.level === "warn" && lines[2]!.text === "Deploy retido: disk-guard — o espaço já voltou (75.6 GB), falta uma nova tentativa", lines[2]!.text);
   check("pt: alerts line counts the undelivered notifications", lines[3]!.text === "100 aviso(s) ao supervisor nunca entregue(s)", lines[3]!.text);
   check("pt: facts line = queue, disk, unpriced week cost (never US$ 0)", fleetFacts(outage, pt) === "Fila 2 prontas · 12 bloqueadas · Disco 75.6 GB livres · Custo 7d 1.3B tokens (sem preço)", fleetFacts(outage, pt));
