@@ -60,6 +60,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "diagredact.test.ts",
   "download-path.test.ts",
   "drawer.test.ts",
+  "gate-feedback.test.ts",
   "gate-queue.test.ts",
   "gate-wordmark.test.ts",
   "gpuplan.test.ts",
@@ -102,9 +103,15 @@ export const PORTABLE_TESTS: readonly string[] = [
   "voice.test.ts",
   "voiceloop.test.ts",
   "workflow-yaml.test.ts",
+  "token-efficiency.test.ts",
   "protocol-crypto.test.ts",
   "sdk.test.ts",
-  "backlog-integrity.test.ts",
+"diskhold.test.ts",
+"addressbar.test.ts",
+  "pair-lead.test.ts",
+  "qr-camera.test.ts",
+"pilotwatch.test.ts",
+"backlog-integrity.test.ts",
 ];
 
 /**
