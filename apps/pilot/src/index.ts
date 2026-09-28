@@ -10,15 +10,15 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
-import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDiffCmd, pilotInfraDrifted, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
-import { deploySkipReason } from "./deployguard";
-import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
+import { deploy, drainForReload, headDrifted, pilotInfraDiffCmd, pilotInfraDrifted, resolveDeployPlan, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
+import { defaultVerifiedMergesFile, deploySkipReason, readVerifiedMerges } from "./deployguard";
+import { DEPLOY_REFUSAL_BACKOFF_MS, DEPLOY_ROLLBACK_HOLD_MS, deployBackoffRemaining, noteDeployRefusal, noteDeployRollback, rollbackHoldRemaining, type DeployBackoff, type RollbackHold } from "./deploybackoff";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, readyOrphanBlocks, type AddTaskResult, type Task } from "./backlog";
 import { redteamFinding } from "./findingline";
 import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
-import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
+import { appendArchivedLesson, appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
 import { areaKey, nightlyIdleDue, nightlySkipDue, nightlyWindow, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
@@ -57,15 +57,27 @@ import {
 } from "./state";
 import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
 import { recordLessonImpact } from "./metrics";
-import { distSweepDue, doctorDist, runDoctor } from "./doctor";
+import { distSweepDue, doctorDist, runDoctor, runDoctorGuards } from "./doctor";
+import { bootDiskGate, diskAlert, diskHoldTickMs, fleetVolumes, initialDiskHold, noteDiskFailure, persistSafely, pollDiskHold, waitWhileDiskCritical, type DiskHold, type DiskHoldIo } from "./diskhold";
+import { sweepPilotArtifacts } from "./retention";
 
 let deployBusy = false;
+/** eval-02 disk hold (diskhold.ts): `low` = no new work, `critical` = the loop
+ * only probes, sweeps and feeds the heartbeat. Folded every tick; ENOSPC
+ * anywhere in the process forces it critical. */
+let diskHold: DiskHold = initialDiskHold();
+let diskIo: DiskHoldIo = { alert: diskAlert(false) };
+let diskVolumes = fleetVolumes({ stateRoot: join(homedir(), ".opencode-remote", "pilot"), repo: process.cwd() });
 /** Disk hygiene (eval r3): when the stale-dist sweep last ran — the boot
  * doctor pass counts as a run; the loop repeats it hourly on idle slots. */
 let lastDistSweep: number | null = null;
 /** Consecutive same-kind deploy refusals (dirty prod, disk, prod ahead) — arms
  * the pending-deploy hold (deploybackoff.ts). In-memory: a restart looks again. */
 let deployBackoff: DeployBackoff | null = null;
+/** eval r5: armed by a rolled-back deploy — the pending path waits for a new
+ * verified merge (or DEPLOY_ROLLBACK_HOLD_MS) instead of walking down to the
+ * next-newest sha with nothing learned. In-memory, like deployBackoff. */
+let rollbackHold: RollbackHold | null = null;
 /** P1-104: set while the deploy-time self-reload waits for the running slots
  * to drain — no new pipeline picks until the process exits onto the new code
  * (otherwise the eager-fill would instantly refill the slots and the reload
@@ -117,7 +129,14 @@ const log = (level: string, msg: string, data?: unknown) =>
   console.log(JSON.stringify({ ts: nowLocalISO(), level, msg, data }));
 
 async function main() {
-  await ensureSingleton();
+  // eval-02: the pidfile is the first write of every boot — on 24/09 it threw
+  // ENOSPC at each KeepAlive relaunch (~14x). Nothing is written while the
+  // disk is critical; the gate waits (and alerts) until space returns.
+  const bootCfg = loadConfig();
+  // alert seam — eval-01 integration: diskAlert(false, (kind, detail) => notifyOperator("disk", kind, detail))
+  diskIo = { alert: diskAlert(bootCfg.digest) };
+  diskVolumes = fleetVolumes({ stateRoot: join(homedir(), ".opencode-remote", "pilot"), repo: bootCfg.repo });
+  diskHold = await bootDiskGate(diskVolumes, () => ensureSingleton(), diskIo);
   const cfg = loadConfig();
   // Self-serve mission: read once at boot and hash-tracked — the loop's drift
   // self-heal below re-boots this process whenever mission.json changes, so a
@@ -200,9 +219,32 @@ async function main() {
   };
   startWatchdog();
 
+  // eval-02: bounded pilot artifacts (retention.ts) — hourly with the dist
+  // sweep; sweepForSpace runs both at once on every critical disk-hold entry.
+  // Always the pilot root: builder logs/shots/tmp land there for any mission.
+  const sweepArtifacts = (): void => {
+    try {
+      const art = sweepPilotArtifacts(join(homedir(), ".opencode-remote", "pilot"));
+      if (art.removed > 0 || !art.ok) log(art.ok ? "info" : "warn", "retention: artifacts", art);
+    } catch (err) {
+      log("warn", "retention: artifacts crashed", { err: String(err).slice(0, 200) });
+    }
+  };
+  const sweepForSpace = (idle: string[]): void => {
+    try {
+      const sweep = doctorDist(idle);
+      log(sweep.ok ? "info" : "warn", "doctor: dist", sweep);
+    } catch (err) {
+      log("warn", "doctor: dist crashed", { err: String(err).slice(0, 200) });
+    }
+    sweepArtifacts();
+  };
+
   // P1-030: deterministic repair pass on every boot — refs/state/backlog/
   // branches, each idempotent and logged; never blocks the loop from starting.
   runDoctor(cfg, slotNumbers.map((s) => slotCfg.get(s)!.workspace));
+  // eval r5: judge freshness + tier-B completeness (alert only, never blocks)
+  runDoctorGuards(cfg);
   lastDistSweep = Date.now();
 
   const once = process.argv.includes("--once");
@@ -230,6 +272,7 @@ async function main() {
     if (once && reason === "eager-fill") return;
     if (frozen() || state.auditMode) return;
     if (drainNewPicks || nightlyDrain) return; // P1-104 self-reload / P3-356 nightly window — no new picks
+    if (diskHold.level !== "ok") return; // eval-02 disk hold — no new picks while the disk is low
     if (state.tasks + running.size >= cfg.maxTasksPerDay) return;
     try {
       const free = slotNumbers.filter((s) => !running.has(s));
@@ -310,6 +353,22 @@ async function main() {
     if (frozen()) {
       log("info", "frozen — pilot.lock present, rechecking in 5s");
       await sleep(5_000);
+      continue;
+    }
+    // eval-02 disk hold: statfs of every volume the fleet writes, BEFORE any
+    // work. low → no new picks/nightly/aux (fillFreeSlots and the gates below);
+    // critical → nothing but the space sweeps and the heartbeat until the disk
+    // recovers. Space back → the pending deploy retries now, not in 30min.
+    const disk = await pollDiskHold(diskHold, diskVolumes, diskIo);
+    diskHold = disk.hold;
+    if (disk.transition === "resume") deployBackoff = null;
+    if (diskHold.level === "critical") {
+      if (disk.transition || distSweepDue(lastDistSweep, Date.now())) {
+        lastDistSweep = Date.now();
+        sweepForSpace(slotNumbers.filter((s) => !running.has(s)).map((s) => slotCfg.get(s)!.workspace));
+      }
+      if (once) return;
+      await sleep(diskHoldTickMs());
       continue;
     }
     // daily budget rollover — only while no worker holds the shared counters
@@ -464,7 +523,8 @@ async function main() {
         } catch (err) {
           log("warn", "nightly pass crashed", { err: String(err).slice(0, 200) });
         }
-      } else if (!foreignMission) {
+      } else if (!foreignMission && diskHold.level === "ok") {
+        // (eval-02: a disk hold is its own alert — no misleading "slots busy" skip record)
         const reason = nightlySkipDue(state, today, new Date(nowMs).getHours(), running.size > 0, {
           running: running.size,
           slots: slotNumbers.length,
@@ -489,16 +549,20 @@ async function main() {
     // Same-kind refusals back off (deploybackoff.ts) instead of retrying each
     // cycle: the 2026-09-05 burn was 196 dirty-guard refusals eating the cap.
     const backoffHold = deployBackoffRemaining(deployBackoff, Date.now()) > 0;
-    if (running.size === 0 && !deployBusy && !foreignMission && state.deploys < cfg.maxDeploysPerDay && !backoffHold) {
+    // eval r5: after a rollback, no new attempt without new information
+    const rollbackHeld = rollbackHold !== null && rollbackHoldRemaining(rollbackHold, verifiedTip(), Date.now()) > 0;
+    if (running.size === 0 && !deployBusy && !foreignMission && state.deploys < cfg.maxDeploysPerDay && !backoffHold && !rollbackHeld) {
       const prodSha = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
       // P2-058: the target is the newest gate-verified, non-quarantined merge
       // sha on origin/main — a direct push to main (bookkeeping or hostile) is
-      // walked past and can never become a deploy target.
-      const target = latestDeployableSha(cfg.repo, cfg.baseBranch);
+      // walked past and can never become a deploy target. eval r5: a large
+      // clean catch-up ships in bounded oldest-first steps (resolveDeployPlan).
+      const plan = resolveDeployPlan(cfg.repo, cfg.baseBranch);
+      const target = plan.target;
       if (prodSha && target && prodSha !== target) {
-        log("info", "pending deploy: prod behind a gate-verified merge", { prod: prodSha.slice(0, 7), target: target.slice(0, 7) });
-        const dep = await deploy(cfg, target, undefined, { onAttempt: countDeployAttempt });
-        noteDeployOutcome(dep);
+        log("info", "pending deploy: prod behind a gate-verified merge", { prod: prodSha.slice(0, 7), target: target.slice(0, 7), pending: plan.pending.length, step: plan.step.length });
+        const dep = await deploy(cfg, target, undefined, { onAttempt: countDeployAttempt, plan });
+        noteDeployOutcome(dep, target);
         log("info", "deploy result", { ok: dep.ok, rolledBack: dep.rolledBack, refused: dep.refused, detail: dep.detail.slice(0, 200) });
         if (!dep.ok && !dep.refused) {
           state.failures++;
@@ -524,6 +588,7 @@ async function main() {
       } catch (err) {
         log("warn", "doctor: dist crashed", { err: String(err).slice(0, 200) });
       }
+      sweepArtifacts(); // eval-02: bounded pilot artifacts, same hourly cadence
     }
 
     // queue read straight from origin/main: slot worktrees may be mid-pipeline
@@ -534,7 +599,8 @@ async function main() {
 
     // aux agents share slot 1's worktree — only run when every slot is idle,
     // synced to main so their BACKLOG edits land on the right branch
-    if (running.size === 0) {
+    // (eval-02: and never on a low disk — no new agent sessions/workspace writes)
+    if (running.size === 0 && diskHold.level === "ok") {
       const aux = slotCfg.get(1)!;
       syncWorkspace(aux.workspace, aux.baseBranch);
       writeSandboxConfig(aux.workspace); // headless runs abort without sandbox perms
@@ -612,7 +678,7 @@ async function runDoctorPass(st: PilotState): Promise<void> {
   });
   log("warn", "audit diagnosis", { summary: formatDiagnosis(diag), ...diag });
   st.auditDiagnosis = formatDiagnosis(diag);
-  saveState(st);
+  saveStateSafe(st, "doctor pass"); // eval-02: also runs inside the crash path
   // P2-341: loose prose under ## Ready never becomes a task (parseBacklog
   // only sees `- [ ]` lines) — flag it for the operator. Report only: the
   // raw markdown is consumed by the pure scanner and nothing else; the log
@@ -638,6 +704,7 @@ async function runDoctorPass(st: PilotState): Promise<void> {
  * P1-099: `onSettled` runs in the finally, right after the slot is released —
  * the eager-fill hook that immediately backfills every free slot. */
 async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig, onSettled?: () => void): Promise<void> {
+  const tokensBefore = state.taskCosts?.[task.id] ?? 0; // eval 05: lifetime total BEFORE this run
   // P1-060: budgets scale with the task's size tag — clone the slot config
   // with the effective rounds/timeout/attempts so runPipeline and the
   // circuit breaker both honor the long-horizon allowance for size L.
@@ -667,13 +734,13 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
     // P1-075: lesson-injection instrumentation — fold this outcome into the
-    // with/without cohorts (tokens from the reconciliation above, 0 when it
-    // failed) so the operator can measure whether lessons actually help.
+    // with/without cohorts (tokens = what THIS run added to the reconciled
+    // lifetime total, 0 when it failed). Descriptive only (lessonimpact.ts).
     const impact = {
       lessons: result.lessonsInjected ?? 0,
       rounds: result.rounds ?? 0,
       ok: result.ok,
-      tokens: state.taskCosts?.[task.id] ?? 0,
+      tokens: Math.max(0, (state.taskCosts?.[task.id] ?? 0) - tokensBefore), // = runTokenDelta
     };
     recordLessonImpact(state, impact);
     log("info", "lesson impact", { task: task.id, ...impact });
@@ -777,7 +844,11 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
     // still sees each crash as its own distinct entry (P2-063).
     const wake = recordPipelineCrash(state);
     const detail = String(err).slice(0, 300);
-    saveState(state);
+    // eval-02: nothing in this path may throw — an ENOSPC from saveState here
+    // skipped the cool-down below and the finally's eager-fill re-picked the
+    // same task 763x in ~2min (24/09 04:24). ENOSPC flips the disk hold instead.
+    noteDiskError(err, `pipeline ${task.id}`);
+    saveStateSafe(state, "pipeline crash");
     log("error", "pipeline crashed", { task: task.id, slot, err: detail, infraFails: state.infraFails });
     if (wake) await runDoctorPass(state);
     await sleep(30_000);
@@ -821,9 +892,13 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });
     return;
   }
-  const target = latestDeployableSha(cfg.repo, cfg.baseBranch);
+  // eval r5: same plan as the pending path — a large clean catch-up ships in
+  // bounded steps; the remaining steps follow on the next merges/idle cycles
+  const plan = resolveDeployPlan(cfg.repo, cfg.baseBranch);
+  const target = plan.target;
   if (!target) {
-    log("warn", "no gate-verified merge sha on origin/main — deploy skipped", { task: task.id, sha: sha.slice(0, 7) });
+    if (plan.newest) log("info", "prod already at the newest gate-verified merge — nothing to deploy", { task: task.id, prod: plan.prod.slice(0, 7) });
+    else log("warn", "no gate-verified merge sha on origin/main — deploy skipped", { task: task.id, sha: sha.slice(0, 7) });
     return;
   }
   // fire-and-forget: the deploy (npm ci/build/soak) runs in the prod repo
@@ -831,8 +906,11 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
   // The daily counter moves inside onAttempt (guards passed, mutation about
   // to start) — a refusal spends nothing.
   deployBusy = true;
-  void deploy(cfg, target, { task: task.id, ui: touchedUi }, {
+  // a bounded catch-up step stops short of this task's merge: its UI is not
+  // live yet, so no post-deploy shot may be filed as its evidence (P2-011)
+  void deploy(cfg, target, { task: task.id, ui: touchedUi && !plan.stepped }, {
     onAttempt: countDeployAttempt,
+    plan,
     // P1-104: the end-of-deploy self-reload waits for the running slots to
     // drain (and holds new picks meanwhile) instead of exiting mid-pipeline
     slotsRunning: () => running.size,
@@ -841,7 +919,7 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     },
   })
     .then((dep) => {
-      noteDeployOutcome(dep);
+      noteDeployOutcome(dep, target);
       log("info", "deploy result", { task: task.id, ...dep });
       if (!dep.ok && !dep.refused) state.failures++;
       if (cfg.digest && !dep.refused) {
@@ -855,7 +933,7 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     .catch(() => {})
     .finally(() => {
       deployBusy = false;
-      saveState(state);
+      saveStateSafe(state, "deploy settled"); // eval-02: a throw here was an unhandled rejection
     });
 }
 
@@ -864,13 +942,49 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
  * exits inside deploy()) is still counted. */
 function countDeployAttempt(): void {
   state.deploys++;
-  saveState(state);
+  saveStateSafe(state, "deploy attempt");
+}
+
+/** eval-02: fold an error into the disk hold — ENOSPC-class forces it critical
+ * (announced once); anything else is left to its caller. True when forced. */
+function noteDiskError(err: unknown, what: string): boolean {
+  const noted = noteDiskFailure(diskHold, err, what, diskIo);
+  diskHold = noted.hold;
+  return noted.forced;
+}
+
+/** eval-02: saveState for the paths that must never throw (crash path, deploy
+ * settle, budget hook, doctor pass). A failed write keeps the in-memory state
+ * authoritative — the next save retries — and an ENOSPC flips the disk hold. */
+function saveStateSafe(st: PilotState, what: string): boolean {
+  return persistSafely(
+    () => saveState(st),
+    (err) => {
+      noteDiskError(err, `saveState (${what})`);
+      log("warn", "state save failed — in-memory state kept", { what, err: String(err).slice(0, 200) });
+    },
+  );
+}
+
+/** Newest gate-verified merge recorded so far — the rollback hold's "new
+ * information" signal (the gatekeeper appends one line per merge). */
+function verifiedTip(): string | null {
+  return readVerifiedMerges(defaultVerifiedMergesFile()).at(-1)?.sha ?? null;
 }
 
 /** Fold a deploy result into the refusal backoff: an attempt (any outcome)
  * clears the streak; a same-kind refusal grows it and, at the threshold,
- * holds the pending-deploy path for DEPLOY_REFUSAL_BACKOFF_MS. */
-function noteDeployOutcome(dep: DeployResult): void {
+ * holds the pending-deploy path for DEPLOY_REFUSAL_BACKOFF_MS.
+ * eval r5: a rollback arms the rollback hold; a clean deploy releases it. */
+function noteDeployOutcome(dep: DeployResult, target?: string): void {
+  if (dep.rolledBack && target) {
+    rollbackHold = noteDeployRollback(target, verifiedTip(), Date.now());
+    const minutes = Math.round(DEPLOY_ROLLBACK_HOLD_MS / 60_000);
+    log("warn", "pending deploy on hold after a rollback — waiting for a new verified merge", { sha: target.slice(0, 7), maxHoldMin: minutes });
+    emit("deploy", { phase: "rollback-hold", ok: false, detail: `${target.slice(0, 7)} rolled back — pending deploy waits for a new verified merge (max ${minutes}min)` });
+  } else if (dep.ok) {
+    rollbackHold = null;
+  }
   if (!dep.refused) {
     deployBackoff = null;
     return;
@@ -896,6 +1010,9 @@ function overCap(task: Task): boolean {
  * (nightlyWindow + nightlyIdleDue at the call site — P3-356).
  */
 async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
+  // eval-02: the nightly agents (explorer rebuilds the desktop app, red team,
+  // forensic) never start on a low disk — the disk hold is its own alert
+  if (diskHold.level !== "ok") return;
   const today = nowLocalISO().slice(0, 10);
   // P1-059: forensic carries its own 7-day guard — a due forensic must not be
   // skipped just because redteam/explorer already ran today (both self-guard).
@@ -940,7 +1057,7 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
         today,
         {
           exec: (cmd) => exec(cmd, { cwd: cfg.workspace, allowFail: true }),
-          appendLesson: appendFailureLesson,
+          appendLesson: appendArchivedLesson,
           lessonsFile: defaultLessonsFile(),
         },
         log,
@@ -1165,6 +1282,7 @@ async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attemp
       kind: "failure",
       ts: nowLocalISO(),
       task: task.id,
+      title: task.title, // eval 05: the feed line names what the blocked task was
       attempts,
       step: gate?.step ?? "pipeline",
       findings: detail,
@@ -1269,7 +1387,27 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-main().catch((err) => {
+// eval-02: an ENOSPC out of a fire-and-forget path (slot worker, deploy settle)
+// crashed the process with a raw stack (24/09 05:20 and 05:21) — straight into a
+// KeepAlive relaunch on the same full disk. Disk-full rejections now force the
+// disk hold; anything else keeps the crash-only contract (log + exit 1).
+process.on("unhandledRejection", (reason) => {
+  if (noteDiskError(reason, "unhandled rejection")) return;
+  const err = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  log("error", "pilot fatal", { err: err.slice(0, 1500), unhandled: true });
+  process.exit(1);
+});
+
+main().catch(async (err) => {
   log("error", "pilot fatal", { err: String(err).slice(0, 500) });
+  // eval-02: a full disk is no reason to relaunch into the same disk every 30s
+  // (the 24/09 loop) — hold here, heartbeat fed, until the space is back, then
+  // exit once so KeepAlive boots clean.
+  if (noteDiskError(err, "main loop")) {
+    try {
+      await waitWhileDiskCritical(diskHold, diskVolumes, diskIo);
+    } catch {}
+    process.exit(0);
+  }
   process.exit(1);
 });

@@ -553,6 +553,10 @@ import {
   parseFailureLessons,
   readRecentFailureLessons,
   type FailureLesson,
+  appendArchivedLesson,
+  ARCHIVED_KIND,
+  readArchivedLessons,
+  type ArchivedLesson,
 } from "../apps/pilot/src/failureLessons";
 
 import { AtomicWriteIo, clampSlots, ensureSingleton, loadState, normalizeModels, normalizePilotConfig, recordTaskFailure, recordTaskHold, saveState, startHeartbeat, tierBModelFor, writeJsonAtomic } from "../apps/pilot/src/state";
@@ -4840,10 +4844,12 @@ check("touchedUi: lookalike apps/webs rejected", !touchedUiFromDiff("apps/webs/s
     plannerPrompt(TASK, 1, ["- When X, do Y (fonte: P0-001)"]).includes("EXPERIENCE — relevant lessons from past merges") &&
       plannerPrompt(TASK, 1, ["- When X, do Y (fonte: P0-001)"]).includes("(fonte: P0-001)"),
   );
+  // eval 05: "Spec before build" shares no informative word with any lesson
+  // ("build" is spec boilerplate), so the match fixture names its topic
   const plannerLessons = pickRelevantLessons(
     "# Experience memory (IER)\n\n## Lessons\n- When you build the planner prompt, inject matched lessons (fonte: P2-042)\n",
-    TASK.title,
-    TASK.spec,
+    "Planner prompt carries matched lessons",
+    "inject the matched lessons into the planner prompt",
   );
   check(
     "planner: keyword-matched lessons reach the prompt (match criterion)",
@@ -6428,14 +6434,16 @@ check("disk guard: statfs probe returns bytes on a real dir", realFree !== null 
 
 
 // --- P1-007 experience memory (IER) ------------------------------------------
-check("experience: cap pinned at 60", EXPERIENCE_CAP === 60);
+// eval 05: 60 held under one day of lessons — 150 is the measured pool size
+check("experience: cap pinned at 150", EXPERIENCE_CAP === 150);
 
 
 const EXP_TASK: Task = { id: "P1-007", priority: "P1", title: "Memory of experience", spec: "scribe lessons", area: "infra", line: "" };
 
-// P1-075: each lesson carries a DISTINCT pair of tokens (topicN/fixN) — with
-// semantic dedupe on, same-token synthetic lessons would collapse to one.
-const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the relay frames (fonte: P0-001)`;
+// P1-075: each lesson carries DISTINCT tokens (topicN/zoneN/fixN/pathN) —
+// with semantic dedupe on (Jaccard >= 0.3 since eval 05), synthetic lessons
+// sharing most of their words would collapse to one.
+const lessonOf = (n: number) => `- When topic${n} spikes in zone${n}, do fix${n} via path${n} (fonte: P0-001)`;
 
 
 {
@@ -6459,15 +6467,15 @@ const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the 
     "",
   ].join("\n");
   const pick = pickRelevantLessons(md, "relay frame duplication", "keep frames opaque, check watermark");
-  check("experience: picks only keyword-matched lessons", pick.length === 4);
-  check("experience: higher score first (title beats spec weight)", pick[0]!.includes("seq watermark"));
-  check(
-    "experience: ties resolved most-recent-first",
-    pick[2]!.includes("slow down and back off") && pick[3]!.includes("queue with backoff"),
-  );
+  // eval 05: a lone shared "relay" (the two backoff lessons) is not relevance
+  check("experience: picks only lessons with enough shared evidence", pick.length === 2);
+  check("experience: ties resolved most-recent-first", pick[0]!.includes("seq watermark") && pick[1]!.includes("keep them opaque"));
   check("experience: no match → empty injection", pickRelevantLessons(md, "capacitor ios build", "app store packaging").length === 0);
-  const many = Array.from({ length: 7 }, (_, i) => `- When relay topic ${i} appears, handle relay ${i} (fonte: P2-00${i})`).join("\n");
-  check("experience: capped at 5 lessons", pickRelevantLessons(`${md}\n${many}`, "relay", "relay").length === 5);
+  const many = Array.from({ length: 7 }, (_, i) => `- When relay topic${i} alpha${i}, do item${i} beta${i} gamma${i} (fonte: P2-00${i})`).join("\n");
+  check(
+    "experience: capped at 5 lessons",
+    pickRelevantLessons(`${md}\n${many}`, "relay topic0 topic1 topic2 topic3 topic4 topic5 topic6", "item0 item1 item2 item3 item4 item5 item6").length === 5,
+  );
 }
 
 
@@ -6477,6 +6485,11 @@ const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the 
   const t0 = "# Experience memory (IER)\n\n## Lessons\n- When a thing exists already, do not duplicate it ever again (fonte: P0-001)\n";
   const appended = appendLessons(t0, ["- When a thing exists already, do not duplicate it ever again", "When writing tests, pin the acceptance criterion"], "P1-007");
   check("experience: append dedupes against the file and adds new", appended.added.length === 1 && appended.added[0]!.includes("(fonte: P1-007)"));
+  // eval 05: the re-landed lesson is refreshed (newest fonte, moved last), not duplicated
+  check(
+    "experience: a re-landed lesson is refreshed, never duplicated",
+    appended.refreshed.length === 1 && parseLessons(appended.md).length === 2 && parseLessons(appended.md)[0]!.includes("thing exists already") && !appended.md.includes("P0-001"),
+  );
   const back = appendLessons(appended.md, ["- When writing tests, pin the acceptance criterion"], "P1-007");
   check("experience: append is idempotent", back.added.length === 0 && back.md === appended.md);
   const mem = "# Experience memory (IER)\n\n## Lessons\n- existing lesson one survives (fonte: P1-007)\n- existing lesson two survives (fonte: P1-007)\n";
@@ -6487,12 +6500,12 @@ const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the 
     ["- When lesson one appears, do one", "- When lesson two appears, do two", "- When lesson three appears, do three", "- When lesson four appears, do four"],
     "P1-007",
   );
-  check("experience: append caps at 3 and creates the section", fresh.added.length === 3 && parseLessons(fresh.md).length === 3);
+  check("experience: append caps at 2 (eval 05) and creates the section", fresh.added.length === 2 && parseLessons(fresh.md).length === 2);
 }
 
 
 {
-  const capMd = "# Experience memory (IER)\n\n## Lessons\n" + Array.from({ length: 65 }, (_, i) => lessonOf(i)).join("\n") + "\n" + lessonOf(0) + "\n";
+  const capMd = "# Experience memory (IER)\n\n## Lessons\n" + Array.from({ length: EXPERIENCE_CAP + 5 }, (_, i) => lessonOf(i)).join("\n") + "\n" + lessonOf(0) + "\n";
   const pruned = dedupeAndPrune(capMd);
   const kept = parseLessons(pruned.md);
   check("experience: prune removes dupes + oldest above cap", pruned.removed === 6 && kept.length === EXPERIENCE_CAP);
@@ -6504,7 +6517,8 @@ const lessonOf = (n: number) => `- When topic${n} spikes, do fix${n} inside the 
 
 
 // --- P1-075 semantic dedupe + scored prune/archive ----------------------------
-check("experience: JACCARD_DUPE pinned at 0.6", JACCARD_DUPE === 0.6);
+// eval 05: 0.6 never fired on real lessons (max pair 0.50); >= 0.30 was 16/16 paraphrases
+check("experience: JACCARD_DUPE pinned at 0.3", JACCARD_DUPE === 0.3);
 
 check("experience: jaccard of identical sets is 1, disjoint is 0", jaccard(new Set(["relay", "frames", "seq"]), new Set(["relay", "frames", "seq"])) === 1 && jaccard(new Set(["relay"]), new Set(["frames"])) === 0);
 
@@ -6518,9 +6532,13 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const different = "- When the daemon freezes, do drop the stale pidfile (fonte: P9-008)";
   const base = `# Experience memory (IER)\n\n## Lessons\n${original}\n`;
   const appended = appendLessons(base, [paraphrased, different], "P9-009");
-  check("experience: paraphrase with jaccard >= 0.6 is dropped on append", appended.added.length === 1 && appended.added[0]!.includes("daemon freezes"));
+  check(
+    "experience: paraphrase with jaccard >= JACCARD_DUPE refreshes instead of adding",
+    appended.added.length === 1 && appended.added[0]!.includes("daemon freezes") &&
+      appended.refreshed.length === 1 && parseLessons(appended.md).includes(paraphrased) && !parseLessons(appended.md).includes(original),
+  );
   // above cap so the dedupe pass actually runs (under cap it is a no-op)
-  const fillers = Array.from({ length: 60 }, (_, i) => lessonOf(i + 100));
+  const fillers = Array.from({ length: EXPERIENCE_CAP }, (_, i) => lessonOf(i + 100));
   const both = dedupeAndPrune(`# Experience memory (IER)\n\n## Lessons\n${fillers.join("\n")}\n${original}\n${paraphrased}\n`);
   const keptLessons = parseLessons(both.md);
   check("experience: dedupeAndPrune drops the older paraphrase", keptLessons.includes(paraphrased) && !keptLessons.includes(original));
@@ -6550,8 +6568,8 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
 
   const harnessDone = "- When the pilot gatekeeper slot refresh breaks, do re-check the backlog checkpoint (fonte: P1-001)";
   const productOld = "- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)";
-  // 59 distinct product fillers + 1 harness-done + product-old (oldest overall) = 61 → cap+1
-  const fillers = Array.from({ length: 59 }, (_, i) => lessonOf(i + 10));
+  // cap-1 distinct product fillers + 1 harness-done + product-old (oldest overall) → cap+1
+  const fillers = Array.from({ length: EXPERIENCE_CAP - 1 }, (_, i) => lessonOf(i + 10));
   const md = `# Experience memory (IER)\n\n## Lessons\n${productOld}\n${fillers.join("\n")}\n${harnessDone}\n`;
   const pruned = dedupeAndPrune(md, EXPERIENCE_CAP, doneTaskIds(backlogMd));
   check(
@@ -6561,7 +6579,9 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const kept = parseLessons(pruned.md);
   check("experience: product lesson is never archived, even when oldest", kept.includes(productOld) && kept.length === EXPERIENCE_CAP);
 
-  const twoHarness = `# Experience memory (IER)\n\n## Lessons\n${productOld}\n${fillers.join("\n")}\n${harnessDone}\n- When the planner slot refresh loses the builder checkpoint, do consult the backlog (fonte: P1-002)\n`;
+  // (eval 05: worded apart from harnessDone — at Jaccard >= 0.3 the old
+  // "planner slot refresh … checkpoint … backlog" line was its paraphrase)
+  const twoHarness = `# Experience memory (IER)\n\n## Lessons\n${productOld}\n${fillers.join("\n")}\n${harnessDone}\n- When the planner worktree stalls on a builder round, do reset the reviewer scribe (fonte: P1-002)\n`;
   const pruned2 = dedupeAndPrune(twoHarness, EXPERIENCE_CAP, doneTaskIds(backlogMd));
   check("experience: archived equals the removed harness lines", pruned2.archived.length === 2 && pruned2.removed === 2 && parseLessons(pruned2.md).includes(productOld));
   // unknown/undone fonte: never archived — but still dropped harness-first by
@@ -6581,10 +6601,10 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const setup = () => {
     const dir = mkdtempSync(join(tmpdir(), "ocr-expmaint-"));
     mkdirSync(join(dir, "docs"), { recursive: true });
-    // 62 lessons: watermark (oldest) + 60 fillers + 1 harness-done → cap+2
+    // watermark (oldest) + cap fillers + 1 harness-done → cap+2
     const lines = [
       "- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)",
-      ...Array.from({ length: 60 }, (_, i) => lessonOf(i + 10)),
+      ...Array.from({ length: EXPERIENCE_CAP }, (_, i) => lessonOf(i + 10)),
       harnessDone,
     ];
     writeFileSync(join(dir, "docs", "EXPERIENCE.md"), `# Experience memory (IER)\n\n## Lessons\n${lines.join("\n")}\n`);
@@ -6594,7 +6614,7 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   const dir = setup();
   const cmds: string[] = [];
   const logs: string[] = [];
-  const landed: FailureLesson[] = [];
+  const landed: ArchivedLesson[] = [];
   const st: { expMaintLast?: string } = {};
   const pristineExp = readFileSync(join(dir, "docs", "EXPERIENCE.md"), "utf8");
   const res = await maintainExperienceWorkspace(
@@ -6618,7 +6638,8 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     (level, msg) => logs.push(`${level}:${msg}`),
   );
   check("expmaint: prune runs, archives the harness lesson, stamps its own guard", res.changed && res.archived === 1 && st.expMaintLast === "2026-09-03");
-  check("expmaint: archived entry is a failure lesson with step archived + fonte task", landed.length === 1 && landed[0]!.step === "archived" && landed[0]!.task === "P1-001" && landed[0]!.attempts === 0);
+  // eval 05: its own kind — never a kind:"failure" row the failure readers would inject
+  check("expmaint: archived entry is an experience-archived record with the fonte task", landed.length === 1 && landed[0]!.kind === ARCHIVED_KIND && landed[0]!.task === "P1-001" && landed[0]!.lesson === harnessDone);
   check("expmaint: commit + guarded push executed", cmds.some((c) => c.includes("experience maintenance")) && cmds.some((c) => c.includes("origin HEAD:pilot/meta") && c.startsWith("git push")));
   check("expmaint: logs the maintenance line", logs.some((l) => l.includes("experience maintained")));
   const again = await maintainExperienceWorkspace(dir, st, "2026-09-03", { exec: () => ({ ok: true, output: "" }), appendLesson: () => true, lessonsFile: "x" });
@@ -6628,7 +6649,7 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
   // push-guard refusal: logged + never thrown, archive still lands, guard stamps
   const dir2 = setup();
   const logs2: string[] = [];
-  const landed2: FailureLesson[] = [];
+  const landed2: ArchivedLesson[] = [];
   const st2: { expMaintLast?: string } = {};
   const pristineExp2 = readFileSync(join(dir2, "docs", "EXPERIENCE.md"), "utf8");
   const res2 = await maintainExperienceWorkspace(
@@ -6663,12 +6684,13 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     "2026-09-03",
     {
       exec: () => ({ ok: false, output: "" }),
-      appendLesson: appendFailureLesson,
+      appendLesson: appendArchivedLesson,
       lessonsFile: join(dir3, "out", "lessons.jsonl"),
     },
   );
-  const stored = readRecentFailureLessons(join(dir3, "out", "lessons.jsonl"));
-  check("expmaint: real appendFailureLesson roundtrip (fs-first, outside worktrees)", stored.length === 1 && stored[0]!.step === "archived" && stored[0]!.findings.includes("gatekeeper"));
+  const stored = readArchivedLessons(join(dir3, "out", "lessons.jsonl"));
+  check("expmaint: real appendArchivedLesson roundtrip (fs-first, outside worktrees)", stored.length === 1 && stored[0]!.kind === ARCHIVED_KIND && stored[0]!.lesson.includes("gatekeeper"));
+  check("expmaint: an archived record never reads as a blocked failure", readRecentFailureLessons(join(dir3, "out", "lessons.jsonl")).length === 0);
   rmSync(dir3, { recursive: true, force: true });
 
   // R3 review: on a successful landing the archived lessons must come from the
@@ -6680,12 +6702,12 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     const staleHarness = "- When the pilot gatekeeper backlog STALE-ARCHIVE marker breaks, do re-check the slot checkpoint (fonte: P1-001)";
     const freshHarness = "- When the pilot gatekeeper backlog FRESH-ARCHIVE marker breaks, do re-check the slot checkpoint (fonte: P1-001)";
     const mdFor = (harness: string) =>
-      `# Experience memory (IER)\n\n## Lessons\n- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)\n${Array.from({ length: 59 }, (_, i) => lessonOf(i + 10)).join("\n")}\n${harness}\n`;
+      `# Experience memory (IER)\n\n## Lessons\n- When the relay frames duplicate, do check the seq watermark first (fonte: P9-001)\n${Array.from({ length: EXPERIENCE_CAP - 1 }, (_, i) => lessonOf(i + 10)).join("\n")}\n${harness}\n`;
     // workspace holds the stale copy; the fake checkout restores the fresh one
     writeFileSync(join(dir4, "docs", "EXPERIENCE.md"), mdFor(staleHarness));
     writeFileSync(join(dir4, "BACKLOG.md"), "# Backlog\n\n## Done\n- [x] (P1-001) done task — merged\n");
     const freshContent = readFileSync(join(dir4, "docs", "EXPERIENCE.md"), "utf8").replace("STALE-ARCHIVE", "FRESH-ARCHIVE");
-    const landed4: FailureLesson[] = [];
+    const landed4: ArchivedLesson[] = [];
     const st4: { expMaintLast?: string } = {};
     let prMerged4 = false;
     let prCreated4 = false;
@@ -6716,9 +6738,9 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
     });
     check(
       "expmaint: archived lessons come from the landed fresh-copy pass, not the stale workspace",
-      res4.archived === 1 && landed4.length === 1 && landed4[0]!.findings.includes("FRESH-ARCHIVE"),
+      res4.archived === 1 && landed4.length === 1 && landed4[0]!.lesson.includes("FRESH-ARCHIVE"),
     );
-    check("expmaint: the stale workspace archive decision is discarded on success", !landed4.some((l) => l.findings.includes("STALE-ARCHIVE")));
+    check("expmaint: the stale workspace archive decision is discarded on success", !landed4.some((l) => l.lesson.includes("STALE-ARCHIVE")));
   } finally {
     rmSync(dir4, { recursive: true, force: true });
   }
@@ -6752,11 +6774,11 @@ check(
   const expDir = mkdtempSync(join(tmpdir(), "ocr-experience-"));
   mkdirSync(join(expDir, "docs"), { recursive: true });
   const file = join(expDir, "docs", "EXPERIENCE.md");
-  writeFileSync(file, `# Experience memory (IER)\n\n## Lessons\n${Array.from({ length: 62 }, (_, i) => lessonOf(i)).join("\n")}\n`);
+  writeFileSync(file, `# Experience memory (IER)\n\n## Lessons\n${Array.from({ length: EXPERIENCE_CAP + 2 }, (_, i) => lessonOf(i)).join("\n")}\n`);
   const first = maintainExperienceFile(expDir);
-  check("experience: maintain prunes a file above the cap", first.changed && first.removed === 2 && first.lessons === 60);
+  check("experience: maintain prunes a file above the cap", first.changed && first.removed === 2 && first.lessons === EXPERIENCE_CAP);
   const second = maintainExperienceFile(expDir);
-  check("experience: maintain is a no-op below the cap", !second.changed && second.lessons === 60);
+  check("experience: maintain is a no-op below the cap", !second.changed && second.lessons === EXPERIENCE_CAP);
   check("experience: maintain on a missing file does nothing", maintainExperienceFile(join(expDir, "nope")).changed === false);
   rmSync(expDir, { recursive: true, force: true });
 }
@@ -6822,32 +6844,31 @@ check(
 }
 
 
-// --- P1-075 archived experience lessons ride the failure block, capped --------
+// --- legacy archived rows never ride the failure block (eval 05, forensic rec 6) ---
 {
   const realOf = (n: number): FailureLesson => ({ kind: "failure", ts: `2026-09-01T10:${String(n).padStart(2, "0")}:00-03:00`, task: `P2-${String(n).padStart(3, "0")}`, attempts: 4, step: "typecheck", findings: `finding ${n}`, tail: "" });
   const archivedOf = (n: number): FailureLesson => ({ kind: "failure", ts: `2026-09-02T10:${String(n).padStart(2, "0")}:00-03:00`, task: `P1-${String(n).padStart(3, "0")}`, attempts: 0, step: "archived", findings: `archived lesson ${n}`, tail: "" });
-  // 8 real failures then 5 archived — the last-10 window holds 5 real + 5 archived
+  // 8 real failures then 5 legacy archived rows (P1-075 wrote them as kind:"failure")
   const mixed = [...Array.from({ length: 8 }, (_, i) => realOf(i)), ...Array.from({ length: 5 }, (_, i) => archivedOf(i))];
   const block = failureLessonsBlock(mixed);
-  const archivedLines = (block.match(/step: archived/g) ?? []).length;
-  const realLines = (block.match(/step: typecheck/g) ?? []).length;
-  check("failure lessons: archived entries cap at 3 of the slots", archivedLines === 3);
-  check("failure lessons: real failures keep >= 7 slots via backfill", realLines === 7 && block.includes("finding 1") && block.includes("finding 7"));
-  check("failure lessons: all-real window is untouched", (failureLessonsBlock(mixed.slice(0, 8)).match(/step: typecheck/g) ?? []).length === 8);
+  check("failure lessons: archived success lessons are never injected", !block.includes("step: archived") && !block.includes("archived lesson"));
+  check("failure lessons: every real failure keeps its slot", (block.match(/step: typecheck/g) ?? []).length === 8 && block.includes("finding 0") && block.includes("finding 7"));
+  check("failure lessons: an all-archived feed injects nothing", failureLessonsBlock(mixed.slice(8)) === "");
 }
 
 
 // --- P1-075 lesson-injection impact instrumentation ---------------------------
 {
-  const st: { lessonImpact?: import("../apps/pilot/src/state").LessonImpact } = {};
+  // eval 05: the accounting lives in lessonImpactV2 (the v1 record is frozen)
+  const st: { lessonImpactV2?: import("../apps/pilot/src/state").LessonImpactV2 } = {};
   recordLessonImpact(st, { lessons: 5, rounds: 2, ok: true, tokens: 100 });
   recordLessonImpact(st, { lessons: 3, rounds: 1, ok: false, tokens: 40 });
   recordLessonImpact(st, { lessons: 0, rounds: 3, ok: true, tokens: 7 });
   recordLessonImpact(st, { lessons: 0, rounds: 1, ok: false, tokens: 0 });
   check(
     "lesson impact: folds merges/rounds/tokens into the right cohort",
-    st.lessonImpact!.with.merges === 1 && st.lessonImpact!.with.roundsTotal === 3 && st.lessonImpact!.with.tokensTotal === 140 &&
-      st.lessonImpact!.without.merges === 1 && st.lessonImpact!.without.roundsTotal === 4 && st.lessonImpact!.without.tokensTotal === 7,
+    st.lessonImpactV2!.with.merges === 1 && st.lessonImpactV2!.with.roundsTotal === 3 && st.lessonImpactV2!.with.tokensTotal === 140 &&
+      st.lessonImpactV2!.without.merges === 1 && st.lessonImpactV2!.without.roundsTotal === 4 && st.lessonImpactV2!.without.tokensTotal === 7,
   );
 }
 
@@ -13506,7 +13527,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   // Every first-contact screen opens its centered brand header with the same
   // glyph before the wordmark — the wizard's mark language, nothing per-view.
-  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+  // P3-373 (eval-09): the "pair a phone" dialog joined the list — it still
+  // wore the P1-050 splash's app icon over a sans title.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx", "PairingOverlay.tsx"]) {
     const src = read(join("components", view));
     // P2-355: the header now carries the named layout-shift region — match
     // the opening tag, not the bare literal.
@@ -13948,14 +13971,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 // disabled ghost beside the error. P3-433 removes the override: the `primary`
 // class resolves to the shared button.primary accent identity (P3-449/P3-450:
 // one primary dialect per journey), and the P3-366 desktop-flow beat still
-// pins the class presence over the quiet scan entry.
+// pins the class presence over the quiet scan entry. P3-415 (eval-09): the
+// `primary` class is now granted only where the paste form is the sole path
+// (submitClass — scripts/pair-lead.test.ts pins the verdict); the no-override
+// rule below still holds for that primary.
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
   const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
   check(
     "P3-433: the desktop paste submit keeps no recessed-chip override (shared accent primary)",
     !/\.pair-submit\.primary\s*\{/.test(css) &&
-      pairingSrc.includes('className={preferPaste ? "pair-submit primary" : "pair-submit"}'),
+      pairingSrc.includes('lead === "paste" ? "pair-submit primary" : "pair-submit secondary"') &&
+      pairingSrc.includes("className={submitClass}"),
   );
 }
 
@@ -14050,7 +14077,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-427: the host entry is suppressed while the agent is down",
-    view.includes("const hostSection = onPairRemote && !agentDown && ("),
+    // P3-415 (eval-09): the render condition is named (hostEntry) so the
+    // one-lead verdict and the render read the same boolean.
+    view.includes("const hostEntry = !!onPairRemote && !agentDown;") && view.includes("const hostSection = hostEntry && ("),
   );
   check(
     "P3-427: the daemon-assuming intro yields to the agent-down verdict",
@@ -14066,7 +14095,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-427: the verdict card yields to the App-level error block (one status per phase)",
-    /agentDown && phase !== "error" && \(/.test(view),
+    // P3-415 (eval-09): named (agentDownCard) — the lead verdict reads it too.
+    view.includes('const agentDownCard = !!agentDown && phase !== "error";') && view.includes("{agentDownCard && ("),
   );
   // App side: only the pairManual call site carries the verdict — the
   // add-machine ceremony must keep the full rendering (P3-422 lesson).

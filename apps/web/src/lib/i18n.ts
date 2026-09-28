@@ -990,6 +990,9 @@ export const dict = {
     // P3-378: a typed URL that parses but isn't http(s) (file://, data:…) is a
     // deliberate sandbox rejection — name it and give the way out
     browserLocalFile: "Only http(s) pages open in this sandboxed pane — local files don't. Serve the folder over HTTP (e.g. python3 -m http.server) and open its localhost URL.",
+    // P3-378 (eval-09): any other non-http(s) scheme (javascript:, data:, about:…)
+    // is named as such — the local-file sentence was the wrong story for it
+    browserSchemeBlocked: "Only http(s) addresses open in this pane.",
     browserLoadFailed: "Could not load the page.",
     browserCrashed: "The page renderer crashed — reload.",
     browserErrUnreachable: "The machine did not answer — the host browser is unreachable.",
@@ -1888,6 +1891,9 @@ export const dict = {
     // P3-378: URL digitada que parseia mas não é http(s) (file://, data:…) é
     // rejeição deliberada da sandbox — nomear e dar o caminho
     browserLocalFile: "Só páginas http(s) abrem neste painel com sandbox — arquivos locais não. Sirva a pasta via HTTP (ex.: python3 -m http.server) e abra a URL localhost.",
+    // P3-378 (eval-09): outro esquema que não é http(s) (javascript:, data:,
+    // about:…) ganha o próprio nome — a frase de arquivo local contava a história errada
+    browserSchemeBlocked: "Só endereços http(s) abrem neste painel.",
     browserLoadFailed: "Não foi possível carregar a página.",
     browserCrashed: "O renderizador da página caiu — recarregue.",
     browserErrUnreachable: "A máquina não respondeu — o navegador do host está fora de alcance.",
