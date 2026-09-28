@@ -10,9 +10,9 @@
     "release.yml/release": ["contents:write"],
     "release.yml/desktop-dmg": ["contents:write"],
     "release.yml/desktop-win": ["contents:write"],
-    "release.yml/release-verify": ["contents:read"],
+    "release.yml/release-verify": ["contents:write"],
     "release.yml/relay-image": ["contents:read", "packages:write"],
-    "release.yml/release-feeds": ["contents:read"],
+    "release.yml/release-feeds": ["contents:write"],
     "release.yml/release-publish": ["contents:write"]
   },
   "conditions": {

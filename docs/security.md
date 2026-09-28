@@ -292,8 +292,17 @@ identity servers, no accounts.
 
 14. **Workflow permissions (P2-271).** Every job of both workflows declares
     its own least-privilege `permissions:` block — the six CI jobs can only
-    read repository contents, and only the release jobs that publish touch
-    `contents: write` (plus `packages: write` for the relay image) — and
+    read repository contents, and only the release jobs that touch the
+    release hold `contents: write` (plus `packages: write` for the relay
+    image) — including the two VERIFICATION jobs `release-verify` and
+    `release-feeds`: since P2-179 the release is always a DRAFT when they
+    run, and GitHub only lists draft releases to callers with push access,
+    which for the GITHUB_TOKEN means `contents: write` (with `contents:
+    read` both jobs fail on "release not found" and the release-publish job
+    that needs them is skipped, leaving the draft unverified). Both jobs
+    only read release content; the write scope is the minimum that can see
+    the draft, and neither job's checkout keeps git credentials
+    (`persist-credentials: false`).
     `npm run check:workflow-perms` (`scripts/check-workflow-perms.ts`,
     verdict in the pure `scripts/workflowperms.ts`) runs in the `verify` job
     after the install step, re-reading both files and failing the job on a

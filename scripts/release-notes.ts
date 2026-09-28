@@ -34,6 +34,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { assetMatches, bareVersion, tagProblems, type AssetMatch } from "./release-assets";
+import { RELEASE_BODY_MAX_CHARS } from "./release-body";
 import { MANIFEST_NAME } from "./release-checksums";
 
 /** Documented delimiters of the guide block inside the release body. */
@@ -80,9 +81,20 @@ export function guideSlots(tag: string): GuideSlot[] {
   ];
 }
 
-/** First-open warning: the release may ship unsigned (no secrets configured). */
+/** First-open warning: the release may ship unsigned (no secrets configured).
+ * eval-16: macOS 15 (Sequoia) removed the right-click → Open override for apps
+ * that are not notarized — the only way through is Privacy & Security → "Open
+ * Anyway" after a first blocked attempt; the right-click path still applies to
+ * macOS 14 and older. */
 const FIRST_OPEN_LINE =
-  '> **Primeira abertura no macOS:** enquanto a assinatura de desenvolvedor não estiver configurada, o macOS pode avisar que o app é de um "desenvolvedor não identificado". Clique com o botão direito no app e escolha **Abrir** — só na primeira vez.';
+  '> **Primeira abertura no macOS:** enquanto a assinatura de desenvolvedor não estiver configurada, o macOS bloqueia a primeira abertura do app ("não foi possível verificar…"). No macOS 15 (Sequoia) ou mais novo: tente abrir uma vez, depois vá em **Ajustes do Sistema → Privacidade e Segurança** e clique em **Abrir Mesmo Assim**. No macOS 14 ou anterior: clique com o botão direito no app e escolha **Abrir**. Só na primeira vez.';
+
+/** eval-16 (fix-round): the FIRST release ships the Windows installer unsigned
+ * (no WIN_CSC_* secrets, docs/RELEASING.md) — SmartScreen blocks its first
+ * run with a warning, not the macOS block above. The guide must say so or the
+ * Windows audience stops at the blue screen. */
+const WINDOWS_SMARTSCREEN_LINE =
+  '> **Primeira execução no Windows:** enquanto a assinatura de código não estiver configurada, o SmartScreen bloqueia a primeira execução do instalador ("O Windows protegeu o seu PC"). Clique em **Mais informações → Executar assim mesmo**. Só na primeira vez.';
 
 /** How to verify a download against the checksum manifest. */
 function checksumLine(): string {
@@ -126,6 +138,8 @@ export function downloadGuide(
   }
   lines.push("");
   lines.push(FIRST_OPEN_LINE);
+  lines.push("");
+  lines.push(WINDOWS_SMARTSCREEN_LINE);
   if (hasManifest) {
     lines.push("");
     lines.push(checksumLine());
@@ -195,8 +209,20 @@ function cli(argv: readonly string[]): void {
     process.exitCode = 1;
     return;
   }
+  // eval-16: the edit below PATCHes the whole body back — above GitHub's
+  // ceiling it dies with an opaque HTTP 422, so fail here with the reason.
+  const next = applyGuide(body, guide);
+  if (next.length > RELEASE_BODY_MAX_CHARS) {
+    console.error(`release-notes: FAIL ${tag}`);
+    console.error(
+      `  - the body with the guide is ${next.length} characters, above GitHub's ${RELEASE_BODY_MAX_CHARS}-character ceiling — cap the notes with scripts/release-body.ts`,
+    );
+    console.error("release-notes: 1 problem(s) found — the release stays a draft");
+    process.exitCode = 1;
+    return;
+  }
   try {
-    writeFileSync(bodyPath, applyGuide(body, guide), "utf8");
+    writeFileSync(bodyPath, next, "utf8");
   } catch (err) {
     console.error(`release-notes: cannot write the release body — ${(err as Error).message}`);
     process.exitCode = 1;

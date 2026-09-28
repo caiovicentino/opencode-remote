@@ -97,6 +97,8 @@ export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "retention.test.ts", cause: "network-port" },
   { file: "pilotwatch-daemon.test.ts", cause: "long-lived-child" },
   { file: "relay-hosting.test.ts", cause: "long-lived-child" },
+  // eval-16: runs a fake `gh` executable (shebang + mode 0755) plus bash/sed.
+  { file: "release-distribution.test.ts", cause: "chmod" },
 ];
 
 /**
