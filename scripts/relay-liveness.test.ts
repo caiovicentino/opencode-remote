@@ -53,7 +53,8 @@ check("liveness: only the stale peer is returned", survivors.length === 1 && sur
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function startRelay(env: Record<string, string>) {
-  const port = freePortPairSync(); // relay on port, metrics on port + 1
+  const port = freePortPairSync(); // a pair: the relay listens on port, its metrics on port + 1
+  const metrics = port + 1;
   const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),
     env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(metrics), OCR_E2E_MARKER: "1" },
