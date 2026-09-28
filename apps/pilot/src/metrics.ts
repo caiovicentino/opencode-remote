@@ -406,7 +406,6 @@ export function deployLagFacts(input: {
     input.quarantined.filter((q) => typeof q?.sha === "string" && SHA_RE.test(q.sha)).map((q) => q.sha!),
   );
   let behindTotal: number | null = null;
-  let pendingSinceMs: number | null = null;
   let pending = 0;
   let oldestPending = Number.POSITIVE_INFINITY;
   for (const h of input.history ?? []) {

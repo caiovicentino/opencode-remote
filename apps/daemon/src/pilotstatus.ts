@@ -310,7 +310,7 @@ async function readGitFacts(repo: string, git: GitRunner): Promise<GitFacts> {
   // the lag walk needs main's first-parent history down to prod — one read-only
   // `git log` answers it (rev-list --count over ALL commits counted bookkeeping
   // too, which kept a healthy idle fleet permanently 1–2 "behind")
-  let history: LagCommit[] = [];
+  const history: LagCommit[] = [];
   if (prod && main && prod !== main) {
     const out = (await git(["log", "--first-parent", `--max-count=${DEPLOY_LAG_WALK_MAX}`, "--format=%H %ct", main], repo)) ?? "";
     for (const line of out.split("\n")) {
