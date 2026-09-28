@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { nowLocalISO } from "./log";
+import { normalizeLessonImpactV2 } from "./lessonimpact";
 import { homedir } from "node:os";
 import type { TaskUsd } from "./pricing";
 import type { MissionModels } from "./mission";
@@ -176,10 +177,34 @@ export interface LessonImpactCohort {
   tokensTotal: number;
 }
 
-/** P1-075: lesson-injection impact — with vs without injected IER lessons. */
+/** P1-075: lesson-injection impact — with vs without injected IER lessons.
+ * Eval 05: frozen legacy record, no longer written — its tokens re-added the
+ * task's LIFETIME total on every run (1.70x inflated) and "without" mixed
+ * planner failures with 3 red-team merges. Kept (never rewritten) so a
+ * rollback to older code still finds it intact; see lessonImpactV2. */
 export interface LessonImpact {
   with: LessonImpactCohort;
   without: LessonImpactCohort;
+}
+
+/** Eval 05: one v2 cohort — every treated pipeline run, tokens per run. */
+export interface LessonImpactV2Cohort {
+  runs: number;
+  merges: number;
+  roundsTotal: number;
+  tokensTotal: number;
+}
+
+/** Eval 05: lesson-injection accounting v2 (lessonimpact.ts). DESCRIPTIVE
+ * ONLY — nothing randomizes who gets lessons, so the cohorts differ in task
+ * mix and a gap between them is not evidence that lessons help or hurt. */
+export interface LessonImpactV2 {
+  /** YYYY-MM-DD (local) the v2 accounting started. */
+  since: string;
+  with: LessonImpactV2Cohort;
+  without: LessonImpactV2Cohort;
+  /** runs that ended before any builder round — no treatment, no cohort. */
+  untreated: number;
 }
 
 export interface PilotState {
@@ -262,8 +287,10 @@ export interface PilotState {
    * (own guard — a redteam agent failure must never block it). */
   expMaintLast?: string;
   /** P1-075: merges/rounds/tokens folded per cohort (builder got IER lessons
-   * injected, or not) — measures whether lesson injection helps. */
+   * injected, or not). Eval 05: legacy v1, frozen — see lessonImpactV2. */
   lessonImpact?: LessonImpact;
+  /** Eval 05: per-run lesson-injection accounting (recordLessonImpact). */
+  lessonImpactV2?: LessonImpactV2;
 }
 
 function normalizeAudit(a: unknown): AuditMode | null {
@@ -389,6 +416,19 @@ export function loadState(file = STATE_FILE): PilotState {
       // P1-075: experience-maintenance guard + lesson-impact cohorts
       expMaintLast: typeof s.expMaintLast === "string" ? s.expMaintLast : undefined,
       lessonImpact: normalizeLessonImpact(s.lessonImpact),
+      // eval 05: lifetime record — must survive the midnight rollover below
+      lessonImpactV2: normalizeLessonImpactV2(s.lessonImpactV2),
+      // eval 05: last-run guards and lifetime counters are not daily budgets —
+      // the rollover below dropped them, so every cross-midnight boot re-ran
+      // the WEEKLY forensic and reset the gate-corpus cadence
+      redteamLast: typeof s.redteamLast === "string" ? s.redteamLast : undefined,
+      researchLast: typeof s.researchLast === "string" ? s.researchLast : undefined,
+      explorerLast: typeof s.explorerLast === "string" ? s.explorerLast : undefined,
+      forensicLast: typeof s.forensicLast === "string" ? s.forensicLast : undefined,
+      mergesSinceCorpus:
+        typeof s.mergesSinceCorpus === "number" && Number.isFinite(s.mergesSinceCorpus) && s.mergesSinceCorpus >= 0 ? s.mergesSinceCorpus : undefined,
+      // P2-045: the dashboard chip text lives as long as auditMode (kept above)
+      auditDiagnosis: typeof s.auditDiagnosis === "string" ? s.auditDiagnosis : undefined,
     };
     if (s.date === today) return { ...s, ...shared, merges, infraFails };
     return { date: today, tasks: 0, deploys: 0, failures: 0, merges: 0, infraFails: 0, ...shared };

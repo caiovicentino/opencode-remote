@@ -10,15 +10,15 @@ import { notifySupervisor } from "./notify";
 import { runResearcher } from "./researcher";
 import { runExplorer } from "./explorer";
 import { runPipeline, TASK_ID_RE, writeSandboxConfig, writeAuxSandboxConfig, budgetsFor, isOverCap, strategistPrompt, STRATEGIST_MARKER } from "./pipeline";
-import { deploy, drainForReload, headDrifted, latestDeployableSha, pilotInfraDiffCmd, pilotInfraDrifted, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
-import { deploySkipReason } from "./deployguard";
-import { DEPLOY_REFUSAL_BACKOFF_MS, deployBackoffRemaining, noteDeployRefusal, type DeployBackoff } from "./deploybackoff";
+import { deploy, drainForReload, headDrifted, pilotInfraDiffCmd, pilotInfraDrifted, resolveDeployPlan, shouldForceReload, shouldSelfHealReload, type DeployResult } from "./deploy";
+import { defaultVerifiedMergesFile, deploySkipReason, readVerifiedMerges } from "./deployguard";
+import { DEPLOY_REFUSAL_BACKOFF_MS, DEPLOY_ROLLBACK_HOLD_MS, deployBackoffRemaining, noteDeployRefusal, noteDeployRollback, rollbackHoldRemaining, type DeployBackoff, type RollbackHold } from "./deploybackoff";
 import { digest } from "./push";
 import { addTask, appendCommitAndPush, auxPushIo, blockTask, nextId, parseAuxTaskLines, parseBacklog, readyOrphanBlocks, type AddTaskResult, type Task } from "./backlog";
 import { redteamFinding } from "./findingline";
 import { bootMissionRepo, logMissionLoaded } from "./missionrepo";
 import { landMetaCommit, metaIo } from "./metapush";
-import { appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
+import { appendArchivedLesson, appendFailureLesson, defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { defaultPendingRefillFile, readPendingRefill, relandDetail, relandPendingRefill, savePendingRefill } from "./refill";
 import { forensicDue, runForensic } from "./forensic";
 import { areaKey, nightlyIdleDue, nightlySkipDue, nightlyWindow, pickBatch, assignSlots, startDelayMs, type SlotAffinity } from "./scheduler";
@@ -57,7 +57,7 @@ import {
 } from "./state";
 import { applySessionCosts, foldSlotCache, querySessionTokenRows } from "./costs";
 import { recordLessonImpact } from "./metrics";
-import { distSweepDue, doctorDist, runDoctor } from "./doctor";
+import { distSweepDue, doctorDist, runDoctor, runDoctorGuards } from "./doctor";
 import { bootDiskGate, diskAlert, diskHoldTickMs, fleetVolumes, initialDiskHold, noteDiskFailure, persistSafely, pollDiskHold, waitWhileDiskCritical, type DiskHold, type DiskHoldIo } from "./diskhold";
 import { sweepPilotArtifacts } from "./retention";
 
@@ -74,6 +74,10 @@ let lastDistSweep: number | null = null;
 /** Consecutive same-kind deploy refusals (dirty prod, disk, prod ahead) — arms
  * the pending-deploy hold (deploybackoff.ts). In-memory: a restart looks again. */
 let deployBackoff: DeployBackoff | null = null;
+/** eval r5: armed by a rolled-back deploy — the pending path waits for a new
+ * verified merge (or DEPLOY_ROLLBACK_HOLD_MS) instead of walking down to the
+ * next-newest sha with nothing learned. In-memory, like deployBackoff. */
+let rollbackHold: RollbackHold | null = null;
 /** P1-104: set while the deploy-time self-reload waits for the running slots
  * to drain — no new pipeline picks until the process exits onto the new code
  * (otherwise the eager-fill would instantly refill the slots and the reload
@@ -239,6 +243,8 @@ async function main() {
   // P1-030: deterministic repair pass on every boot — refs/state/backlog/
   // branches, each idempotent and logged; never blocks the loop from starting.
   runDoctor(cfg, slotNumbers.map((s) => slotCfg.get(s)!.workspace));
+  // eval r5: judge freshness + tier-B completeness (alert only, never blocks)
+  runDoctorGuards(cfg);
   lastDistSweep = Date.now();
 
   const once = process.argv.includes("--once");
@@ -543,16 +549,20 @@ async function main() {
     // Same-kind refusals back off (deploybackoff.ts) instead of retrying each
     // cycle: the 2026-09-05 burn was 196 dirty-guard refusals eating the cap.
     const backoffHold = deployBackoffRemaining(deployBackoff, Date.now()) > 0;
-    if (running.size === 0 && !deployBusy && !foreignMission && state.deploys < cfg.maxDeploysPerDay && !backoffHold) {
+    // eval r5: after a rollback, no new attempt without new information
+    const rollbackHeld = rollbackHold !== null && rollbackHoldRemaining(rollbackHold, verifiedTip(), Date.now()) > 0;
+    if (running.size === 0 && !deployBusy && !foreignMission && state.deploys < cfg.maxDeploysPerDay && !backoffHold && !rollbackHeld) {
       const prodSha = exec("git rev-parse HEAD", { cwd: cfg.repo, allowFail: true }).output.trim();
       // P2-058: the target is the newest gate-verified, non-quarantined merge
       // sha on origin/main — a direct push to main (bookkeeping or hostile) is
-      // walked past and can never become a deploy target.
-      const target = latestDeployableSha(cfg.repo, cfg.baseBranch);
+      // walked past and can never become a deploy target. eval r5: a large
+      // clean catch-up ships in bounded oldest-first steps (resolveDeployPlan).
+      const plan = resolveDeployPlan(cfg.repo, cfg.baseBranch);
+      const target = plan.target;
       if (prodSha && target && prodSha !== target) {
-        log("info", "pending deploy: prod behind a gate-verified merge", { prod: prodSha.slice(0, 7), target: target.slice(0, 7) });
-        const dep = await deploy(cfg, target, undefined, { onAttempt: countDeployAttempt });
-        noteDeployOutcome(dep);
+        log("info", "pending deploy: prod behind a gate-verified merge", { prod: prodSha.slice(0, 7), target: target.slice(0, 7), pending: plan.pending.length, step: plan.step.length });
+        const dep = await deploy(cfg, target, undefined, { onAttempt: countDeployAttempt, plan });
+        noteDeployOutcome(dep, target);
         log("info", "deploy result", { ok: dep.ok, rolledBack: dep.rolledBack, refused: dep.refused, detail: dep.detail.slice(0, 200) });
         if (!dep.ok && !dep.refused) {
           state.failures++;
@@ -694,6 +704,7 @@ async function runDoctorPass(st: PilotState): Promise<void> {
  * P1-099: `onSettled` runs in the finally, right after the slot is released —
  * the eager-fill hook that immediately backfills every free slot. */
 async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotConfig, onSettled?: () => void): Promise<void> {
+  const tokensBefore = state.taskCosts?.[task.id] ?? 0; // eval 05: lifetime total BEFORE this run
   // P1-060: budgets scale with the task's size tag — clone the slot config
   // with the effective rounds/timeout/attempts so runPipeline and the
   // circuit breaker both honor the long-horizon allowance for size L.
@@ -723,13 +734,13 @@ async function runSlot(slot: number, wscfg: PilotConfig, task: Task, cfg: PilotC
       log("warn", "task cost reconciliation failed", { task: task.id, err: String(err).slice(0, 200) });
     }
     // P1-075: lesson-injection instrumentation — fold this outcome into the
-    // with/without cohorts (tokens from the reconciliation above, 0 when it
-    // failed) so the operator can measure whether lessons actually help.
+    // with/without cohorts (tokens = what THIS run added to the reconciled
+    // lifetime total, 0 when it failed). Descriptive only (lessonimpact.ts).
     const impact = {
       lessons: result.lessonsInjected ?? 0,
       rounds: result.rounds ?? 0,
       ok: result.ok,
-      tokens: state.taskCosts?.[task.id] ?? 0,
+      tokens: Math.max(0, (state.taskCosts?.[task.id] ?? 0) - tokensBefore), // = runTokenDelta
     };
     recordLessonImpact(state, impact);
     log("info", "lesson impact", { task: task.id, ...impact });
@@ -881,9 +892,13 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     log("info", "deploy budget reached — merge left on main for manual deploy", { deploys: state.deploys });
     return;
   }
-  const target = latestDeployableSha(cfg.repo, cfg.baseBranch);
+  // eval r5: same plan as the pending path — a large clean catch-up ships in
+  // bounded steps; the remaining steps follow on the next merges/idle cycles
+  const plan = resolveDeployPlan(cfg.repo, cfg.baseBranch);
+  const target = plan.target;
   if (!target) {
-    log("warn", "no gate-verified merge sha on origin/main — deploy skipped", { task: task.id, sha: sha.slice(0, 7) });
+    if (plan.newest) log("info", "prod already at the newest gate-verified merge — nothing to deploy", { task: task.id, prod: plan.prod.slice(0, 7) });
+    else log("warn", "no gate-verified merge sha on origin/main — deploy skipped", { task: task.id, sha: sha.slice(0, 7) });
     return;
   }
   // fire-and-forget: the deploy (npm ci/build/soak) runs in the prod repo
@@ -891,8 +906,11 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
   // The daily counter moves inside onAttempt (guards passed, mutation about
   // to start) — a refusal spends nothing.
   deployBusy = true;
-  void deploy(cfg, target, { task: task.id, ui: touchedUi }, {
+  // a bounded catch-up step stops short of this task's merge: its UI is not
+  // live yet, so no post-deploy shot may be filed as its evidence (P2-011)
+  void deploy(cfg, target, { task: task.id, ui: touchedUi && !plan.stepped }, {
     onAttempt: countDeployAttempt,
+    plan,
     // P1-104: the end-of-deploy self-reload waits for the running slots to
     // drain (and holds new picks meanwhile) instead of exiting mid-pipeline
     slotsRunning: () => running.size,
@@ -901,7 +919,7 @@ function launchDeploy(cfg: PilotConfig, task: Task, sha: string, touchedUi: bool
     },
   })
     .then((dep) => {
-      noteDeployOutcome(dep);
+      noteDeployOutcome(dep, target);
       log("info", "deploy result", { task: task.id, ...dep });
       if (!dep.ok && !dep.refused) state.failures++;
       if (cfg.digest && !dep.refused) {
@@ -948,10 +966,25 @@ function saveStateSafe(st: PilotState, what: string): boolean {
   );
 }
 
+/** Newest gate-verified merge recorded so far — the rollback hold's "new
+ * information" signal (the gatekeeper appends one line per merge). */
+function verifiedTip(): string | null {
+  return readVerifiedMerges(defaultVerifiedMergesFile()).at(-1)?.sha ?? null;
+}
+
 /** Fold a deploy result into the refusal backoff: an attempt (any outcome)
  * clears the streak; a same-kind refusal grows it and, at the threshold,
- * holds the pending-deploy path for DEPLOY_REFUSAL_BACKOFF_MS. */
-function noteDeployOutcome(dep: DeployResult): void {
+ * holds the pending-deploy path for DEPLOY_REFUSAL_BACKOFF_MS.
+ * eval r5: a rollback arms the rollback hold; a clean deploy releases it. */
+function noteDeployOutcome(dep: DeployResult, target?: string): void {
+  if (dep.rolledBack && target) {
+    rollbackHold = noteDeployRollback(target, verifiedTip(), Date.now());
+    const minutes = Math.round(DEPLOY_ROLLBACK_HOLD_MS / 60_000);
+    log("warn", "pending deploy on hold after a rollback — waiting for a new verified merge", { sha: target.slice(0, 7), maxHoldMin: minutes });
+    emit("deploy", { phase: "rollback-hold", ok: false, detail: `${target.slice(0, 7)} rolled back — pending deploy waits for a new verified merge (max ${minutes}min)` });
+  } else if (dep.ok) {
+    rollbackHold = null;
+  }
   if (!dep.refused) {
     deployBackoff = null;
     return;
@@ -1024,7 +1057,7 @@ async function maybeNightly(cfg: PilotConfig, st: PilotState, trigger: string) {
         today,
         {
           exec: (cmd) => exec(cmd, { cwd: cfg.workspace, allowFail: true }),
-          appendLesson: appendFailureLesson,
+          appendLesson: appendArchivedLesson,
           lessonsFile: defaultLessonsFile(),
         },
         log,
@@ -1249,6 +1282,7 @@ async function blockAndPush(cfg: PilotConfig, st: PilotState, task: Task, attemp
       kind: "failure",
       ts: nowLocalISO(),
       task: task.id,
+      title: task.title, // eval 05: the feed line names what the blocked task was
       attempts,
       step: gate?.step ?? "pipeline",
       findings: detail,
