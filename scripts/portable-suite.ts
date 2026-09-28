@@ -60,6 +60,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "diagredact.test.ts",
   "download-path.test.ts",
   "drawer.test.ts",
+  "gate-feedback.test.ts",
   "gate-queue.test.ts",
   "gate-wordmark.test.ts",
   "gpuplan.test.ts",
