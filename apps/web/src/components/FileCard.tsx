@@ -117,6 +117,10 @@ export default function FileCard({
           </button>
         </div>
         {preview.url ? (
+          // eval-12: unsandboxed on purpose — Chromium never runs its PDF viewer
+          // in a sandboxed frame. This frame is only reached for kind === "pdf"
+          // and the File's type is mimeFor(name) = application/pdf for exactly
+          // that extension, so it can only host the browser's PDF viewer.
           <iframe
             title={name}
             src={preview.url}

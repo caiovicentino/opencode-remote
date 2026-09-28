@@ -10,6 +10,8 @@
  *    module and writes (touchHeartbeat + saveState(loadState())) changes the
  *    seeded files without the sandbox (negative control) and leaves them
  *    byte-identical with it;
+ *  - PATH shim (POSIX): mutating launchctl verbs and pkill/killall are
+ *    refused through the pilot's own exec(); read-only verbs pass through;
  *  - static guard: every scripts/*.test.ts that imports apps/pilot/src must
  *    import "./testhome" before any other module.
  * Run: npx tsx scripts/testhome.test.ts
@@ -20,6 +22,8 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { exec } from "../apps/pilot/src/runner";
+import { TESTHOME_REFUSAL } from "./testhome";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -96,6 +100,27 @@ function runChild(home: string, guarded: boolean): { status: number | null; stde
   const r = runChild(guarded.home, true);
   check("canary: the guarded child ran in a throwaway home", r.status === 0 && r.resolvedHome !== "" && r.resolvedHome !== guarded.home, r.stderr.slice(0, 400));
   check("canary: with testhome the seeded state/heartbeat stay byte-identical", fingerprint(guarded.files) === before);
+}
+
+// 2b. launchd/pattern-kill shim — launchd is per user, so HOME alone does not
+// stop a suite that falls through to deploy code from restarting the REAL
+// com.ocr.* services (2026-09-27 12:56). Exercised through the pilot's own
+// exec(), the exact path deploy.ts kickstart() uses. No real mutating
+// launchctl is ever run here.
+if (process.platform !== "win32") {
+  const which = spawnSync("sh", ["-c", "command -v launchctl"], { encoding: "utf8" }).stdout.trim();
+  check("shim: launchctl resolves to the testhome shim", which.startsWith(sandbox), which);
+  const kick = exec(`launchctl kickstart -k gui/${process.getuid?.() ?? 501}/com.ocr.testhome-canary`, { cwd: repo, allowFail: true });
+  check("shim: a mutating launchctl verb is refused through the pilot's exec()", !kick.ok && kick.output.includes(TESTHOME_REFUSAL), kick.output.slice(0, 200));
+  const boot = exec("launchctl bootout gui/501/com.ocr.testhome-canary", { cwd: repo, allowFail: true });
+  check("shim: bootout is refused too", !boot.ok && boot.output.includes(TESTHOME_REFUSAL));
+  const pk = exec("pkill -f ocr-testhome-canary-pattern", { cwd: repo, allowFail: true });
+  const ka = exec("killall ocr-testhome-canary", { cwd: repo, allowFail: true });
+  check("shim: pkill and killall are refused", !pk.ok && pk.output.includes(TESTHOME_REFUSAL) && !ka.ok && ka.output.includes(TESTHOME_REFUSAL));
+  if (process.platform === "darwin") {
+    const ver = exec("launchctl version", { cwd: repo, allowFail: true });
+    check("shim: read-only verbs still reach the real launchctl", !ver.output.includes(TESTHOME_REFUSAL), ver.output.slice(0, 200));
+  }
 }
 
 // 3. static guard — pilot-importing suites must load the sandbox first

@@ -1,6 +1,6 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
-import { log } from "./log";
+import { log, stdioGuard } from "./log";
 
 export interface MetricDef {
   name: string;
@@ -46,6 +46,17 @@ export const VERSION =
         }
       ).version;
 
+// eval-12: the stdio guard (log.ts) counts in its own state — a stream error
+// listener must never touch anything that could log — and every scrape
+// copies that count here, so both formats publish it.
+function syncStdioGuardCount(): void {
+  def(
+    "ocr_log_write_errors_total",
+    "stdout/stderr write errors absorbed instead of crashing (disk full, closed pipe)",
+    "counter",
+  ).value = stdioGuard.errors;
+}
+
 /** text/plain exposition format (Prometheus-compatible) */
 function promText(): string {
   let out = "";
@@ -66,6 +77,27 @@ function snapshot() {
     version: VERSION,
     ...o,
   };
+}
+
+/**
+ * eval-12: the one answer a request gets when its handler threw. Counted, and
+ * logged with the error NAME only — a message can carry a path, a token-bearing
+ * URL or request content. A response that already started streaming cannot
+ * change its status anymore, so it is torn down instead of written twice.
+ */
+export function apiRequestFailed(res: ServerResponse, err: unknown): void {
+  metrics.inc("ocr_api_handler_errors_total");
+  log("error", "api request failed", { error: err instanceof Error ? err.name : "unknown" });
+  try {
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "internal error" }));
+  } catch {
+    // the socket is already gone — nothing left to answer
+  }
 }
 
 /**
@@ -90,14 +122,44 @@ export function bindBackoffMs(attempt: number): number {
  */
 export function startMetricsServer(port: number, api?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>): Server {
   const server = createHttpServer(async (req, res) => {
-    if (req.url?.startsWith("/metrics")) {
-      const body = req.url.includes("format=prom") ? promText() : JSON.stringify(snapshot(), null, 2);
-      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-      res.end(body);
-      return;
+    // eval-12: per-request backstop. Node 22 kills the process on an
+    // unhandled rejection, and this listener is async: before it, one
+    // malformed request line from any local process (`GET //[` makes
+    // new URL() throw) or any throw inside a route (an unreadable state file
+    // under authorized()) took the whole daemon down with no auth needed.
+    try {
+      if (req.url?.startsWith("/metrics")) {
+        syncStdioGuardCount();
+        const body = req.url.includes("format=prom") ? promText() : JSON.stringify(snapshot(), null, 2);
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        res.end(body);
+        return;
+      }
+      // eval-12: unauthenticated liveness probe, same shape as the relay's and
+      // the PWA origin's /healthz — a fixed literal answered by the event loop
+      // itself, so it also proves the loop is not wedged. Everything with
+      // content stays behind the Bearer-gated /api/health.
+      if (req.method === "GET" && req.url?.split("?")[0] === "/healthz") {
+        res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        res.end(JSON.stringify({ ok: true, service: "ocr-daemon" }));
+        return;
+      }
+      if (api && req.url) {
+        let url: URL;
+        try {
+          url = new URL(req.url, "http://127.0.0.1");
+        } catch {
+          // a request target no URL parser accepts is the client's fault:
+          // 400, and no log line — a local loop must not flood the log
+          res.writeHead(400).end();
+          return;
+        }
+        if (await api(req, res, url)) return;
+      }
+      res.writeHead(404).end();
+    } catch (err) {
+      apiRequestFailed(res, err);
     }
-    if (api && req.url && (await api(req, res, new URL(req.url, "http://127.0.0.1")))) return;
-    res.writeHead(404).end();
   });
   let bound = false;
   let attempt = 0;
