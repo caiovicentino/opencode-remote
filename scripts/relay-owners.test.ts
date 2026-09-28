@@ -1,7 +1,7 @@
 /**
  * Two daemons holding one room's owner identity (eval-13b), against a real
  * relay subprocess booted from this checkout (hermetic: throwaway HOME,
- * random port in 40000-60000, killed by PID).
+ * ephemeral free port pair, killed by PID).
  *
  * Every daemon frame carries its room id as the sender (from === room). Two
  * live sockets claiming that identity are two daemon processes sharing one
@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { freePortPairSync } from "./testports";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown) {
@@ -31,7 +32,7 @@ setTimeout(() => {
 }, 45_000).unref();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const port = 40_000 + Math.floor(Math.random() * 19_000);
+const port = freePortPairSync(); // relay on port, metrics on port + 1
 const mport = port + 1;
 const home = mkdtempSync(join(tmpdir(), "ocr-relay-owners-"));
 const relay: ChildProcess = spawn(process.execPath, ["--import", "tsx/esm", "apps/relay/src/index.ts"], {
