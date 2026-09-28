@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import { getLang, translate } from "../lib/i18n";
 
 interface Props {
   children: ReactNode;
@@ -28,13 +29,21 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.error) {
+      // eval-10: localized, and the raw message (e.g. "Minified React error
+      // #31; visit https://…") moves behind a details fold — it is a
+      // diagnostic, not copy for the person holding the phone
+      const lang = getLang();
       return (
         <div className="screen">
-          <h1 style={{ fontSize: "1rem" }}>Something broke</h1>
-          <p style={{ color: "var(--danger)" }}>{this.state.error.message}</p>
+          <h1 style={{ fontSize: "1rem" }}>{translate(lang, "crashTitle")}</h1>
+          <p>{translate(lang, "crashBody")}</p>
           <button className="primary" onClick={() => this.setState({ error: null })}>
-            Try again
+            {translate(lang, "crashRetry")}
           </button>
+          <details className="muted" style={{ fontSize: "0.75rem" }}>
+            <summary>{translate(lang, "crashDetails")}</summary>
+            <p style={{ overflowWrap: "anywhere" }}>{this.state.error.message}</p>
+          </details>
         </div>
       );
     }
