@@ -92,7 +92,10 @@ export const PORTABLE_EXCLUSIONS: readonly PortableExclusion[] = [
   { file: "judge-bridge.test.ts", cause: "chmod" },
   { file: "hello-replay.test.ts", cause: "long-lived-child" },
   { file: "sdk-e2e.test.ts", cause: "long-lived-child" },
-  { file: "deploy-preflight.test.ts", cause: "network-port" },
+{ file: "deploy-preflight.test.ts", cause: "network-port" },
+{ file: "pilot-diskfull.test.ts", cause: "long-lived-child" },
+  { file: "retention.test.ts", cause: "network-port" },
+{ file: "deploy-preflight.test.ts", cause: "network-port" },
   { file: "pilotwatch-daemon.test.ts", cause: "long-lived-child" },
 ];
 

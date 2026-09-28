@@ -104,7 +104,11 @@ export const PORTABLE_TESTS: readonly string[] = [
   "workflow-yaml.test.ts",
   "protocol-crypto.test.ts",
   "sdk.test.ts",
-  "pilotwatch.test.ts",
+"diskhold.test.ts",
+"addressbar.test.ts",
+  "pair-lead.test.ts",
+  "qr-camera.test.ts",
+"pilotwatch.test.ts",
 ];
 
 /**

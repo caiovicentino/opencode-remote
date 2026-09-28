@@ -561,10 +561,28 @@ export async function ensureSingleton(pidFile = PID_FILE): Promise<void> {
 // ── heartbeat + self-watchdog ────────────────────────────────────────────────
 const HEARTBEAT = join(homedir(), ".opencode-remote", "pilot", "heartbeat");
 
+/** eval-02: the self-watchdog reads this in-memory beat, never the file — on a
+ * full disk the file write fails silently, and the watchdog used to kill a
+ * live, deliberately holding loop for a "stale" heartbeat (24/09: exit →
+ * KeepAlive relaunch → ENOSPC at the pidfile, ~14 times). The file stays the
+ * external signal (daemon /api/pilot-events), written best-effort. */
+let lastBeatAt = Date.now();
+
 export function touchHeartbeat() {
+  touchHeartbeatFile(HEARTBEAT);
+}
+
+/** The beat itself, file explicit (tests point it at a scratch path). */
+export function touchHeartbeatFile(file: string): void {
+  lastBeatAt = Date.now();
   try {
-    writeFileSync(HEARTBEAT, String(Date.now()));
+    writeFileSync(file, String(lastBeatAt));
   } catch {}
+}
+
+/** Milliseconds since the last in-memory beat (what the watchdog judges). */
+export function heartbeatAgeMs(now: number = Date.now()): number {
+  return now - lastBeatAt;
 }
 
 /**
@@ -604,7 +622,7 @@ export interface WatchdogDeps {
 export function startWatchdog(maxSilenceMin = 3, deps: WatchdogDeps = {}) {
   const now = deps.now ?? Date.now;
   const touch = deps.touch ?? touchHeartbeat;
-  const heartbeatAge = deps.heartbeatAgeMs ?? ((at: number) => at - Number(readFileSync(HEARTBEAT, "utf8")));
+  const heartbeatAge = deps.heartbeatAgeMs ?? ((at: number) => heartbeatAgeMs(at));
   const exit = deps.exit ?? ((code: number) => process.exit(code));
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
   const out = deps.out ?? ((line: string) => console.log(line));

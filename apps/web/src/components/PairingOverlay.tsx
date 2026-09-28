@@ -140,18 +140,16 @@ export default function PairingOverlay({ qrDataUrl, onDismiss, deviceList, webAp
   return (
     <div className="pair-overlay" role="dialog" aria-modal="true" aria-label={t("pairOverlayTitle")}>
       <div className="pair-overlay-card">
-        <img
-          className="splash-logo"
-          src="icon.svg"
-          alt=""
-          width={44}
-          height={44}
-          onError={(e) => {
-            // Asset missing (some dev layouts): degrade to the wordmark only.
-            e.currentTarget.style.display = "none";
-          }}
-        />
-        <h2 className="splash-wordmark">OpenCode Remote</h2>
+        {/* P3-373 (eval-09): the "pair a phone" dialog is a first-contact
+            surface too — it wears the brand header the wizard, the ceremony
+            and the degraded card share (✻ glyph over the serif wordmark), not
+            the P1-050 splash's app icon over a sans title. */}
+        <header className="pair-overlay-brand">
+          <div className="welcome-mark" aria-hidden="true">
+            ✻
+          </div>
+          <h2 className="brand-wordmark">OpenCode Remote</h2>
+        </header>
         <p className="splash-value">{t("splashValue")}</p>
 
         {/* P2-193: a usable combined link collapses the journey to a single
