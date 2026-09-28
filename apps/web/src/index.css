@@ -4769,6 +4769,60 @@ mark.content-hit-mark {
   color: var(--status-err);
   border-color: var(--status-err);
 }
+/* eval-19: a running card whose pilot is down is stalled, not running */
+.mission-st.st-stalled {
+  color: var(--status-wait);
+  border-color: var(--status-wait);
+}
+/* eval-19: fleet strip — the daemon's status digest leads the pane: one line
+   per attention flag (dot = severity), then a quiet facts line. Static, same
+   card language as .mission-down (auditoria surface, nothing animates). */
+.fleet-strip {
+  margin: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  max-width: 720px;
+}
+.fleet-strip[data-fleet="critical"] {
+  border-left: 2px solid var(--status-err);
+}
+.fleet-strip[data-fleet="warn"] {
+  border-left: 2px solid var(--status-wait);
+}
+.fleet-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+  line-height: 1.4;
+}
+.fleet-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-done);
+  transform: translateY(-1px);
+}
+.fleet-critical .fleet-dot {
+  background: var(--status-err);
+}
+.fleet-warn .fleet-dot {
+  background: var(--status-wait);
+}
+.fleet-ok .fleet-dot {
+  background: var(--status-ok);
+}
+.fleet-critical {
+  font-weight: 600;
+}
+.fleet-facts {
+  margin: 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 .mission-title {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);

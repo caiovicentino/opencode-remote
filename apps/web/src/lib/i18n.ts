@@ -1024,6 +1024,21 @@ export const dict = {
     browserErrDesktopOnly: "The browser pane needs the desktop connection.",
     browserErrUnexpected: "Unexpected answer from the machine.",
     browserErrGeneric: "Could not open the page — {msg}",
+    // eval-19: Mission Control's fleet strip (daemon /api/pilot-status digest)
+    fleetTitle: "Fleet status",
+    fleetPilotDown: "Pilot stopped {span} ago — last signal {when}",
+    fleetPilotStale: "Pilot silent for {span}",
+    fleetPilotAlive: "Pilot running",
+    fleetProdBehind: "Production is {n} verified merge(s) behind main (pending since {when})",
+    fleetProdCurrent: "production up to date",
+    fleetDeployHold: "Deploy on hold: {reason}",
+    fleetDeployHoldResolved: "Deploy on hold: {reason} — space is back ({free}), waiting for the next attempt",
+    fleetDiskLow: "Low disk: {free} free (deploys need {min})",
+    fleetAlerts: "{n} supervisor alert(s) never delivered",
+    fleetFacts: "Queue {ready} ready · {blocked} blocked · Disk {free} free · Cost 7d {cost}",
+    fleetCostUnpriced: "{tokens} tokens (unpriced)",
+    missionSt_stalled: "stalled",
+    missionLegacySource: "Fixed mission from pilot.json — set a mission in any conversation to replace it",
     // eval-10 (PWA mobile UX): chat action failures are localized and never
     // carry the raw response body; agent errors show the provider's message
     errAgentFailed: "The agent stopped with an error: {message}",
@@ -1988,6 +2003,21 @@ export const dict = {
     browserErrDesktopOnly: "O pane do navegador pede a conexão do desktop.",
     browserErrUnexpected: "Resposta inesperada da máquina.",
     browserErrGeneric: "Não foi possível abrir a página — {msg}",
+    // eval-19: faixa de saúde da frota no Mission Control (digest /api/pilot-status do daemon)
+    fleetTitle: "Status da frota",
+    fleetPilotDown: "Piloto parado há {span} — último sinal {when}",
+    fleetPilotStale: "Piloto sem sinal há {span}",
+    fleetPilotAlive: "Piloto ativo",
+    fleetProdBehind: "Produção {n} merge(s) verificado(s) atrás do main (pendente desde {when})",
+    fleetProdCurrent: "produção em dia",
+    fleetDeployHold: "Deploy retido: {reason}",
+    fleetDeployHoldResolved: "Deploy retido: {reason} — o espaço já voltou ({free}), falta uma nova tentativa",
+    fleetDiskLow: "Disco baixo: {free} livres (o deploy exige {min})",
+    fleetAlerts: "{n} aviso(s) ao supervisor nunca entregue(s)",
+    fleetFacts: "Fila {ready} prontas · {blocked} bloqueadas · Disco {free} livres · Custo 7d {cost}",
+    fleetCostUnpriced: "{tokens} tokens (sem preço)",
+    missionSt_stalled: "interrompida",
+    missionLegacySource: "Missão fixa do pilot.json — defina uma missão em qualquer conversa para substituí-la",
     // eval-10 (UX mobile do PWA): falhas de ação no chat localizadas e sem o
     // corpo cru da resposta; erro do agente mostra a mensagem do provedor
     errAgentFailed: "O agente parou com um erro: {message}",
