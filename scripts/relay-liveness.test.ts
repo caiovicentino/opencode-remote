@@ -8,6 +8,7 @@
  * Run: npx tsx scripts/relay-liveness.test.ts
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { freePortPairSync } from "./testports";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { get } from "node:http";
 import { createServer } from "node:net";
@@ -51,24 +52,9 @@ check("liveness: only the stale peer is returned", survivors.length === 1 && sur
 // --- 2. integration helpers ---------------------------------------------------
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// eval-03: pick genuinely free ports from the OS (the relay-rooms.test.ts
-// fix) — the old random 40000-60000 range collided on the CI runner: listen
-// EADDRINUSE killed the relay ("relay never came up"), and that red verify
-// job was the ci-red strike behind the P3-371 (port 58338) and P3-415 (port
-// 41972) blocks — tasks that never touched the relay.
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address() as { port: number };
-      srv.close(() => resolve(port));
-    });
-    srv.on("error", reject);
-  });
-}
-
-async function startRelay(env: Record<string, string>) {
-  const [port, metrics] = [await freePort(), await freePort()];
+function startRelay(env: Record<string, string>) {
+  const port = freePortPairSync(); // a pair: the relay listens on port, its metrics on port + 1
+  const metrics = port + 1;
   const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),
     env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(metrics), OCR_E2E_MARKER: "1" },

@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACT_BUDGETS, artifactProblems, artifactTypeOf, type ArtifactEntry } from "./artifactbudget";
 import { PACKAGING_DIR, collectProblems } from "./check-artifact-size";
+import { readUnitSuite } from "./unit-suite";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -301,8 +302,8 @@ check(
   pkg.scripts["check:artifact-size"] === "tsx scripts/check-artifact-size.ts",
 );
 check(
-  "package.json: the test battery includes this file",
-  pkg.scripts["test:unit"].includes("scripts/artifactbudget.test.ts"),
+  "scripts/unit-suite.txt: the test battery includes this file",
+  readUnitSuite(repoRoot()).entries.some((e) => e.file === "scripts/artifactbudget.test.ts"),
 );
 
 check(

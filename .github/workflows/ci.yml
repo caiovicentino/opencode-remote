@@ -98,11 +98,19 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests
-        run: npm run test:unit
-
+      # Build BEFORE the unit battery — the judge's order (typecheck, build,
+      # unit). With the old order two suites always SKIPped here with exit 0:
+      # message-paging ("apps/web/dist missing") and relay-healthz's dist-csp
+      # block. OCR_BROWSER_PATH hands message-paging the runner's system
+      # Chrome (playwright-core ships no browser), so the P1-064 PWA paging
+      # e2e runs on Linux too instead of "SKIP: chromium not available".
       - name: Build
         run: npm run build
+
+      - name: Unit tests
+        env:
+          OCR_BROWSER_PATH: /usr/bin/google-chrome
+        run: npm run test:unit
 
       - name: E2E smoke (ephemeral relay + daemon)
         run: |
@@ -130,13 +138,60 @@ jobs:
       - name: Desktop sidecar
         run: npx tsx scripts/desktop-sidecar.test.ts
 
+      # The step used to test nothing: $GITHUB_PATH only reaches LATER steps,
+      # so integration.ts never found the binary it had just installed and
+      # printed "SKIP: opencode binary not found" (exit 0) on every green run
+      # — while the unpinned installer asked the GitHub API for "latest"
+      # unauthenticated and reddened 4 of 300 runs (22-24/09) with "Failed
+      # to fetch version information". Pinned (the version production runs;
+      # bump deliberately) it downloads straight from the release, retried;
+      # installed, a SKIP is a failure.
       - name: Integration (real opencode)
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
-          npx tsx scripts/integration.ts
+        shell: bash
+        timeout-minutes: 10
         env:
           OPENCODE_BIN: opencode
+          OPENCODE_VERSION: "1.18.32"
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if curl -fsSL https://opencode.ai/install | bash -s -- --version "$OPENCODE_VERSION" --no-modify-path; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::opencode $OPENCODE_VERSION did not install after 3 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+          export PATH="$HOME/.opencode/bin:$PATH"
+          opencode --version
+          # Warm-up: on a fresh runner the FIRST opencode start initializes its
+          # state; spawned cold by integration.ts it accepted one health probe
+          # and never answered it (runs 36329935973, 36330288905 — ~5 min
+          # stall), while a bash-started server answered in ~2s and the
+          # integration then passed (run 36330659362). Root cause inside
+          # opencode not isolated; the warm-up makes the phase explicit.
+          opencode serve --port 4917 > "$RUNNER_TEMP/opencode-warmup.log" 2>&1 &
+          warm_pid=$!
+          warm=""
+          for i in $(seq 1 90); do
+            if curl -fsS -m 3 -o /dev/null http://127.0.0.1:4917/global/health; then warm="${i}s"; break; fi
+            sleep 1
+          done
+          kill "$warm_pid" 2>/dev/null || true
+          wait "$warm_pid" 2>/dev/null || true
+          if [ -z "$warm" ]; then
+            cat "$RUNNER_TEMP/opencode-warmup.log"
+            echo "::error::opencode $OPENCODE_VERSION never answered /global/health during the warm-up"
+            exit 1
+          fi
+          echo "opencode warm-up healthy after ~$warm"
+          npx tsx scripts/integration.ts | tee "$RUNNER_TEMP/integration.log"
+          if grep -q '^SKIP' "$RUNNER_TEMP/integration.log"; then
+            echo "::error::integration.ts skipped although opencode $OPENCODE_VERSION is installed"
+            exit 1
+          fi
 
   # P2-147: scope gate for the desktop packaging job. A pure repo script
   # (no third-party action) classifies the changed paths so desktop-package

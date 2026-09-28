@@ -33,16 +33,19 @@
  *
  * Everything listed below is pure node: fs, os and path only — no Electron,
  * no socket, no chmod, no spawn, no listen — so the same files pass on any
- * OS and double as the portable path-logic regression net. One exception:
- * testhome.test.ts spawns two short-lived node children (no listen, nothing
- * kept alive) to prove the test-HOME sandbox (USERPROFILE on Windows) in a
- * fresh process.
+ * OS and double as the portable path-logic regression net. Two deliberate
+ * exceptions spawn short-lived children (never a server, nothing kept
+ * alive): testhome.test.ts (two node children, proving the test-HOME
+ * sandbox — USERPROFILE on Windows — in a fresh process) and
+ * unit-suite.test.ts (node/tsx and git children, pinning the unit-battery
+ * runner's spawn semantics and the merge=union list merge on Windows too).
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { PORTABLE_EXCLUSIONS, portableCoverage } from "./portablecoverage";
+import { invokedDirectly, seconds, stepSummaryMarkdown, type FileTiming } from "./unit-suite";
 
 export const PORTABLE_TESTS: readonly string[] = [
   "aux-curate.test.ts",
@@ -101,6 +104,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "testhome.test.ts",
   "thinking.test.ts",
   "traystatus.test.ts",
+  "unit-suite.test.ts",
   "updateremind.test.ts",
   "updateprogress.test.ts",
   "updatespace.test.ts",
@@ -178,24 +182,45 @@ function cli(): number {
   }
   const repoRoot = resolve(here, "..");
   const tsxEntry = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  for (const file of PORTABLE_TESTS) {
+  // Same per-file timing lines as the unit battery (scripts/unit-suite.ts),
+  // and the same job-summary table on CI.
+  const timings: FileTiming[] = [];
+  const started = performance.now();
+  let failed: { index: number; label: string; code: number } | undefined;
+  for (const [index, file] of PORTABLE_TESTS.entries()) {
     const full = join(here, file);
     if (!existsSync(full)) {
       console.error(`portable-suite: FAIL ${file} — file missing on disk`);
       return 1;
     }
     console.log(`portable-suite: run ${file}`);
+    const t0 = performance.now();
     const res = spawnSync(process.execPath, [tsxEntry, full], { cwd: repoRoot, stdio: "inherit" });
+    const ms = Math.round(performance.now() - t0);
+    timings.push({ label: `scripts/${file}`, ms, ok: res.status === 0 });
     if (res.status !== 0) {
-      console.error(`portable-suite: FAIL ${file}`);
-      return 1;
+      console.error(`portable-suite: FAIL ${file} (${ms}ms)`);
+      failed = { index, label: `scripts/${file}`, code: res.status ?? 1 };
+      break;
+    }
+    console.log(`portable-suite: ok ${file} (${ms}ms)`);
+  }
+  const summary = process.env.GITHUB_STEP_SUMMARY;
+  if (summary) {
+    try {
+      const result = { code: failed?.code ?? 0, timings, failed };
+      appendFileSync(summary, stepSummaryMarkdown(result, PORTABLE_TESTS.length, "Portable battery (scripts/portable-suite.ts)"));
+    } catch {
+      // best-effort: the job summary never flips the verdict
     }
   }
-  console.log(`portable-suite: OK ${PORTABLE_TESTS.length} file(s)`);
+  if (failed) return 1;
+  console.log(`portable-suite: OK ${PORTABLE_TESTS.length} file(s) in ${seconds(Math.round(performance.now() - started))}`);
   return 0;
 }
 
-// CLI guard: run the suite only when executed directly (same pattern as
-// scripts/ci-scope.ts) — importing the module must stay side-effect free.
-const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === invoked) process.exit(cli());
+// CLI guard: run the suite only when executed directly — importing the
+// module must stay side-effect free. Real-path comparison (invokedDirectly):
+// the old string test skipped the suite and exited 0 when started through a
+// symlinked path.
+if (invokedDirectly(import.meta.url)) process.exit(cli());

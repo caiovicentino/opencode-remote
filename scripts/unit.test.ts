@@ -6626,6 +6626,10 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
 
 // --- P1-075 nightly maintenance flow (own guard, archive sink, guarded push) ---
 {
+  // The fakes below take the landing's failure paths (no sha, no confirmed
+  // merge, every git command failing): with real timers each call slept
+  // 3 attempts × 3s — 18s, ~45% of this file's wall time (eval-17 profile).
+  const noSleep = async (_ms: number) => {};
   const harnessDone = "- When the pilot gatekeeper slot refresh breaks, do re-check the backlog checkpoint (fonte: P1-001)";
   const setup = () => {
     const dir = mkdtempSync(join(tmpdir(), "ocr-expmaint-"));
@@ -6663,6 +6667,7 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
         return true;
       },
       lessonsFile: join(dir, "lessons.jsonl"),
+      sleep: noSleep,
     },
     (level, msg) => logs.push(`${level}:${msg}`),
   );
@@ -6715,6 +6720,7 @@ check("experience: isHarnessLesson matches process vocabulary", isHarnessLesson(
       exec: () => ({ ok: false, output: "" }),
       appendLesson: appendArchivedLesson,
       lessonsFile: join(dir3, "out", "lessons.jsonl"),
+      sleep: noSleep,
     },
   );
   const stored = readArchivedLessons(join(dir3, "out", "lessons.jsonl"));
@@ -42754,6 +42760,13 @@ if (failures > 0) {
   check("relay-image-smoke: inline RELAY_WIRE_PROTOCOL matches @ocr/protocol", !!literal && Number(literal[1]) === RELAY_WIRE_PROTOCOL);
 }
 
+// The P2-331 pin above sits after the main gate: without this second gate
+// its FAIL printed and the battery still exited 0 with "UNIT TESTS PASSED"
+// (eval-04; reproduced by eval-17 with the inline literal drifted).
+if (failures > 0) {
+  console.error(`UNIT TESTS FAILED: ${failures}`);
+  process.exit(1);
+}
 
 console.log("UNIT TESTS PASSED");
 process.exit(0);

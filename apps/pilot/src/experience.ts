@@ -358,6 +358,9 @@ export interface ExpMaintIo {
   exec: (cmd: string) => { ok: boolean; output: string };
   appendLesson: (file: string, lesson: ArchivedLesson) => boolean;
   lessonsFile: string;
+  /** Backoff between landing attempts — real timers when omitted; the eval
+   * battery injects a no-op so the failure paths do not burn 3×3s each. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -390,7 +393,7 @@ export async function maintainExperienceWorkspace(
   let maint = pre;
   const result = await landMetaCommit(
     ws,
-    { exec: io.exec, sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)) },
+    { exec: io.exec, sleep: io.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms))) },
     {
       files: [EXPERIENCE_FILE],
       message: "pilot(redteam): experience maintenance",

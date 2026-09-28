@@ -6,6 +6,7 @@
  * Run: npx tsx scripts/pwa-watch.test.ts
  */
 import { spawn, spawnSync } from "node:child_process";
+import { freePortSync } from "./testports";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,7 +95,7 @@ writeFileSync(join(dist, "index.html"), "<html>ocr-pwa</html>");
 writeFileSync(join(dist, "sw.js"), "// sw");
 writeFileSync(join(dist, "assets", "app.js"), "console.log(1)");
 writeFileSync(join(dist, "secret.txt"), "top");
-const port = 30_000 + Math.floor(Math.random() * 20_000);
+const port = freePortSync();
 const child = spawn(process.execPath, [fileURLToPath(new URL("../deploy/pwa-server.mjs", import.meta.url))], {
   env: { ...process.env, PWA_PORT: String(port), PWA_DIST_DIR: dist },
   stdio: ["ignore", "pipe", "pipe"],
@@ -151,7 +152,7 @@ if (oc.status === 0) {
   );
   check("tls: openssl generated the throwaway certificate", gen.status === 0 && existsSync(cert));
   if (gen.status === 0) {
-    const tlsPort = 30_000 + Math.floor(Math.random() * 20_000);
+    const tlsPort = freePortSync();
     const tlsChild = spawn(process.execPath, [fileURLToPath(new URL("../deploy/pwa-server.mjs", import.meta.url))], {
       env: { ...process.env, PWA_PORT: String(tlsPort), PWA_DIST_DIR: dist, PWA_TLS_CERT: cert, PWA_TLS_KEY: key },
       stdio: ["ignore", "pipe", "pipe"],

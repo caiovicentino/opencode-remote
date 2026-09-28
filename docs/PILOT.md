@@ -58,7 +58,11 @@ no código do pilot com um check grep-style).
 
 **Runbook do operador (pós-merge)**: ativar a proteção de branch no GitHub para
 `main` — "Require a pull request before merging" + squash merges + as checks
-requeridas do CI existente. Nenhuma mudança de código é necessária: com a
+requeridas do CI existente — **depois** de ligar "Allow auto-merge" no repo
+(`allow_auto_merge`, desligado em 2026-09-27: sem ele, com check requerida
+pendente, o `--auto` e o squash imediato falham e o PR meta fica aberto
+bloqueando todo landing seguinte; comandos exatos em `docs/security.md` §22).
+Nenhuma mudança de código é necessária: com a
 proteção ativa, `gh pr merge --squash --auto` arma o auto-merge e o landing
 confirma o squash via `gh pr view` (estado + headRefOid) dentro do orçamento de
 ~5 min, esperando as checks terminarem (o caminho sem proteção continua
@@ -2516,11 +2520,32 @@ Wiring no loop do pipeline é follow-up — o spike valida o sinal primeiro.
 ## Testes órfãos não passam despercebidos (P2-133)
 
 Todo `scripts/*.test.ts` precisa ser executado por um runner real — bateria do
-gate, cadeia `test:unit` ou CI — ou estar declarado em `scripts/test-registry.json`
-(teste ao vivo/Electron, com runner e motivo). A asserção final de
-`scripts/unit.test.ts` roda `scripts/testreachability.ts` (puro, sem I/O) contra o
-repositório real: script declarado no package.json e nunca invocado não conta como
-cobertura, e qualquer teste órfão futuro reprova o gate.
+gate, lista `scripts/unit-suite.txt` (o `test:unit`) ou CI — ou estar declarado em
+`scripts/test-registry.json` (teste ao vivo/Electron, com runner e motivo).
+`scripts/unit-suite.test.ts` roda `scripts/testreachability.ts` (puro, sem I/O)
+contra o repositório real: script declarado no package.json e nunca invocado não
+conta como cobertura, e qualquer teste órfão futuro reprova o gate. (A asserção
+original morava em `scripts/unit.test.ts` e sumiu no split do juiz, P1-056; sem
+ela, 18 testes ficaram só no `PORTABLE_TESTS` — rodando apenas no Windows do CI —
+até a eval-17 restaurá-la.)
+
+A bateria `test:unit` é a lista `scripts/unit-suite.txt` (um arquivo por linha,
+na ordem de execução) rodada por `scripts/unit-suite.ts`: mesma semântica da
+antiga cadeia `&&` (para no primeiro vermelho, com o exit code dele), mais uma
+linha `ok i/n <arquivo> (Nms)` por arquivo, tudo sob o HOME descartável de
+`scripts/testhome.ts` (o runner o importa antes do primeiro arquivo; as suítes
+herdam o mesmo `OCR_TEST_HOME`). `--keep-going` roda todos os arquivos e lista
+todas as falhas (diagnóstico local; CI e gate seguem fail-fast). Teste novo =
+uma linha no FIM da lista; `.gitattributes` faz `merge=union` nesse arquivo, então dois branches que
+acrescentam linhas não conflitam mais (a linha única do package.json conflitava
+em quase toda task paralela). Branch cortado antes da troca:
+`npx tsx scripts/unit-suite.ts --fold-chain origin/main` dobra a cadeia antiga
+na lista. Cuidado: o fold reescreve o package.json INTEIRO com o conteúdo do
+ref (só o `test:unit` muda) — se o branch editou OUTRO script E adicionou
+entradas na cadeia, o fold desfaz essa edição (ele imprime o que escreveu, então
+é recuperável). As entradas dobradas entram no FIM da lista, então arquivos
+compartilhados podem rodar mais cedo que na cadeia do ref (inofensivo: todas as
+suítes são herméticas — re-dobre contra o ref atualizado para realinhar a ordem).
 
 ## Cobertura da bateria portátil (P2-237)
 
@@ -2529,7 +2554,9 @@ arquivo de teste entra na lista portátil (`PORTABLE_TESTS`) ou na lista de
 exclusões (`PORTABLE_EXCLUSIONS`) com uma causa documentada — não existe
 terceira opção; `scripts/portablecoverage.ts` (puro, sem I/O) cruza as duas
 listas com a listagem real do diretório e qualquer arquivo sem classificação
-reprova o gate no `test:unit` e no job `verify-win`.
+reprova o gate no `test:unit` e no job `verify-win`. A lista portátil é um
+SUBCONJUNTO da bateria: todo arquivo em `PORTABLE_TESTS` também precisa estar em
+`scripts/unit-suite.txt` (paridade pinada em `scripts/unit-suite.test.ts`).
 
 ## Readiness de merge espera o CI existir (P3-346, eval r4)
 

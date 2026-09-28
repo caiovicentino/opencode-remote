@@ -13,6 +13,7 @@
  * Run: npx tsx scripts/relay-ipcap.test.ts
  */
 import { spawn } from "node:child_process";
+import { freePortPairSync } from "./testports";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { IpCap, clientIp, normalizeIp } from "../apps/relay/src/ipcap";
@@ -131,7 +132,7 @@ check("ipcap: trusted hop key shares the plain-IPv4 budget", proxyCap.admit(clie
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function startRelay(env: Record<string, string>) {
-  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  const port = freePortPairSync(); // relay on port, metrics on port + 1
   const proc = spawn("npx", ["tsx", "apps/relay/src/index.ts"], {
     cwd: join(import.meta.dirname, ".."),
     env: { ...process.env, ...env, RELAY_PORT: String(port), RELAY_METRICS_PORT: String(port + 1), OCR_E2E_MARKER: "1" },
