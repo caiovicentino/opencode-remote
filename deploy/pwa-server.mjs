@@ -45,12 +45,26 @@ const MIME = {
 // be revalidated or a deploy never reaches the phone
 const IMMUTABLE_RE = /^\/assets\//;
 
+// eval-12: hardening headers on every answer. This origin is the page that
+// holds the phone's pairing identity and renders the approve buttons: no
+// other site may frame it (clickjacking an approval), no file is ever
+// sniffed into another type, and outbound links never carry the tailnet
+// hostname in a Referer. No Content-Security-Policy on purpose: the artifact
+// viewer renders agent-written HTML in a srcdoc iframe, and a srcdoc document
+// INHERITS the page's CSP — a script-src policy would silently break every
+// inline script and chart inside an artifact.
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+};
+
 function log(level, msg, data) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, data }));
 }
 
 function send(res, status, headers, body) {
-  res.writeHead(status, headers);
+  res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
   res.end(body);
 }
 
@@ -102,7 +116,7 @@ const server = (TLS ? createHttpsServer : createHttpServer)(
     return;
   }
   const type = MIME[extname(target).toLowerCase()] ?? "application/octet-stream";
-  const headers = { "content-type": type };
+  const headers = { ...SECURITY_HEADERS, "content-type": type };
   headers["cache-control"] = IMMUTABLE_RE.test(url.pathname)
     ? "public, max-age=31536000, immutable"
     : "no-cache";
