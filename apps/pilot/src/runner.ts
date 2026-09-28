@@ -116,6 +116,83 @@ export function idScanner(): { scan: (chunk: string) => AgentIds; flush: () => A
 }
 
 /**
+ * eval-18: one line of `opencode run --print-logs` stderr output
+ * (`timestamp=2026-09-24T10:40:48.826Z level=INFO run=… message=…`). These
+ * lines carry the session id (`message=created id=ses_…`) but no agent text.
+ */
+const OPENCODE_LOG_LINE_RE = /^timestamp=\S+ level=[A-Z]+ /;
+
+/**
+ * eval-18: streaming filter that drops opencode's --print-logs lines from a
+ * stream while keeping everything else byte-for-byte (error text included).
+ * Lines split across chunks are held until their newline arrives; flush()
+ * releases a trailing partial line. Pure — pinned by the unit battery.
+ */
+export function logLineStripper(): { push: (chunk: string) => string; flush: () => string } {
+  let pending = "";
+  const keep = (line: string) => !OPENCODE_LOG_LINE_RE.test(line);
+  return {
+    push(chunk: string): string {
+      const text = pending + chunk;
+      const lastNl = text.lastIndexOf("\n");
+      if (lastNl < 0) {
+        pending = text;
+        return "";
+      }
+      pending = text.slice(lastNl + 1);
+      return text
+        .slice(0, lastNl + 1)
+        .split(/(?<=\n)/)
+        .filter(keep)
+        .join("");
+    },
+    flush(): string {
+      const rest = pending;
+      pending = "";
+      return rest && keep(rest) ? rest : "";
+    },
+  };
+}
+
+/**
+ * eval-18: the `created` log line of a ROOT session. A subagent's line
+ * carries `parentID=ses_…` and never matches, so the first hit is the run's
+ * own session — authoritative, unlike a `ses_…` seen on stdout: an agent that
+ * greps a test fixture (`ses_abc123456`) or a reviewer quoting one used to
+ * become that "session" (4 fixture ids sat in state.taskCostSessions,
+ * 2026-09-24). Premise is ORDERING, not stream purity: opencode 1.18.32's UI
+ * module writes log lines (and tool output) to stderr, and the root session's
+ * `created` line is emitted BEFORE the first tool runs — so the first match is
+ * the run's own session (verified over the 224 builder logs: 144 with exactly
+ * one root line, 80 resumes with none, none with two).
+ */
+const ROOT_CREATED_RE = /^timestamp=\S+ level=[A-Z]+ .*\bmessage=created id=(ses_[A-Za-z0-9]+) .*\bparentID=undefined\b/;
+
+/** eval-18: line-buffered stderr scan for the root `created` line (pure). */
+export function rootSessionScanner(): { push: (chunk: string) => void; id: () => string | undefined } {
+  let pending = "";
+  let found: string | undefined;
+  const take = (line: string) => {
+    if (found) return;
+    const m = ROOT_CREATED_RE.exec(line);
+    if (m) found = m[1];
+  };
+  return {
+    push(chunk: string): void {
+      if (found) return;
+      const lines = (pending + chunk).split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) take(line);
+    },
+    id(): string | undefined {
+      if (pending) take(pending);
+      pending = "";
+      return found;
+    },
+  };
+}
+
+/**
  * P2-016: opencode API endpoint. Reviewer note (round 2): the :4096 fallback is
  * duplicated with apps/daemon/src/index.ts (OPENCODE_URL) — keep them in sync;
  * the daemon copy is not exported, so a shared constant is a follow-up.
@@ -229,6 +306,13 @@ export async function runAgent(
     /** Mission v2: `opencode run --model <provider/model>` — set only after
      * the id was verified against the live catalog (runAgentForRole). */
     model?: string;
+    /** eval-18: capture the session id (for per-task token attribution)
+     * WITHOUT changing the output: `--print-logs` is passed so opencode
+     * prints the `created id=ses_…` line, and its log lines are stripped
+     * from `output` so parsers see exactly what they saw before. Without
+     * it, reviewer/scribe/recap sessions were never attributed (0 of 228
+     * reviewer sessions in the 09-22..24 window). No-op with printLogs. */
+    sessionCapture?: boolean;
   },
 ): Promise<RunResult> {
   if (!(await (opts.preflight ?? waitForApi)())) {
@@ -242,7 +326,10 @@ export async function runAgent(
   }
   return new Promise((resolve) => {
     const args = ["run"];
-    if (opts.printLogs) args.push("--print-logs"); // exposes the session id for context-cache resumes
+    // exposes the session id for context-cache resumes (printLogs) and for
+    // cost attribution (eval-18 sessionCapture, log lines stripped below)
+    const stripLogs = !!opts.sessionCapture && !opts.printLogs;
+    if (opts.printLogs || opts.sessionCapture) args.push("--print-logs");
     if (opts.sessionId) args.push("-s", opts.sessionId);
     if (opts.model) args.push("--model", opts.model); // one argv entry, no shell
     // eval-15: NUL/control chars, ANSI escapes, invisible text and credential
@@ -258,6 +345,13 @@ export async function runAgent(
     let timedOut = false;
     const outScan = idScanner();
     const errScan = idScanner();
+    const errStrip = stripLogs ? logLineStripper() : null;
+    // eval-18: with --print-logs the root `created` line is the authority;
+    // a resumed run (-s) IS that session — the scanner has nothing to add, so
+    // it is skipped entirely (its whole stderr sweep would be discarded).
+    // Only without either does the legacy stdout-first scan decide.
+    const rootScan = !opts.sessionId && (opts.printLogs || opts.sessionCapture) ? rootSessionScanner() : null;
+    const sessionOf = (scanned: string | undefined) => opts.sessionId ?? rootScan?.id() ?? scanned;
     // P1-035: the self-watchdog must be fed even when the agent stays silent
     // on stdout (a slow strategist/researcher/redteam used to starve the
     // heartbeat and kill the pilot with slots in flight) — hence a timer, not
@@ -274,24 +368,27 @@ export async function runAgent(
       opts.onStdout?.(c.toString());
     });
     child.stderr.on("data", (c: Buffer) => {
-      output += c.toString();
+      output += errStrip ? errStrip.push(c.toString()) : c.toString();
+      rootScan?.push(c.toString());
       errScan.scan(c.toString());
     });
     child.on("exit", () => {
       stopHeartbeat();
       clearTimeout(timer);
+      if (errStrip) output += errStrip.flush();
       const ids = mergeAgentIds(outScan.flush(), errScan.flush());
-      resolve({ ok: !timedOut, output, timedOut, sessionId: ids.sessionId, taskIds: ids.taskIds });
+      resolve({ ok: !timedOut, output, timedOut, sessionId: sessionOf(ids.sessionId), taskIds: ids.taskIds });
     });
     child.on("error", (err) => {
       stopHeartbeat();
       clearTimeout(timer);
+      if (errStrip) output += errStrip.flush();
       const ids = mergeAgentIds(outScan.flush(), errScan.flush());
       resolve({
         ok: false,
         output: output + `\nspawn error: ${String(err)}`,
         timedOut,
-        sessionId: ids.sessionId,
+        sessionId: sessionOf(ids.sessionId),
         taskIds: ids.taskIds,
         infra: "spawn",
       });
@@ -395,6 +492,8 @@ export interface AgentRunOpts {
   onStdout?: (chunk: string) => void;
   /** P2-105: extra directories mounted for tier-B dispatch (evidence shots). */
   extraDirs?: string[];
+  /** eval-18: tier-A session id capture for cost attribution (runAgent). */
+  sessionCapture?: boolean;
   /** Test seams (runAgent): preflight + spawn injection. */
   preflight?: () => Promise<boolean>;
   spawnImpl?: typeof spawn;

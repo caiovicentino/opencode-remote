@@ -250,7 +250,7 @@ export async function commitAndPushFindings(
       const id = nextId(ws, "P3");
       const res = addTask(ws, id, "P3", `[explorer][${f.severity}] ${f.title}`, explorerSpec(f));
       if (res === "applied") applied++;
-      else log("warn", "explorer finding dropped — task line failed validation", { id, result: res });
+      else log("warn", res === "refused" ? "explorer finding dropped — the Ready-debris ratchet refused the edit" : "explorer finding dropped — task line failed validation", { id, result: res });
     }
     return applied > 0 ? { action: "apply" } : { action: "abort" };
   });
@@ -274,7 +274,7 @@ export async function commitAndPushFableFindings(
       const id = nextId(ws, "P3");
       const res = addTask(ws, id, "P3", `[fable][${f.priority}] ${f.title}`, fableSpec(f));
       if (res === "applied") applied++;
-      else log("warn", "fable improvement dropped — task line failed validation", { id, result: res });
+      else log("warn", res === "refused" ? "fable improvement dropped — the Ready-debris ratchet refused the edit" : "fable improvement dropped — task line failed validation", { id, result: res });
     }
     return applied > 0 ? { action: "apply" } : { action: "abort" };
   });

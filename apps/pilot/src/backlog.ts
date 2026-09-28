@@ -36,35 +36,46 @@ const TASK_LINE_RE = /^- \[ \] \(([^)]+)\) \[(P\d)\] (.+?)(?: — spec: (.+))?$/
 /** P1-006: documented area vocabulary; unknown tags fall back to serial "". */
 export const KNOWN_AREAS = new Set(["ui", "daemon", "desktop", "infra", "relay"]);
 
+/**
+ * One `## Ready` line as the scheduler sees it: the task, or null when the
+ * line is not an open task line (eval-06: shared by parseBacklog and the
+ * line-level structure scan, so "what the queue schedules" has one definition).
+ */
+export function parseTaskLine(line: string): Task | null {
+  const trimmed = line.trim();
+  let body = trimmed;
+  let area = "";
+  let size: TaskSize | undefined;
+  // P1-060: strip trailing tags right-to-left — (size:) and (area:) may
+  // appear in either order and only a trailing occurrence counts, so a tag
+  // mentioned mid-spec stays part of the spec text (parse never breaks).
+  for (;;) {
+    const am = AREA_RE.exec(body);
+    if (am) {
+      area = KNOWN_AREAS.has(am[1] ?? "") ? am[1]! : "";
+      body = body.slice(0, am.index).trimEnd();
+      continue;
+    }
+    const sm = SIZE_RE.exec(body);
+    if (sm) {
+      size = sm[1]!.toUpperCase() as TaskSize;
+      body = body.slice(0, sm.index).trimEnd();
+      continue;
+    }
+    break;
+  }
+  const m = TASK_LINE_RE.exec(body);
+  if (m && m[1] && m[2] && m[3])
+    return { id: m[1], priority: m[2], title: m[3], spec: m[4] ?? "", area, size: size ?? "S", line: trimmed };
+  return null;
+}
+
 export function parseBacklog(md: string): Task[] {
   const ready = md.split(/^## /m).find((s) => s.startsWith("Ready")) ?? "";
   const tasks: Task[] = [];
   for (const line of ready.split("\n")) {
-    const trimmed = line.trim();
-    let body = trimmed;
-    let area = "";
-    let size: TaskSize | undefined;
-    // P1-060: strip trailing tags right-to-left — (size:) and (area:) may
-    // appear in either order and only a trailing occurrence counts, so a tag
-    // mentioned mid-spec stays part of the spec text (parse never breaks).
-    for (;;) {
-      const am = AREA_RE.exec(body);
-      if (am) {
-        area = KNOWN_AREAS.has(am[1] ?? "") ? am[1]! : "";
-        body = body.slice(0, am.index).trimEnd();
-        continue;
-      }
-      const sm = SIZE_RE.exec(body);
-      if (sm) {
-        size = sm[1]!.toUpperCase() as TaskSize;
-        body = body.slice(0, sm.index).trimEnd();
-        continue;
-      }
-      break;
-    }
-    const m = TASK_LINE_RE.exec(body);
-    if (m && m[1] && m[2] && m[3])
-      tasks.push({ id: m[1], priority: m[2], title: m[3], spec: m[4] ?? "", area, size: size ?? "S", line: trimmed });
+    const task = parseTaskLine(line);
+    if (task) tasks.push(task);
   }
   return tasks;
 }
@@ -73,19 +84,30 @@ export function loadBacklog(repoDir: string): Task[] {
   return parseBacklog(readFileSync(join(repoDir, BACKLOG), "utf8"));
 }
 
-/** Mark a task as done: move its line from ## Ready to ## Done. */
-export function markDone(repoDir: string, id: string, note: string) {
+/**
+ * Mark a task as done: move its line from ## Ready to ## Done. Tri-state
+ * plus refusal (eval-06): "applied" wrote the move; "noop" the id is already
+ * a `- [x]` item under ## Done; "missing" there is no open line for the id OR
+ * no `## Done` header — the old code removed the line and wrote the file
+ * anyway, so the task silently vanished; "refused" the edit would have left
+ * new debris under ## Ready (writeChecked). The insert uses a replacer
+ * function: a task line carrying `$'` or `` $` `` must never be expanded as a
+ * String.replace pattern (it would splice the rest of the file into Done).
+ */
+export function markDone(repoDir: string, id: string, note: string): BacklogEditResult | "refused" {
   const p = join(repoDir, BACKLOG);
   const md = readFileSync(p, "utf8");
-  const re = new RegExp(`^(- \\[ \\] \\(${id}\\).*)$`, "m");
+  const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^(- \\[ \\] \\(${escaped}\\).*)$`, "m");
   const line = re.exec(md)?.[1];
-  if (!line) return;
+  if (!line) return doneTaskIds(md).has(id) ? "noop" : "missing";
+  if (!/^## Done$/m.test(md)) return "missing";
   const done = md.replace(re, "").replace(/\n{3,}/g, "\n\n");
   const updated = done.replace(
     /^## Done$/m,
-    `## Done\n- [x] (${id}) ${line.replace(/^- \[ \] \([^)]+\) /, "")} — ${note}`,
+    () => `## Done\n- [x] (${id}) ${line.replace(/^- \[ \] \([^)]+\) /, "")} — ${note}`,
   );
-  writeFileSync(p, updated);
+  return writeChecked(p, md, updated) ? "applied" : "refused";
 }
 
 /**
@@ -101,6 +123,27 @@ export function doneTaskIds(md: string): Set<string> {
   const body = end >= 0 ? rest.slice(0, end) : rest;
   const out = new Set<string>();
   for (const m of body.matchAll(/^- \[x\] \(([^)]+)\)/gm)) out.add(m[1]!.trim());
+  return out;
+}
+
+/**
+ * eval-06: the pilot's own bookkeeping subjects on a task id — `pilot(<ID>):
+ * mark done` (plus the empty-diff self-heal variant) and `pilot(<ID>): block
+ * after N failed attempts`. They record status, never the task's work, so
+ * merged-work checks (taskMergedIn, the doctor) must not count them.
+ */
+export function isBookkeepingSubject(subject: string): boolean {
+  return /^pilot\([^)]+\): (?:mark done\b|block after \d+ failed attempts)/.test(subject.trim());
+}
+
+/** eval-06: ids of the open `- [ ] (ID)` items under every ## Blocked section
+ * (the doctor's merged-work check). Pure: parses the md string. */
+export function blockedTaskIds(md: string): Set<string> {
+  const out = new Set<string>();
+  for (const s of sectionsOf(md)) {
+    if (s.name !== "Blocked") continue;
+    for (const m of md.slice(s.bodyStart, s.end).matchAll(/^- \[ \] \(([^)]+)\)/gm)) out.add(m[1]!.trim());
+  }
   return out;
 }
 
@@ -161,7 +204,15 @@ export function blockTaskEdit(md: string, id: string, findings: string): BlockTa
   if (!match) return { text: md, result: "missing" };
   const owner = sectionsOf(md).find((s) => s.start < match.index && match.index < s.end);
   if (owner?.name === "Blocked") return { text: md, result: "noop" }; // already blocked
-  const summary = findings.replace(/\s+/g, " ").trim().slice(0, 200);
+  // eval-06: findings often quote a colored agent log — ANSI sequences and
+  // other control bytes are stripped so they never land in BACKLOG.md
+  // (P3-457 carried raw ESC[91m from a builder stack trace)
+  const summary = findings
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
   const entry = `${match[1]} — ${summary}`;
   const removed = md.replace(re, "").replace(/\n{3,}/g, "\n\n");
   if (!/^## Blocked$/m.test(removed)) {
@@ -187,15 +238,16 @@ export function blockTaskEdit(md: string, id: string, findings: string): BlockTa
   return { text: collapsed.replace(/^## Blocked$/m, () => `## Blocked\n${entry}`), result: "applied" };
 }
 
-export function blockTask(repoDir: string, id: string, findings: string): BacklogEditResult {
+export function blockTask(repoDir: string, id: string, findings: string): BacklogEditResult | "refused" {
   const p = join(repoDir, BACKLOG);
-  const out = blockTaskEdit(readFileSync(p, "utf8"), id, findings);
-  if (out.result === "applied") writeFileSync(p, out.text);
-  return out.result;
+  const md = readFileSync(p, "utf8");
+  const out = blockTaskEdit(md, id, findings);
+  if (out.result !== "applied") return out.result;
+  return writeChecked(p, md, out.text) ? "applied" : "refused";
 }
 
 /** Add a task at the top of ## Ready (used by redteam findings). */
-export type AddTaskResult = "applied" | "invalid" | "missing";
+export type AddTaskResult = "applied" | "invalid" | "refused" | "missing";
 
 /**
  * P2-336: the one validator for a proposed task line — shared by
@@ -220,8 +272,9 @@ export function isValidTaskLine(line: string): boolean {
 /**
  * Outcome of addTask: "applied" wrote the validated line, "invalid" means
  * the produced line failed isValidTaskLine and NOTHING was written (the
- * caller must log a warning — fail-closed for every caller), "missing"
- * means the file has no ## Ready section and nothing was written.
+ * caller must log a warning — fail-closed for every caller), "refused" means
+ * the Ready-debris ratchet declined the write (also nothing written), and
+ * "missing" means the file has no ## Ready section and nothing was written.
  */
 export function addTask(repoDir: string, id: string, priority: string, title: string, spec: string): AddTaskResult {
   const p = join(repoDir, BACKLOG);
@@ -229,8 +282,10 @@ export function addTask(repoDir: string, id: string, priority: string, title: st
   const entry = `- [ ] (${id}) [${priority}] ${title} — spec: ${spec}`;
   if (!isValidTaskLine(entry)) return "invalid";
   if (!/^## Ready$/m.test(md)) return "missing";
-  writeFileSync(p, md.replace(/^## Ready$/m, `## Ready\n${entry}`));
-  return "applied";
+  // eval-06: the validated line still goes through the Ready-debris ratchet —
+  // a refusal is fail-closed exactly like an invalid line (nothing written)
+  // and is reported as itself, never as "invalid" (the caller logs the reason)
+  return writeChecked(p, md, md.replace(/^## Ready$/m, () => `## Ready\n${entry}`)) ? "applied" : "refused";
 }
 
 // ── P2-341: orphan prose blocks under ## Ready (doctor diagnostic) ──────────
@@ -273,6 +328,114 @@ export function readyOrphanBlocks(md: string): ReadyOrphanReport {
     lineNo++;
   }
   return { count: starts.length, starts };
+}
+
+// ── eval-06: line-level backlog structure + the writer ratchet ───────────────
+//
+// readyOrphanBlocks judges a blank-separated BLOCK by its first line, so a
+// `- [x]` item counted as prose, a valid task glued under it hid, and its
+// "17 blocks" alert (2 firings in the whole pilot.log — infra-failure wake and
+// audit-mode entry, never at boot) was never actionable. Five red-team
+// findings (RT-341/390/424/439/453,
+// all fixed on main) rotted under ## Ready for up to 19 days that way: the
+// pre-P2-336 redteam flow wrote the finding's paragraphs below a one-line
+// task, and markDone later moved only that first line to ## Done.
+
+/** Any task item of any section: `- [ ] (ID)` open, `- [x] (ID)` done. */
+const ITEM_RE = /^- \[([ x])\] \(([^)]+)\)/;
+
+/** The sections the pilot owns; anything else in the file is left alone. */
+const PILOT_SECTIONS = new Set(["Ready", "Blocked", "Done"]);
+
+export type BacklogShapeKind =
+  | "orphan" // non-task line under ## Ready — parseBacklog never schedules it
+  | "done-in-ready" // `- [x]` item left in the queue
+  | "open-in-done" // `- [ ]` item filed under ## Done (status is a lie)
+  | "done-in-blocked" // `- [x]` item under ## Blocked
+  | "prose" // free text under ## Blocked / ## Done (harmless, still reported)
+  | "duplicate-section"; // a second ## Ready / ## Done (only the first Ready is read)
+
+/** One structural defect: 1-based line over the whole markdown + its text. */
+export interface BacklogShapeIssue {
+  line: number;
+  section: string;
+  kind: BacklogShapeKind;
+  /** Task id for item lines, "" otherwise. */
+  id: string;
+  /** Trimmed line text — the writer ratchet compares these. */
+  text: string;
+}
+
+/**
+ * Classify EVERY non-blank line of ## Ready / ## Blocked / ## Done. A Ready
+ * line is fine only when parseTaskLine accepts it (exactly what the scheduler
+ * schedules); Blocked holds open items, Done holds done items. A repeated
+ * ## Ready or ## Done header is reported once per extra header; repeated
+ * ## Blocked headers stay the P2-142 doctor warning (the stop-loss collapses
+ * them on its next write). Pure: markdown in, issues out, file order.
+ */
+export function backlogShapeIssues(md: string): BacklogShapeIssue[] {
+  const issues: BacklogShapeIssue[] = [];
+  const seen = new Set<string>();
+  const lineOf = (offset: number) => md.slice(0, offset).split("\n").length;
+  for (const s of sectionsOf(md)) {
+    if (!PILOT_SECTIONS.has(s.name)) continue;
+    if (seen.has(s.name) && s.name !== "Blocked")
+      issues.push({ line: lineOf(s.start), section: s.name, kind: "duplicate-section", id: "", text: `## ${s.name}` });
+    seen.add(s.name);
+    let lineNo = lineOf(s.bodyStart);
+    for (const raw of md.slice(s.bodyStart, s.end).split("\n")) {
+      const text = raw.trim();
+      const item = ITEM_RE.exec(text);
+      const id = item?.[2]?.trim() ?? "";
+      let kind: BacklogShapeKind | null = null;
+      if (!text) kind = null;
+      else if (s.name === "Ready") kind = parseTaskLine(text) ? null : item?.[1] === "x" ? "done-in-ready" : "orphan";
+      else if (!item) kind = "prose";
+      else if (s.name === "Done" && item[1] === " ") kind = "open-in-done";
+      else if (s.name === "Blocked" && item[1] === "x") kind = "done-in-blocked";
+      if (kind) issues.push({ line: lineNo, section: s.name, kind, id, text });
+      lineNo++;
+    }
+  }
+  return issues;
+}
+
+/** Ready-queue debris texts (orphan + done-in-ready) — what the ratchet guards. */
+function readyDebris(md: string): string[] {
+  return backlogShapeIssues(md)
+    .filter((i) => i.kind === "orphan" || i.kind === "done-in-ready")
+    .map((i) => i.text);
+}
+
+/**
+ * True when `after` carries a Ready debris line that `before` did not
+ * (multiset compare). A ratchet, not a gate: debris already in the file never
+ * blocks a legitimate edit — an edit may only keep or shrink it.
+ */
+export function introducesReadyDebris(before: string, after: string): boolean {
+  const budget = new Map<string, number>();
+  for (const text of readyDebris(before)) budget.set(text, (budget.get(text) ?? 0) + 1);
+  for (const text of readyDebris(after)) {
+    const left = budget.get(text) ?? 0;
+    if (left === 0) return true;
+    budget.set(text, left - 1);
+  }
+  return false;
+}
+
+/**
+ * The single fs write path of every pilot BACKLOG.md edit (markDone,
+ * blockTask, addTask, appendReadyLines): refuses — writes nothing, returns
+ * false — an edit that would introduce Ready debris. Validating each produced
+ * line was not enough: the rot came from a writer whose line validated fine
+ * while its entry spanned more lines (pre-P2-336 redteam) and from a move
+ * that took only the first line of an entry (markDone).
+ */
+function writeChecked(p: string, before: string, after: string): boolean {
+  if (introducesReadyDebris(before, after)) return false;
+  writeFileSync(p, after);
+  return true;
 }
 
 // ── Foreign mission: seed the pilot's BACKLOG.md format when absent ─────────
@@ -382,8 +545,13 @@ export function parseAuxTaskLines(output: string, max = 5): string[] {
  * "noop" when every id is already present — the desired state is present, so
  * a meta-landing retry after a queued merge converges as success instead of
  * aborting; "missing" when there are no lines or no ## Ready section at all.
+ * eval-06: each line is re-validated here (an invalid one is dropped, all
+ * invalid = "missing") — this is also the landing path of the pending refill
+ * store, re-read from ~/.opencode-remote — and the write is ratcheted
+ * ("refused" when it would introduce Ready debris).
  */
-export function appendReadyLines(repoDir: string, lines: string[]): BacklogEditResult {
+export function appendReadyLines(repoDir: string, rawLines: string[]): BacklogEditResult | "refused" {
+  const lines = rawLines.map((l) => l.trim()).filter((l) => isValidTaskLine(l));
   if (!lines.length) return "missing";
   const p = join(repoDir, BACKLOG);
   const md = readFileSync(p, "utf8");
@@ -406,8 +574,7 @@ export function appendReadyLines(repoDir: string, lines: string[]): BacklogEditR
     fresh.join("\n") +
     "\n\n" +
     md.slice(insertAt).replace(/^\n+/, "");
-  writeFileSync(p, updated);
-  return "applied";
+  return writeChecked(p, md, updated) ? "applied" : "refused";
 }
 
 /** Injectable sinks for appendCommitAndPush (unit battery pins the semantics). */

@@ -1,0 +1,58 @@
+relay-image	UNKNOWN STEP	2026-09-10T23:41:19.9819317Z ##[group]Run docker build -f deploy/relay/Dockerfile -t relay-smoke:pr .
+relay-image	UNKNOWN STEP	2026-09-10T23:41:19.9821903Z [36;1mdocker build -f deploy/relay/Dockerfile -t relay-smoke:pr .[0m
+relay-image	UNKNOWN STEP	2026-09-10T23:41:19.9864918Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+relay-image	UNKNOWN STEP	2026-09-10T23:41:19.9866459Z ##[endgroup]
+relay-image	UNKNOWN STEP	2026-09-10T23:41:20.7354860Z #0 building with "default" instance using docker driver
+relay-image	UNKNOWN STEP	2026-09-10T23:41:20.7356233Z 
+relay-image	UNKNOWN STEP	2026-09-10T23:41:20.7356527Z #1 [internal] load build definition from Dockerfile
+relay-image	UNKNOWN STEP	2026-09-10T23:41:20.7357320Z #1 transferring dockerfile: 3.21kB 0.0s done
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.1439765Z #30 0.234 > node ../../scripts/gen-version.mjs
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.1440594Z #30 0.234 
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.3292166Z #30 0.265 version.ts -> 0.2.0
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.3293052Z #30 0.269 
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.3293397Z #30 0.269 > @ocr/web@0.2.0 build
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.3293843Z #30 0.269 > vite build --base=./
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.3294256Z #30 0.269 
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.3742703Z #30 0.464 vite v6.4.3 building for production...
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.5995360Z #30 0.539 transforming...
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7259039Z #30 0.816 ✓ 21 modules transformed.
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7938629Z #30 0.818 ✗ Build failed in 327ms
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7941702Z #30 0.818 error during build:
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7942699Z #30 0.818 Could not resolve "../../desktop/src/pairing" from "src/App.tsx"
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7943669Z #30 0.818 file: /app/apps/web/src/App.tsx
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7944478Z #30 0.818     at getRollupError (file:///app/node_modules/rollup/dist/es/shared/parseAst.js:317:41)
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7945498Z #30 0.818     at error (file:///app/node_modules/rollup/dist/es/shared/parseAst.js:313:42)
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7946692Z #30 0.818     at ModuleLoader.handleInvalidResolvedId (file:///app/node_modules/rollup/dist/es/shared/node-entry.js:22002:24)
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7947853Z #30 0.818     at file:///app/node_modules/rollup/dist/es/shared/node-entry.js:21962:26
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7948633Z #30 0.837 npm error Lifecycle script `build` failed with error:
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7949193Z #30 0.837 npm error code 1
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7949607Z #30 0.837 npm error path /app/apps/web
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7950085Z #30 0.838 npm error workspace @ocr/web@0.2.0
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7950592Z #30 0.838 npm error location /app/apps/web
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7956793Z #30 0.838 npm error command failed
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7957389Z #30 0.838 npm error command sh -c vite build --base=./
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7958345Z #30 ERROR: process "/bin/sh -c npm run build --workspace apps/web" did not complete successfully: exit code: 1
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7959217Z ------
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7959677Z  > [web 15/15] RUN npm run build --workspace apps/web:
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7960482Z 0.818     at error (file:///app/node_modules/rollup/dist/es/shared/parseAst.js:313:42)
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7961936Z 0.818     at ModuleLoader.handleInvalidResolvedId (file:///app/node_modules/rollup/dist/es/shared/node-entry.js:22002:24)
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7963162Z 0.818     at file:///app/node_modules/rollup/dist/es/shared/node-entry.js:21962:26
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7964082Z 0.837 npm error Lifecycle script `build` failed with error:
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7964667Z 0.837 npm error code 1
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7965139Z 0.837 npm error path /app/apps/web
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7965931Z 0.838 npm error workspace @ocr/web@0.2.0
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7966475Z 0.838 npm error location /app/apps/web
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7966956Z 0.838 npm error command failed
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7967517Z 0.838 npm error command sh -c vite build --base=./
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7968026Z ------
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7968342Z Dockerfile:40
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7968670Z --------------------
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7969154Z   38 |     COPY apps/web/vite.config.ts apps/web/vite.config.ts
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7969903Z   39 |     COPY apps/web/tsconfig.json apps/web/tsconfig.json
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7970521Z   40 | >>> RUN npm run build --workspace apps/web
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7971014Z   41 |     
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7971586Z   42 |     FROM node:22-slim
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7971987Z --------------------
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.7972938Z ERROR: failed to build: failed to solve: process "/bin/sh -c npm run build --workspace apps/web" did not complete successfully: exit code: 1
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.8018650Z ##[error]Process completed with exit code 1.
+relay-image	UNKNOWN STEP	2026-09-10T23:41:32.8177178Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

@@ -280,6 +280,22 @@ perguntar: "o Claude faria assim?" Se a resposta é não, não mergea.
   sem reabrir a conversa —, caracteres de controle saem, e o título corta em
   60 caracteres com reticências; nada muda dentro da página — o Electron
   repassa o `document.title` do renderer à janela
+- Busca dentro das conversas (eval-20): a busca de conversas e o ⌘K acham a
+  conversa pelo que foi dito, não só pelo título — seção "Nas mensagens"
+  abaixo dos títulos, trecho de uma linha com a ocorrência marcada no mesmo
+  tom da barra de busca do chat, e abrir o resultado abre a barra de busca da
+  conversa com o termo na ocorrência mais antiga carregada (a ocorrência que
+  o trecho mostra); quando ela está em mensagens anteriores, a barra abre com
+  o termo e o atalho "Carregar anteriores" busca páginas antigas até achar.
+  A busca dispara uma por vez (single-flight) após 500 ms de digitação, com
+  termo de 3+ caracteres; um scan que não terminou nunca vira "Nada
+  encontrado" — diz que não deu pra ler todas as conversas e oferece tentar
+  de novo. A lista filtrada vazia fala da busca ("Nada encontrado para
+  “…”"), nunca "Nenhuma conversa ainda."
+- Atalhos ensinados na própria UI (eval-20): ⌘/ ou `?` abre a folha de
+  atalhos (diálogo calmo, duas colunas no desktop, foco preso e Esc fechando
+  só a folha), e as ações do ⌘K mostram
+  as próprias teclas — uma tabela só, pinada contra o menu Ir
 
 ## Regra de ouro
 Cada task de UI fecha com screenshot desktop-flow provando o critério visual.

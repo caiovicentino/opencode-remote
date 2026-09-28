@@ -63,6 +63,7 @@
           border-radius:6px; font-size:10px; font-weight:700; letter-spacing:.16em; animation:chip 2s ease-out infinite; pointer-events:auto; cursor:help; }
   .chip.on { display:block; }
   .chip.amber { border-color:var(--gold); color:var(--gold); background:rgba(251,191,36,.10); }
+  .chip.st { cursor:pointer; }
   @keyframes chip { 0%{box-shadow:0 0 0 0 rgba(248,113,113,.45)} 70%{box-shadow:0 0 0 10px rgba(248,113,113,0)} 100%{box-shadow:0 0 0 0 rgba(248,113,113,0)} }
   /* ── offline: red frame around the whole viewport + toast ── */
   #frame { position:fixed; inset:0; z-index:9; pointer-events:none; opacity:0; transition:opacity .3s ease-out;
@@ -102,6 +103,7 @@
   #card h2 { font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--cyan); display:flex; align-items:center; gap:10px; }
   #card h2 i { width:10px; height:10px; border-radius:50%; display:inline-block; }
   #card h2 small { color:var(--muted); letter-spacing:.04em; text-transform:none; font-weight:400; font-size:12px; margin-left:auto; }
+  #card h2 { padding-right:26px; } /* the × close button sits over the title row */
   #card .facts { display:flex; flex-wrap:wrap; gap:6px 18px; margin:12px 0 14px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
   #card .facts b { color:var(--text); font-family:ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:0; margin-left:6px; }
   #card .tl { font:11.5px/1.7 ui-monospace,Menlo,monospace; border-top:1px solid var(--hair); padding-top:8px; }
@@ -123,7 +125,9 @@
     #card { animation:none; } #toast, #frame, #cap { transition:none; }
   }
   @media (max-width: 720px) {
-    #legend { display:none; } #tl { max-width:60vw; } #tr { font-size:10px; }
+    #legend { display:none; } #tl { max-width:50vw; } #tr { font-size:10px; }
+    /* eval-19: the status chips stack above the one-line caption, never on it */
+    #alerts { bottom:46px; right:14px; } .chip { font-size:9px; padding:4px 8px; }
   }
 </style>
 </head>
@@ -149,6 +153,9 @@
   <span>FILA</span><b id="h-fila">0</b>
   <span>HB</span><b id="h-hb">—</b>
   <span>NOTIFY</span><b id="h-notify" title="último aviso entregue">—</b>
+  <span>PROD</span><b id="h-lag" title="merges verificados pendentes no main (o piloto só faz deploy deles; o total de commits fica no tooltip)">—</b>
+  <span>DISCO</span><b id="h-disk" title="espaço livre no volume da produção">—</b>
+  <span>CUSTO 7D</span><b id="h-cost" title="custo dos merges dos últimos 7 dias">—</b>
   <div class="bars hidden" id="h-bars" title="burn-down 7 dias"></div>
 </div>
 
@@ -162,6 +169,11 @@
 </div>
 
 <div class="hud" id="alerts">
+  <div class="chip st" id="c-pilot" title="" onclick="openStatus()">PILOTO PARADO</div>
+  <div class="chip st" id="c-hold" title="" onclick="openStatus()">DEPLOY RETIDO</div>
+  <div class="chip st" id="c-lag" title="" onclick="openStatus()">PROD ATRASADA</div>
+  <div class="chip st" id="c-disk" title="" onclick="openStatus()">DISCO BAIXO</div>
+  <div class="chip st amber" id="c-alerts" title="" onclick="openStatus()">AVISOS NÃO ENTREGUES</div>
   <div class="chip" id="c-audit" title="">AUDIT · FILA PAUSADA</div>
   <div class="chip" id="c-rb" title="">PROD UNHEALTHY</div>
   <div class="chip amber" id="c-pwa" title="">PWA ORIGIN DOWN</div>
@@ -285,6 +297,7 @@ const world = {
   taskCosts: {}, taskAttempts: {}, contextPressure: {},
   rbDetail: "", pwaDown: false, pwaDetail: "",
   history: null,
+  status: null,              // eval-19: /api/pilot-status digest (liveness, deploy lag/hold, disk, cost, alerts)
 };
 let now = performance.now() / 1000; // seconds, painter clock (never 0 — `gone` timestamps are truthy)
 const fx = { particles: [], bursts: [], pulses: [], rings: [] }; // transient visuals
@@ -491,6 +504,27 @@ function streamIn(stationId, color) {
 }
 function spark(s) { for (let i = 0; i < 3; i++) fx.particles.push({ x: s.x, y: s.y, vx: (Math.random() - .5) * 60, vy: (Math.random() - .5) * 60, t: 0, life: 0.5, color: s.color, free: true }); }
 function heartbeatPulse() { if (!RM) fx.pulses.push({ t: 0 }); }
+// eval-19 fix: the digest's pilot verdict outranks the raw heartbeat — a third
+// party kept touching heartbeat files for a pilot dead since 24/09, so the
+// core must not breathe or label itself with the raw age while PILOTO PARADO
+// is lit; it shows the pilot's own last sign of life instead
+function corePilotDownFn() {
+  const p = world.status && world.status.installed ? world.status.pilot : null;
+  return !!p && (p.state === "down" || p.state === "stale");
+}
+function coreHbLabel() {
+  if (corePilotDownFn()) {
+    const p = world.status.pilot;
+    return p.silentForMs != null && Number.isFinite(p.silentForMs) ? fmtSpan(p.silentForMs) : "—";
+  }
+  return world.hbMs == null ? "—" : fmtAge(world.hbMs);
+}
+// should THIS poll push a heartbeat ring? the pilot's verdict gates it (the
+// ring is the pilot's pulse — production itself only beats through a deploy);
+// the previous hb age lives on world.lastHb so the gate stays observable
+function pulseWanted() {
+  return world.hbMs != null && (world.lastHb == null || world.hbMs < world.lastHb) && !corePilotDownFn();
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. painter (canvas)
@@ -662,7 +696,12 @@ function draw() {
   }
   // ── the core (PROD) ──
   const c = world.core;
-  const hbFresh = world.hbMs != null && world.hbMs < 90_000;
+  // eval-19 fix: the heartbeat rings are the PILOT's pulse — when the digest
+  // says the pilot is down or stale, the raw hb age (kept fresh by a third
+  // party after the pid died, 2026-09-27) must not pulse the core beside the
+  // PILOTO PARADO chip
+  const corePilotDown = corePilotDownFn();
+  const hbFresh = !corePilotDown && world.hbMs != null && world.hbMs < 90_000;
   const coreColor = world.offline ? COL.dim : !hbFresh ? COL.gray : c.state === "fail" || c.state === "unhealthy" ? COL.red : c.state === "deploying" ? COL.gold : c.state === "ok" ? COL.green : COL.white;
   const breath = RM || !hbFresh || world.offline ? 1 : 1 + Math.sin(now * (c.state === "deploying" ? 6 : c.state === "unhealthy" ? 4 : 2.2)) * 0.05;
   let ox = 0, oy = 0; if (now < c.tremorUntil) { ox = (Math.random() - .5) * 5; oy = (Math.random() - .5) * 5; }
@@ -679,7 +718,7 @@ function draw() {
   // PWA origin down: a broken dashed halo
   if (world.pwaDown) { ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.arc(X, Y, cr + 22, 0, TAU); ctx.strokeStyle = hexA(COL.gold, 0.8); ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]); }
   label("PROD", X + ox, Y + oy - 5, hexA(coreColor, 0.95), 11, 800);
-  label(world.offline ? "OFF" : world.hbMs == null ? "—" : fmtAge(world.hbMs), X + ox, Y + oy + 9, hexA(hbFresh && !world.offline ? COL.muted : COL.red, 0.9), 10, 600);
+  label(world.offline ? "OFF" : coreHbLabel(), X + ox, Y + oy + 9, hexA(hbFresh && !world.offline ? COL.muted : COL.red, 0.9), 10, 600);
   if (c.tag && now < c.tag.until) label(c.tag.text, X, Y + cr + 30, hexA(c.tag.color, 0.95), 10, 700);
   if (world.audit) label("AUDIT", X, Y - cr - 30, hexA(COL.red, RM ? 1 : 0.7 + Math.sin(now * 3) * 0.3), 11, 800);
   // ── ships ──
@@ -762,7 +801,7 @@ function renderHud() {
   $("h-hb").className = world.offline || world.hbMs == null ? "bad" : world.hbMs < 90_000 ? "ok" : "warn";
   // P3-357: "último aviso entregue há N min" — supervisor notify age
   const notifyMin = world.notifyMs == null ? null : Math.max(1, Math.round(world.notifyMs / 60_000));
-  $("h-notify").textContent = world.notifyMs == null ? "—" : fmtAge(world.notifyMs);
+  $("h-notify").textContent = world.notifyMs == null ? "—" : fmtSpan(world.notifyMs);
   $("h-notify").className = world.notifyMs == null ? "" : world.notifyMs < NOTIFY_STALE_MS ? "ok" : "warn";
   $("h-notify").title = notifyMin == null ? "nenhum aviso entregue" : `último aviso entregue há ${notifyMin} min`;
   $("live").className = world.offline ? "off" : world.hbMs != null && world.hbMs < 90_000 ? "on" : "stale";
@@ -770,6 +809,8 @@ function renderHud() {
   $("c-rb").classList.toggle("on", world.core.state === "unhealthy"); $("c-rb").title = world.rbDetail || "";
   $("c-pwa").classList.toggle("on", !!world.pwaDown); $("c-pwa").title = world.pwaDetail || "";
   $("c-night").classList.toggle("on", !!world.nightlySkipped); $("c-night").title = world.nightlySkipped ? `${world.nightlySkipped.date} · ${world.nightlySkipped.reason}` : "";
+  // a surprise in the digest must never stop the poll loop that calls this
+  try { renderStatus(); } catch {}
   const e = world.lastEvent;
   if (e) {
     const cap = $("cap");
@@ -828,6 +869,98 @@ function openCore() {
   $("f-slots").textContent = world.fleetSlots || 2; pickCoordinator(world.coordinator || "claude-fable-5-1");
   $("modal").classList.add("open");
 }
+// eval-19: the fleet status digest (/api/pilot-status). The pilot was down for
+// days while this HUD only painted a gold heartbeat age — now liveness, deploy
+// lag/hold, disk, cost and undelivered alerts each get a number and, when they
+// need the operator, a chip that opens the drill-down.
+const ATTN_CHIP = { "pilot-down":"c-pilot", "pilot-stale":"c-pilot", "deploy-hold":"c-hold", "deploy-lag":"c-lag", "disk-low":"c-disk", "alerts-undelivered":"c-alerts" };
+function fmtSpan(ms) { return Number.isFinite(ms) && ms >= 48 * 3_600_000 ? `${(ms / 86_400_000).toFixed(1)}d` : fmtAge(ms); }
+function fmtGB(b) { return Number.isFinite(b) ? `${(b / 1024 ** 3).toFixed(1)}G` : "—"; }
+function fmtWhen(iso) { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit", hour12:false }) : "—"; }
+const sha7 = (s) => (s || "").slice(0, 7) || "—";
+// silence = since the pilot's last sign of life (a pid-dead verdict dates it
+// from the last recorded activity, not from a heartbeat someone else touched)
+const silentOf = (p) => (p.silentForMs != null ? p.silentForMs : p.heartbeatAgeMs);
+function flagOf(kind) { const st = world.status; return st && st.installed ? (st.attention || []).find((f) => f.kind === kind) || null : null; }
+function flagText(f) {
+  const st = world.status, p = st.pilot, d = st.deploy, h = d.hold;
+  switch (f.kind) {
+    case "pilot-down": case "pilot-stale":
+      return `piloto ${f.kind === "pilot-down" ? "parado" : "sem sinal"} há ${fmtSpan(silentOf(p))} — ${p.reason === "pid-dead" ? "última atividade" : "último heartbeat"} ${fmtWhen(p.since)}${p.pid ? ` · pid ${p.pid} ${p.pidAlive === false ? "morto" : p.pidAlive ? "vivo" : "?"}` : ""}`;
+    case "deploy-hold":
+      return `deploy retido por ${h.reason}${h.count > 1 ? ` (${h.count}×)` : ""} — ${h.detail}${h.until ? ` · backoff até ${fmtWhen(h.until)}` : ""}`;
+    case "deploy-lag":
+      return `produção ${d.behind} merge(s) verificado(s) atrás do main (${sha7(d.prodSha)} → ${sha7(d.mainSha)}${d.behindTotal != null ? ` · ${d.behindTotal} commit(s) no total` : ""}) · pendente desde ${fmtWhen(d.pendingSince)}`;
+    case "disk-low":
+      return `disco com ${fmtGB(st.disk.freeBytes)} livres — o deploy exige ${fmtGB(st.disk.minFreeBytes)}`;
+    case "alerts-undelivered":
+      return `${st.alerts.undelivered} aviso(s) ao supervisor não entregues${st.alerts.lastDeliveredAgeMs != null ? ` · último entregue há ${fmtSpan(st.alerts.lastDeliveredAgeMs)}` : " · nenhum entregue"}`;
+    default: return f.kind;
+  }
+}
+function renderStatus() {
+  const st = world.status;
+  const shown = {};
+  if (st && st.installed) for (const f of st.attention || []) { const id = ATTN_CHIP[f.kind]; if (id && !shown[id]) shown[id] = f; }
+  for (const id of ["c-pilot", "c-hold", "c-lag", "c-disk", "c-alerts"]) {
+    const f = shown[id], el = $(id);
+    el.classList.toggle("on", !!f);
+    if (!f) { el.title = ""; continue; }
+    el.classList.toggle("amber", f.level === "warn");
+    el.title = flagText(f);
+    const p = st.pilot, d = st.deploy;
+    el.textContent =
+      id === "c-pilot" ? `${f.kind === "pilot-down" ? "PILOTO PARADO" : "PILOTO SEM SINAL"} · ${fmtSpan(silentOf(p))}` :
+      id === "c-hold" ? `DEPLOY RETIDO · ${String(d.hold.reason).toUpperCase()}` :
+      id === "c-lag" ? `PROD −${d.behind} · ${d.pendingSince ? fmtSpan(Date.now() - Date.parse(d.pendingSince)) : "?"}` :
+      id === "c-disk" ? `DISCO BAIXO · ${fmtGB(st.disk.freeBytes)}` :
+      `${st.alerts.undelivered} AVISOS NÃO ENTREGUES`;
+  }
+  const lag = $("h-lag"), disk = $("h-disk"), cost = $("h-cost");
+  if (!st || !st.installed) { lag.textContent = disk.textContent = cost.textContent = "—"; return; }
+  const d = st.deploy, lagF = flagOf("deploy-lag"), diskF = flagOf("disk-low");
+  lag.textContent = d.behind == null ? "—" : d.behind === 0 ? "EM DIA" : `−${d.behind}`;
+  lag.className = d.behind === 0 ? "ok" : lagF ? (lagF.level === "critical" ? "bad" : "warn") : "";
+  lag.title = d.behind == null
+    ? "sem checkout git da produção"
+    : `prod ${sha7(d.prodSha)} · main ${sha7(d.mainSha)} · ${d.behind} merge(s) verificado(s) pendente(s)${d.behindTotal != null && d.behindTotal > 0 ? ` (${d.behindTotal} commit(s) no total)` : ""}${d.pendingSince ? ` · pendente desde ${fmtWhen(d.pendingSince)}` : ""}${d.fetchedAt ? ` · main buscado ${fmtWhen(d.fetchedAt)}` : ""}`;
+  disk.textContent = fmtGB(st.disk.freeBytes);
+  disk.className = st.disk.freeBytes == null ? "" : diskF ? (diskF.level === "critical" ? "bad" : "warn") : "ok";
+  disk.title = `${fmtGB(st.disk.freeBytes)} livres de ${fmtGB(st.disk.totalBytes)} · deploy exige ${fmtGB(st.disk.minFreeBytes)}`;
+  const w = st.cost.week;
+  cost.textContent = w.usd != null ? `US$ ${w.usd.toFixed(2)}` : fmtTok(w.tokens) || "0";
+  cost.className = "";
+  cost.title = `${w.merges} merge(s) em 7 dias · ${fmtTok(w.tokens) || "0 tok"}${w.unpricedTokens > 0 ? ` · ${fmtTok(w.unpricedTokens)} sem preço (modelo fora da tabela)` : ""}`;
+  if (st.alerts.undelivered > 0) { $("h-notify").className = "bad"; $("h-notify").title += ` · ${st.alerts.undelivered} não entregue(s)`; }
+  if (st.pilot.state === "down") {
+    $("live").className = "off";
+    $("h-hb").textContent = fmtSpan(silentOf(st.pilot)); $("h-hb").className = "bad";
+  }
+}
+function openStatus() {
+  const st = world.status; if (!st) return;
+  const p = st.pilot, d = st.deploy, q = st.queue, c = st.cost, flags = st.installed ? st.attention || [] : [];
+  const worst = flags.length ? (flags[0].level === "critical" ? COL.red : COL.gold) : COL.green;
+  $("m-title").innerHTML = `<i style="background:${worst}"></i>FROTA · STATUS<small>${esc(fmtWhen(st.at))}</small>`;
+  const money = (x) => (x.usd != null ? `US$ ${x.usd.toFixed(2)}` : "sem preço");
+  const facts = [
+    ["PILOTO", `${{ alive:"VIVO", stale:"SEM SINAL", down:"PARADO", absent:"AUSENTE" }[p.state] || p.state}${p.state !== "alive" && silentOf(p) != null ? " · " + fmtSpan(silentOf(p)) : ""}`],
+    ["PROD", d.behind == null ? "—" : d.behind === 0 ? `${sha7(d.prodSha)} · em dia` : `${sha7(d.prodSha)} → ${sha7(d.mainSha)} · −${d.behind}${d.behindTotal != null ? ` · ${d.behindTotal} commits` : ""}`],
+    ["DEPLOY", d.hold ? `retido · ${d.hold.reason}` : "livre"],
+    ["DISCO", `${fmtGB(st.disk.freeBytes)} / mín ${fmtGB(st.disk.minFreeBytes)}`],
+    ["FILA", `${q.ready} prontas · ${q.blocked} bloqueadas${q.source === "origin/main" ? "" : ` (${q.source})`}`],
+    ["CUSTO 24H", `${c.day.merges} merges · ${fmtTok(c.day.tokens) || "0 tok"} · ${money(c.day)}`],
+    ["CUSTO 7D", `${c.week.merges} merges · ${fmtTok(c.week.tokens) || "0 tok"} · ${money(c.week)}`],
+    ["AVISOS", `${st.alerts.undelivered} pendentes`],
+  ];
+  $("m-facts").innerHTML = facts.map(([k, v]) => `<span>${k}<b>${esc(v)}</b></span>`).join("");
+  $("m-tl").innerHTML = flags.length
+    ? flags.map((f) => `<div><span class="ts">${f.level === "critical" ? "CRÍTICO" : "ATENÇÃO"}</span><span class="ph ${f.level === "critical" ? "bad" : ""}">${esc(f.kind)}</span><span class="dt">${esc(flagText(f))}</span></div>`).join("")
+    : `<div class="empty">nada pede o operador agora</div>`;
+  hideBudgetForm();
+  $("modal").classList.add("open");
+}
+window.openStatus = openStatus;
 function closeModal() { $("modal").classList.remove("open"); }
 window.closeModal = closeModal;
 function hideBudgetForm() { $("bform").style.display = "none"; }
@@ -923,7 +1056,7 @@ let token = window.__OCR_TOKEN__ || localStorage.getItem("ocr_dash_token") || ""
 if (token === "__APITOKEN__") token = "";
 if (PARAMS.get("token")) { token = PARAMS.get("token"); localStorage.setItem("ocr_dash_token", token); history.replaceState(null, "", location.pathname); }
 const hdr = () => ({ authorization: `Bearer ${token}` });
-let lastKey = null, firstPoll = true, delay = 2000, pollTimer = 0, lastHb = null, tick = 0;
+let lastKey = null, firstPoll = true, delay = 2000, pollTimer = 0, tick = 0;
 const evKey = (e) => `${e.ts}|${e.type}|${e.task || ""}|${e.phase || ""}|${e.detail || ""}`;
 function ingest(events) {
   let start = 0;
@@ -949,8 +1082,8 @@ async function poll() {
     const data = await res.json();
     const st = data.state || {}, cfg = data.cfg || {};
     world.hbMs = Number.isFinite(data.heartbeatMs) ? data.heartbeatMs : null;
-    if (world.hbMs != null && (lastHb == null || world.hbMs < lastHb)) heartbeatPulse();
-    lastHb = world.hbMs;
+    if (pulseWanted()) heartbeatPulse();
+    world.lastHb = world.hbMs;
     world.notifyMs = Number.isFinite(data.notifyLastMs) ? data.notifyLastMs : null;
     world.tasks = st.tasks ?? 0; world.deploys = st.deploys ?? 0; world.failures = st.failures ?? 0; world.merges = st.merges ?? 0;
     world.maxTasks = cfg.maxTasksPerDay || 6; world.maxDeploys = cfg.maxDeploysPerDay || 6;
@@ -965,16 +1098,58 @@ async function poll() {
     if (world.core.state === "idle" && world.deployEvents.length === 0 && world.hbMs != null) world.core.state = "ok";
     if (data.lastAux) for (const k of ["researcher", "strategist"]) { const id = k === "researcher" ? "research" : k; if (data.lastAux[k] && !world.stations[id].last) world.stations[id].last = data.lastAux[k]; }
     setOffline(false); delay = 2000;
-    if (tick % 5 === 0) loadReady(); if (tick % 30 === 0) loadHistory(); tick++;
+    if (tick % 5 === 0) { loadReady(); loadStatus(); } if (tick % 30 === 0) loadHistory(); tick++;
   } catch (err) {
     if (String(err.message) !== "auth") { delay = Math.min(delay * 2, 30_000); setOffline(true, Math.round(delay / 1000)); }
   }
   renderHud();
-  pollTimer = setTimeout(poll, delay);
+  // P2-110: with the live stream up, events arrive over SSE — the poll only
+  // refreshes the counters, so it relaxes to 10s
+  pollTimer = setTimeout(poll, streamLive && !world.offline ? 10_000 : delay);
+}
+// P2-110 (eval-19): live stream — EventSource over the ocr_session cookie,
+// minted once from the Bearer via POST /api/session (the token never rides a
+// URL). Frames: snapshot (events + status digest), pilot (one per new
+// events.jsonl line, ~100 ms), status (every 15s). A stream that fails
+// before its first snapshot retries twice, then the page stays on the poll
+// (e.g. the desktop iframe, where the cookie is third-party).
+let stream = null, streamLive = false, streamFails = 0;
+async function startStream() {
+  if (MOCK || typeof EventSource === "undefined" || stream || streamFails > 2) return;
+  try {
+    const r = await fetch("/api/session", { method: "POST", headers: hdr() });
+    if (!r.ok) { streamFails = 3; return; }
+  } catch { streamFails++; return; }
+  const es = (stream = new EventSource("/api/pilot-stream"));
+  es.addEventListener("snapshot", (m) => {
+    try {
+      const d = JSON.parse(m.data);
+      if (d.status) acceptStatus(d.status);
+      ingest(d.events || []);
+      streamLive = true; streamFails = 0;
+      setOffline(false); renderHud();
+    } catch {}
+  });
+  es.addEventListener("pilot", (m) => { try { ingest([JSON.parse(m.data)]); renderHud(); } catch {} });
+  es.addEventListener("status", (m) => { try { acceptStatus(JSON.parse(m.data)); renderHud(); } catch {} });
+  es.onerror = () => {
+    streamLive = false;
+    if (es.readyState !== 2) return; // CONNECTING: the browser retries by itself
+    es.close(); stream = null; streamFails++;
+    if (streamFails <= 2) setTimeout(startStream, 3000 * streamFails);
+  };
 }
 async function loadReady() {
   try { const r = await fetch("/api/pilot-ready", { headers: hdr() }); const { ready, blocked } = await r.json();
     world.readyList = ready || []; world.blockedList = blocked || []; world.ready = world.readyList.length; world.blocked = world.blockedList.length; } catch {}
+}
+// only a digest with every section the HUD reads is accepted — an older or
+// newer daemon's other shape leaves the previous view in place
+function acceptStatus(d) {
+  if (d && typeof d.installed === "boolean" && Array.isArray(d.attention) && d.pilot && d.deploy && d.disk && d.cost && d.cost.week && d.cost.day && d.alerts && d.queue) world.status = d;
+}
+async function loadStatus() {
+  try { const r = await fetch("/api/pilot-status", { headers: hdr() }); if (r.ok) acceptStatus(await r.json()); } catch {}
 }
 async function loadHistory() {
   try { const r = await fetch("/api/pilot-history", { headers: hdr() }); const d = await r.json(); world.history = d.exists ? d.days || [] : null; } catch { world.history = null; }
@@ -982,7 +1157,7 @@ async function loadHistory() {
 async function loadMission() {
   try { const r = await fetch("/api/pilot-mission", { headers: hdr() }); const { mission } = await r.json(); $("mission").textContent = mission || "sem missão definida"; $("mission").title = mission || ""; } catch { $("mission").textContent = "—"; }
 }
-function saveToken() { token = $("token").value.trim(); localStorage.setItem("ocr_dash_token", token); $("tokenbox").style.display = "none"; clearTimeout(pollTimer); delay = 2000; poll(); loadMission(); }
+function saveToken() { token = $("token").value.trim(); localStorage.setItem("ocr_dash_token", token); $("tokenbox").style.display = "none"; clearTimeout(pollTimer); delay = 2000; poll(); loadMission(); streamFails = 0; startStream(); }
 window.saveToken = saveToken;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1112,7 +1287,7 @@ function mockTick() {
 // ═══════════════════════════════════════════════════════════════════════════
 resize();
 if (MOCK) { mockInit(); renderHud(); }
-else if (token) { poll(); loadMission(); loadReady(); loadHistory(); }
+else if (token) { poll(); loadMission(); loadReady(); loadHistory(); startStream(); }
 else { $("tokenbox").style.display = "block"; renderHud(); }
 requestAnimationFrame(frame);
 </script>

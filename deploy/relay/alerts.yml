@@ -15,12 +15,12 @@ groups:
         annotations:
           summary: "O relay está recusando conexões novas por capacidade: quem tenta entrar recebe ocupado."
       - alert: RelayCrashLoop
-        expr: "relay_uptime_seconds < 60"
-        for: 10m
+        expr: "resets(relay_uptime_seconds[1h]) >= 3"
+        for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "O processo está reiniciando em laço: o tempo de atividade volta a zero a cada raspagem."
+          summary: "O processo reiniciou três vezes ou mais na última hora: cada queda derruba todas as salas de todos os inquilinos."
       - alert: RelayCertExpiryState
         expr: "relay_cert_expiry_state > 0"
         for: 30m
@@ -77,3 +77,24 @@ groups:
           severity: warning
         annotations:
           summary: "Duas instâncias do daemon disputam a mesma sala (processo antigo vivo ou pasta de estado copiada): o celular recebe respostas da instância errada."
+      - alert: RelayDown
+        expr: "absent_over_time(relay_connections_total[5m])"
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "O relay não publica métricas há cinco minutos: caiu, recusa o boot ou a raspagem quebrou — ninguém pareia."
+      - alert: RelayRateLimited
+        expr: "increase(relay_rate_limited_total[15m]) > 0"
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Conexões derrubadas pelo teto de frames por conexão: abuso, ou um daemon legítimo acima do teto e um celular congelado por um minuto."
+      - alert: RelayLogWriteErrors
+        expr: "increase(relay_log_write_errors_total[15m]) > 0"
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "O relay não consegue escrever o próprio log (disco cheio ou saída fechada): segue roteando, mas sem trilha."

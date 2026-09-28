@@ -1958,12 +1958,19 @@ const ROOM_BUDGET_PROM_ORDER = [
   "relay_connections_total",
   "relay_connections_active",
   "relay_frames_routed",
+  // eval-13: the unrouted subset of routed frames joined the documented set,
+  // split by sender class (owner = the daemon streaming into a room that
+  // just lost its phone; non-owner = the phone symptom)
+  "relay_frames_unrouted_total",
+  "relay_frames_unrouted_owner_total",
   "relay_bytes_routed",
   "relay_rejects",
   "relay_rate_limited_total",
   // P2-351: the fatal-crash counter joined the documented set, right after
   // the rate limiter it sits beside
   "relay_crashes_total",
+  // eval-13: unwritable log lines are counted instead of killing the relay
+  "relay_log_write_errors_total",
   "relay_rooms_rejected",
   "relay_rooms_rejected_invalid_room_id",
   "relay_rooms_rejected_socket_room_cap",
@@ -1981,11 +1988,16 @@ const ROOM_BUDGET_JSON_ORDER = [
   "connections_total",
   "connections_active",
   "frames_routed",
+  // eval-13: same position as its Prometheus twin
+  "frames_unrouted",
+  "frames_unrouted_owner",
   "bytes_routed",
   "rejects",
   "rate_limited_total",
   // P2-351: additive crash counter, same position as its Prometheus twin
   "crashes_total",
+  // eval-13: same position as its Prometheus twin
+  "log_write_errors_total",
   "rooms_rejected",
   "rooms_rejected_invalid_room_id",
   "rooms_rejected_socket_room_cap",
@@ -2445,11 +2457,16 @@ check(
       ["connections_total", "relay_connections_total", "counter"],
       ["connections_active", "relay_connections_active", "gauge"],
       ["frames_routed", "relay_frames_routed", "counter"],
+      // eval-13: additive unrouted subset, right after its parent counter
+      ["frames_unrouted", "relay_frames_unrouted_total", "counter"],
+      ["frames_unrouted_owner", "relay_frames_unrouted_owner_total", "counter"],
       ["bytes_routed", "relay_bytes_routed", "counter"],
       ["rejects", "relay_rejects", "counter"],
       ["rate_limited_total", "relay_rate_limited_total", "counter"],
       // P2-351: additive crash counter, same position as its Prometheus twin
       ["crashes_total", "relay_crashes_total", "counter"],
+      // eval-13: additive log-write failure counter, next to the crash counter
+      ["log_write_errors_total", "relay_log_write_errors_total", "counter"],
       ["rooms_rejected", "relay_rooms_rejected", "counter"],
       ["rooms_rejected_invalid_room_id", "relay_rooms_rejected_invalid_room_id", "counter"],
       ["rooms_rejected_socket_room_cap", "relay_rooms_rejected_socket_room_cap", "counter"],

@@ -150,6 +150,10 @@ import {
   ROUTINE_DUE_MAX_ATTEMPTS,
 } from "./routinedue.js";
 import { queueView } from "./backlogview.js";
+// eval-19: fleet status digest (pilot liveness, deploy lag/hold, disk, queue, cost, alerts)
+import { readPilotStatus, readQueueBacklog, readTailLines } from "./pilotstatus.js";
+// P2-110 (eval-19): live pilot stream (SSE) for the dashboard
+import { createDefaultPilotStream, type PilotStream } from "./pilotstream.js";
 import { DEVICE_TOUCH_INTERVAL_MS, nextDeviceLabel, touchDecision } from "./devicetouch.js";
 import {
   noteRejectWarn,
@@ -1027,8 +1031,8 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
   // recent conversations scanned, messages per conversation, total time
   // budget with early exit — live in searchindex.ts and mark the answer
   // `truncated` when hit. Origin failure degrades to an empty truncated list
-  // plus one coarse log line (no path, no secret). Wiring this into the
-  // conversation selector is the next slice; no screen consumes the route yet.
+  // plus one coarse log line (no path, no secret). Consumed by the
+  // conversation list and the ⌘K palette (web components/ContentSearch.tsx).
   if (req.path === "/__ocr/search" && req.method === "GET") {
     const q = typeof req.query?.q === "string" ? req.query.q : "";
     if (q.trim().length < SEARCH_MIN_TERM) {
@@ -1922,6 +1926,12 @@ async function proxy(req: OpRequest, sessionFrom = ""): Promise<OpResponse> {
     );
     metrics.inc("ocr_pilot_mission_reads_total");
     return { id: req.id, status: 200, body: { mission: spec?.prompt ?? legacy, spec, modelSubstitutions } };
+  }
+  // eval-19: the fleet status digest for the phone's Mission Control — the
+  // same read-only payload as the loopback GET /api/pilot-status.
+  if (req.path === "/__ocr/pilot-status" && req.method === "GET") {
+    metrics.inc("ocr_pilot_mission_reads_total");
+    return { id: req.id, status: 200, body: await readPilotStatus() };
   }
   if (req.path === "/__ocr/pilot-forensic" && req.method === "GET") {
     const task = typeof req.query?.task === "string" ? req.query.task : "";
@@ -4606,6 +4616,9 @@ function dashboardFile(variant: "index" | "mission-v3" = "index"): string | URL 
   return new URL(`../../../apps/pilot/dashboard/${variant}.html`, import.meta.url);
 }
 
+// P2-110: one shared SSE hub, created on the first /api/pilot-stream client
+let pilotStream: PilotStream | null = null;
+
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   // GET /dashboard — pilot three.js mission control (static file). P1-057: the
   // apiToken is NEVER embedded in the HTML anymore — the browser proves itself
@@ -5013,7 +5026,9 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       let ready: { id: string; title: string; area: string }[] = [];
       let blocked: { id: string; title: string; area: string }[] = [];
       try {
-        const md = readFileSync(new URL("../../../BACKLOG.md", import.meta.url), "utf8");
+        // eval-19: the pilot works origin/main's queue — the checkout's copy
+        // lags by the whole deploy lag (27/09: Ready=[P2-345], done on main)
+        const md = (await readQueueBacklog()) ?? readFileSync(new URL("../../../BACKLOG.md", import.meta.url), "utf8");
         const view = queueView(md);
         ready = view.ready;
         blocked = view.blocked;
@@ -5156,6 +5171,23 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       }
       return true;
     }
+    // GET /api/pilot-stream — P2-110 SSE: snapshot, one `pilot` frame per new
+    // events.jsonl line, the status digest every 15s (cookie auth for
+    // EventSource via POST /api/session; the token never rides the URL)
+    if (seg[1] === "pilot-stream" && req.method === "GET") {
+      pilotStream ??= createDefaultPilotStream({
+        status: () => readPilotStatus(),
+        onClients: (n) => metrics.gauge("ocr_pilot_stream_clients", n),
+      });
+      await pilotStream.attach(req, res);
+      return true;
+    }
+    // GET /api/pilot-status — eval-19 fleet digest: liveness, deploy lag/hold,
+    // disk, queue (origin/main), cost, undelivered alerts + attention flags
+    if (seg[1] === "pilot-status" && req.method === "GET") {
+      send(200, await readPilotStatus());
+      return true;
+    }
     // GET /api/pilot-liveness — eval-01 liveness verdict for Mission Control
     // (contract: docs/PILOT.md "Alertas de vida do pilot")
     if (seg[1] === "pilot-liveness" && req.method === "GET") {
@@ -5172,7 +5204,24 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
           .filter(Boolean)
           .map((l) => JSON.parse(l) as PilotEvent);
       } catch {}
-      const events = allEvents.slice(-200);
+      // P2-109 (eval-19): ?since=<ISO>&limit=<n> makes the fallback poll
+      // cheap — only events strictly newer than `since`, newest `limit`
+      // (default 200, max 1000). Without `since` the tail stays the last 200.
+      // `since` compares by instant when both sides parse as dates (plain ISO
+      // with offsets, not only Z), falling back to the raw string order.
+      const since = url.searchParams.get("since");
+      const limitRaw = Number(url.searchParams.get("limit") ?? 200);
+      const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
+      const sinceMs = since ? Date.parse(since) : Number.NaN;
+      const events = (
+        since && Number.isFinite(sinceMs)
+          ? allEvents.filter((e) => {
+              if (typeof e.ts !== "string") return false;
+              const t = Date.parse(e.ts);
+              return Number.isFinite(t) ? t > sinceMs : e.ts > since;
+            })
+          : allEvents
+      ).slice(-limit);
       // P2-045: per-step gate failure breakdown over the full event file —
       // wider than the 200-event tail so the picture stays honest
       const failSteps = countFailSteps(allEvents);
@@ -5201,10 +5250,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       } catch {}
       const lastAux: Record<string, string> = {};
       try {
-        const tail = readFileSync(join(homedir(), ".opencode-remote", "logs", "pilot.log"), "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .slice(-400);
+        // eval-19: tail read — the whole log (10.4 MB) used to be read per poll
+        const tail = readTailLines(join(homedir(), ".opencode-remote", "logs", "pilot.log"), 400, 512 * 1024);
         for (const line of tail) {
           if (!line.includes("researcher") && !line.includes("strategist")) continue;
           try {

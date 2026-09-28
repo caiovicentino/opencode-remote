@@ -64,6 +64,20 @@ export function takeSendOnOpen(id: string, now: number = Date.now()): string | n
   return flag.text;
 }
 
+/**
+ * eval-10: consume the flag AND clear the opened session's draft when it
+ * fires. The send-on-open path sends the text as an override (the composer
+ * draft is never wiped by an override — camera-question rule), so the chat
+ * opened with the first message sent AND still sitting in the composer: one
+ * more tap sent it twice. The draft equals the flagged text by construction
+ * (takeSendOnOpen validates it), so clearing it drops nothing the user typed.
+ */
+export function consumeSendOnOpen(id: string, now: number = Date.now()): string | null {
+  const text = takeSendOnOpen(id, now);
+  if (text !== null) clearDraft(id);
+  return text;
+}
+
 /** Appends with a single space separator and returns the new value. */
 export function appendDraft(id: string, text: string): string {
   const prev = getDraft(id);
