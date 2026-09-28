@@ -498,9 +498,10 @@ const queueMd = (ready: string[], blocked: string[]) =>
 
 // ── 8. the new suites run in the gate (an orphan test file never runs) ─────
 {
-  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
-  const chain = pkg.scripts["test:unit"] ?? "";
-  check("chain: test:unit runs pilot-status, dashboard-status, mission-fleet and pilot-stream", ["pilot-status", "dashboard-status", "mission-fleet", "pilot-stream"].every((f) => chain.includes(`tsx scripts/${f}.test.ts`)));
+  // composition: the unit battery moved to the registry (scripts/unit-suite.txt,
+  // #1404) — the pin reads the list, not the chain line.
+  const list = readFileSync(new URL("./unit-suite.txt", import.meta.url), "utf8");
+  check("chain: the unit suite runs pilot-status, dashboard-status, mission-fleet and pilot-stream", ["pilot-status", "dashboard-status", "mission-fleet", "pilot-stream"].every((f) => new RegExp(`^scripts/${f}\\.test.ts$`, "m").test(list)));
 }
 
 for (const d of temps) rmSync(d, { recursive: true, force: true });
