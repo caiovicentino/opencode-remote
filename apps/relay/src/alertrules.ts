@@ -157,6 +157,18 @@ export function alertRules(): RelayAlertRule[] {
       severity: "warning",
       symptom: "Uma sala passou o orçamento de volume da janela e foi encerrada.",
     },
+    {
+      // eval-13: two live sockets holding one room's owner identity — two
+      // daemons sharing one identity. The 10 minutes absorb the brief overlap
+      // a restart can produce; a lasting pair means answers come from the
+      // wrong process in silence.
+      alert: "RelayDuplicateOwner",
+      series: "relay_rooms_duplicate_owner",
+      expr: "relay_rooms_duplicate_owner > 0",
+      for: "10m",
+      severity: "warning",
+      symptom: "Duas instâncias do daemon disputam a mesma sala (processo antigo vivo ou pasta de estado copiada): o celular recebe respostas da instância errada.",
+    },
   ];
 }
 

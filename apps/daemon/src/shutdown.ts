@@ -26,16 +26,19 @@ export interface ShutdownDeps {
  * 2. stop listeners (http close; relay/client ws closed with code 1001)
  * 3. short settle so close frames flush, then exit 0
  * A hard timer caps the drain at DRAIN_MS; a second signal exits immediately.
+ * eval-12: `exitCode` (default 0) is what every exit of this call uses — the
+ * crash path drains the same way but exits 1, so a supervisor that treats 0
+ * as a deliberate stop (the desktop sidecar) still restarts the daemon.
  */
 export function createShutdown(deps: ShutdownDeps): {
-  shutdown: (signal: string) => Promise<void>;
+  shutdown: (signal: string, exitCode?: number) => Promise<void>;
   isShuttingDown: () => boolean;
 } {
   let started = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  const shutdown = async (signal: string, exitCode = 0): Promise<void> => {
     if (started) {
       log("warn", "shutdown already in progress; exiting immediately", { signal });
-      deps.exit(0);
+      deps.exit(exitCode);
       return;
     }
     started = true;
@@ -44,7 +47,7 @@ export function createShutdown(deps: ShutdownDeps): {
       activeConnections: deps.activeConnections(),
       uptimeS: Math.round(deps.uptimeMs() / 1000),
     });
-    const hard = deps.setTimeout(() => deps.exit(0), DRAIN_MS);
+    const hard = deps.setTimeout(() => deps.exit(exitCode), DRAIN_MS);
     try {
       await deps.stopListeners();
       await new Promise<void>((r) => deps.setTimeout(r, SETTLE_MS));
@@ -52,7 +55,7 @@ export function createShutdown(deps: ShutdownDeps): {
       log("warn", "error during shutdown drain", { error: (err as Error).message });
     }
     deps.clearTimeout(hard);
-    deps.exit(0);
+    deps.exit(exitCode);
   };
   return { shutdown, isShuttingDown: () => started };
 }

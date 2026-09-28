@@ -96,7 +96,7 @@ fallback de merge local.
 | `builder` | implementa a task em branch `pilot/<id>`, commita | 45 min |
 | `security reviewer` | foco: crypto, auth, injection, secrets | 20 min |
 | `quality reviewer` | foco: regressão, UX, docs, testes | 20 min |
-| `scribe` | após o merge: destila até 3 lições do diff (P1-075: só o diff — findings de review não entram no prompt) → `docs/EXPERIENCE.md` | 10 min |
+| `scribe` | após o merge: destila 0–2 lições do diff (P1-075: só o diff — findings de review não entram no prompt; eval 05: até 200 caracteres, vê as lições já guardadas mais próximas para não repeti-las) → `docs/EXPERIENCE.md` | 10 min |
 | `strategist` | quando a fila tem <2 tasks: lê código/memória/métricas e propõe as próximas tasks (o runner valida e pousa via PR `pilot/meta` com guard) | 25 min |
 | `red team` (1x/dia, janela reservada 02:00–04:00 — P3-356) | tenta quebrar segurança/robustez; achados viram task P0 | 30 min |
 | gatekeeper | **não é LLM** — roda scripts, decide por exit codes | — |
@@ -278,10 +278,11 @@ o perfil `pilot` é pinado **pelo caminho do workspace**
 achado a: um repo externo chamado `opencode-remote` ganhava a bateria
 completa e os `scripts/*.ts` dele rodavam como nossas invariants — conteúdo
 de repo é do atacante, o caminho é do scheduler; um clone de missão vive em
-`pilot/mission/<key>/repo-N`, cujo pai não é o slot root). **Re-pin do
-judge**: a cópia pinada em `~/.opencode-remote/judge/src/gateprofile.ts`
-ainda usa a detecção por nome/árvore — o operador espelha a regra de caminho
-lá e re-pina (a bateria unit cobre só o espelho in-repo). Um repo
+`pilot/mission/<key>/repo-N`, cujo pai não é o slot root). **Judge**: a
+cópia pinada em `~/.opencode-remote/judge/src/gateprofile.ts` já usa a mesma
+regra de caminho desde o commit `5ff11e8` do judge (P1-058); o checkout de
+produção vem de `OCR_PILOT_REPO` (herdado do launchd do pilot) ou
+`~/.opencode-remote/prod` — ver "Juiz: caminhos protegidos…" abaixo. Um repo
 externo (missão self-serve, abaixo) roda o **perfil genérico**: apenas os
 scripts `typecheck`, `build`, `test` e `lint` que existirem no `package.json`
 dele (`buildGenericProfile`), rodando do próprio repo alvo, cada step com
@@ -552,6 +553,60 @@ mergeadas pelo workflow sem intervenção humana.
    (`DEPLOY_REFUSAL_BACKOFF_MS`, `deploybackoff.ts`; warn + evento
    `deploy/backoff`). Tentativa real, recusa de outro tipo ou restart do
    processo zeram a sequência (estado em memória).
+0g. **Guard do judge (eval r5)**: último guard antes da mutação. As live
+   invariants que fecham todo deploy rodam o judge **pinado**, que fala o
+   protocolo pela própria cópia vendorizada (`~/.opencode-remote/judge/src/protocol.ts`).
+   Se o judge está inutilizável (ausente, HEAD ≠ pin, checkout sujo) o deploy é
+   recusado (`refused:"judge-guard"`) — antes, `resolveJudge()` estourava DEPOIS
+   do reset/build/restart e produção ficava num build sem verificação e sem
+   rollback. Se a cópia diverge **em runtime** de
+   `packages/protocol/src/crypto.ts` no SHA alvo (`judgedrift.ts`: tipos e
+   comentários apagados pelo compilador, comparação por tokens — cópia ASCII ou
+   tipo estreitado não contam; o RT-390 conta) o deploy também é recusado, sem
+   quarentena e sem budget — era exatamente o incidente 10/09→22/09 (judge
+   pinado antes do RT-390, live invariants falhando e **quarentenando SHAs
+   bons** por 12 dias). Um notify por recusa distinta; a mensagem nomeia os
+   símbolos que mudaram (`changed: clientHello, serverAccept`) e carrega os
+   passos exatos do reparo para o SHA recusado: (1) `git -C <prod> show
+   <sha>:packages/protocol/src/crypto.ts > ~/.opencode-remote/judge/src/protocol.ts`,
+   (2) revisar `git -C ~/.opencode-remote/judge diff` (área de crypto, protegida
+   pela constituição), (3) `cd ~/.opencode-remote/judge && npm run typecheck &&
+   npm test`, (4) commitar no repo do judge, (5) re-pinar `judge.json` com o novo
+   HEAD, (6) `npx tsx scripts/pilot-preflight.ts` — o pending deploy tenta de novo
+   sozinho. É intencional que QUALQUER mudança de runtime em
+   `packages/protocol/src/crypto.ts` pare os deploys até esse reparo, mesmo quando
+   o hello antigo do judge ainda seria aceito (ex.: nonce canônico do hello): um
+   `serverAccept` mais estrito com o cliente inalterado é exatamente o formato do
+   incidente de 22/09, e compatibilidade não é decidível mecanicamente. Alvo sem
+   `packages/protocol` (repo estrangeiro) não tem o que espelhar; comparação
+   impossível (sem compilador) segue em fail-open com warn. O judge é resolvido
+   uma vez após a mutação e reusado pelas re-execuções do soak; se ficar
+   inutilizável nesse meio-tempo o deploy volta ao SHA anterior **sem**
+   quarentena.
+0h. **Catch-up em passos + plano explícito (eval r5)**: os dois pontos de
+   deploy resolvem o alvo por `resolveDeployPlan()` (mesmo walk first-parent do
+   `latestDeployableSha`, ancorado no HEAD de produção). Com o intervalo
+   **limpo** (nenhum SHA quarentenado entre prod e o mais novo) e mais de
+   `CATCHUP_STEP_TASKS` (4) merges verificados pendentes, o deploy anda em
+   passos do mais antigo para o mais novo, até 4 merges por passo: uma falha
+   quarentena um passo e aponta no máximo 4 suspeitos (`step suspects:` no
+   detail), e os passos anteriores ficam no ar. Intervalo que já carrega uma
+   quarentena vai direto ao mais novo (regra de fix-forward — só o merge mais
+   novo pode trazer a correção). Todo deploy anuncia o plano depois dos guards
+   (log `deploy plan` com a lista, evento `deploy/plan`, notify do supervisor
+   para passo com ≥2 merges); o detail do deploy bem-sucedido carrega o resumo.
+   Deploy com ≥ `CATCHUP_MIN_TASKS` (2) merges ganha o **soak reforçado** da lane
+   de autocatálise (baseline, `invariants --live` extra a cada 5 checagens,
+   rollback por taxa) com piso de `CATCHUP_SOAK_MIN` (10) minutos — o
+   `monitorMin: 2` do pilot.json dava 2 sondas para 16 merges de uma vez.
+0i. **Espera após rollback (eval r5)**: um deploy que volta atrás arma uma
+   espera no caminho de pending deploy: nada de nova tentativa até a lista de
+   merges verificados ganhar um SHA novo (informação nova — talvez a correção)
+   ou passar `DEPLOY_ROLLBACK_HOLD_MS` (2h). Antes, o self-heal descia para o
+   próximo SHA verificado no ciclo seguinte sem aprender nada (11/09
+   08:33/08:39/08:44: três deploys e três SHAs bons quarentenados pela mesma
+   falha de ambiente). O caminho de merge (launchDeploy) não consulta a espera
+   — um merge novo É a informação nova. Estado em memória, como o backoff.
 1. `git reset --hard <sha>` no repo de produção + install + `npm run build`.
    **P1-021**: o install é decidido pelo hash do `package-lock.json` persistido
    em `~/.opencode-remote/pilot/last-install.json` — lock inalterado roda o fast
@@ -715,11 +770,15 @@ intacto). Bloco opcional:
   que o critério de aceitação pede.
 - **Forensic semanal**: na passada noturna (janela reservada ou primeira
   ocorrência >= 2h ocioso do dia — P3-356/P1-095), um agente analisa as últimas
-  100 failure lessons (`lessons.jsonl`), os carryovers de gate-fail e o
+  100 failure lessons (`lessons.jsonl` — só tasks bloqueadas de verdade, uma
+  linha por task; lições arquivadas nunca entram), os carryovers de gate-fail e o
   `git log -50` e escreve a taxonomia de falhas (padrões, causas raiz,
   recomendações) em `~/.opencode-remote/pilot/forensic-latest.md` + digest no
   telefone. Guard próprio de 7 dias (`state.forensicLast`, persistido **antes**
-  do run); falha é best-effort e nunca bloqueia o loop. O relatório chega ao
+  do run; eval 05: preservado na virada de dia do `loadState` junto com
+  `redteamLast`/`researchLast`/`explorerLast`/`mergesSinceCorpus`/`auditDiagnosis`
+  — antes todo boot em outro dia descartava essas guardas e o forensic semanal
+  rodava de novo); falha é best-effort e nunca bloqueia o loop. O relatório chega ao
   disco pelo runner (stdout), nunca por write direto do agente fora do workspace.
 
 ## Tarefas long-horizon — campo size (P1-060)
@@ -1208,6 +1267,23 @@ e logados em `apps/pilot/src/doctor.ts`:
   `models.tierB` tem algum role configurado; binário quebrado → `ok:false`
   (exit 1) com a cauda do erro no detail. Sem tier-B configurado a sonda é
   pulada (máquina tier-A-only fica verde).
+- **`tierb-roles`** (eval r5) — com um bloco `models.tierB` presente, todo papel
+  de julgamento (`TIER_B_ROLES`, exaustivo contra o tipo `TierBRole` em
+  compile-time) precisa estar pinado: papel faltando é nomeado ("fable silently
+  run tier A" — o caso de 22/09, quando o fable rodou em tier A em silêncio) e
+  chave desconhecida (typo) também; sem bloco tier-B continua verde;
+- **`judge`** (eval r5) — judge pinado utilizável (mesmo veredito do
+  `resolveJudge`, só leitura) e cópia vendorizada do protocolo em sincronia de
+  runtime com `origin/<base>:packages/protocol/src/crypto.ts`; divergência sai
+  com o reparo e a janela do primeiro token diferente. Diagnóstico apenas —
+  quem bloqueia o deploy é o guard do judge (0g).
+
+O boot roda `runDoctorGuards()` logo depois do pass completo (separado para não
+mexer no contrato do P1-030): cada check vermelho loga warn, emite evento
+(`alert`/`judge` ou `phase`/`tierB-roles`) e notifica o supervisor, sem nunca
+bloquear o boot. Desde a eval r5 o `refs` não reseta mais quando o `checkout
+main` falha — o reset caía na branch `pilot/<ID>` em que o slot estava e
+apagava commits não empurrados (24/09 07:12, repo-2).
 
 **Blocos soltos sob `## Ready`** (P2-341): o pass de doctor também denuncia as
 rodadas contíguas de prosa cuja primeira linha não é uma task line válida
@@ -1236,6 +1312,8 @@ npx tsx apps/pilot/src/doctor.ts backlog            # exit 1 se inválido
 npx tsx apps/pilot/src/doctor.ts branches
 npx tsx apps/pilot/src/doctor.ts state
 npx tsx apps/pilot/src/doctor.ts tierb            # sonda o binário claude tier-B
+npx tsx apps/pilot/src/doctor.ts tierb-roles      # todo papel tier-B pinado?
+npx tsx apps/pilot/src/doctor.ts judge            # judge pinado + protocolo em sincronia
 ```
 
 Cobertura: um bloco por subcomando em `scripts/unit.test.ts` (sequência exata de
@@ -1266,6 +1344,31 @@ npm run start --workspace @ocr/pilot       # loop contínuo em foreground
 Atenção: vale o singleton do pidfile — subir uma segunda instância (foreground,
 `once` ou serviço) mata a instância anterior viva.
 
+### Preflight antes de religar o pilot (eval r5)
+
+```sh
+npx tsx scripts/pilot-preflight.ts          # relatório pt-BR + VEREDITO GO/NO-GO (exit 0/1)
+npx tsx scripts/pilot-preflight.ts --json   # fatos + checks em JSON
+```
+
+Somente leitura (git com `--no-optional-locks`, nunca fetch; só GETs em
+loopback e na lista `/models` do provider tier A; nenhum segredo impresso —
+`daemon.json` nem é lido). Mede: serviços `com.ocr.*` no launchd, idade do
+heartbeat e pidfile, disco dos dois volumes (prod/slots e o volume do
+`opencode.db`, com folga em dias a +5 GB/dia), judge pinado + deriva do
+protocolo contra os alvos do deploy, `gh auth`, API do opencode (:4096), health
+de deploy do daemon (`/metrics` sem token), alcance do provider tier A,
+`claude --version`, completude do tier B, caminho de alerta (sessão supervisora
+existe? inscrições de push? fila `notify-pending`), validade do
+`mission.json`, o plano de deploy pendente (prod → alvo, tarefas incluídas,
+passos, o que o intervalo toca e se o código de prod — que é o que o restart
+roda — já tem o catch-up em passos) e o trabalho em voo (PRs `pilot/*`,
+commits só locais que o doctor do boot apagaria, com o comando de backup).
+Qualquer FALHA ⇒ NO-GO. Importante: o processo religado roda o código do
+checkout de produção; as mudanças do deploy desta seção só valem depois de
+deployadas — até lá o preflight indica a alavanca do código antigo
+(`monitorMin` no pilot.json).
+
 ## Regras do BACKLOG.md
 
 Formato das tasks (seção `## Ready`):
@@ -1294,9 +1397,11 @@ sem spec.
 - O `builderPrompt` referência o spec: "read it FIRST ... do not delete or
   rewrite the spec" — desvios precisam ser justificados no commit.
 - **Planner enxerga as lições (P2-042)**: o `plannerPrompt` injeta o mesmo
-  contexto de experiência do builder/strategist — top-5 lições do IER
-  (`pickRelevantLessons`, keyword-match contra título+spec da task) e as 10
-  failure lessons mais recentes (`~/.opencode-remote/pilot/lessons.jsonl`).
+  contexto de experiência do builder/strategist — até 5 lições do IER
+  (`pickRelevantLessons`, match pesado por raridade contra título+spec da task)
+  e as 5 failure lessons de tasks bloqueadas mais próximas da task
+  (`~/.opencode-remote/pilot/lessons.jsonl`; eval 05 — o strategist segue com as
+  10 mais recentes).
   Assim o spec de P0/P1 já nasce ciente dos padrões que bloquearam tasks
   anteriores; sem nenhum match, o prompt fica limpo (blocos vazios).
 - O reviewer de **quality** ganha o critério explícito "does the diff fulfill
@@ -1609,32 +1714,54 @@ lições de engenharia de uma linha, no formato `- When <situação>, do <ação
 seção `## Lessons`. Três peças:
 
 1. **SCRIBE (pós-merge)**: logo depois que o gatekeeper mergea, um agent lê o diff
-   da task + os findings de review (já endereçados) e **saída** de 1-3 lições no
-   formato acima — o agent nunca edita o arquivo direto: o runner valida o formato,
-   deduplica contra o que já existe, appenda (máx. 3 por merge) e pousa o commit
+   da task e **saída** de 0-2 lições no formato acima (eval 05: no máximo 200
+   caracteres antes da tag `(fonte:)`, sem convenções que o repo já aplica em
+   todo lugar; "nenhuma lição" é resposta válida). O prompt carrega as lições já
+   guardadas mais próximas do diff (`lessonsNearDiff`: caminhos tocados + linhas
+   adicionadas) para o scribe não reescrevê-las — repetir uma delas literalmente
+   a **renova**. O agent nunca edita o arquivo direto: o runner valida o formato,
+   corta texto longo em fronteira de palavra (teto 240), deduplica contra o que já
+   existe, appenda (máx. 2 novas por merge) e pousa o commit
    `pilot(scribe): N lesson(s) from <ID>` via **PR `pilot/meta`** (P1-076), com
    retry do landing inteiro para lidar com scribes concorrentes de slots paralelos.
+   Uma lição que chega de novo (chave igual ou paráfrase, Jaccard >= 0.3) não é
+   duplicada nem descartada: a redação nova **substitui** a antiga no fim do
+   arquivo, então a poda por idade preserva o que continua sendo reaprendido.
    Falha do scribe nunca falha o pipeline
    (o merge já aconteceu); é log + evento `scribe-done`.
-2. **Injeção nos prompts**: `builderPrompt` e o prompt do strategist recebem o
-   **top-5 de lições relevantes** — keyword-match (tokenizado, stopword-filtered)
-   do título (peso 2) + spec (peso 1) da task contra o texto da lição, empate
-   resolvido pela mais recente primeiro. Task sem overlap de keywords não recebe
-   lição nenhuma (nada é injetado à força).
+2. **Injeção nos prompts**: `builderPrompt`, `plannerPrompt` e o prompt do
+   strategist recebem **até 5 lições relevantes**: cada palavra em comum com a
+   task vale pela sua raridade no arquivo (idf; título pesa 2, spec 1), o
+   boilerplate de spec (`evidence`, `apps`, `unit`, `typecheck`, `src`, `test`,
+   `build`, `real`… — presente em 53–78% das tasks) não conta, a lição precisa
+   de >= 2 palavras em comum e de pontuação mínima (2,5× o idf de uma palavra
+   única), e uma paráfrase de lição já escolhida não entra de novo. Sem lição
+   relevante, nada é injetado. Medição (eval 05, replay dos últimos 60 merges
+   contra o EXPERIENCE.md que cada builder viu): o match antigo (`score > 0`)
+   enchia os 5 slots em 58/60 tasks com as mesmas lições "hub" (duas delas em
+   23/60 prompts); o novo injeta 3,3 lições em média (−32% de texto), nenhuma em
+   10/60, e numa amostra rotulada de 12 tasks a fração de lições relevantes
+   subiu de ~5% para ~15% (relevantes+parciais: 23% → 41%).
 3. **Manutenção noturna (red team)**: no pass noturno (primeira janela >= 2h
    ocioso do dia), além da caça a
    buracos de segurança, o pilot **deduplica e poda** `docs/EXPERIENCE.md`
-   quando ele passa de **60 lições** — dedupe por chave normalizada (case/
+   quando ele passa de **150 lições** (eval 05: com 60, ~27 merges/dia × 3
+   lições enchiam o arquivo em menos de um dia — a poda cortava 47–92 lições por
+   noite e a vida mediana de uma lição era 27h; no replay do stream real do
+   scribe a política nova dá ~68h) — dedupe por chave normalizada (case/
    pontuação/provenance-insensitive, vence a ocorrência mais recente) **e, desde
-   P1-075, dedupe semântico** (Jaccard >= 0.6 sobre os tokens da lição, só para
-   pares com >= 5 tokens) — e poda para as 60 mais recentes, com commit+push
+   P1-075, dedupe semântico** (Jaccard >= 0.3 sobre os tokens da lição, só para
+   pares com >= 5 tokens; calibrado em 3 snapshots reais: todos os 16 pares
+   >= 0,30 eram a mesma lição reescrita, e o antigo 0,6 nunca disparava) — e poda
+   para as 150 mais recentes, com commit+push
    `pilot(redteam): experience maintenance`. A manutenção roda **antes** do
    agent de redteam, sob guard própria (`expMaintLast`): falha/crash do agent
    não perde mais o dia. Na poda, lições de **harness** (vocabulário do
    pipeline: pilot/pipeline/builder/reviewer/scribe/gate/backlog/planner/slot…)
    cujo `(fonte: ID)` já está em `## Done` são **arquivadas** — viram uma linha
-   `step:"archived"` em `~/.opencode-remote/pilot/lessons.jsonl` (fora de todo
-   worktree) em vez de serem apagadas; lições de código de produto têm
+   `kind:"experience-archived"` (`{ts, task, lesson}`) em
+   `~/.opencode-remote/pilot/lessons.jsonl` (fora de todo worktree) em vez de
+   serem apagadas; lições de código de produto têm
    prioridade e nunca são arquivadas (acima do cap, cai primeiro a harness, e
    dentro da classe a mais antiga).
 
@@ -1659,12 +1786,39 @@ duplicam entradas, e `findings` nunca repete o conteúdo de `tail` no caminho de
 re-bloqueio (que resume pelo step). O prompt do **strategist** recebe as **10
 lições de falha mais recentes** num bloco `FAILURE LESSONS` na hora de
 criar/refinar tasks, para não re-propor padrões que já queimaram o orçamento de
-tentativas. P1-075: lições de experiência **arquivadas** pela manutenção
-noturna (`step: "archived"`) também pousam nesse jsonl, mas prefill no máximo
-**3 dos 10 slots** do bloco — falhas reais de task bloqueada mantêm o resto.
-O pipeline também instrumenta o efeito da injeção de lições: cada resultado de
-pipeline é dobrado em `state.lessonImpact` (coortes *with/without lessons*:
-merges, rounds totais e tokens totais) e logado como `lesson impact`.
+tentativas; o do **planner** recebe as 5 mais próximas da task (palavras
+informativas em comum com título+spec; recência desempata). Eval 05 (forensic
+2026-09-24, rec. 6): entram **só tasks bloqueadas de verdade** (`attempts > 0`),
+**uma linha por task** (re-bloqueio fica com a mais nova), e o filtro roda
+**antes** da janela de recência. Antes disso o jsonl de produção tinha 192 linhas
+`kind:"failure"`/`step:"archived"` (lições de SUCESSO arquivadas pela manutenção
+noturna, P1-075) contra 15 bloqueios reais, e o bloco que planner e strategist
+viam era 3 lições arquivadas e **nenhuma** falha real; o diagnóstico do doctor
+listava `archived(182)` como passo de falha e tasks mergeadas como
+"rejeitadas". Arquivadas agora têm kind próprio (`experience-archived`) e nunca
+entram em leitor de falha (as 192 linhas legadas são filtradas). A linha do
+prompt compacta o boilerplate do stop-loss (`infra "ci-red" 3x in a row: <último
+detalhe>` — o nome do job de CI deixa de ser cortado), usa só as linhas de falha
+da cauda (sem `OK …`, eventos JSON nem códigos ANSI) e mostra o título da task
+quando a linha o tem (`title`, gravado a partir deste eval).
+O pipeline também registra, **de forma descritiva**, a injeção de lições: cada
+resultado de pipeline é dobrado em `state.lessonImpactV2` (coortes *with/without
+lessons*: runs, merges, rounds e tokens) e logado como `lesson impact`. Limites
+(eval 05, `apps/pilot/src/lessonimpact.ts`): as coortes **não são aleatórias** —
+o matcher decide quem recebe lição a partir do texto da task, então a diferença
+entre elas não prova que lições ajudam ou atrapalham. A v1 (até 2026-09-27)
+somava o total **vitalício** de tokens da task a cada run (1,70× inflado em 568
+runs: 6,45 bi registrados contra 3,80 bi reais) e jogava runs que nem chegaram
+ao builder (8 falhas de planner) na coorte *without* — que tinha só 3 merges,
+todos de tasks RT. A contabilidade nova vive em `state.lessonImpactV2`: soma o
+delta de tokens de cada run, conta `runs`, deixa runs sem rodada de builder em
+`untreated`, carimba `since` e sobrevive à virada da meia-noite. O registro v1
+(`state.lessonImpact`) fica **congelado** — nunca é reescrito nem migrado, então
+um rollback para código antigo continua achando os dois intactos. Uma afirmação
+causal exige holdout aleatório: com a
+variância medida (CV 0,89 em rounds/merge, 1,14 em tokens/merge), detectar 20%
+de efeito com 80% de poder pede ~311 merges por braço em rounds (~511 em
+tokens), ou seja, semanas de holdout — decisão do operador, ainda não ligada.
 
 ## RESEARCHER role (daily frontier scan)
 
@@ -1872,6 +2026,148 @@ threshold, notify e emit são injetáveis (`DeployOpts`) — a bateria de eval
 (`scripts/unit.test.ts`) testa o abort com threshold mockado provando que ele
 acontece antes do `npm ci`.
 
+## Disco: hold, retenção e VACUUM (eval-02, 27/09)
+
+**Por quê.** Em 24/09, das 04:20 às 07:40, o volume de `~/.opencode-remote` (e, na
+época, do `opencode.db`) chegou a 0 bytes. O disk guard do deploy recusou por 12h
+(85 recusas desde 23/09 15:56), mas nada parava os 8 slots. Depois disso, toda
+escrita virou fatal: `pilot fatal … ENOSPC … pilot.pid` a cada relaunch do
+KeepAlive (~14×, com 30s de ThrottleInterval). O `saveState` do caminho de crash
+lançou ENOSPC e pulou o cool-down (763 re-picks do mesmo task em ~2min). O
+heartbeat falhava em silêncio até o watchdog matar o loop. A queda de 12/09 → 22/09
+foi da mesma classe.
+
+**Disk hold** (`apps/pilot/src/diskhold.ts`). Em todo tick, antes de qualquer
+trabalho, o loop faz `statfs` de cada volume que a frota escreve: estado do pilot,
+checkout de prod, o `opencode.db` **resolvido** (symlink para o SSD desde 24/09) e
+o temp. O **pior** volume decide o nível:
+
+| nível | entra | sai (histerese) | efeito |
+|---|---|---|---|
+| `low` | < 10 GiB | ≥ 12 GiB → ok | sem picks novos, sem nightly/aux; pipelines em voo terminam; deploy segue com o guard de 5 GiB |
+| `critical` | < 5 GiB, ou uma escrita falhou com ENOSPC (mín. 10 min) | ≥ 7 GiB → low | nada novo, sem deploy; o loop só sonda, varre espaço (dist + artefatos) e alimenta o heartbeat |
+
+Cada transição gera **um** alerta: log `disk hold` / `disk hold released`, evento
+`alert` (`task: "disk"`), `notifySupervisor("pilot-disk")` e um push `💾 Pilot …`
+com `digest` ligado. Enquanto o hold durar, sai um lembrete a cada 6h: em 12/09 um
+único sinal perdido virou 10 dias parados. O seam é único (`diskAlert`); o dono da
+entrega de alertas pode repontá-lo. Quando o espaço volta, o backoff do pending deploy é zerado (sem
+esperar 30min). Se nenhum volume puder ser lido, o nível não muda: nunca entra em
+hold por falta de evidência e nunca sai dele pelo mesmo motivo.
+
+**Nunca crash-loop.**
+- **Boot gate:** a escrita do pidfile espera (sem crash) enquanto o disco está
+  critical; um ENOSPC nela força o hold.
+- **Caminho de crash:** o `runSlot`, o fim do deploy e o contador de deploy usam
+  `saveStateSafe`, que nunca lança. O estado em memória segue autoritativo e o
+  próximo save tenta de novo.
+- **ENOSPC fora de await:** uma rejeição não tratada com ENOSPC vira hold em vez de
+  derrubar o processo. Outros erros continuam fatais (crash-only).
+- **`main()` morto por ENOSPC:** o processo espera o espaço voltar e sai **uma**
+  vez.
+- **Watchdog:** julga o batimento **em memória** (`heartbeatAgeMs`). O arquivo
+  `pilot/heartbeat` continua sendo o sinal externo (dashboard), gravado
+  best-effort.
+
+As listas do deploy guard (`verified-merges.jsonl`, `quarantine.jsonl`,
+`last-install.json`) agora são gravadas com tmp + rename: um ENOSPC no meio da
+escrita não trunca mais a quarentena.
+
+**Hatches** (os mesmos do daemon): `OCR_DISK_FULL=1` força critical e
+`OCR_DISK_OK=1` força ok (FULL vence); `OCR_DISK_HOLD_TICK_MS` encurta o tick em
+testes. `scripts/pilot-diskfull.test.ts` sobe o entrypoint real com HOME
+temporário e `OCR_DISK_FULL=1`. Com `OCR_REAL_ENOSPC=1` (macOS), o teste repete o
+cenário num volume HFS+ de 16 MB realmente cheio e prova o resume automático num
+sparse de 8 GiB (~3,6 GB de backing temporário).
+
+**Retenção de artefatos** (automática, em `apps/pilot/src/retention.ts`: de hora
+em hora junto do sweep de dist; num hold critical, na entrada e de hora em hora
+enquanto ele durar). Cada regra
+mantém um piso dos N mais novos, apaga o que passou da idade e aplica um teto de
+contagem. Arquivo com menos de 1h nunca é tocado; subdiretórios e symlinks nunca
+casam.
+
+| regra | onde | piso | idade | teto |
+|---|---|---|---|---|
+| builder-logs | `pilot/builder-*.log` | 50 | 30d | 200 |
+| stray-logs | `pilot/p<N>-*.log`, `last-builder-output*.log` | 0 | 14d | 20 |
+| shots-builder | `pilot/shots/builder/*` (só arquivos) | 100 | 30d | 400 |
+| shots-explorer | `pilot/shots/explorer/*.png` | 120 | 45d | 400 |
+| tmp | `pilot/tmp/*` | 0 | 7d | 100 |
+| client-logs | `pilot/client-logs/*.txt` | 20 | 30d | 100 |
+
+`pilot/shots/*.png` continua com o teto de 20 do `shot.ts` (P2-011). Aquela
+passada só conhece `.png`, por isso o css/html de `shots/builder` acumulava.
+Manual: `npx tsx apps/pilot/src/retention.ts artifacts` (dry-run) /
+`… --apply`.
+
+**Retenção de sessões do opencode** (opt-in, CLI, **dry-run por padrão**). Medido
+read-only em 27/09: o `opencode.db` tem 87 GB, `page_count` 21,3M × 4 KiB,
+`freelist_count` 0 e `auto_vacuum` 0 (NONE). ~90% dele é a tabela `event`, e cada
+`message.updated` regrava os `summary.diffs[*].patch` da sessão inteira (até
+5 MB/evento no pilot). As sessões dos clones do pilot somam ~28–31 GB. O resto é
+de outros projetos do dono (`/Volumes/SSD Major/wow` ≈ 47 GB), fora do alcance
+desta ferramenta.
+
+Contrato do opencode 1.18.32, verificado num `opencode serve` hermético:
+- `GET /session?directory=D` lista só D, do mais novo para o mais antigo, e
+  **limita a 100 por padrão**. Por isso a ferramenta passa `limit=10000` e marca
+  listagens truncadas.
+- `scope=project` alarga para todos os clones do mesmo repositório, inclusive o
+  do dono, e **nunca é usado**.
+- `DELETE /session/<id>` apaga em cascata filhos, mensagens, parts e o event log.
+  **Ignora `directory`**, então a posse é checada do lado do cliente: diretório
+  exatamente igual a um clone do pilot (`repo-<n>`, clones de missão,
+  `repo-explorer`, `repo` legado), só raízes (o filho vai junto), idade = update
+  mais novo da árvore inteira, ids canônicos, teto por execução (`--max`, padrão
+  500), pausa entre deletes e trilha JSONL em `pilot/retention-audit.jsonl`, mais
+  `pilot-retention` no `audit.log`.
+
+Com o opencode no ar e o pilot parado ou ocioso:
+
+```sh
+npx tsx apps/pilot/src/retention.ts sessions --days 14          # dry-run: 582 raízes (~11–13 GB) em 27/09
+npx tsx apps/pilot/src/retention.ts sessions --days 14 --apply  # apaga + audita
+# --days 3 alcança 1000 raízes (~27–28 GB) em 27/09
+```
+
+**VACUUM, a realidade.** O delete só devolve páginas ao freelist **interno**: o
+arquivo continua com 87 GB, e o crescimento seguinte reusa esse espaço antes de
+crescer (28 GB ≈ 4–7 dias de frota). Para encolher o arquivo:
+- `VACUUM` no lugar exige acesso exclusivo e reescreve tudo. Precisa de ~2× o
+  tamanho do banco: um temp do tamanho do banco em `SQLITE_TMPDIR`/`TMPDIR`
+  (**disco interno por padrão, 78 GB livres < 87 GB, o que levaria a um novo
+  ENOSPC**) mais o WAL no SSD.
+- **Recomendado:** `VACUUM INTO` numa conexão **read-only**, com o opencode
+  parado. Isso grava uma cópia compacta (≈ dados vivos) direto no SSD, sem temp no
+  disco interno e já no modo INCREMENTAL. Num banco de teste isso foi verificado:
+  cópia com metade das páginas, `quick_check` ok, `auto_vacuum` 2 e origem
+  byte-idêntica. Depois é trocar os arquivos, levando `-wal`/`-shm` junto com o
+  antigo. Daí em diante, `PRAGMA incremental_vacuum` devolve o espaço liberado sem
+  reescrita total.
+
+```sh
+# 0) retenção primeiro (precisa do opencode no ar); depois o DONO para só o opencode
+#    (o daemon fala com ele pela API e nunca abre o banco)
+launchctl bootout gui/$(id -u)/com.ocr.opencode
+D="/Volumes/SSD Major/opencode_data"
+sqlite3 -readonly "$D/opencode.db" "PRAGMA auto_vacuum=INCREMENTAL; VACUUM INTO '$D/opencode.compact.db'"
+sqlite3 -readonly "$D/opencode.compact.db" "PRAGMA quick_check; PRAGMA auto_vacuum"   # ok / 2
+cd "$D" && mv opencode.db opencode.db.pre-vacuum \
+  && for x in -wal -shm; do [ -e "opencode.db$x" ] && mv "opencode.db$x" "opencode.db.pre-vacuum$x"; done \
+  && mv opencode.compact.db opencode.db
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ocr.opencode.plist   # ou: launchctl load -w <plist>
+# conferidas as sessões no app: rm "$D"/opencode.db.pre-vacuum*   (devolve os 87 GB antigos)
+```
+
+**Rotação de logs** (`deploy/rotate-logs.sh`, launchd `com.ocr.logrotate` às
+03:07). Cada log é tratado isoladamente: um log que não se consegue arquivar não
+aborta mais a rodada. O arquivo vivo só é truncado depois que a cópia `.gz` foi
+gravada. Arquivos antigos em texto puro são comprimidos, e o prune é **por log**,
+pelos 5 mais novos por mtime. O `sort -r` antigo mantinha os 5 caminhos
+lexicograficamente maiores somando todos os logs, e apagava um arquivo do daemon
+mais novo que os do relay.
+
 ## Deploy só de SHA verificado + quarentena (P2-058, 02/09)
 
 Antes o `deploy()` aceitava qualquer HEAD de `origin/main`: um push direto em
@@ -2016,3 +2312,98 @@ fresco) e o pilot emite evento `alert` + notify do supervisor dizendo que o
 main está vermelho no mesmo check — o próximo ciclo tenta de novo em vez de
 enterrar a task. No máximo um hold por task: no segundo ci-red compartilhado,
 bloqueia como antes.
+
+## Juiz: caminhos protegidos, cota de flaky e veredito v2 (P3-353, P3-359, eval-08)
+
+O gate roda no juiz pinado (`~/.opencode-remote/judge`, commit em
+`~/.opencode-remote/judge.json`), mas a bateria executa código que o builder
+edita e o pilot age sobre o veredito por código do próprio repo. Sem proteção,
+um branch que troca `test:unit` por `true` ou planta um `judge.ts` que devolve
+`{ok:true}` passava no próprio gate — reproduzido contra o juiz `957106c`
+(os dois vereditos saíram `ok:true`). O juiz v2 fecha isso:
+
+- **Diff do próprio juiz.** `gateVerdict` calcula o diff contra o merge-base
+  com `origin/HEAD|main|master` (o `nameOnly` do pedido só acrescenta
+  caminhos, nunca esconde). Diff vazio, sem base, HEAD ≠ sha pedido ou árvore
+  suja ⇒ vermelho no step `context`.
+- **Step `protected`** (antes de qualquer comando da bateria) quando o diff:
+  toca `apps/pilot/src/judge.ts`, `apps/pilot/src/judgeverdict.ts`,
+  `scripts/invariants.ts`, `packages/protocol/src/crypto.ts`, `.github/`,
+  `deploy/` ou qualquer `.npmrc` (comparação case-insensitive); remove ou
+  reescreve um script de `package.json` (raiz ou workspace) — acrescentar
+  comandos simples a uma cadeia `&&` continua livre, `|| true`/`;`/pipe não;
+  cria hook `pre*`/`post*`/`prepare`; remove workspace; ou tira pontos de
+  asserção (`check`/`assert`/`expect`/`fail`, `throw new …Error`, saída com
+  falha) de um script que o gate executa (contados depois do esbuild remover
+  comentários). `apps/pilot/` como um todo continua editável.
+  Calibração no histórico do `origin/main`: 68 de 533 merges de task
+  (12,8%, 48 deles na onda de CI/release da semana 36) teriam pedido
+  autorização; as regras de scripts/bateria disparam em 0,4% dos commits.
+- **Escalada.** O veredito assinado carrega `constitutionChange` e
+  `protected[]`; o pilot recebe o step `protected` como finding do builder e
+  emite `alert`. Autorizar é um ato do operador no juiz, nunca do workspace:
+  1. no juiz, adicionar a task em `protected-allow.json`
+     (`{"task":"P3-353","paths":[".github/","package.json#scripts"],"reason":"…","until":"AAAA-MM-DD"}`;
+     `paths` aceita id exato, prefixo terminado em `/` ou `<package.json>#scripts`);
+  2. `git -C ~/.opencode-remote/judge commit -am "allow P3-353: …"`;
+  3. `npm test && npm run canary` no juiz;
+  4. gravar o novo HEAD em `~/.opencode-remote/judge.json` (`{"pin":"<sha>"}`).
+  Editar o allowlist sem commit suja a árvore (o pilot recusa juiz sujo);
+  commitar sem re-pin tira o HEAD do pin (idem). O branch autorizado ainda
+  precisa de uma linha `constitution-change:` no corpo de algum commit.
+- **Cota de flaky (P3-359).** Um step que só passa no retry conta no ledger do
+  juiz (`~/.opencode-remote/judge/state/flakes.jsonl`, fora do git): 2 por step
+  por 24h móveis; o 3º vira vermelho com o tail da primeira execução. Ledger
+  que não grava ⇒ vermelho (fail-closed). Relatório:
+  `cd ~/.opencode-remote/judge && npx tsx src/cli.ts flakes --days 7`.
+  Em pilot.log (03–23/09) foram 55 passes flaky, 32 do `desktop-flow`: essa
+  cota teria virado 33 deles vermelhos — consertar o `desktop-flow` antes de
+  pinar ou aceitar a parada como sinal.
+- **Veredito v2.** O pilot manda um nonce por pedido; o juiz (package.json
+  `ocrJudge.verdict: 2`) devolve no payload assinado `nonce`, `judge` (HEAD) e
+  `base`. `checkVerdictBinding` (judgeverdict.ts) exige sha + task sempre e,
+  num juiz v2, nonce e HEAD = pin. A chave pública é lida antes do spawn e a
+  árvore do juiz é re-verificada depois do run; o diretório `judge-req-*`
+  some em qualquer caminho. Juiz v1 continua aceito por sha + task.
+- **Bateria isolada do runtime.** Todo comando do workspace (scripts npm,
+  `scripts/*.ts`, re-execuções do EVIDENCE) roda com `HOME`/`USERPROFILE`
+  descartável (sem `//` do `TMPDIR`), caches reais de Playwright/npm/Electron,
+  identidade git por `GIT_AUTHOR_*`/`GIT_COMMITTER_*` e sem `RELAY_URL`,
+  `OCR_PILOT_REPO`, `PILOT_EVENTS_FILE` e `XDG_*` — como o CI. Em 27/09 o
+  `runDoctor` da bateria reescreveu o `pilot/state.json` de produção; agora isso
+  cai na sandbox. O step de invariants do juiz mantém o ambiente real. Tripwire:
+  `judge.json`, `pilot.json`, `mission.json`, `judge/judge.key` e `daemon.json`
+  (sem `lastSeenAt` e sem o cliente transitório `pilot-invariants`) são
+  comparados antes/depois da bateria; mudança ⇒ vermelho no step `context` com
+  `runtimeChanged[]` no veredito. `pilot/state.json` fica só com a sandbox: os
+  outros slots do pilot o gravam durante qualquer gate. Shims no início do PATH:
+  `launchctl` só aceita verbos de leitura (`print`, `list`, …) e `pkill`/`killall`
+  são recusados — launchd é por usuário, não por HOME (27/09 12:56: código de
+  deploy com exec real reiniciou relay e daemon de produção). Qualquer tentativa
+  recusa o veredito (`blockedCommands[]`) e o pilot emite `alert`.
+- **Avisos de runs verdes (eval-04).** Linhas `WARN <step> budget: …` de um step
+  verde (ex.: `desktop-flow` acima de 80% dos 420 s) viajam no veredito assinado
+  (`warnings`) e chegam ao pipeline (`judgeGate().warnings`, até 3).
+- **Intérprete do juiz.** Gate e `invariants --live` do deploy rodam
+  `node <juiz>/node_modules/tsx/dist/cli.mjs` com cwd no juiz
+  (`judgeInvariantsCommand`) — nunca `npx tsx` com cwd no checkout auditado.
+- **Drift do protocolo vendorizado.** Três camadas: no gate,
+  `packages/protocol/src/crypto.ts` é caminho protegido (mudar o handshake pede
+  re-vendor do juiz); no boot/preflight, o doctor compara a cópia do juiz com o
+  alvo (`apps/pilot/src/judgedrift.ts`); antes de re-pinar,
+  `npx tsx src/cli.ts drift --repo <dir>` no juiz compara `judge/src/protocol.ts`
+  com `packages/protocol/src/crypto.ts` por símbolo de runtime (comentário/tipo
+  não conta). Teria acusado `clientHello`/`serverAccept` em 10/09 — o incidente
+  de 22/09 (12 dias de deploys em quarentena).
+- **Canário.** `npm run canary` no juiz: 11 branches maliciosos recusados antes
+  da bateria, 2 controles positivos certificados, 4 cenários de sandbox com a
+  bateria real contra um HOME falso (escrita em `$HOME/.opencode-remote` cai na
+  sandbox; escrita por caminho absoluto é pega pelo tripwire), vereditos
+  forjados/adulterados/re-ligados rejeitados. `runJudgeCanary()` expõe o resultado ao
+  doctor (vermelho, com motivo, em juiz v1).
+
+Limites conhecidos: builder e juiz rodam com o mesmo usuário e o builder tem
+`bash`/`external_directory` liberados — ele consegue ler `judge.key` e editar
+o juiz fora do workspace; o isolamento real é o juiz num usuário macOS
+próprio (tarefa do operador). A base do diff vem das refs do workspace;
+`pipeline.ts` (79 commits) e `deploy.ts` (29) não são caminhos protegidos.
