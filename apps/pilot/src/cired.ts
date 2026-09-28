@@ -15,6 +15,9 @@
  * pulling audit.ts in would drag node:fs into the unit battery, P3-400). */
 export const CI_RED_KIND = "ci-red";
 
+/** The run's aggregate check (scripts/cigate.ts) — a verdict, never a job. */
+export const CI_GATE_CHECK = "ci-gate";
+
 /** Check conclusions that mean "red" — mirrors the CHECK_RED set in
  * pipeline.ts mergeReadiness so the main probe built from this list and the
  * PR readiness verdict can never drift apart. */
@@ -54,7 +57,10 @@ export function redChecksFromDetail(detail: unknown): string[] {
     const i = seg.indexOf("=");
     if (i <= 0) continue; // no name part / empty segment
     const name = seg.slice(0, i).trim();
-    if (name && name !== CI_RED_KIND) names.push(name); // the aggregate is never a job
+    // the aggregate is never a job — eval-03: it is named "ci-gate" (this
+    // compared against the infra KIND "ci-red", so a legacy detail carrying
+    // `ci-gate=FAILURE` matched main's always-red aggregate: a false hold)
+    if (name && name !== CI_GATE_CHECK) names.push(name);
   }
   return [...new Set(names)];
 }

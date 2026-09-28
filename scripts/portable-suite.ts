@@ -113,6 +113,7 @@ export const PORTABLE_TESTS: readonly string[] = [
   "qr-camera.test.ts",
 "pilotwatch.test.ts",
 "backlog-integrity.test.ts",
+"failure-classifier.test.ts",
 ];
 
 /**
