@@ -3,7 +3,7 @@ import { join, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { agentStream, cachedExec, exec, runAgent, runAgentForRole, runStepWithRetry, rerunKey, type AgentIds, type RerunResults } from "./runner";
 import { nowLocalISO } from "./log";
-import { markDone, type Task } from "./backlog";
+import { isBookkeepingSubject, markDone, type Task } from "./backlog";
 import { landMetaCommit, metaIo } from "./metapush";
 import { emit } from "./events";
 import { clearGuardRejections, raiseGuardAlert } from "./guardalert";
@@ -15,6 +15,8 @@ import { appendLessonsToWorkspace, lessonsNearDiff, pickRelevantLessons, readExp
 import { defaultLessonsFile, failureLessonsBlock, readRecentFailureLessons } from "./failureLessons";
 import { captureGateCorpus, CORPUS_COMMANDS, CORPUS_DIR, loadGateCorpus } from "./gate-corpus";
 import { repairPlan } from "./mergerepair";
+import { actionsIds, asFailedLog, bridgeRunId, CI_BRIDGE_MAX_CHARS, CI_BRIDGE_TIMEOUT_MIN, CI_JOB_LOG_ATTEMPTS, CI_RED_STEP, ciFindingBlock, failedLogCommand, jobLogCommand, summarizeCiFailure, type RedCheck } from "./cibridge";
+import { providerOutage, reviewerInconclusive } from "./failureclass";
 /**
  * P2-009 (round 2): single predicate for "UI evidence required", shared by the
  * builder prompt and the gatekeeper so the builder is always asked for exactly
@@ -29,6 +31,9 @@ export const TASK_DONE_MARKER = "PILOT:TASK-DONE";
 import { detectGateProfile } from "./gateprofile";
 import { doctorDist } from "./doctor";
 import { judgeGate } from "./judge";
+import { GATE_CARRY_TAIL_BYTES, GATE_FINDING_TAIL_BYTES, gateTailDigest, gateTailHeadline } from "./gatetail";
+import { bounceEvidence, defaultEvidenceIo, EVIDENCE_BOUNCE_TIMEOUT_MIN, evidenceGaps } from "./evidencecheck";
+import { COUPLING_GATE_STEPS, couplingBlock, couplingHints, workspaceCouplingIo } from "./coupling";
 import { specFailureIsInfra, type InfraFailureKind } from "./audit";
 import {
   clearRecapCarry,
@@ -52,6 +57,54 @@ export const CONSTITUTION = `CONSTITUTION (never violate):
 export function lessonsBlock(lessons: string[]): string {
   return lessons.length ? `\nEXPERIENCE — relevant lessons from past merges (follow them):\n${lessons.join("\n")}\n` : "";
 }
+
+/**
+ * Forensic 2026-09-24 rec. 5 — spec coupling. The recurring way a UI task dies
+ * at the gate (lessons P3-413, P3-414, P3-435, P3-449, P3-450, P3-389): the
+ * diff renames copy, a class or a computed style that an e2e/unit assertion
+ * or a hand-kept mirror pins as a literal, and the builder only learns it
+ * from a red desktop-flow. Planner (P0/P1) and builder (every priority) are
+ * told to grep the coupled surfaces up front and name what the change
+ * invalidates. Stable text (no task data): both prompts keep their P1-077
+ * cacheable prefix.
+ */
+export const COUPLED_SURFACES =
+  "scripts/desktop-flow.test.ts, scripts/unit.test.ts and the other scripts/*.test.ts, plus the hand-kept mirrors apps/web/src/components/PaneMap.tsx, BOTH the en and pt-BR tables of apps/web/src/lib/i18n.ts, README.md, README.pt-BR.md and docs/PRODUCT.md";
+
+export const COUPLING_RULE_PLANNER = `Coupled assertions (lessons P3-413/P3-435/P3-449/P3-450 — the most common way a UI task dies at the gate): end ## Touched files with an "Invalidates:" list. Grep every user-visible string, CSS class/selector, data-attribute and computed-style value your approach renames or removes in ${COUPLED_SURFACES}, and cite each hit as path:line — the builder must update every one of them in the same commit. When nothing matches, write "Invalidates: none (grepped: <the terms>)".`;
+
+export const COUPLING_RULE_BUILDER = `Coupled assertions (lessons P3-413/P3-435/P3-449/P3-450): before committing, grep every user-visible string, CSS class/selector, data-attribute and computed-style value your diff renames or removes in ${COUPLED_SURFACES}. Update every hit in the SAME commit (a stale literal there fails the gate's desktop-flow/unit step) and list them in the commit body under "Invalidates:" ("Invalidates: none" when the grep found nothing). A planner spec's Invalidates: list is the starting point, not the limit.`;
+
+/**
+ * eval-18 measurements (opencode.db, pilot sessions 09-22..09-24): the builder
+ * burns 88.6% of fleet tokens, ~97% of it cache-reading its own growing
+ * context, at ~1.1 tool calls per turn. AGENTS.md rides the system prompt of
+ * EVERY agent turn and grew 4.3KB -> 35KB in 24 days through builders told to
+ * document there (~121M tokens in 3 days). Both rules below are quality-
+ * neutral; the diagnosis rule deliberately greps FAIL/error lines instead of
+ * tailing — a tail hides the mid-run failure this module's gate feedback is
+ * about. Stable text (P1-077 prefix).
+ */
+export const DOCS_RULE_BUILDER =
+  "Document user-visible changes in README.md / README.pt-BR.md / docs/ — not AGENTS.md: it is injected into every agent turn, so only a change to the constitution or to the agent contract itself belongs there.";
+
+export const CONTEXT_HYGIENE_RULE =
+  "Context hygiene (token cost, never at the expense of correctness): batch independent reads, greps and git commands into ONE turn (parallel tool calls); `grep -n` first, then read files by line range instead of whole; do not re-read a file already in your context unless it changed; to diagnose a long test/build run, grep its FAIL/error lines (`| grep -nE '^FAIL|[Ee]rror'`) rather than tailing it — a tail hides a mid-run failure (the EVIDENCE paste still uses the final lines).";
+
+/**
+ * Forensic 2026-09-24 rec. 4 — the fixed UI-EVIDENCE lines (placeholders
+ * only, so the builder prompt's stable prefix stays byte-identical) and the
+ * format rules the judge's parser actually enforces: a fenced, bulleted or
+ * bold block used to read as "no EVIDENCE block" / "UI task without
+ * shot-1440x900" / a fabricated output line.
+ */
+export const UI_SHOT_LINES = `shot-1440x900: ~/.opencode-remote/pilot/shots/builder/<TASK-ID>-r<ROUND>-1440.png
+shot-390: ~/.opencode-remote/pilot/shots/builder/<TASK-ID>-r<ROUND>-390.png`;
+
+export const EVIDENCE_FORMAT_RULES = `EVIDENCE format — the gate parses these exact lines, so a decorated block reads as MISSING or FABRICATED:
+- \`EVIDENCE:\` alone on its own line, then plain text only: no code fence, no bullets, no backticks, no bold. A fence or note line after a \`$ \` command is compared as that command's output and rejects the merge.
+- Each screenshot line is bare \`shot-1440x900: <path>\` / \`shot-390: <path>\`: an absolute or ~/ path without spaces to a real PNG (1440x900 or 2880x1800; 390 or 780 wide) taken during THIS pipeline run — older files are rejected as stale.
+- Before the gate runs, the pipeline pre-checks this block and sends it back to you ONCE in the same round when it is missing, lacks a required command or a required screenshot line, or cites an unreadable, wrong-size or stale PNG.`;
 
 // ── P1-059/P1-078: strategist prompt (pure builder, stable-first assembly) ──
 
@@ -179,6 +232,7 @@ Rules:
 - Keep the spec short and concrete (<= ~120 lines) — the builder is another agent that will follow it.
 - Acceptance criteria must be testable: commands to run, observable behaviors, numbers when applicable.
 - Touched files must cite real repo paths you actually inspected.
+- ${COUPLING_RULE_PLANNER}
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
@@ -503,7 +557,13 @@ export function builderPrompt(
   resume: AgentIds | null = null,
   attempt = 1,
   recap = "",
-): string {  const uiTask = needsUiEvidence(t.area, false);
+  // eval fixround (F13): the prompt's own diff hint follows the pipeline's
+  // diff base (origin/<base>), never the slot's LOCAL main — that ref only
+  // moves when this slot merges/blocks, and a stale one shows other tasks'
+  // files as "the diff".
+  base = "main",
+): string {
+  const uiTask = needsUiEvidence(t.area, false);
   // P2-008: when a planner spec exists on the branch, the builder must follow it
   const specBlock = specFile
     ? `\nPLANNER SPEC: ${specFile} exists on this branch — read it FIRST. It holds the agreed problem analysis, approach, touched files, edge cases, acceptance criteria and out-of-scope. Follow it; if you must deviate, justify the deviation in the commit message. Do not delete or rewrite the spec.\n`
@@ -514,10 +574,10 @@ export function builderPrompt(
     ? `\nLONG-HORIZON TASK (P1-060): this task is size L and its spec's ## Approach is structured as numbered milestones (M1..Mn). Execute milestones IN ORDER, one or more per round, and keep the branch green at the end of every round (typecheck + build + unit). You have a larger round/timeout budget than a size-S task — use it to finish milestones, not to gold-plate.\n`
     : "";
   const attemptBlock = attempt > 1
-    ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff main...pilot/${t.id}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
+    ? `\nATTEMPT ${attempt} (P1-060): the branch pilot/${t.id} already exists with committed work from previous attempts and was PRESERVED for you. Continue from the existing history (git log, \`git diff ${taskDiffRange(t.id, base)}\`) — do NOT restart from scratch and do NOT undo already-committed work.\n`
     : "";
   const roundBlock = round > 1
-    ? `\nRounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff main...pilot/${t.id}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.`
+    ? `\nRounds 1..${round - 1} already committed work on this branch. Inspect it first with \`git diff ${taskDiffRange(t.id, base)}\` and fix the findings INCREMENTALLY — do not restart from scratch or re-read files you already understand.`
     : "";
   const uiBullet = uiTask
     ? `\n- UI self-driving (P2-011): this task changes the UI. Validate your own output visually before finishing: build the app, then use the host browser CLI — \`node tools/browse.mjs open <url> ~/.opencode-remote/pilot/shots/builder/${t.id}-r${round}.png\` — and inspect the PNG. Produce TWO sized screenshots with the browse CLI — \`node tools/browse.mjs shot <path>.png 1440 900\` (desktop) and \`node tools/browse.mjs shot <path>.png 390 844\` (phone), positional width/height — and cite both paths in the EVIDENCE block below; PNG dimensions are verified at the gate (1440x900 exactly, 2x Retina accepted; width 390). This is YOUR pre-merge self-check; post-deploy evidence is captured separately by the pipeline.`
@@ -535,9 +595,11 @@ Rules:
 - ${CONSTITUTION}
 - Create/keep working on branch pilot/<TASK-ID>. Commit your work with a conventional message "pilot(<TASK-ID>): ...".
 - Run "npm run typecheck" and "npm run build" and fix any errors before committing.
-- Document user-visible changes in the relevant docs (README.md / AGENTS.md / docs/).
+- ${DOCS_RULE_BUILDER}
 - Do NOT push, do NOT touch production services, do NOT modify BACKLOG.md.
 - Keep the diff focused: one task, no drive-by refactors.
+- ${COUPLING_RULE_BUILDER}
+- ${CONTEXT_HYGIENE_RULE}
 
 MANDATORY EVIDENCE (P2-009): when finished, end your output with exactly this EVIDENCE
 block — the deterministic gatekeeper parses it, re-executes every cited command and
@@ -557,9 +619,12 @@ $ npm run typecheck --silent
 $ npm run test:unit --silent
 <paste the real command output here>${
     uiTask
-      ? `\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>`
-      : `\n(if this round's diff touches apps/web/ or apps/desktop/, also cite:\nshot-1440x900: <absolute path of a real 1440x900 PNG screenshot>\nshot-390: <absolute path of a real 390px-wide PNG screenshot>)`
+      ? `\n${UI_SHOT_LINES}`
+      : `\n(if this round's diff touches apps/web/ or apps/desktop/, also cite:\n${UI_SHOT_LINES})`
   }
+PILOT:TASK-DONE
+
+${EVIDENCE_FORMAT_RULES}
 
 TASK (${t.id}) [${t.priority}]: ${t.title}
 spec: ${t.spec || "(no extra spec — use judgement, keep the change small and shippable)"}
@@ -811,6 +876,7 @@ async function runScribe(
     timeoutMin: 10,
     label: `scribe-${t.id}`,
     onStdout: agentStream("scribe"),
+    sessionCapture: true, // eval-18: attribute the scribe's tokens to the task
     missionModels: cfg.missionModels,
   });
   trackSession?.(out.sessionId);
@@ -1105,6 +1171,26 @@ export function touchedUiFromDiff(nameOnly: string): boolean {
     .some((l) => l.trim().startsWith("apps/web/") || l.trim().startsWith("apps/desktop/"));
 }
 
+/**
+ * The branch diff range every pipeline decision reads — the reviewers' diff,
+ * the gate's name-only list (renderTouched → desktop smokes + mandatory UI
+ * shots), touchedUi (post-deploy shot), the empty-diff self-heal — and the one
+ * the builder is told to inspect: three-dot against the REMOTE base ref. The
+ * slot's local `main` only moves on that slot's own merges and doctor passes,
+ * so once the task branch sits on a newer origin/<base> (resume rebase,
+ * conflict-block merge, a builder's own rebase) `main...pilot/<ID>` also
+ * listed every commit other slots merged in between: P3-401 and P3-459
+ * (relay) and P2-357 (infra, PR #1390 = scripts/unit.test.ts only) were
+ * rejected with "UI task without shot-1440x900" for apps/web paths they never
+ * touched, and P3-461 (relay, zero UI files in 5c36e52) got a post-deploy UI
+ * shot. runPipeline's own diff/name-only lines spell the same range inline
+ * (kept byte-identical to eval-03's #1399; the battery pins the equality).
+ * `id` is TASK_ID_RE-checked by every caller.
+ */
+export function taskDiffRange(id: string, base = "main"): string {
+  return `origin/${base}...pilot/${id}`;
+}
+
 /** P1-044 (a): the corpus must hold at least this many samples per command to
  * count as green — mirrors the P3-033 acceptance criterion (>=3 per command). */
 export const MIN_CORPUS_SAMPLES = 3;
@@ -1318,11 +1404,15 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       const prev = JSON.parse(readFileSync(failFile, "utf8")) as { task?: string; step?: string; tail?: string };
       // P3-355: an "unverified-blocking" carry is not a gatekeeper failure — it
       // samples dropped [BLOCKING] findings the builder must respond to.
+      // eval-03: a "ci-red" carry is the remote CI excerpt of the PR whose
+      // merge was refused (cibridge.ts) — fenced as untrusted text.
       if (prev.task === t.id && prev.tail)
         findings +=
           prev.step === "unverified-blocking"
             ? `[dropped BLOCKING findings from the last review — mechanically unverifiable, but you must respond to each: fix it or restate it with verifiable path:line evidence]\n${prev.tail}\n`
-            : `[previous gatekeeper failure]\n${prev.tail}\n`;
+            : prev.step === CI_RED_STEP
+              ? `${ciFindingBlock(prev.tail)}\n`
+              : `[previous gatekeeper failure]\n${prev.tail}\n`;
     }
   } catch {}
   // P1-079: a context recap recorded by an earlier cycle's checkpoint (or by
@@ -1495,6 +1585,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
           timeoutMin: CONTEXT_RECAP_TIMEOUT_MIN,
           label: `recap-${t.id}-r${round}`,
           onStdout: stream,
+          sessionCapture: true, // eval-18: attribute the recap's tokens to the task
         });
         trackSession(out.sessionId);
         return parseRecap(out.output);
@@ -1536,7 +1627,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     const conflictBlock = mergeConflictBlock(prMergeable.output?.trim(), t.id, base);
     // mission v2: the mission may pin the builder model (verified against the
     // live catalog at dispatch; default model otherwise — never a crash)
-    const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap) + conflictBlock, {
+    const build = await runAgentForRole("builder", builderPrompt(t, round, findings, lessons, specFile, resume, attemptNo + 1, recap, base) + conflictBlock, {
       cwd: ws,
       timeoutMin: cfg.taskTimeoutMin,
       label: `builder-${t.id}-r${round}`,
@@ -1562,6 +1653,19 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // per-task diagnostic log: concurrent slots would clobber a shared file
     writeFileSync(join(homedir(), ".opencode-remote/pilot", `builder-${t.id}.log`), build.output);
     emit("phase", { task: t.id, phase: "builder-done", ok: !roundFailed });
+    // eval-03: a round killed by a model-provider outage (the CLI's own
+    // terminal "Error: Cannot connect to API…", failureclass.ts) or by the
+    // opencode API preflight is infra — end the cycle NOW: retrying the next
+    // round at once only dies again (2026-09-23 ~01:24: P2-337/338/339 each
+    // lost a round, the immediate retry died ~70s later, and all three burned
+    // an attempt as "builder did not finish" within 25s). The builder always
+    // runs --print-logs, so the outage detector requires the structured
+    // process-exit ERROR line right before the CLI's frame — a tool's output
+    // or model prose cannot forge both.
+    const outage = roundFailed ? (build.infra === "api-down" ? "opencode API unreachable (preflight)" : providerOutage(build.output, { printLogs: true })) : null;
+    if (outage) {
+      return { ok: false, detail: `[infra] model provider unreachable (builder round ${round}): ${outage}`, infra: "api-down", ...roundMeta() };
+    }
     if (roundFailed) {
       // P2-013: a failed round (crash/timeout) is exactly when partial work
       // exists — retry within the round budget instead of aborting; the
@@ -1581,10 +1685,62 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       }
       continue;
     }
+    // Forensic 2026-09-24 recs. 4+5 — PRE-GATE check: the static half of the
+    // judge's evidence step (block, required commands, UI shots: cited,
+    // readable, sized, fresh) on the gate's own predicate, plus the coupled-
+    // assertion scan of the branch diff (coupling.ts). Either kind of gap goes
+    // back to the SAME builder session once, in this round, instead of costing
+    // the round — or, on the last round, the attempt — at the gate. Skipped on
+    // an empty code diff (the self-heal below owns that path).
+    let builderOutput = build.output;
+    const preNames = exec(`git diff --name-only ${taskDiffRange(t.id, base)}`, { cwd: ws, allowFail: true }).output;
+    if (codeChanges(preNames, specFile).length > 0) {
+      const requireShots = needsUiEvidence(t.area, touchedUiFromDiff(preNames));
+      const io = defaultEvidenceIo();
+      const pre = await bounceEvidence(t.id, round, builderOutput, requireShots, {
+        gaps: (o) => evidenceGaps(o, requireShots, startedAtMs, io),
+        coupling: () => couplingHints(exec(`git diff ${taskDiffRange(t.id, base)}`, { cwd: ws, allowFail: true }).output, workspaceCouplingIo(ws)),
+        bounce: async (prompt, gaps) => {
+          emit("phase", { task: t.id, phase: "evidence-bounce", ok: false, detail: gaps[0] ?? "" });
+          const r = await runAgentForRole("builder", prompt, {
+            cwd: ws,
+            timeoutMin: Math.min(cfg.taskTimeoutMin, EVIDENCE_BOUNCE_TIMEOUT_MIN),
+            label: `builder-${t.id}-r${round}-evidence`,
+            sessionId: builderSession,
+            printLogs: true,
+            onStdout: stream,
+            missionModels: cfg.missionModels,
+          });
+          if (r.sessionId) builderSession = r.sessionId;
+          trackSession(r.sessionId);
+          return r;
+        },
+      });
+      if (pre.bounced) {
+        builderOutput = pre.output;
+        writeFileSync(join(homedir(), ".opencode-remote/pilot", `builder-${t.id}.log`), builderOutput);
+        const left = [...pre.after, ...pre.couplingAfter];
+        emit("phase", { task: t.id, phase: "evidence-bounce-done", ok: left.length === 0, detail: left[0] ?? "all pre-gate items fixed" });
+        console.log(
+          JSON.stringify({
+            ts: nowLocalISO(),
+            level: "info",
+            msg: "pre-gate bounce",
+            data: { task: t.id, round, before: pre.before, after: pre.after, couplingBefore: pre.couplingBefore, couplingAfter: pre.couplingAfter },
+          }),
+        );
+      }
+    }
     // --name-only: unified diff lines are prefixed (a/, b/, diff --git) and
     // would never match a bare path — round-2 review caught exactly that.
-    const diff = exec(`git diff main...pilot/${t.id}`, { cwd: ws }).output;
-    const nameOnly = exec(`git diff --name-only main...pilot/${t.id}`, { cwd: ws }).output;
+    // eval-03: against origin/<base> (fetched by setupTaskBranch), never the
+    // slot's LOCAL main — that ref only moves when this slot merges/blocks, so
+    // a stale one dragged other tasks' apps/web|apps/desktop files into the
+    // diff: the gate demanded UI shots the builder was never asked for (P3-459,
+    // local main 5cc7ae1 vs origin d900e65: 10 UI files) and reviewers read
+    // code that was not the task's. Foreign repos have no `main` at all.
+    const diff = exec(`git diff origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
+    const nameOnly = exec(`git diff --name-only origin/${base}...pilot/${t.id}`, { cwd: ws }).output;
     touchedUi = touchedUiFromDiff(nameOnly);
     // P2-011: UI tasks get visual evidence — per-task, post-deploy shape only
     // (round-3 review: unscoped mtime pick could serve another task's stale
@@ -1629,13 +1785,16 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       exec("git reset -q --hard HEAD", { cwd: ws, allowFail: true });
       exec("git clean -qfd", { cwd: ws, allowFail: true });
       // P1-076: the mark-done lands via the pilot/meta PR — no direct main push
+      // eval-06 fixround: markDone's result is read — a "missing"/"refused"
+      // bookkeeping used to surface as the success detail "marked done".
+      const marked = { value: null as ReturnType<typeof markDone> | null };
       const push = await landMetaCommit(ws, metaIo(ws), {
         files: ["BACKLOG.md"],
         message: `pilot(${t.id}): mark done (empty-diff self-heal)`,
         guardFile: "BACKLOG.md",
         base,
         apply: () => {
-          markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
+          marked.value = markDone(ws, t.id, `already merged — empty-diff self-heal ${nowLocalISO().slice(0, 10)}`);
           exec("git add BACKLOG.md", { cwd: ws, allowFail: true });
           // idempotent: if markDone was a no-op (task already marked), skip the
           // commit instead of failing on an empty commit
@@ -1644,11 +1803,14 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
             : { action: "apply" };
         },
       });
+      const markedLanded = marked.value === "applied" || marked.value === "noop";
       return {
         ok: push === "pushed",
         detail:
           push === "pushed"
-            ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+            ? markedLanded
+              ? `task ${t.id} already merged on main — marked done (empty-diff self-heal)`
+              : `task ${t.id} already merged on main but the mark-done did not apply (${marked.value ?? "missing"}) — move the line by hand`
             : `task ${t.id} already merged on main but the mark-done landing ${push === "refused" ? "was refused by the push guard" : "failed"}`,
         ...roundMeta(),
       };
@@ -1685,7 +1847,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     emit("phase", { task: t.id, phase: "gatekeeper" });
     let gate;
     try {
-      gate = judgeGate({ ws, sha: gateSha, task: t, builderOutput: build.output, startedAtMs, nameOnly });
+      gate = judgeGate({ ws, sha: gateSha, task: t, builderOutput, startedAtMs, nameOnly });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       emit("phase", { task: t.id, phase: "gatekeeper-done", ok: false, detail: "judge bridge — fail-closed" });
@@ -1694,6 +1856,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     for (const step of gate.flaky) {
       emit("phase", { task: t.id, phase: "gate-flaky", ok: true, detail: step });
       console.log(JSON.stringify({ ts: nowLocalISO(), level: "info", msg: "gate-flaky", data: { task: t.id, round, step } }));
+    }
+    // forensic rec. 8: a GREEN step's early warning (desktop-flow above 80% of
+    // its 420s budget) reaches the operator before the timeout blocks tasks
+    for (const w of gateWarnings(gate)) {
+      emit("alert", { task: t.id, ok: false, detail: w });
+      console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gate warning", data: { task: t.id, round, warning: w } }));
     }
     emit("phase", {
       task: t.id,
@@ -1707,14 +1875,31 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // the round's findings (review findings from a previous round coexist —
       // the gate block comes first in the fix order) and let the builder fix
       // it in the next round. Only the LAST round turns it terminal.
+      // Forensic rec. 3: the verdict tail is the step's FULL output — the
+      // finding, the carryover and the headline are cut by relevance
+      // (gatetail.ts), never by bytes from the end.
       findings = `${findings}\n${gateFindingBlock(gate.step, gate.tail)}`;
+      // rec. 5: a stale literal assertion is the usual cause of a red unit /
+      // desktop-flow step on a UI diff — name the dangling ones next to it
+      if (COUPLING_GATE_STEPS.includes(gate.step)) {
+        const hints = couplingHints(diff, workspaceCouplingIo(ws));
+        if (hints.length) findings = `${findings}\n${couplingBlock(hints)}`;
+      }
+      const carry = gateTailDigest(gate.step, gate.tail, GATE_CARRY_TAIL_BYTES);
       if (round < cfg.maxReviewRounds) {
-        writeGateFailCarry(cfg.stateRoot, t.id, gate.step, gate.tail);
+        writeGateFailCarry(cfg.stateRoot, t.id, gate.step, carry);
         continue;
       }
-      recordGateFail(cfg.stateRoot, state, t.id, gate.step, gate.tail);
-      return { ok: false, detail: `gatekeeper rejected at step ${gate.step}: ${gate.tail.slice(-300)}`, ...roundMeta() };
+      const headline = gateTailHeadline(gate.step, gate.tail);
+      recordGateFail(cfg.stateRoot, state, t.id, gate.step, carry, headline);
+      return { ok: false, detail: `gatekeeper rejected at step ${gate.step}: ${headline}`, ...roundMeta() };
     }
+    // eval-03: a green gate supersedes whatever an earlier round (or cycle)
+    // carried — left on disk, a FIXED failure re-entered the next cycle's
+    // prompt as "[previous gatekeeper failure]" and became the step/tail of
+    // the block lesson and the forensic's "open carryover": P3-401/P3-459 were
+    // filed as "UI task without shot-1440x900" while remote CI was the cause.
+    clearGateFailCarry(cfg.stateRoot, t.id);
 
     // two adversarial reviewers in parallel, isolated contexts
     emit("phase", { task: t.id, phase: "reviewers" });
@@ -1727,6 +1912,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `sec-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: reviewer tokens were never attributed
         missionModels: cfg.missionModels,
       }),
       runAgentForRole("reviewer", reviewerPrompt("QUALITY", "regressions, UX, docs, test coverage, complexity", t, reviewDiff, uiShot, specFile, incrementalFrom), {
@@ -1734,6 +1920,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `qual-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: reviewer tokens were never attributed
         missionModels: cfg.missionModels,
       }),
     ]);
@@ -1747,8 +1934,34 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         data: { task: t.id, round, secOk: parseVerdict(sec.output) === "APPROVE", qualOk: parseVerdict(qual.output) === "APPROVE" },
       }),
     );
-    const secParsed = parseFindings(sec.output);
-    const qualParsed = parseFindings(qual.output);
+    // eval-03 (+ eval-15): a reviewer that never finished (timeout, spawn,
+    // preflight, provider outage) returned no trustworthy verdict — even a
+    // VERDICT marker in its output may be a planted file it cat'ed. eval
+    // fixround: a plain reviewer TIMEOUT no longer aborts the cycle — 15 of
+    // 1025 real review rounds ran 20.0–20.4 min (reviewTimeoutMin=20) and six
+    // of them still merged on the same cycle; aborting discarded real
+    // verdicts and, on a task with 0 attempts, reset the whole branch. On a
+    // NON-final round the inconclusive reviewer's verdict AND markers are
+    // discarded (its output is untrusted text, never parsed): verdict null ⇒
+    // fail-closed rejection — the merit path that goes to the next round.
+    // Only on the LAST round the outcome stays infra "timeout" (a merit
+    // rejection there burns an attempt the round budget already spent).
+    // Spawn failures, the preflight and provider outages stay infra in every
+    // round — a builder still working when the provider dies cannot be
+    // re-litigated by re-running reviewers.
+    const secDead = reviewerInconclusive(sec);
+    const qualDead = reviewerInconclusive(qual);
+    const tolerated = round < cfg.maxReviewRounds;
+    const abortDead = [secDead, qualDead].find((d) => d !== null && !(tolerated && d.infra === "timeout"));
+    if (abortDead) {
+      return { ok: false, detail: `[infra] review inconclusive (round ${round}): ${abortDead.why}`, infra: abortDead.infra, ...roundMeta() };
+    }
+    // a tolerated inconclusive reviewer: no verdict, no findings — never an
+    // approval, never evidence (its output may end on a planted marker)
+    const secBlank = secDead !== null;
+    const qualBlank = qualDead !== null;
+    const secParsed = secBlank ? [] : parseFindings(sec.output);
+    const qualParsed = qualBlank ? [] : parseFindings(qual.output);
     // P2-015: reviewers are LLMs — findings citing files/lines that don't exist
     // (or snippets absent from the diff) are mechanically dropped.
     // P1-073: a verdict whose findings all fail verification no longer
@@ -1764,10 +1977,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
     // review — an APPROVE's rationale bullets are not findings.
     const allDropped = (o: string, v: { kept: string[]; dropped: string[] }) =>
       parseVerdict(o) === "REQUEST_CHANGES" && v.dropped.length > 0 && v.kept.length === 0;
-    const secAllDropped = allDropped(sec.output, secVerified);
-    const qualAllDropped = allDropped(qual.output, qualVerified);
-    const secOk = reviewerOk(sec.output, secVerified.kept, secVerified.dropped);
-    const qualOk = reviewerOk(qual.output, qualVerified.kept, qualVerified.dropped);
+    const secAllDropped = secBlank ? false : allDropped(sec.output, secVerified);
+    const qualAllDropped = qualBlank ? false : allDropped(qual.output, qualVerified);
+    const secOk = secBlank ? false : reviewerOk(sec.output, secVerified.kept, secVerified.dropped);
+    const qualOk = qualBlank ? false : reviewerOk(qual.output, qualVerified.kept, qualVerified.dropped);
     if (secAllDropped || qualAllDropped) {
       // P2-115: surface WHY every finding was unverifiable — one alert per
       // round, listing up to 2 distinct drop reasons per all-dropped reviewer
@@ -1811,11 +2024,23 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         timeoutMin: cfg.reviewTimeoutMin,
         label: `esc-${t.id}-r${round}`,
         onStdout: stream,
+        sessionCapture: true, // eval-18: tier-A fallback session gets attributed
         models: cfg.models,
         marker: ESCALATION_MARKER,
       });
       trackSession(esc.sessionId);
-      const escParsed = parseFindings(esc.output);
+      // eval-03: an arbiter that never finished is no arbiter (same rule as
+      // the reviewers above — its output may end on a planted marker). eval
+      // fixround: like the reviewers, a plain TIMEOUT on a non-final round is
+      // tolerated as a fail-closed rejection (the round goes on); only the
+      // last round aborts as infra, and spawn/preflight/provider-outage stay
+      // infra in every round.
+      const escDead = reviewerInconclusive(esc);
+      const escTolerated = escDead !== null && tolerated && escDead.infra === "timeout";
+      if (escDead && !escTolerated) {
+        return { ok: false, detail: `[infra] review inconclusive (escalation, round ${round}): ${escDead.why}`, infra: escDead.infra, ...roundMeta() };
+      }
+      const escParsed = escTolerated ? [] : parseFindings(esc.output);
       const escVerified = verifyFindings(escParsed, ws, reviewDiff);
       for (const d of escVerified.dropped) logHallucination(t.id, "escalation", d, escVerified.reasons[d] ?? "unknown");
       // P3-355: when BOTH reviewers were all-dropped, the arbiter's APPROVE is
@@ -1824,7 +2049,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // Otherwise the approval is downgraded and the round continues as
       // REQUEST_CHANGES fed by [unverified] hints (fail-closed).
       const bothAllDropped = secAllDropped && qualAllDropped;
-      const escApproveRaw = reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
+      const escApproveRaw = escTolerated ? false : reviewerOk(esc.output, escVerified.kept, escVerified.dropped);
       const escApprove = arbiterApproveHolds(escApproveRaw, bothAllDropped, esc.output, ws, reviewDiff);
       const approveDowngraded = escApproveRaw && !escApprove;
       if (escApprove) {
@@ -1842,7 +2067,7 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
         task: t.id,
         phase: "escalation",
         ok: escApprove,
-        detail: `kept ${escVerified.kept.length}, dropped ${escVerified.dropped.length}${approveDowngraded ? " — span-less approve downgraded" : ""}`,
+        detail: `kept ${escVerified.kept.length}, dropped ${escVerified.dropped.length}${approveDowngraded ? " — span-less approve downgraded" : ""}${escTolerated ? " — arbiter timed out, verdict discarded" : ""}`,
       });
       console.log(
         JSON.stringify({
@@ -1897,6 +2122,10 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       // P2-125: the failure detail carries the actual gh reason and the
       // structured infra kind (timeout/network) routes through the infra
       // path — no attempt burned, no fever sample, re-scheduled next cycle.
+      // eval-03: a ci-red refusal leaves the red job's excerpt as the carry —
+      // the next cycle's builder gets it as a [BLOCKING] finding, the block
+      // lesson keeps the full job name (step "ci-red").
+      if (!merged.ok && merged.ciFailure) writeCiRedCarry(cfg.stateRoot, t.id, merged.ciFailure);
       if (!merged.ok)
         return { ok: false, detail: `gate green but the PR merge failed: ${merged.detail}`, infra: merged.infra, ...roundMeta() };
     } else {
@@ -1926,6 +2155,12 @@ export async function runPipeline(cfg: PilotConfig, t: Task, state: PilotState, 
       findings = [...deduped, ...unverified].join("\n");
       if ((secAllDropped || qualAllDropped) && escalationFindings === null) {
         findings = `${findings}\n[a reviewer voted REQUEST_CHANGES but every finding failed mechanical verification — if the concern is real, restate it citing verifiable path:line evidence from the diff]`.trim();
+      }
+      // eval fixround: a tolerated inconclusive reviewer (timeout on a
+      // non-final round) rejects fail-closed with no evidence — the builder
+      // must know the round was inconclusive, not silent-approve
+      if (secBlank || qualBlank) {
+        findings = `${findings}\n[a reviewer ${[secBlank ? "security" : "", qualBlank ? "quality" : ""].filter(Boolean).join(" and ")} timed out before finishing — its round was inconclusive, its verdict was discarded; this cycle continues as a rejection and re-reviews next round]`.trim();
       }
       // P3-355: every dropped [BLOCKING] finding rides the gate-fail carry into
       // the next round as "[unverified BLOCKING]" — the builder must respond to
@@ -2163,10 +2398,11 @@ function logHallucination(task: string, reviewer: string, finding: string, reaso
   );
 }
 
-/** Shared gatekeeper failure path: warn log + per-task carryover file + counter. */
-function recordGateFail(stateRoot: string, state: PilotState, taskId: string, step: string, tail: string) {
+/** Shared gatekeeper failure path: warn log + per-task carryover file + counter.
+ * `headline` (gate steps: gateTailHeadline) replaces the byte-cut log tail. */
+function recordGateFail(stateRoot: string, state: PilotState, taskId: string, step: string, tail: string, headline?: string) {
   console.log(
-    JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: taskId, step, tail: tail.slice(-300) } }),
+    JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "gatekeeper fail", data: { task: taskId, step, tail: headline ?? tail.slice(-300) } }),
   );
   // P2-045: structured step signal on the events feed — the dashboard failure
   // breakdown aggregates these instead of the operator grepping pilot.log
@@ -2195,19 +2431,75 @@ function writeGateFailCarry(stateRoot: string, taskId: string, step: string, tai
 }
 
 /**
+ * eval-03: drop the per-task carry (a green gate superseded it) — but only
+ * carries of GATE steps. A green local gate says nothing about remote CI
+ * (`ci-red`) or review findings (`unverified-blocking`): erasing them left
+ * the next cycle without the CI log the builder needed when the round later
+ * aborted as infra (a fresh branch starts with no findings at all).
+ */
+function clearGateFailCarry(stateRoot: string, taskId: string) {
+  const f = gateFailFile(stateRoot, taskId);
+  if (!f) return;
+  try {
+    const carry = JSON.parse(readFileSync(f, "utf8")) as { step?: unknown };
+    if (carry.step === CI_RED_STEP || carry.step === "unverified-blocking") return;
+  } catch {
+    // unreadable/corrupt carry — a green gate removes it, as before
+  }
+  try {
+    rmSync(f, { force: true });
+  } catch {}
+}
+
+/**
+ * eval-03: the ci-red carry — same file and JSON shape as the gatekeeper
+ * carry (so the block lesson, the doctor and the forensic read it unchanged)
+ * but step CI_RED_STEP, its own bound (the summary is already capped and
+ * leads with the headline — a tail slice would cut the job name) and no
+ * gate-fail event (the local gate was green; the dashboard's gate-step
+ * breakdown must not count remote CI).
+ */
+function writeCiRedCarry(stateRoot: string, taskId: string, text: string) {
+  const failFile = gateFailFile(stateRoot, taskId);
+  if (!failFile) return;
+  try {
+    mkdirSync(dirname(failFile), { recursive: true });
+    writeFileSync(failFile, JSON.stringify({ task: taskId, step: CI_RED_STEP, tail: text.slice(0, CI_BRIDGE_MAX_CHARS), at: nowLocalISO() }, null, 2));
+  } catch {}
+}
+
+/**
  * P1-101: the finding block the builder receives when the deterministic gate
  * goes red between rounds — it instructs the fix-first order and carries the
- * failing step's output tail (pure; pinned by the unit battery).
+ * failing step's output (pure; pinned by the unit battery). Forensic rec. 3:
+ * the output is cut by relevance (failing checks + beat, first error block,
+ * summary, then the last lines — gatetail.ts), not by its last 1500 bytes.
  */
 export function gateFindingBlock(step: string, tail: string): string {
-  return `[deterministic gate failed at step "${step}" — fix this FIRST and re-run the EVIDENCE commands]\n${tail.slice(-1500)}`;
+  return `[deterministic gate failed at step "${step}" — fix this FIRST and re-run the EVIDENCE commands]\n${gateTailDigest(step, tail, GATE_FINDING_TAIL_BYTES)}`;
+}
+
+/**
+ * Forensic rec. 8: early-warning lines a signed verdict carries from GREEN
+ * judge steps (judge stepWarnings — `WARN desktop-flow budget: …` above 80% of
+ * the 420s ceiling), surfaced by the bridge as `warnings` (eval-08, #1398).
+ * Tolerates a bridge/judge that predates the field (absent → []); strings
+ * only, at most 3 lines of 240 chars (pure; pinned by the battery).
+ */
+export function gateWarnings(gate: object): string[] {
+  const warnings = (gate as { warnings?: unknown }).warnings;
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter((w): w is string => typeof w === "string" && w.trim() !== "").map((w) => w.slice(0, 240)).slice(0, 3);
 }
 
 /** Injectable sinks for mergePrForTask (unit battery pins the semantics).
  * P3-341: readFile/writeFile are optional conflict-repair sinks — absent ⇒
  * the repair is skipped and the behavior is byte-for-byte the pre-P3-341 one. */
 export interface PrMergeIo {
-  exec: (cmd: string) => { ok: boolean; output: string };
+  /** `timeoutMin` (eval fixround): an optional per-call cap for the SYNCHRONOUS
+   * spawnSync behind it — the CI bridge's fetches hang the whole pilot event
+   * loop while they wait, so they get a short one instead of the 5-min default. */
+  exec: (cmd: string, timeoutMin?: number) => { ok: boolean; output: string };
   sleep: (ms: number) => Promise<void>;
   readFile?: (p: string) => string | null;
   writeFile?: (p: string, c: string) => boolean;
@@ -2231,6 +2523,9 @@ export interface PrMergeOutcome {
   ok: boolean;
   detail: string;
   infra?: InfraFailureKind;
+  /** eval-03: on a ci-red refusal, the bounded remote-CI summary (cibridge.ts)
+   * — headline + the red jobs' relevant log lines; the caller carries it. */
+  ciFailure?: string;
 }
 
 /** Confirmation budget (~5 min, same shape as MERGE_CONFIRM_POLLS in metapush). */
@@ -2278,7 +2573,7 @@ export type MergeReadiness =
   | { verdict: "merge"; detail: string }
   | { verdict: "pending"; detail: string }
   | { verdict: "unknown"; detail: string }
-  | { verdict: "skip"; infra: "conflict" | "ci-red"; detail: string };
+  | { verdict: "skip"; infra: "conflict" | "ci-red"; detail: string; checks?: RedCheck[] };
 
 /** Check-run conclusions / status-context states that mean "CI is red". */
 const CHECK_RED = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]);
@@ -2322,6 +2617,9 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
   const mergeable = typeof s.mergeable === "string" ? s.mergeable : "";
   if (!rollup && !mergeable) return { verdict: "unknown", detail: "snapshot carries neither mergeable nor statusCheckRollup" };
   const red: string[] = [];
+  // eval-03: the red checks' Actions ids (detailsUrl) for the CI bridge —
+  // read from this same snapshot, no extra gh call
+  const redChecks: RedCheck[] = [];
   const pending: string[] = [];
   let green = 0;
   let readable = 0;
@@ -2342,6 +2640,7 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
     }
     if (CHECK_RED.has(outcome)) {
       red.push(`${name}=${outcome}`);
+      redChecks.push({ name, conclusion: outcome, ...(actionsIds(c.detailsUrl) ?? { runId: null, jobId: null }) });
       continue;
     }
     if (!outcome || outcome === "PENDING" || outcome === "EXPECTED") {
@@ -2371,10 +2670,10 @@ export function mergeReadiness(snap: unknown, opts: { ciExpected?: boolean } = {
       // name=CONCLUSION shape of the non-ci-gate path) — no new gh call, and
       // the ci-gate itself is excluded (this sentence already names it).
       const jobs = red.filter((r) => !r.startsWith("ci-gate="));
-      return { verdict: "skip", infra: "ci-red", detail: `CI red: ci-gate aggregate failed${jobs.length ? ` (${jobs.join(", ")})` : ""}` };
+      return { verdict: "skip", infra: "ci-red", detail: `CI red: ci-gate aggregate failed${jobs.length ? ` (${jobs.join(", ")})` : ""}`, checks: redChecks };
     }
   }
-  if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}` };
+  if (red.length) return { verdict: "skip", infra: "ci-red", detail: `CI red: ${red.join(", ")}`, checks: redChecks };
   // P3-346: CI is expected on this repo but GitHub reported no check yet —
   // the run is not scheduled, not "green". Never a merge.
   if (opts.ciExpected && readable === 0) return { verdict: "pending", detail: "no checks reported yet — CI expected (workflows trigger on pull_request)" };
@@ -2595,6 +2894,62 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
   return { status: "repaired", sha };
 }
 
+/** eval-03: one `gh pr view --json state,headRefOid` read; null on gh noise
+ * or malformed JSON (callers fail open to their previous behavior). */
+function prHeadSnapshot(io: PrMergeIo, prNumber: number): { state: string; head: string } | null {
+  const view = io.exec(`gh pr view ${prNumber} --json state,headRefOid`);
+  if (!view.ok) return null;
+  try {
+    const snap = JSON.parse(view.output) as { state?: unknown; headRefOid?: unknown };
+    const head = typeof snap.headRefOid === "string" && /^[0-9a-f]{40}$/.test(snap.headRefOid) ? snap.headRefOid : "";
+    return { state: typeof snap.state === "string" ? snap.state : "", head };
+  } catch {
+    return null;
+  }
+}
+
+function staleHeadDetail(prNumber: number, head: string, ours: string): string {
+  const detail = `PR #${prNumber} head is ${head.slice(0, 7)}, not our pushed ${ours.slice(0, 7)} — the branch push did not land; its CI verdict is not this cycle's (retry next cycle)`;
+  console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "merge skipped — PR head is not the pushed sha", data: { pr: prNumber, head: head.slice(0, 7), ours: ours.slice(0, 7) } }));
+  return detail;
+}
+
+/**
+ * eval-03: the CI bridge's I/O half — read the failed jobs' logs of the red
+ * run (`gh run view <run> --log-failed`, digits-only run id) and reduce them
+ * to the bounded summary (cibridge.ts). Fail-open: a gh failure or a check
+ * without Actions ids still yields the red job names ("log unavailable"),
+ * never an exception and never a changed verdict. eval fixround: under gh
+ * rate limiting this path must not hammer the API — at most
+ * CI_JOB_LOG_ATTEMPTS job-log reads (the cap counts ATTEMPTS, not successes:
+ * 5 red jobs under a rate limit previously made 5 calls), each with the
+ * short CI_BRIDGE_TIMEOUT_MIN cap (the exec is a synchronous spawnSync — a
+ * 5-min hang freezes the pilot event loop).
+ */
+export function fetchCiFailure(io: PrMergeIo, checks: readonly RedCheck[], context = ""): string | undefined {
+  if (!checks.length) return undefined;
+  const cmd = failedLogCommand(bridgeRunId(checks));
+  const log = cmd ? io.exec(cmd, CI_BRIDGE_TIMEOUT_MIN) : null;
+  let raw = log?.ok ? log.output : "";
+  if (!raw.trim()) {
+    // `gh run view` refuses a run still in progress — read each red job's
+    // own log over REST instead (bounded attempts, not bounded successes)
+    const parts: string[] = [];
+    let attempts = 0;
+    for (const c of checks) {
+      if (attempts >= CI_JOB_LOG_ATTEMPTS || parts.length >= 3) break;
+      const jobCmd = c.name === "ci-gate" ? null : jobLogCommand(c.jobId);
+      if (!jobCmd) continue;
+      attempts++;
+      const job = io.exec(jobCmd, CI_BRIDGE_TIMEOUT_MIN);
+      if (job.ok && job.output.trim()) parts.push(asFailedLog(c.name, job.output));
+    }
+    raw = parts.join("\n");
+  }
+  const note = raw ? "" : !cmd ? "no GitHub Actions run id on the red check" : `gh run view failed: ${ghTail(log?.output ?? "").slice(-160)}`;
+  return summarizeCiFailure(checks, raw, note, context).text;
+}
+
 /**
  * P2-125: create + merge the task PR and CONFIRM it landed with OUR sha as
  * the merged head — the same fail-closed confirmation `armMetaPr` applies to
@@ -2623,7 +2978,7 @@ export async function repairConflictedBranch(io: PrMergeIo, args: { branch: stri
  */
 export async function mergePrForTask(
   io: PrMergeIo,
-  args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean; base?: string },
+  args: { branch: string; title: string; body: string; pushedSha: string; ciExpected?: boolean; base?: string; pushOk?: boolean },
 ): Promise<PrMergeOutcome> {
   const create = io.exec(
     `gh pr create --head ${args.branch} --title ${shq(prTitle(args.title))} --body ${shq(args.body)}`,
@@ -2647,7 +3002,14 @@ export async function mergePrForTask(
   // red or conflicting PR is skipped here with the reason — classified infra
   // (free retry: the next cycle rebases/re-runs and probes again; three
   // identical skips in a row become a hard block via the streak breaker).
-  const ready = await awaitMergeReadiness(io, prNumber, PR_READINESS_POLLS, undefined, { ciExpected: args.ciExpected });
+  // eval fixround: when the push LANDED, the verdict and the head must come
+  // from ONE snapshot — expectSha makes the query read headRefOid and holds
+  // the verdict until the PR actually carries our sha, so a GitHub read lag
+  // (~3s after the push, P3-459: push 12:13:53, readiness 12:13:56) can no
+  // longer return a stale head's verdict as this cycle's. A refused push
+  // keeps the old one-read behavior: the stale-head path below names it
+  // fast instead of burning the poll budget on a head that will never move.
+  const ready = await awaitMergeReadiness(io, prNumber, PR_READINESS_POLLS, args.pushOk ? args.pushedSha : undefined, { ciExpected: args.ciExpected });
   // P3-341: a CONFLICTING PR is no longer a dead end. With the repair sinks
   // wired (real workspace) the builder merges origin/main into the branch in
   // the slot, resolves trivial conflicts (docs, comment-only code hunks) and
@@ -2698,15 +3060,31 @@ export async function mergePrForTask(
   }
   if (effective.verdict !== "merge") {
     const infra = readinessInfraKind(effective);
+    // eval-03: a red verdict is only the task's when it is about OUR head. A
+    // refused push (P3-459 cycle 3: GitHub 500 on the branch push) leaves the
+    // PR on the previous cycle's head, whose red CI was then counted as the
+    // third ci-red strike and blocked the task for code this cycle replaced.
+    // eval fixround: infra kind "stale-head" — it neither counts nor clears
+    // the per-task streak. When the push LANDED this shape is GitHub read lag
+    // (absorbed by the expectSha poll above), so a stale head here means the
+    // push really was refused.
+    const head = effective.verdict === "skip" && effective.infra === "ci-red" ? prHeadSnapshot(io, prNumber) : null;
+    if (head?.state === "OPEN" && head.head && head.head !== expectedSha) {
+      return { ok: false, infra: "stale-head", detail: staleHeadDetail(prNumber, head.head, expectedSha) };
+    }
+    const ciFailure =
+      effective.verdict === "skip" && effective.infra === "ci-red"
+        ? fetchCiFailure(io, effective.checks ?? [], `PR #${prNumber} · rejected head ${expectedSha.slice(0, 12)} · branch origin/${args.branch}`)
+        : undefined;
     console.log(
       JSON.stringify({
         ts: nowLocalISO(),
         level: "warn",
         msg: "merge skipped — PR not ready on GitHub",
-        data: { pr: prNumber, verdict: effective.verdict, infra, detail: effective.detail.slice(0, 300) },
+        data: { pr: prNumber, verdict: effective.verdict, infra, detail: effective.detail.slice(0, 300), ...(ciFailure ? { ci: ciFailure.split("\n", 1)[0] } : {}) },
       }),
     );
-    return { ok: false, infra, detail: `PR #${prNumber} not merged (${effective.verdict}): ${effective.detail}` };
+    return { ok: false, infra, detail: `PR #${prNumber} not merged (${effective.verdict}): ${effective.detail}`, ...(ciFailure ? { ciFailure } : {}) };
   }
   // P3-354: a PR merged OUTSIDE the loop (operator, or this task's previous
   // cycle whose --delete-branch then makes the retry push fail the
@@ -2715,8 +3093,14 @@ export async function mergePrForTask(
   // head-mismatch check would burn an attempt + a fever sample for work that
   // is already in main. One explicit probe BEFORE arming: MERGED + foreign
   // head is infra "conflict" — the next cycle's empty-diff self-heal resyncs.
+  // eval fixround: this probe is fail-OPEN by design (gh noise falls through
+  // to the arm) — the arm itself is now fail-CLOSED: `--match-head-commit`
+  // makes GitHub refuse to squash-merge anything but `expectedSha`, so the
+  // "same transient 5xx that refused the push" can no longer arm a merge over
+  // an OPEN foreign head (S2). A refused push (pushOk=false) that slips
+  // through is classified stale-head by the confirmation poll, never merit.
   // gh noise here fails open: the poll below remains the backstop.
-  const pre = io.exec(`gh pr view ${prNumber} --json state,headRefOid`);
+  const pre = io.exec(`gh pr view ${prNumber} --json state,headRefOid`, CI_BRIDGE_TIMEOUT_MIN);
   if (pre.ok) {
     let preSnap: { state?: unknown; headRefOid?: unknown } = {};
     try {
@@ -2740,11 +3124,20 @@ export async function mergePrForTask(
         detail: `PR #${prNumber} already MERGED outside the loop (head ${preHead.slice(0, 7)}, our ${expectedSha.slice(0, 7)}) — resyncs next cycle`,
       };
     }
+    // eval-03: still OPEN on a head we did not push (refused push) — arming
+    // would squash a head this cycle's gate never certified, and the poll
+    // below would then report it as a merit anomaly
+    if (preSnap.state === "OPEN" && preHead && preHead !== expectedSha) {
+      return { ok: false, infra: "stale-head", detail: staleHeadDetail(prNumber, preHead, expectedSha) };
+    }
   }
   // --auto only works once branch protection exists; the immediate squash is
   // the fallback. Failure here is NOT fatal: the squash may be queued anyway.
+  // eval fixround: `--match-head-commit` on BOTH calls — the merge is atomic
+  // and fail-closed on OUR head (gh refuses when the PR head moved), so a
+  // probe failure can never arm a merge over someone else's code.
   const merge = io.exec(
-    `gh pr merge ${prNumber} --squash --delete-branch --auto || gh pr merge ${prNumber} --squash --delete-branch`,
+    `gh pr merge ${prNumber} --squash --delete-branch --match-head-commit ${expectedSha} --auto || gh pr merge ${prNumber} --squash --delete-branch --match-head-commit ${expectedSha}`,
   );
   const mergeTail = ghTail(merge.output);
   for (let poll = 0; poll < PR_MERGE_CONFIRM_POLLS; poll++) {
@@ -2760,8 +3153,16 @@ export async function mergePrForTask(
     const state = typeof snap.state === "string" ? snap.state : "";
     const head = typeof snap.headRefOid === "string" ? snap.headRefOid : "";
     // a head that is not ours (before or at merge) is a real anomaly, not infra
-    // — P3-341: "ours" is the pre-merge pushed sha OR the repair's new head
+    // — P3-341: "ours" is the pre-merge pushed sha OR the repair's new head.
+    // eval fixround: when the push itself was refused (pushOk=false), a
+    // foreign head is EXPECTED — the refused push kept the old head — so the
+    // honest verdict is infra "stale-head" (free retry), never a merit
+    // anomaly that burns an attempt (the P3-459 shape, even with the probe
+    // dead and the merge armed-but-refused by --match-head-commit).
     if (head && head !== expectedSha) {
+      if (args.pushOk === false) {
+        return { ok: false, infra: "stale-head", detail: staleHeadDetail(prNumber, head, expectedSha) };
+      }
       return { ok: false, detail: `PR #${prNumber} head is ${head.slice(0, 7)}, not our ${expectedSha.slice(0, 7)} — merge exec: ${mergeTail}` };
     }
     if (state === "MERGED") {
@@ -2847,7 +3248,7 @@ async function mergeTask(
   // retries the PR.
   const outcome = await mergePrForTask(
     {
-      exec: (cmd) => exec(cmd, { cwd: ws, timeoutMin: 5, allowFail: true }),
+      exec: (cmd, timeoutMin) => exec(cmd, { cwd: ws, timeoutMin: timeoutMin ?? 5, allowFail: true }),
       sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
       // P3-341: real repair sinks, resolved against the workspace and refusing
       // absolute paths or `..` traversal (git diff paths are repo-relative,
@@ -2877,6 +3278,12 @@ async function mergeTask(
       title,
       body: "Autonomous pipeline merge — gatekeeper green (typecheck, build, reconnect, integration, invariants, download).",
       pushedSha: preMergeHead,
+      // eval fixround: whether the branch push actually landed — the merge
+      // decision reads the PR head from the same snapshot as the CI verdict
+      // only when it did (GitHub read lag is absorbed by the poll); a refused
+      // push keeps the fast stale-head classification instead of burning the
+      // poll budget on a head that will never move.
+      pushOk: pushed.ok,
       // P3-346: read from the checkout being merged — a foreign mission repo
       // without workflows keeps the "no checks ⇒ merge" rule
       ciExpected: workflowsExpectPrChecks(readWorkflowTexts(ws)),
@@ -2906,16 +3313,24 @@ async function mergeTask(
   }
   // P1-076: the mark-done bookkeeping commit lands via the pilot/meta PR —
   // direct pushes to main no longer exist anywhere in the pipeline
-  await landMetaCommit(ws, metaIo(ws), {
+  // eval-06 fixround: markDone's result drives the apply — "noop" (already
+  // marked) is the R6 desired-state success; "missing"/"refused" abort the
+  // landing instead of committing nothing, and a landing that did not
+  // complete is logged (the merged task stays open in the queue).
+  const marked = { value: null as ReturnType<typeof markDone> | null };
+  const markLanding = await landMetaCommit(ws, metaIo(ws), {
     files: ["BACKLOG.md"],
     message: `pilot(${t.id}): mark done`,
     guardFile: "BACKLOG.md",
     base,
     apply: () => {
-      markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
-      return { action: "apply" };
+      marked.value = markDone(ws, t.id, `merged by pilot ${nowLocalISO().slice(0, 10)}`);
+      if (marked.value === "applied") return { action: "apply" };
+      return { action: marked.value === "noop" ? "noop" : "abort" };
     },
   });
+  if (markLanding !== "pushed" || (marked.value !== "applied" && marked.value !== "noop"))
+    console.log(JSON.stringify({ ts: nowLocalISO(), level: "warn", msg: "mark-done landing did not complete — the merged task stays open in the queue", data: { task: t.id, result: marked.value, landing: markLanding } }));
   // P2-045: honest daily merge counter for the dashboard — state.json resets
   // at midnight (loadState), matching `git log --since=00:00` exactly
   state.merges = (state.merges ?? 0) + 1;
@@ -2956,11 +3371,15 @@ function headSha(ws: string): string {
 export function taskMergedIn(ws: string, id: string, base = "main"): boolean {
   if (!TASK_ID_RE.test(id)) return false;
   const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --oneline`, {
+  const r = exec(`git log origin/${base} --extended-regexp --grep='^pilot\\(${escaped}\\):' --format=%s`, {
     cwd: ws,
     allowFail: true,
   });
-  return r.ok && r.output.trim().length > 0;
+  // eval-06: the pilot's own `mark done` / `block after N failed attempts`
+  // commits share the prefix but carry no work — a blocked task moved back to
+  // ## Ready must not read as merged (the empty-diff self-heal would mark it
+  // done and a P0/P1 would skip its planner)
+  return r.ok && r.output.split("\n").some((s) => s.trim() !== "" && !isBookkeepingSubject(s));
 }
 
 /**

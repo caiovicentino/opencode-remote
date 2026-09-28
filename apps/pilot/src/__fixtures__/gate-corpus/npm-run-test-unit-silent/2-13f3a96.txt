@@ -399,19 +399,19 @@ OK   window-state: state file lives in the given userData dir
 OK   window-state: missing file → default, no crash
 OK   window-state: save then load roundtrips the bounds
 OK   window-state: loaded bounds match what was saved
-[desktop] window-state unreadable (/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-OR30AT/window-state.json), using defaults: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+[desktop] window-state unreadable (/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-OR30AT/window-state.json), using defaults: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
     at JSON.parse (<anonymous>)
     at loadWindowBounds (~/.opencode-remote/pilot/repo-1/apps/desktop/src/window-state.ts:84:38)
     at <anonymous> (~/.opencode-remote/pilot/repo-1/scripts/unit.test.ts:1517:8)
 OK   window-state: corrupted JSON file → default without crashing
-[desktop] window-state write failed (/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-OR30AT/gone/window-state.json): Error: ENOENT: no such file or directory, open '/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-OR30AT/gone/window-state.json'
+[desktop] window-state write failed (/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-OR30AT/gone/window-state.json): Error: ENOENT: no such file or directory, open '/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-OR30AT/gone/window-state.json'
     at writeFileSync (node:fs:2430:20)
     at saveWindowBounds (~/.opencode-remote/pilot/repo-1/apps/desktop/src/window-state.ts:96:5)
     at <anonymous> (~/.opencode-remote/pilot/repo-1/scripts/unit.test.ts:1522:5) {
   errno: -2,
   code: 'ENOENT',
   syscall: 'open',
-  path: '/var/folders/v1/chbzjjpn1z9bmdw7rxcyf4w80000gn/T/ocr-winstate-OR30AT/gone/window-state.json'
+  path: '/var/folders/xx/EXAMPLETMPDIRXXXX/T/ocr-winstate-OR30AT/gone/window-state.json'
 }
 OK   window-state: write failure is log-only (unwritable dir)
 OK   shutdown: idle state is not shutting down

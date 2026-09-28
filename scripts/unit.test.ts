@@ -606,6 +606,7 @@ import {
   mayPush,
   parseAuxTaskLines,
   parseBacklog,
+  backlogShapeIssues,
   readyOrphanBlocks,
   addTask,
   type AuxPushIo,
@@ -2765,10 +2766,31 @@ try {
     taskMergedIn(pilotRepo, "P0-$(touch boom)") === false && !existsSync(join(pilotRepo, "boom")),
   );
   check("taskMergedIn rejects ids with shell metacharacters", taskMergedIn(pilotRepo, "P0-1'; ls") === false);
+  // eval-06: the pilot's own bookkeeping shares the prefix but is not work —
+  // origin/main carries `pilot(P3-457): block after 4 failed attempts (#1312)`
+  // and nothing else for P3-457, which made a requeued P3-457 read as merged
+  g("git commit -q --allow-empty -m 'pilot(P3-457): block after 4 failed attempts (#1312)'");
+  g("git commit -q --allow-empty -m 'pilot(P3-457): mark done (empty-diff self-heal)'");
+  g("git update-ref refs/remotes/origin/main HEAD");
+  check("taskMergedIn: block/mark-done bookkeeping alone is not a merge (eval-06)", taskMergedIn(pilotRepo, "P3-457") === false);
+  g("git commit -q --allow-empty -m 'pilot(P3-457): rollout percent in the release feed (#1400)'");
+  g("git update-ref refs/remotes/origin/main HEAD");
+  check("taskMergedIn: a work commit next to the bookkeeping counts (eval-06)", taskMergedIn(pilotRepo, "P3-457") === true);
 } catch (e) {
   check(`taskMergedIn test env failed: ${String(e)}`, false);
 } finally {
   if (pilotRepo) rmSync(pilotRepo, { recursive: true, force: true });
+}
+
+// eval-06 fixround: the markDone callers no longer swallow the result — the
+// self-heal detail and the post-merge landing report refused/missing instead
+// of a false "marked done" (verdict 06 nit: success falso no self-heal)
+{
+  const pipelineSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "pipeline.ts"), "utf8");
+  check("markDone callers: both landing sites capture the result", (pipelineSrc.match(/marked\.value = markDone\(/g) ?? []).length === 2);
+  check("self-heal: a mark-done that did not apply is named in the detail", pipelineSrc.includes('the mark-done did not apply (${marked.value ?? "missing"})'));
+  check("post-merge: already-marked converges as noop, missing/refused abort the landing", pipelineSrc.includes('return { action: marked.value === "noop" ? "noop" : "abort" };'));
+  check("post-merge: a landing that did not complete is logged, not swallowed", pipelineSrc.includes("mark-done landing did not complete"));
 }
 
 
@@ -3272,6 +3294,13 @@ check("console-message: undefined first arg falls back to legacy", readConsoleMe
     const noReady = readFileSync(join(dirAt, "BACKLOG.md"), "utf8");
     check("addTask: missing ## Ready section reports missing", addTask(dirAt, "P2-904", "P2", "X", "y (area: ui)") === "missing");
     check("addTask: missing state never touches the file", readFileSync(join(dirAt, "BACKLOG.md"), "utf8") === noReady);
+
+    // eval-06 fixround: a ratchet refusal is its own outcome — never reported
+    // as "invalid" (the callers log the reason)
+    const backlogSrc = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "backlog.ts"), "utf8");
+    const addTaskBody = backlogSrc.slice(backlogSrc.indexOf("export function addTask("), backlogSrc.indexOf("export function", backlogSrc.indexOf("export function addTask(") + 10));
+    check("addTask: a ratchet refusal reports refused, not invalid (eval-06 fixround)", addTaskBody.includes('? "applied" : "refused"') && !addTaskBody.includes(': "invalid"'));
+    check("addTask: the redteam log names the ratchet refusal", pilotIndexSrc.includes("redteam finding dropped — the Ready-debris ratchet refused the edit"));
   } finally {
     rmSync(dirAt, { recursive: true, force: true });
   }
@@ -13527,7 +13556,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   // Every first-contact screen opens its centered brand header with the same
   // glyph before the wordmark — the wizard's mark language, nothing per-view.
-  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx"]) {
+  // P3-373 (eval-09): the "pair a phone" dialog joined the list — it still
+  // wore the P1-050 splash's app icon over a sans title.
+  for (const view of ["WelcomeView.tsx", "PairingView.tsx", "DegradedView.tsx", "PairingOverlay.tsx"]) {
     const src = read(join("components", view));
     // P2-355: the header now carries the named layout-shift region — match
     // the opening tag, not the bare literal.
@@ -13969,14 +14000,18 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 // disabled ghost beside the error. P3-433 removes the override: the `primary`
 // class resolves to the shared button.primary accent identity (P3-449/P3-450:
 // one primary dialect per journey), and the P3-366 desktop-flow beat still
-// pins the class presence over the quiet scan entry.
+// pins the class presence over the quiet scan entry. P3-415 (eval-09): the
+// `primary` class is now granted only where the paste form is the sole path
+// (submitClass — scripts/pair-lead.test.ts pins the verdict); the no-override
+// rule below still holds for that primary.
 {
   const css = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "index.css"), "utf8");
   const pairingSrc = readFileSync(join(import.meta.dirname, "..", "apps", "web", "src", "components", "PairingView.tsx"), "utf8");
   check(
     "P3-433: the desktop paste submit keeps no recessed-chip override (shared accent primary)",
     !/\.pair-submit\.primary\s*\{/.test(css) &&
-      pairingSrc.includes('className={preferPaste ? "pair-submit primary" : "pair-submit"}'),
+      pairingSrc.includes('lead === "paste" ? "pair-submit primary" : "pair-submit secondary"') &&
+      pairingSrc.includes("className={submitClass}"),
   );
 }
 
@@ -14071,7 +14106,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-427: the host entry is suppressed while the agent is down",
-    view.includes("const hostSection = onPairRemote && !agentDown && ("),
+    // P3-415 (eval-09): the render condition is named (hostEntry) so the
+    // one-lead verdict and the render read the same boolean.
+    view.includes("const hostEntry = !!onPairRemote && !agentDown;") && view.includes("const hostSection = hostEntry && ("),
   );
   check(
     "P3-427: the daemon-assuming intro yields to the agent-down verdict",
@@ -14087,7 +14124,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   );
   check(
     "P3-427: the verdict card yields to the App-level error block (one status per phase)",
-    /agentDown && phase !== "error" && \(/.test(view),
+    // P3-415 (eval-09): named (agentDownCard) — the lead verdict reads it too.
+    view.includes('const agentDownCard = !!agentDown && phase !== "error";') && view.includes("{agentDownCard && ("),
   );
   // App side: only the pairManual call site carries the verdict — the
   // add-machine ceremony must keep the full rendering (P3-422 lesson).
@@ -16209,7 +16247,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     {
       name: "healthz",
       status: 200,
-      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+      body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
     },
     {
       name: "web-root",
@@ -16238,7 +16276,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   // P2-331: the healthz probe must demand the announced wire protocol
   const noProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: healthz body without protocol → problem (fail-closed)",
@@ -16246,7 +16284,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(noProtocol),
   );
   const wrongProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL + 1, uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: RELAY_WIRE_PROTOCOL + 1, uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: healthz announcing a different wire protocol → problem",
@@ -16254,7 +16292,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
     JSON.stringify(wrongProtocol),
   );
   const junkProtocol = failOne("healthz", {
-    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: "2", uptimeS: 3, rooms: 1, roomsRejected: 0 }),
+    body: JSON.stringify({ ok: true, version: "0.2.0", protocol: "2", uptimeS: 3, rooms: 1, roomsRejected: 0, instanceId: "relay-i-0f3a9c2b7d5e4a18" }),
   });
   check(
     "P2-331: non-integer protocol → problem",
@@ -20596,9 +20634,9 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
 
   const empty = relayKnobs({});
   check(
-    "P2-171: empty env → exactly the historical defaults (600/1000/20/0/30) with zero problems",
-    empty.ratePerMin === 600 &&
-      empty.rateBurst === 1000 &&
+    "P2-171: empty env → exactly the documented defaults (45000/1500/20/0/30 — rate pair resized by eval-13) with zero problems",
+    empty.ratePerMin === 45_000 &&
+      empty.rateBurst === 1_500 &&
       empty.maxPerIp === 20 &&
       empty.trustProxyHops === 0 &&
       empty.pingIntervalS === 30 &&
@@ -20615,8 +20653,8 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   check(
     "P2-171: blank values are the only present-case that keeps the default without a problem",
     blank.problems.length === 0 &&
-      blank.ratePerMin === 600 &&
-      blank.rateBurst === 1000 &&
+      blank.ratePerMin === 45_000 &&
+      blank.rateBurst === 1_500 &&
       blank.maxPerIp === 20 &&
       blank.trustProxyHops === 0 &&
       blank.pingIntervalS === 30,
@@ -20733,7 +20771,7 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   const fallback = relayKnobs({ RELAY_RATE_PER_MIN: "abc" });
   check(
     "P2-171: a problem knob resolves to the documented default (the boot refuses anyway)",
-    fallback.ratePerMin === 600,
+    fallback.ratePerMin === 45_000,
   );
 }
 
@@ -24202,15 +24240,21 @@ check("i18n: vars interpolatable in both locales", ["queued", "reconnecting", "o
   // a backlog without ## Ready is tolerated (empty report, no throw)
   check("P2-341: a backlog without ## Ready is tolerated (empty report, no throw)", JSON.stringify(readyOrphanBlocks("# B\n\n## Done\n- [x] (P2-001) [P2] Old — done\n")) === JSON.stringify({ count: 0, starts: [] }));
 
-  // the REAL BACKLOG.md of this repo: the rot is real and gets flagged
+  // the REAL BACKLOG.md of this repo: this check used to PIN the rot
+  // (count > 0), which made cleaning the backlog a red battery — eval-06
+  // removed the debris and the check now guards the clean queue instead.
+  // Fixround (verdict 06, blocking 1): the gate judges only the queue's SHAPE
+  // (backlogShapeIssues: orphan / done-in-ready / duplicate-section) — the
+  // landing validator (isValidTaskLine) is STRICTER than the scheduler's
+  // parseTaskLine, so a hand-written or requeued line (a `;`, a missing area
+  // tag, control bytes) scheduled fine while the real-file check went red on
+  // every builder. readyOrphanBlocks stays the doctor's report-only boot
+  // alert; it is no longer the gate's criterion for the live file.
   const realBacklog = readFileSync(join(import.meta.dirname, "..", "BACKLOG.md"), "utf8");
-  const realScan = readyOrphanBlocks(realBacklog);
-  check(
-    "P2-341: the real BACKLOG.md of this repo reports orphan blocks",
-    realScan.count > 0 && realScan.starts.length === realScan.count && realScan.starts.every((n, i) => Number.isInteger(n) && n > 0 && (i === 0 || n > realScan.starts[i - 1]!)),
+  const realShape = backlogShapeIssues(realBacklog).filter(
+    (i) => i.kind === "orphan" || i.kind === "done-in-ready" || i.kind === "duplicate-section",
   );
-  const realLines = realBacklog.split("\n");
-  check("P2-341: every reported orphan start line fails the same validator on the real file", realScan.starts.every((n) => !isValidTaskLine((realLines[n - 1] ?? "").trim())));
+  check("P2-341: the real BACKLOG.md of this repo has zero queue-shape issues (orphan/done-in-ready/duplicate-section)", realShape.length === 0, JSON.stringify(realShape));
 
   // index.ts wiring: runDoctorPass calls the scanner and the block TEXT never
   // reaches the log — only the count and the start lines, deduped by count
@@ -41119,10 +41163,13 @@ import { ASK_NOTIFY_BODY, ASK_NOTIFY_MIN_INTERVAL_MS, ASK_NOTIFY_TITLE, askNotif
 
   // Source pins over the real index.ts (lesson P3-409): the hold branch is
   // structurally before the block landing, and the main read degrades to [].
+  // eval fixround: the api-down cap (eval-03) added an earlier, legitimate
+  // attempt-pin + blockAndPush of its own — scope the search to AFTER the
+  // hold branch, the invariant being tested is exactly that.
   const idx334 = readFileSync(join(import.meta.dirname, "..", "apps", "pilot", "src", "index.ts"), "utf8");
   const holdAt = idx334.indexOf('if (plan.action === "hold") {');
-  const pinAt = idx334.indexOf("state.taskAttempts[taskKey] = Math.max");
-  const pushAt = idx334.indexOf("await blockAndPush(taskCfg, state, task, attempts, reason, true)");
+  const pinAt = idx334.indexOf("state.taskAttempts[taskKey] = Math.max", holdAt);
+  const pushAt = idx334.indexOf("await blockAndPush(taskCfg, state, task, attempts, reason, true)", holdAt);
   check("P2-334: wiring — the hold branch precedes the attempt pin and the block landing (blockAndPush unreachable from the hold path)", holdAt !== -1 && pinAt !== -1 && pushAt !== -1 && holdAt < pinAt && holdAt < pushAt);
   const holdBody = idx334.slice(holdAt, idx334.indexOf("} else {", holdAt));
   check("P2-334: hold branch — no blockAndPush, no attempt pinning, holds counted, alert + supervisor notify", !holdBody.includes("blockAndPush") && !holdBody.includes("maxAttemptsPerTask") && holdBody.includes("recordTaskHold(state, taskKey)") && holdBody.includes('emit("alert"') && holdBody.includes("notifySupervisor"));

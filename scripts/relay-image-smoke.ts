@@ -38,6 +38,10 @@
  * Run: npx tsx scripts/relay-image-smoke.ts http://127.0.0.1:<port> <user>
  */
 import { pathToFileURL } from "node:url";
+// eval-13: the replica-identity grammar is the boot's own (instanceid.ts has
+// no imports, so the bare `npx tsx` of the image jobs resolves it straight
+// off the checkout) — smoke, boot and probe can never disagree on it.
+import { isValidInstanceId } from "../apps/relay/src/instanceid";
 
 /** The wire protocol this tree ships. The relay-image job runs this script via
  * bare `npx tsx` (no npm ci), so it cannot import @ocr/protocol; the literal is
@@ -177,6 +181,13 @@ function parseCounters(body: string | undefined): string[] | string {
     if (typeof counters[field] !== "number" || !Number.isFinite(counters[field] as number) || (counters[field] as number) < 0) {
       problems.push(`counter "${field}" is not a non-negative number`);
     }
+  }
+  // eval-13 (the P3-459 idea of PR #1316): an image must publish the opaque
+  // per-replica identity — the field the docs/RELAY-HOSTING.md two-minute
+  // test compares to expose two replicas behind one address. Without it the
+  // split-room trap is undiagnosable again, so such an image never ships.
+  if (!isValidInstanceId(counters["instanceId"])) {
+    problems.push('counter "instanceId" is not a short opaque instance id (1-64 characters of A-Z a-z 0-9 -)');
   }
   return problems;
 }

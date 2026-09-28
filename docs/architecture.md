@@ -55,8 +55,10 @@ Resource limits: 1MB/frame, 1000 sockets, 10 peers/room, a per-IP
 live-connection cap (`RELAY_MAX_PER_IP`, default 20 — the
 surplus connection is closed with 1013 "too many connections" and counted
 in `rejects` on `/metrics`), and a per-connection
-token bucket on message frames (600 msgs/min sustained, burst 1000 —
-`RELAY_RATE_PER_MIN` / `RELAY_RATE_BURST`). The per-IP cap keys
+token bucket on message frames (45,000 msgs/min sustained, burst 1,500 —
+`RELAY_RATE_PER_MIN` / `RELAY_RATE_BURST`), sized from measured daemon
+traffic (1,144 frames in the peak second, 22,906 in the peak minute) —
+see docs/RELAY-HOSTING.md for the measurement. The per-IP cap keys
 on a normalized address (`normalizeIp`): IPv4-mapped IPv6
 (`::ffff:a.b.c.d`) unmasks to the plain IPv4 and other IPv6 sources
 aggregate by their /64 prefix, so one dual-stack host gets one budget

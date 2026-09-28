@@ -50,7 +50,11 @@ private. That is the product: **local power, remote control, zero trust**.
   normal actionable card for manual review. Asks that are already answered
   collapse into "resolved" lines, duplicates of the same request render once,
   and tapping a stale card says "Permission already resolved" instead of a
-  raw 404
+  raw 404. An ask the daemon never answers (asked before AutoMode was switched
+  on, or while the daemon restarted) surfaces the same way after 10 s
+  ("AutoMode hasn't answered"), and every reconnect re-reads the pending
+  approvals and questions — an ask made while the phone slept is never
+  invisible
 - **Approval preview** — permission cards show the first lines of the
   command/patch being requested (from the permission event payload) before
   you Approve/Deny, so you always know what you're green-lighting
@@ -481,11 +485,15 @@ private. That is the product: **local power, remote control, zero trust**.
   empty — and swaps to the shared SVG reload icon only once a page is loaded (the old bar
   showed a reload that did nothing on the empty pane). While empty the bar shows only a
   generic `https://…` placeholder (P3-448) — never a concrete URL that reads as already
-  typed. A typed URL that
-  parses but isn't http(s) — `file://`, `data:`, … — is rejected with named feedback (P3-378):
-  the address bar flags red and a specific sentence explains the sandbox's http(s)-only rule
-  and the way out (serve the folder over HTTP and open its localhost URL) instead of leaving
-  the typed URL silently ignored. A download started
+  typed. The bar answers every typed address (P3-378): a schemeless host is completed the
+  way a browser omnibox does — `localhost:5173` or `127.0.0.1:8080` load over http (dev
+  servers), `example.com/docs` over https; a `file://` URL or a pasted local path is
+  rejected with named feedback — the address bar flags red (its focus ring too) and a
+  specific sentence explains the sandbox's http(s)-only rule and the way out (serve the
+  folder over HTTP and open its localhost URL); any other scheme (`javascript:`, `data:`,
+  `about:`, …) gets its own "only http(s) addresses" sentence. The sentence is announced to
+  screen readers, the page already loaded stays put, and editing the address dissolves the
+  verdict — a typed URL is never silently ignored. A download started
   in the pane follows the shell's one download policy — no native dialog, sanitized name,
   saved to the system Downloads folder or refused with a log line (P2-241). The Playwright
   screenshot mode (`/api/browse`) remains the fallback in the PWA
@@ -2098,15 +2106,23 @@ two-column composition, vertically centered, so a 1440px window no longer
 renders the phone column with ~70% of it empty and the map's last row
 (Configurações) no longer clips at the fold. The brand header stays a direct
 child of the scroll container, outside the composition, so its sticky block
-(P3-423) keeps the full-height containing block. The submit inside
-the client ceremony wears the shared accent primary identity (P3-433): the
-demotion P3-415 gave it (a quiet recessed chip) was tuned for a gate whose
-first contact has since moved to the degraded card (P3-365) — every desktop
-render of this form is now the standalone manual ceremony, where the paste
-form IS the main action and the grey-flat chip read as a disabled ghost beside
-the error. It renders with the same accent fill as the wizard's "Começar" and
-the reconnect card (one primary dialect per journey, P3-449/P3-450), keeping
-its primary rank over the quiet scan option (P3-366). When the local agent is
+(P3-423) keeps the full-height containing block. Each render of the
+ceremony has exactly ONE accent-filled action, owned by the path it leads
+with (P3-415, `lib/pairlead`; docs/PRODUCT.md: accent = the screen's highest
+action): with the local agent down, the verdict card's "Reconnect now"; when
+the host entry renders (the add-machine ceremony), the entry itself — a
+leading phone tile in the accent fill, the glyph the paired rail's "pair a
+phone" slot wears, on a card with an accent edge; only when the paste form is
+the ceremony's sole path does its submit wear the shared accent fill (P3-433,
+the same identity as the wizard's "Começar" and the reconnect card —
+P3-449/P3-450). Everywhere else the submit is the solid secondary: the card's
+surface, a firm border and the full-contrast semibold label — an enabled
+control that is simply not the loudest (never the recessed grey chip the
+first P3-415 attempt shipped, which read as a disabled ghost beside the
+error) — still one step above the quiet scan option (P3-366). The scan option acquires the
+camera once per opening (eval-09): the screen behind it re-renders on every pairing-state
+push, and that no longer restarts the camera — the preview does not flicker and a dead
+feed stays on its unavailable panel with the paste action. When the local agent is
 down (P3-427), the scan entry and the host entry disappear from this surface
 entirely — the QR they promise is minted by the daemon that is out — and a
 calm verdict card ("The local agent is not running.") carries the reconnect
@@ -2142,7 +2158,10 @@ primary element on that screen. The paste field reads as the same care
 and autocorrect off, sized for the one `opencode-remote://` URI it receives
 instead of a raw four-row browser textarea. The brand header sits centered on the same
 axis as the first-run welcome wizard (P3-339), so the unpaired journey reads
-as one product, accent glyph included (P3-373).
+as one product, accent glyph included (P3-373). The "pair a phone" QR dialog
+wears the same header (P3-373, eval-09): the accent glyph over the serif
+wordmark replaces the P1-050 splash's app icon over a sans title, so the
+desktop's primary pairing moment no longer switches brand language.
 
 **Live auto-connect state (P3-332)**: in local mode the pairing screen no
 longer sits idle while the copy promises the shell "connects by itself" — a
