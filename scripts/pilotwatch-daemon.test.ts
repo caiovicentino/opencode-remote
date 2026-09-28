@@ -251,10 +251,11 @@ const down = await until(async () => {
 });
 const reasons = (down?.reasons ?? []) as Array<{ code: string; severity: string; detail: string }>;
 check("api: dead pilot → state down", down?.state === "down", JSON.stringify(down).slice(0, 400));
-// com.ocr.pilot is not loaded in launchd on this host (exit 113), so the
-// primary reason is the boot-out, not the dead pid (PIDs recycle — the pid
-// file is not the witness)
-check("api: primary reason is the launchd boot-out (the production outage)", reasons[0]?.code === "unloaded" && reasons[0]?.severity === "down", JSON.stringify(reasons));
+// The launchd probe only runs on darwin (where it answers "not loaded" via the
+// hermetic fake launchctl), so the primary reason is the boot-out there and
+// the dead process elsewhere — both are the production outage shape.
+const primaryCode = process.platform === "darwin" ? "unloaded" : "dead";
+check(`api: primary reason is the ${primaryCode} (the production outage shape)`, reasons[0]?.code === primaryCode && reasons[0]?.severity === "down", JSON.stringify(reasons));
 check("api: deleted supervisor session detected by a read-only probe", reasons.some((r) => r.code === "supervisor-missing"));
 check(
   "api: v1 contract fields present",
@@ -268,7 +269,7 @@ if (pushOk) {
   if (hit) {
     const page = decryptPush(hit.body);
     check("push: the phone decrypts it (RFC 8291) — title 🛑 Pilot parado", page.title === "🛑 Pilot parado", JSON.stringify(page));
-    check("push: body carries the real reason", /não está carregado no launchd/.test(page.body ?? "") && /supervisor inacessível/.test(page.body ?? ""));
+    check("push: body carries the real reason", /não está (carregado no launchd|rodando)/.test(page.body ?? "") && /supervisor inacessível/.test(page.body ?? ""));
     check("push: dedicated tag so routine notifications cannot replace it", page.data?.tag === "ocr-pilot");
     check("push: VAPID-signed, urgent, with a TTL", /^vapid t=/.test(String(hit.headers.authorization)) && hit.headers.urgency === "high" && Number(hit.headers.ttl) > 0);
   }
